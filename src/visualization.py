@@ -426,11 +426,15 @@ def visualize_optimization_comparison(
     acc_A = np.array(acc_A)
     acc_B = np.array(acc_B)
     
-    # Compute accuracy difference
+    # Compute accuracy difference, handling NaN values
     diff = acc_A - acc_B
     
-    # Symmetric color limits
-    max_abs = max(abs(diff.min()), abs(diff.max())) if diff.size > 0 else 1.0
+    # Filter out NaN values for color limit calculation
+    valid_diff = diff[~np.isnan(diff)]
+    if valid_diff.size > 0:
+        max_abs = max(abs(valid_diff.min()), abs(valid_diff.max()))
+    else:
+        max_abs = 1.0
     
     # Create coordinate grids
     X, Y = np.meshgrid(steps, budgets)
@@ -448,6 +452,14 @@ def visualize_optimization_comparison(
         vmin=-max_abs,
         vmax=+max_abs
     )
+    
+    # Handle NaN values by setting them to transparent
+    if np.any(np.isnan(diff)):
+        # Create a mask for NaN values
+        nan_mask = np.isnan(diff)
+        # Set NaN values to a neutral color (white) and make them transparent
+        diff_masked = np.ma.masked_where(nan_mask, diff)
+        im.set_array(diff_masked)
     
     # Contour for crossings (A = B)
     try:

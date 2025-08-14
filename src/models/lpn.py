@@ -341,9 +341,11 @@ class LPN(nn.Module):
         if mode == "mean":
             context = latents.mean(axis=-2)
             first_context, second_context = context, context
+            info = {"context": first_context}
         elif mode == "first":
             context = latents[..., 0, :]
             first_context, second_context = context, context
+            info = {"context": first_context}
         elif mode == "random_search":
             assert key is not None, "'key' argument required for 'random_search' inference mode."
             for arg in ["num_samples", "scale"]:
@@ -514,6 +516,10 @@ class LPN(nn.Module):
             row_logits, col_logits, grid_logits, output_seq
         )
         
+        # Remove the duplication of the latents over the pairs.
+        latents = latents[..., 0, :, :]
+        best_context, second_best_context = self._select_best_and_second_best_latents(log_probs, latents)
+
         # Track metrics for each sample if requested
         if track_progress:
             # Calculate metrics using JAX operations
@@ -528,10 +534,6 @@ class LPN(nn.Module):
                 "best_accuracy_progression": best_so_far
             }
             return best_context, second_best_context, trajectory_data
-
-        # Remove the duplication of the latents over the pairs.
-        latents = latents[..., 0, :, :]
-        best_context, second_best_context = self._select_best_and_second_best_latents(log_probs, latents)
 
         return best_context, second_best_context
 
@@ -635,8 +637,6 @@ class LPN(nn.Module):
                 "step_improvements": step_improvements
             }
 
-            # Use the final accuracy as log_probs
-            log_probs = step_accuracies[-1]
         else:
             def update_latents(decoder, carry, step_idx):
                 latents, opt_state = carry
@@ -656,23 +656,18 @@ class LPN(nn.Module):
                 length=num_steps,
             )(self.decoder, (latents, opt_state), jnp.arange(num_steps))
 
-            # Calculate final log_probs
-            log_probs = vmap_log_probs_fn(last_latents, input_seq, output_seq, self.decoder)
+        # After obtaining last_latents in both branches, compute per-latent log-probs for the final latents
+        final_log_probs = vmap_log_probs_fn(last_latents, input_seq, output_seq, self.decoder)
 
         # Concatenate original latents to all_latents and flatten all the latents.
         latents = jnp.concatenate([latents, last_latents], axis=-2).reshape(
             *latents.shape[:-2], -1, latents.shape[-1]
         )
 
-        # NOW define best_context and second_best_context
-        best_context, second_best_context = self._select_best_and_second_best_latents(log_probs, latents)
+        # Use final_log_probs for selection (shape: ..., num_latents)
+        best_context, second_best_context = self._select_best_and_second_best_latents(final_log_probs, latents)
 
         if track_progress:
-            trajectory_data = {
-                "step_accuracies": jnp.array(step_accuracies),
-                "step_losses": jnp.array(step_losses),
-                "step_improvements": jnp.array(step_improvements)
-            }
             return best_context, second_best_context, trajectory_data
         else:
             return best_context, second_best_context

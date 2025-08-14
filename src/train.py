@@ -528,8 +528,7 @@ class Trainer:
         search_trajectories = generated_info.get("search_trajectories", {})
 
         # Create search progress visualization
-        if search_trajectories and any("gradient_ascent" in test_name or "random_search" in test_name 
-                                      for test_name in [test_name]):
+        if search_trajectories and ("gradient_ascent" in test_name or "random_search" in test_name):
             fig_search_progress = self.visualize_search_progress(search_trajectories, test_name)
         else:
             fig_search_progress = None
@@ -639,7 +638,7 @@ class Trainer:
         # Merge with existing metrics
         metrics.update(optimization_metrics)
         
-        # NEW: Store optimization data for comparison plots
+        # NEW: Store optimization data for comparison plots (FIXED structure)
         if not hasattr(self, '_optimization_data'):
             self._optimization_data = {}
         
@@ -650,39 +649,33 @@ class Trainer:
             traj = generated_info['optimization_trajectory']
             method_name = test_name.replace('_gradient_ascent', '').replace('_random_search', '')
             
-            if method_name not in self._optimization_data:
-                self._optimization_data[method_name] = {
-                    'gradient_ascent': {'steps': [], 'budgets': [], 'accuracies': []},
-                    'random_search': {'steps': [], 'budgets': [], 'accuracies': []}
-                }
+            # Initialize storage structure (dict-of-steps)
+            store = self._optimization_data.setdefault(method_name, {
+                'gradient_ascent': {},
+                'random_search': {}
+            })
             
             if 'gradient_ascent' in test_name:
-                self._optimization_data[method_name]['gradient_ascent']['steps'].append(current_step)
-                self._optimization_data[method_name]['gradient_ascent']['budgets'].extend(
-                    list(range(len(traj['step_accuracies'])))
-                )
-                self._optimization_data[method_name]['gradient_ascent']['accuracies'].extend(
-                    traj['step_accuracies']
-                )
+                store['gradient_ascent'][current_step] = {
+                    'budgets': np.arange(len(traj['step_accuracies'])),
+                    'accs': np.asarray(traj['step_accuracies'], dtype=float),
+                }
         
         if 'search_trajectory' in generated_info:
             search_traj = generated_info['search_trajectory']
             method_name = test_name.replace('_gradient_ascent', '').replace('_random_search', '')
             
-            if method_name not in self._optimization_data:
-                self._optimization_data[method_name] = {
-                    'gradient_ascent': {'steps': [], 'budgets': [], 'accuracies': []},
-                    'random_search': {'steps': [], 'budgets': [], 'accuracies': []}
-                }
+            # Initialize storage structure (dict-of-steps)
+            store = self._optimization_data.setdefault(method_name, {
+                'gradient_ascent': {},
+                'random_search': {}
+            })
             
             if 'random_search' in test_name:
-                self._optimization_data[method_name]['random_search']['steps'].append(current_step)
-                self._optimization_data[method_name]['random_search']['budgets'].extend(
-                    list(range(len(search_traj['best_accuracy_progression'])))
-                )
-                self._optimization_data[method_name]['random_search']['accuracies'].extend(
-                    search_traj['best_accuracy_progression']
-                )
+                store['random_search'][current_step] = {
+                    'budgets': np.arange(len(search_traj['best_accuracy_progression'])),
+                    'accs': np.asarray(search_traj['best_accuracy_progression'], dtype=float),
+                }
         
         return metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress
 
@@ -930,24 +923,20 @@ class Trainer:
             search_data = data.get('random_search', {})
             
             # Check if we have sufficient data for both methods
-            print(f"Gradient Ascent Data points: {len(grad_data.get('steps', []))}, "
-                         f"Random Search Data points: {len(search_data.get('steps', []))}")
-            if (len(grad_data.get('steps', [])) > 0 and 
-                len(search_data.get('steps', [])) > 0):
-                
-                # Organize data into grids
-                steps_grad = np.unique(grad_data['steps'])
-                steps_search = np.unique(search_data['steps'])
+            print(f"Gradient Ascent Data points: {len(grad_data.keys())}, "
+                         f"Random Search Data points: {len(search_data.keys())}")
+            if (len(grad_data.keys()) > 0 and 
+                len(search_data.keys()) > 0):
                 
                 # Use common steps
-                common_steps = np.intersect1d(steps_grad, steps_search)
+                common_steps = np.intersect1d(list(grad_data.keys()), list(search_data.keys()))
                 if len(common_steps) < 2:
                     logging.warning(f"Skipping optimization comparison plot: common_steps={common_steps}")
                     continue
                 
                 # Get budget ranges
-                max_grad_budget = max(grad_data['budgets']) if grad_data['budgets'] else 0
-                max_search_budget = max(search_data['budgets']) if search_data['budgets'] else 0
+                max_grad_budget = max(v['budgets'].max() for k, v in grad_data.items() if k in common_steps)
+                max_search_budget = max(v['budgets'].max() for k, v in search_data.items() if k in common_steps)
                 
                 print(f"Max Grad Budget: {max_grad_budget}, Max Search Budget: {max_search_budget}")
                 
@@ -960,31 +949,94 @@ class Trainer:
                 budgets = np.arange(max_budget + 1)
                 print(f"Preparing accuracy grids for budgets: {budgets}, steps: {common_steps}")
 
-                # Create accuracy grids
-                acc_grad = np.zeros((len(budgets), len(common_steps)))
-                acc_search = np.zeros((len(budgets), len(common_steps)))
+                # Create accuracy grids with NaN for missing cells
+                acc_grad = np.full((len(budgets), len(common_steps)), np.nan)
+                acc_search = np.full((len(budgets), len(common_steps)), np.nan)
                 
                 # Fill gradient ascent data
-                for i, step in enumerate(common_steps):
-                    step_mask = np.array(grad_data['steps']) == step
-                    step_budgets = np.array(grad_data['budgets'])[step_mask]
-                    step_accs = np.array(grad_data['accuracies'])[step_mask]
-                    print(f"Gradient Ascent - step {step}: budgets={step_budgets}, accs={step_accs}")
-
-                    for budget, acc in zip(step_budgets, step_accs):
-                        if budget < len(budgets):
-                            acc_grad[budget, i] = acc
+                for j, step in enumerate(common_steps):
+                    if step not in grad_data:
+                        print(f"Warning: Step {step} not found in gradient ascent data")
+                        continue
+                    
+                    step_data = grad_data[step]
+                    if 'budgets' not in step_data or 'accs' not in step_data:
+                        print(f"Warning: Step {step} missing required data keys: {list(step_data.keys())}")
+                        continue
+                    
+                    b_ga, a_ga = step_data['budgets'], step_data['accs']
+                    print(f"Gradient Ascent - step {step}: budgets={b_ga}, accs={a_ga}")
+                    
+                    # Validate data shapes
+                    if len(b_ga) != len(a_ga):
+                        print(f"Warning: Mismatch in gradient ascent data for step {step}: {len(b_ga)} budgets vs {len(a_ga)} accuracies")
+                        continue
+                    
+                    # Validate budget indices are within bounds
+                    if np.any(b_ga >= len(budgets)):
+                        print(f"Warning: Budget indices {b_ga} exceed budget range {len(budgets)} for step {step}")
+                        continue
+                    
+                    acc_grad[b_ga, j] = a_ga
                 
                 # Fill random search data  
-                for i, step in enumerate(common_steps):
-                    step_mask = np.array(search_data['steps']) == step
-                    step_budgets = np.array(search_data['budgets'])[step_mask]
-                    step_accs = np.array(search_data['accuracies'])[step_mask]
-                    print(f"Random Search - step {step}: budgets={step_budgets}, accs={step_accs}")
-
-                    for budget, acc in zip(step_budgets, step_accs):
-                        if budget < len(budgets):
-                            acc_search[budget, i] = acc
+                for j, step in enumerate(common_steps):
+                    if step not in search_data:
+                        print(f"Warning: Step {step} not found in random search data")
+                        continue
+                    
+                    step_data = search_data[step]
+                    if 'budgets' not in step_data or 'accs' not in step_data:
+                        print(f"Warning: Step {step} missing required data keys: {list(step_data.keys())}")
+                        continue
+                    
+                    b_rs, a_rs = step_data['budgets'], step_data['accs']
+                    print(f"Random Search - step {step}: budgets={b_rs}, accs={a_rs}")
+                    
+                    # Validate data shapes
+                    if len(b_rs) != len(a_rs):
+                        print(f"Warning: Mismatch in random search data for step {step}: {len(b_rs)} budgets vs {len(a_rs)} accuracies")
+                        continue
+                    
+                    # Validate budget indices are within bounds
+                    if np.any(b_rs >= len(budgets)):
+                        print(f"Warning: Budget indices {b_rs} exceed budget range {len(budgets)} for step {step}")
+                        continue
+                    
+                    acc_search[b_rs, j] = a_rs
+                
+                # Debug: Show final accuracy grids
+                print(f"Final accuracy grids:")
+                print(f"Gradient Ascent shape: {acc_grad.shape}, NaN count: {np.isnan(acc_grad).sum()}")
+                print(f"Random Search shape: {acc_search.shape}, NaN count: {np.isnan(acc_search).sum()}")
+                
+                # Validate that we have enough data to create a meaningful plot
+                valid_grad_data = np.sum(~np.isnan(acc_grad))
+                valid_search_data = np.sum(~np.isnan(acc_search))
+                
+                if valid_grad_data < 2 or valid_search_data < 2:
+                    print(f"Warning: Insufficient valid data for plot. Gradient Ascent: {valid_grad_data}, Random Search: {valid_search_data}")
+                    return None
+                
+                # Ensure we have at least 2 steps with data
+                steps_with_grad_data = np.sum(np.any(~np.isnan(acc_grad), axis=0))
+                steps_with_search_data = np.sum(np.any(~np.isnan(acc_search), axis=0))
+                
+                if steps_with_grad_data < 2 or steps_with_search_data < 2:
+                    print(f"Warning: Insufficient steps with data. Gradient Ascent: {steps_with_grad_data}, Random Search: {steps_with_search_data}")
+                    return None
+                
+                print(f"Generating optimization comparison plot with {valid_grad_data} gradient ascent points and {valid_search_data} random search points")
+                print(f"Steps with data - Gradient Ascent: {steps_with_grad_data}, Random Search: {steps_with_search_data}")
+                
+                # Final validation of array shapes
+                print(f"Final array shapes - acc_grad: {acc_grad.shape}, acc_search: {acc_search.shape}")
+                print(f"Steps: {common_steps.shape}, Budgets: {budgets.shape}")
+                
+                # Ensure arrays have the expected shapes for visualization
+                if acc_grad.shape != (len(budgets), len(common_steps)) or acc_search.shape != (len(budgets), len(common_steps)):
+                    print(f"Warning: Array shape mismatch. Expected: ({len(budgets)}, {len(common_steps)}), Got: acc_grad: {acc_grad.shape}, acc_search: {acc_search.shape}")
+                    return None
                 
                 # Generate comparison plot
                 return visualize_optimization_comparison(
