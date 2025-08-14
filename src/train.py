@@ -631,7 +631,10 @@ class Trainer:
             optimization_metrics[f"search/{test_name}/final_best_accuracy"] = max(search_traj['sample_accuracies'])
             optimization_metrics[f"search/{test_name}/mean_sample_accuracy"] = sum(search_traj['sample_accuracies']) / len(search_traj['sample_accuracies'])
             optimization_metrics[f"search/{test_name}/std_sample_accuracy"] = jnp.std(jnp.array(search_traj['sample_accuracies']))
-            optimization_metrics[f"search/{test_name}/samples_above_mean"] = sum(1 for acc in search_traj['sample_accuracies'] if acc > optimization_metrics[f"search/{test_name}/mean_sample_accuracy"])
+            mean_accuracy = optimization_metrics[f"search/{test_name}/mean_sample_accuracy"]
+            if hasattr(mean_accuracy, 'item'):
+                mean_accuracy = mean_accuracy.item()
+            optimization_metrics[f"search/{test_name}/samples_above_mean"] = sum(1 for acc in search_traj['sample_accuracies'] if acc > mean_accuracy)
             optimization_metrics[f"search/{test_name}/improvement_over_first"] = search_traj['sample_accuracies'][-1] - search_traj['sample_accuracies'][0]
             optimization_metrics[f"search/{test_name}/best_sample_index"] = search_traj['sample_accuracies'].index(max(search_traj['sample_accuracies']))
         
