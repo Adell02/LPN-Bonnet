@@ -646,24 +646,30 @@ class LPN(nn.Module):
                 step_losses.append(current_loss)
                 step_improvements.append(improvement)
 
-            return (latents, opt_state), (latents, log_probs)
+            return (latents, opt_state), (current_accuracy, current_loss)
 
-        (last_latents, _), (all_latents, all_log_probs) = nn.scan(
+        # Run scan and capture metrics
+        (last_latents, _), metrics = nn.scan(
             update_latents,
             variable_broadcast="params",
             split_rngs={"params": False},
             length=num_steps,
-            out_axes=(-2, -1),
-        )(self.decoder, (latents, opt_state), None)
+        )(self.decoder, (latents, opt_state), jnp.arange(num_steps))
+
+        # Extract metrics after scan completes
+        step_accuracies, step_losses = metrics
+
+        # After scan completes:
+        step_improvements = step_accuracies - step_accuracies[0]
 
         # Concatenate original latents to all_latents and flatten all the latents.
-        latents = jnp.concatenate([latents[..., None, :], all_latents], axis=-2).reshape(
+        latents = jnp.concatenate([latents[..., None, :], last_latents], axis=-2).reshape(
             *latents.shape[:-2], -1, latents.shape[-1]
         )
         # Get all log_probs
         last_log_probs = vmap_log_probs_fn(last_latents, input_seq, output_seq, self.decoder)
 
-        log_probs = jnp.concatenate([all_log_probs, last_log_probs[..., None]], axis=-1).reshape(
+        log_probs = jnp.concatenate([step_accuracies, last_log_probs[..., None]], axis=-1).reshape(
             *last_log_probs.shape[:-1], -1
         )
 
