@@ -151,6 +151,7 @@ class Trainer:
                 col_arange_broadcast = jnp.arange(grids_inputs.shape[-1]).reshape(
                     (*batch_ndims * (1,), grids_inputs.shape[-1])
                 )
+                input_col_mask = col_arange_broadcast < shapes_outputs[..., 1:]
                 input_mask = input_row_mask[..., None] & input_col_mask[..., None, :]
 
                 pixels_equal = jnp.where(
