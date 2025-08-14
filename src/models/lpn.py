@@ -524,6 +524,14 @@ class LPN(nn.Module):
         if track_progress:
             # Calculate metrics using JAX operations
             sample_accuracies = jnp.mean(log_probs, axis=-1)  # Mean over pairs dimension
+            
+            # Ensure we have the right shape: flatten batch dimensions but keep sample dimension
+            # The goal is to get (num_samples,) shape just like gradient ascent gets (num_steps,)
+            if sample_accuracies.ndim > 1:
+                # Average over all batch dimensions to get just the sample dimension
+                while sample_accuracies.ndim > 1:
+                    sample_accuracies = jnp.mean(sample_accuracies, axis=0)
+            
             sample_losses = -sample_accuracies
             sample_improvements = sample_accuracies - sample_accuracies[0]
             def cumulative_max(arr):
