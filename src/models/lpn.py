@@ -637,15 +637,11 @@ class LPN(nn.Module):
             updates, opt_state = optimizer.update(-grads, opt_state)
             latents += updates
 
-            if track_progress:
-                # Calculate and append metrics
-                current_accuracy = jnp.mean(log_probs)
-                current_loss = -current_accuracy
-                improvement = current_accuracy - step_accuracies[-1] if step_accuracies else 0
-                step_accuracies.append(current_accuracy)
-                step_losses.append(current_loss)
-                step_improvements.append(improvement)
+            # Calculate metrics
+            current_accuracy = jnp.mean(log_probs)
+            current_loss = -current_accuracy
 
+            # Don't append to lists, return as part of scan output
             return (latents, opt_state), (current_accuracy, current_loss)
 
         # Run scan and capture metrics
