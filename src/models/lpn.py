@@ -104,6 +104,14 @@ class LPN(nn.Module):
         elif mode == "gradient_ascent":
             for arg in ["num_steps", "lr"]:
                 assert arg in mode_kwargs, f"'{arg}' argument required for 'gradient_ascent' training mode."
+            
+            # ADD missing key generation:
+            key = self.make_rng("gradient_ascent_random_perturbation")
+            
+            # Repeat all the pairs and grid shapes except the one to leave out.
+            leave_one_out_pairs = make_leave_one_out(pairs, axis=-4)  # (*B, N, N-1, R, C, 2)
+            leave_one_out_grid_shapes = make_leave_one_out(grid_shapes, axis=-3)  # (*B, N, N-1, 2, 2)
+            
             if mode_kwargs.get("track_progress", False):
                 first_context, second_context, trajectory_data = self._get_gradient_ascent_context(
                     leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes, key, **mode_kwargs
@@ -327,6 +335,9 @@ class LPN(nn.Module):
             assert key is not None, "'key' argument required when 'remove_encoder_latents' is True."
             latents = jax.random.normal(key, latents.shape)
         
+        # Initialize info dictionary
+        info = {}
+        
         if mode == "mean":
             context = latents.mean(axis=-2)
             first_context, second_context = context, context
@@ -356,47 +367,26 @@ class LPN(nn.Module):
                 first_context, second_context, trajectory_data = self._get_gradient_ascent_context(
                     latents, pairs, grid_shapes, key, **mode_kwargs
                 )
-                info["optimization_trajectory"] = trajectory_data
+                info = {"context": first_context, "optimization_trajectory": trajectory_data}
             else:
                 first_context, second_context = self._get_gradient_ascent_context(
                     latents, pairs, grid_shapes, key, **mode_kwargs
                 )
+                info = {"context": first_context}
         else:
             raise ValueError(f"Unsupported mode: {mode}")
 
-        # Create info dictionary (basic version without tracking for now)
-        info = {"context": first_context}
-
-        if mode == "gradient_ascent" and mode_kwargs.get("track_progress", False):
-            info["optimization_trajectory"] = {
-                "step_accuracies": step_accuracies,
-                "step_losses": step_losses,
-                "step_improvements": step_improvements
-            }
-        elif mode == "random_search" and mode_kwargs.get("track_progress", False):
-            info["search_trajectory"] = {
-                "sample_accuracies": sample_accuracies,
-                "sample_losses": sample_losses,
-                "sample_improvements": sample_improvements,
-                "best_accuracy_progression": best_so_far
-            }
+        # Generate outputs using the selected context
+        output_grids, output_shapes = self._generate_output_from_context(
+            first_context, input, input_grid_shape, dropout_eval
+        )
 
         if return_two_best:
-            output_grids, output_shapes = jax.vmap(
-                partial(
-                    self._generate_output_from_context,
-                    input=input,
-                    input_grid_shape=input_grid_shape,
-                    dropout_eval=dropout_eval,
-                )
-            )(jnp.stack([first_context, second_context], axis=0))
-            first_output_grids, second_output_grids = output_grids[0], output_grids[1]
-            first_output_shapes, second_output_shapes = output_shapes[0], output_shapes[1]
-            return first_output_grids, first_output_shapes, second_output_grids, second_output_shapes, info
-        else:
-            output_grids, output_shapes = self._generate_output_from_context(
-                first_context, input, input_grid_shape, dropout_eval
+            second_output_grids, second_output_shapes = self._generate_output_from_context(
+                second_context, input, input_grid_shape, dropout_eval
             )
+            return output_grids, output_shapes, second_output_grids, second_output_shapes, info
+        else:
             return output_grids, output_shapes, info
 
     def _generate_output_from_context(
@@ -465,13 +455,6 @@ class LPN(nn.Module):
         """Returns the best two contexts using a batched random search."""
         latents = self._prepare_latents_before_search(include_mean_latent, include_all_latents, latents)
         
-        # Initialize tracking arrays
-        sample_accuracies = []
-        sample_losses = []
-        sample_improvements = []
-        best_so_far = []
-        best_accuracy = -float('inf')
-
         if num_samples > 0:
             # Sample some random latents around the given latents.
             num_latents = latents.shape[-2]
@@ -533,33 +516,24 @@ class LPN(nn.Module):
         
         # Track metrics for each sample if requested
         if track_progress:
-            for i in range(log_probs.shape[-1]):
-                current_accuracy = jnp.mean(log_probs[..., i])
-                current_loss = -current_accuracy
-                
-                # Update best so far
-                best_accuracy = jnp.maximum(best_accuracy, current_accuracy)
-                
-                # Record metrics
-                sample_accuracies.append(current_accuracy)
-                sample_losses.append(current_loss)
-                sample_improvements.append(current_accuracy - sample_accuracies[0] if i > 0 else 0)
-                best_so_far.append(best_accuracy)
-        
+            # Calculate metrics using JAX operations
+            sample_accuracies = jnp.mean(log_probs, axis=-1)  # Mean over pairs dimension
+            sample_losses = -sample_accuracies
+            sample_improvements = sample_accuracies - sample_accuracies[0]
+            best_so_far = jnp.maximum.accumulate(sample_accuracies)
+            trajectory_data = {
+                "sample_accuracies": sample_accuracies,
+                "sample_losses": sample_losses,
+                "sample_improvements": sample_improvements,
+                "best_accuracy_progression": best_so_far
+            }
+            return best_context, second_best_context, trajectory_data
+
         # Remove the duplication of the latents over the pairs.
         latents = latents[..., 0, :, :]
         best_context, second_best_context = self._select_best_and_second_best_latents(log_probs, latents)
 
-        if track_progress:
-            trajectory_data = {
-                "sample_accuracies": jnp.array(sample_accuracies),
-                "sample_losses": jnp.array(sample_losses),
-                "sample_improvements": jnp.array(sample_improvements),
-                "best_accuracy_progression": jnp.array(best_so_far)
-            }
-            return best_context, second_best_context, trajectory_data
-        else:
-            return best_context, second_best_context
+        return best_context, second_best_context
 
     def _get_gradient_ascent_context(
         self,
@@ -581,7 +555,7 @@ class LPN(nn.Module):
         stop_gradient_latent_move: bool = True,
         track_progress: bool = False,
         **kwargs,
-    ) -> tuple[chex.Array, chex.Array]:
+    ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:  # FIXED return type
         """Returns the best two contexts using a gradient ascent algorithm."""
         latents = self._prepare_latents_before_search(
             include_mean_latent, include_all_latents, latents, random_perturbation, key
@@ -628,47 +602,69 @@ class LPN(nn.Module):
             raise ValueError(f"Unsupported optimizer: {optimizer}")
         opt_state = optimizer.init(latents)
 
-        def update_latents(decoder, carry, step_idx):
-            latents, opt_state = carry
-            log_probs, grads = value_and_grad_log_probs_fn(latents, input_seq, output_seq, decoder)
-            assert grads.shape == latents.shape
-            if stop_gradient_latent_move:
-                grads = jax.lax.stop_gradient(grads)
-            updates, opt_state = optimizer.update(-grads, opt_state)
-            latents += updates
+        if track_progress:
+            def update_latents_with_tracking(decoder, carry, step_idx):
+                latents, opt_state = carry
+                log_probs, grads = value_and_grad_log_probs_fn(latents, input_seq, output_seq, decoder)
+                assert grads.shape == latents.shape
+                if stop_gradient_latent_move:
+                    grads = jax.lax.stop_gradient(grads)
+                updates, opt_state = optimizer.update(-grads, opt_state)
+                latents += updates
 
-            # Calculate metrics
-            current_accuracy = jnp.mean(log_probs)
-            current_loss = -current_accuracy
+                # Calculate metrics
+                current_accuracy = jnp.mean(log_probs)
+                current_loss = -current_accuracy
 
-            # Don't append to lists, return as part of scan output
-            return (latents, opt_state), (current_accuracy, current_loss)
+                # Return metrics as part of scan output
+                return (latents, opt_state), (current_accuracy, current_loss)
 
-        # Run scan and capture metrics
-        (last_latents, _), metrics = nn.scan(
-            update_latents,
-            variable_broadcast="params",
-            split_rngs={"params": False},
-            length=num_steps,
-        )(self.decoder, (latents, opt_state), jnp.arange(num_steps))
+            (last_latents, _), metrics = nn.scan(
+                update_latents_with_tracking,
+                variable_broadcast="params",
+                split_rngs={"params": False},
+                length=num_steps,
+            )(self.decoder, (latents, opt_state), jnp.arange(num_steps))
 
-        # Extract metrics after scan completes
-        step_accuracies, step_losses = metrics
+            step_accuracies, step_losses = metrics
+            step_improvements = step_accuracies - step_accuracies[0]
 
-        # After scan completes:
-        step_improvements = step_accuracies - step_accuracies[0]
+            trajectory_data = {
+                "step_accuracies": step_accuracies,
+                "step_losses": step_losses,
+                "step_improvements": step_improvements
+            }
+
+            # Use the final accuracy as log_probs
+            log_probs = step_accuracies[-1]
+        else:
+            def update_latents(decoder, carry, step_idx):
+                latents, opt_state = carry
+                log_probs, grads = value_and_grad_log_probs_fn(latents, input_seq, output_seq, decoder)
+                assert grads.shape == latents.shape
+                if stop_gradient_latent_move:
+                    grads = jax.lax.stop_gradient(grads)
+                updates, opt_state = optimizer.update(-grads, opt_state)
+                latents += updates
+
+                return (latents, opt_state), None
+
+            (last_latents, _), _ = nn.scan(
+                update_latents,
+                variable_broadcast="params",
+                split_rngs={"params": False},
+                length=num_steps,
+            )(self.decoder, (latents, opt_state), jnp.arange(num_steps))
+
+            # Calculate final log_probs
+            log_probs = vmap_log_probs_fn(last_latents, input_seq, output_seq, self.decoder)
 
         # Concatenate original latents to all_latents and flatten all the latents.
-        latents = jnp.concatenate([latents[..., None, :], last_latents], axis=-2).reshape(
+        latents = jnp.concatenate([latents, last_latents], axis=-2).reshape(
             *latents.shape[:-2], -1, latents.shape[-1]
         )
-        # Get all log_probs
-        last_log_probs = vmap_log_probs_fn(last_latents, input_seq, output_seq, self.decoder)
 
-        log_probs = jnp.concatenate([step_accuracies, last_log_probs[..., None]], axis=-1).reshape(
-            *last_log_probs.shape[:-1], -1
-        )
-
+        # NOW define best_context and second_best_context
         best_context, second_best_context = self._select_best_and_second_best_latents(log_probs, latents)
 
         if track_progress:
