@@ -915,6 +915,8 @@ class Trainer:
         
         # Check if we have both gradient ascent and random search data
         method_names = list(self._optimization_data.keys())
+
+        logging.info(f"Available optimization methods: {method_names}")
         if len(method_names) == 0:
             return None
         
@@ -926,6 +928,8 @@ class Trainer:
             search_data = data.get('random_search', {})
             
             # Check if we have sufficient data for both methods
+            logging.info(f"Gradient Ascent Data points: {len(grad_data.get('steps', []))}, "
+                         f"Random Search Data points: {len(search_data.get('steps', []))}")
             if (len(grad_data.get('steps', [])) > 0 and 
                 len(search_data.get('steps', [])) > 0):
                 
@@ -936,18 +940,23 @@ class Trainer:
                 # Use common steps
                 common_steps = np.intersect1d(steps_grad, steps_search)
                 if len(common_steps) < 2:
+                    logging.warning(f"Skipping optimization comparison plot: common_steps={common_steps}, max_budget={max_budget}")
                     continue
                 
                 # Get budget ranges
                 max_grad_budget = max(grad_data['budgets']) if grad_data['budgets'] else 0
                 max_search_budget = max(search_data['budgets']) if search_data['budgets'] else 0
                 
+                logging.info(f"Max Grad Budget: {max_grad_budget}, Max Search Budget: {max_search_budget}")
+                
                 # Use common budget range
                 max_budget = min(max_grad_budget, max_search_budget)
                 if max_budget < 2:
+                    logging.info(f"Skipping optimization comparison plot: max_budget={max_budget} < 2")
                     continue
                 
                 budgets = np.arange(max_budget + 1)
+                logging.info(f"Preparing accuracy grids for budgets: {budgets}, steps: {common_steps}")
                 
                 # Create accuracy grids
                 acc_grad = np.zeros((len(budgets), len(common_steps)))
@@ -958,6 +967,7 @@ class Trainer:
                     step_mask = np.array(grad_data['steps']) == step
                     step_budgets = np.array(grad_data['budgets'])[step_mask]
                     step_accs = np.array(grad_data['accuracies'])[step_mask]
+                    logging.info(f"Gradient Ascent - step {step}: budgets={step_budgets}, accs={step_accs}")
                     
                     for budget, acc in zip(step_budgets, step_accs):
                         if budget < len(budgets):
@@ -968,6 +978,7 @@ class Trainer:
                     step_mask = np.array(search_data['steps']) == step
                     step_budgets = np.array(search_data['budgets'])[step_mask]
                     step_accs = np.array(search_data['accuracies'])[step_mask]
+                    logging.info(f"Random Search - step {step}: budgets={step_budgets}, accs={step_accs}")
                     
                     for budget, acc in zip(step_budgets, step_accs):
                         if budget < len(budgets):
@@ -982,6 +993,8 @@ class Trainer:
                     method_A_name="Gradient Ascent",
                     method_B_name="Random Search"
                 )
+        
+        return None
         
         return None
 
