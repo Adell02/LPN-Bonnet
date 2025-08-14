@@ -890,18 +890,23 @@ class Trainer:
     def _generate_optimization_comparison(self) -> Optional[plt.Figure]:
         """Simplified: Generate comparison plot between optimization methods"""
         if not hasattr(self, '_optimization_data') or len(self._optimization_data) == 0:
+            print("DEBUG: No optimization data available for comparison")
             return None
         
         # Simple approach: take the first method that has both optimization types
+        print(f"DEBUG: Available optimization data: {list(self._optimization_data.keys())}")
         for method_name, data in self._optimization_data.items():
             grad_data = data.get('gradient_ascent', {})
             search_data = data.get('random_search', {})
+            print(f"DEBUG: Method {method_name} - grad_data steps: {list(grad_data.keys())}, search_data steps: {list(search_data.keys())}")
             
             if len(grad_data) > 0 and len(search_data) > 0:
                 try:
                     # Get common steps
                     common_steps = sorted(set(grad_data.keys()) & set(search_data.keys()))
+                    print(f"DEBUG: Common steps: {common_steps}")
                     if len(common_steps) < 2:
+                        print(f"DEBUG: Not enough common steps ({len(common_steps)} < 2)")
                         continue
                     
                     # Find maximum budget size
@@ -909,13 +914,16 @@ class Trainer:
                     for step in common_steps:
                         max_budget = max(max_budget, len(grad_data[step]['accs']), len(search_data[step]['accs']))
                     
+                    print(f"DEBUG: Max budget: {max_budget}")
                     if max_budget < 2:
+                        print(f"DEBUG: Max budget too small ({max_budget} < 2)")
                         continue
                     
                     # Create accuracy grids
                     budgets = list(range(max_budget))
                     acc_grad = np.full((max_budget, len(common_steps)), np.nan)
                     acc_search = np.full((max_budget, len(common_steps)), np.nan)
+                    print(f"DEBUG: Creating plot with {len(common_steps)} steps and {max_budget} budget points")
                     
                     # Fill data
                     for j, step in enumerate(common_steps):
@@ -932,6 +940,7 @@ class Trainer:
                                     acc_search[i, j] = acc
                     
                     # Generate plot
+                    print(f"DEBUG: Successfully generating optimization comparison plot!")
                     return visualize_optimization_comparison(
                         steps=np.array(common_steps),
                         budgets=np.array(budgets),
