@@ -597,13 +597,21 @@ class Trainer:
         
         if 'optimization_trajectory' in generated_info:
             traj = generated_info['optimization_trajectory']
-            # Simple logging: just the final accuracy for wandb
-            optimization_metrics[f"optimization/{test_name}/final_accuracy"] = float(traj['step_accuracies'][-1])
+            # Simple logging: just the final accuracy for wandb - handle batch dimensions
+            final_acc = traj['step_accuracies'][-1]
+            if hasattr(final_acc, 'ndim') and final_acc.ndim > 0:
+                final_acc = jnp.mean(final_acc)  # Average over batch dimensions
+            optimization_metrics[f"optimization/{test_name}/final_accuracy"] = float(final_acc)
         
         if 'search_trajectory' in generated_info:
             search_traj = generated_info['search_trajectory']
-            # Simple logging: just the final best accuracy for wandb
-            optimization_metrics[f"search/{test_name}/final_best_accuracy"] = float(max(search_traj['sample_accuracies']))
+            # Simple logging: just the final best accuracy for wandb - handle batch dimensions
+            sample_accs = search_traj['sample_accuracies']
+            if hasattr(sample_accs, 'ndim') and sample_accs.ndim > 1:
+                max_acc = jnp.max(jnp.mean(sample_accs, axis=tuple(range(1, sample_accs.ndim))))  # Average over non-sample dimensions
+            else:
+                max_acc = jnp.max(sample_accs)
+            optimization_metrics[f"search/{test_name}/final_best_accuracy"] = float(max_acc)
         
         # Merge with existing metrics
         metrics.update(optimization_metrics)
@@ -624,8 +632,12 @@ class Trainer:
                 'random_search': {}
             })
             
-            # Convert JAX arrays to numpy arrays safely
-            accuracies = [float(x) for x in traj['step_accuracies']]
+            # Convert JAX arrays to numpy arrays safely - handle batch dimensions
+            step_accs = traj['step_accuracies']
+            if hasattr(step_accs, 'ndim') and step_accs.ndim > 1:
+                # Average over batch dimensions, keep step dimension
+                step_accs = jnp.mean(step_accs, axis=tuple(range(1, step_accs.ndim)))
+            accuracies = [float(x) for x in step_accs]
             store['gradient_ascent'][current_step] = {
                 'budgets': list(range(len(accuracies))),
                 'accs': accuracies,
@@ -640,8 +652,12 @@ class Trainer:
                 'random_search': {}
             })
             
-            # Convert JAX arrays to numpy arrays safely
-            best_progression = [float(x) for x in search_traj['best_accuracy_progression']]
+            # Convert JAX arrays to numpy arrays safely - handle batch dimensions
+            best_prog = search_traj['best_accuracy_progression']
+            if hasattr(best_prog, 'ndim') and best_prog.ndim > 1:
+                # Average over batch dimensions, keep sample dimension
+                best_prog = jnp.mean(best_prog, axis=tuple(range(1, best_prog.ndim)))
+            best_progression = [float(x) for x in best_prog]
             store['random_search'][current_step] = {
                 'budgets': list(range(len(best_progression))),
                 'accs': best_progression,
