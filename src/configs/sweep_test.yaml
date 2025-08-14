@@ -27,7 +27,7 @@ eval:
     - generator: ARC
       task_generator_kwargs:
         only_n_tasks: ${training.task_generator.only_n_tasks}
-      name: generator_mean
+      name: arc_train_optimisation_comparison
       num_pairs: 4
       length: 4  # Reduced for memory
       batch_size: 2
@@ -53,7 +53,7 @@ eval:
     - generator: ARC
       task_generator_kwargs:
         only_n_tasks: ${training.task_generator.only_n_tasks}
-      name: generator_gradient_ascent_100
+      name: arc_train_optimisation_comparison
       num_pairs: 4
       length: 4  # Reduced for memory
       batch_size: 2
@@ -85,7 +85,7 @@ eval:
     - generator: ARC
       task_generator_kwargs:
         only_n_tasks: ${training.task_generator.only_n_tasks}
-      name: generator_random_search_100
+      name: arc_train_optimisation_comparison
       num_pairs: 4
       length: 4  # Reduced for memory
       batch_size: 2
