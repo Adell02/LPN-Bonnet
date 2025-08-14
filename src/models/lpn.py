@@ -355,6 +355,20 @@ class LPN(nn.Module):
         # Create info dictionary (basic version without tracking for now)
         info = {"context": first_context}
 
+        if mode == "gradient_ascent" and mode_kwargs.get("track_progress", False):
+            info["optimization_trajectory"] = {
+                "step_accuracies": step_accuracies,
+                "step_losses": step_losses,
+                "step_improvements": step_improvements
+            }
+        elif mode == "random_search" and mode_kwargs.get("track_progress", False):
+            info["search_trajectory"] = {
+                "sample_accuracies": sample_accuracies,
+                "sample_losses": sample_losses,
+                "sample_improvements": sample_improvements,
+                "best_accuracy_progression": best_so_far
+            }
+
         if return_two_best:
             output_grids, output_shapes = jax.vmap(
                 partial(
