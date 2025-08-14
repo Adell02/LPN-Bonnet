@@ -634,10 +634,15 @@ class Trainer:
             
             # Convert JAX arrays to numpy arrays safely - handle batch dimensions
             step_accs = traj['step_accuracies']
+            print(f"DEBUG GRAD: Original step_accs shape: {jnp.array(step_accs).shape}")
+            print(f"DEBUG GRAD: Original step_accs length: {len(step_accs)}")
             if hasattr(step_accs, 'ndim') and step_accs.ndim > 1:
                 # Average over batch dimensions, keep step dimension
                 step_accs = jnp.mean(step_accs, axis=tuple(range(1, step_accs.ndim)))
+                print(f"DEBUG GRAD: After averaging step_accs shape: {jnp.array(step_accs).shape}")
             accuracies = [float(x) for x in step_accs]
+            print(f"DEBUG GRAD: Final accuracies length: {len(accuracies)}")
+            print(f"DEBUG GRAD: Final accuracies: {accuracies}")
             store['gradient_ascent'][current_step] = {
                 'budgets': list(range(len(accuracies))),
                 'accs': accuracies,
@@ -654,10 +659,15 @@ class Trainer:
             
             # Convert JAX arrays to numpy arrays safely - handle batch dimensions
             best_prog = search_traj['best_accuracy_progression']
+            print(f"DEBUG SEARCH: Original best_prog shape: {jnp.array(best_prog).shape}")
+            print(f"DEBUG SEARCH: Original best_prog length: {len(best_prog)}")
             if hasattr(best_prog, 'ndim') and best_prog.ndim > 1:
                 # Average over batch dimensions, keep sample dimension
                 best_prog = jnp.mean(best_prog, axis=tuple(range(1, best_prog.ndim)))
+                print(f"DEBUG SEARCH: After averaging best_prog shape: {jnp.array(best_prog).shape}")
             best_progression = [float(x) for x in best_prog]
+            print(f"DEBUG SEARCH: Final best_progression length: {len(best_progression)}")
+            print(f"DEBUG SEARCH: Final best_progression: {best_progression}")
             store['random_search'][current_step] = {
                 'budgets': list(range(len(best_progression))),
                 'accs': best_progression,
