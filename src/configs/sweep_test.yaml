@@ -1,0 +1,131 @@
+training:
+  seed: 0
+  resume_from_checkpoint: null
+  inference_mode: mean
+  batch_size: 2
+  gradient_accumulation_steps: 2
+  total_num_steps: 2
+  log_every_n_steps: 1
+  eval_every_n_logs: 1  # Reduce frequency to save memory
+  save_checkpoint_every_n_logs: null
+  learning_rate: 4e-4
+  prior_kl_coeff: 1e-4
+  mixed_precision: True
+  online_data_augmentation: False
+  task_generator:
+    num_workers: 1
+    num_pairs: 1
+    class: ARC
+    only_n_tasks: 1
+  train_datasets:
+
+eval:
+  eval_datasets:
+  
+  # SINGLE evaluation dataset with DIFFERENT optimization methods
+  test_datasets:
+    - generator: ARC
+      task_generator_kwargs:
+        only_n_tasks: ${training.task_generator.only_n_tasks}
+      name: generator_mean
+      num_pairs: 1
+      length: 2  # Reduced for memory
+      batch_size: 2
+      num_tasks_to_show: 2  # Reduced for memory
+      inference_mode: mean  # Method 1: Mean inference
+      
+    # - generator: ARC
+    #   task_generator_kwargs:
+    #     only_n_tasks: ${training.task_generator.only_n_tasks}
+    #   name: generator_gradient_ascent_20
+    #   num_pairs: 4
+    #   length: 20
+    #   batch_size: 16
+    #   num_tasks_to_show: 10
+    #   inference_mode: gradient_ascent  # Method 2: Gradient ascent with 20 steps
+    #   inference_kwargs:
+    #     num_steps: 20
+    #     lr: 0.1
+    #     optimizer: adam
+    #     optimizer_kwargs:
+    #       b2: 0.9
+          
+    - generator: ARC
+      task_generator_kwargs:
+        only_n_tasks: ${training.task_generator.only_n_tasks}
+      name: generator_gradient_ascent_100
+      num_pairs: 1
+      length: 2
+      batch_size: 2
+      num_tasks_to_show: 2
+      inference_mode: gradient_ascent  # Method 3: Gradient ascent with 100 steps
+      inference_kwargs:
+        num_steps: 100
+        lr: 0.1
+        optimizer: adam
+        optimizer_kwargs:
+          b2: 0.9
+        track_progress: True
+          
+    # - generator: ARC
+    #   task_generator_kwargs:
+    #     only_n_tasks: ${training.task_generator.only_n_tasks}
+    #   name: generator_random_search_20
+    #   num_pairs: 4
+    #   length: 32
+    #   batch_size: 16
+    #   num_tasks_to_show: 10
+    #   inference_mode: random_search  # Method 4: Random search with 20 samples
+    #   inference_kwargs:
+    #     num_samples: 20
+    #     scale: 1.0
+    #     include_mean_latent: True
+    #     include_all_latents: False
+        
+    - generator: ARC
+      task_generator_kwargs:
+        only_n_tasks: ${training.task_generator.only_n_tasks}
+      name: generator_random_search_100
+      num_pairs: 1
+      length: 2
+      batch_size: 2
+      num_tasks_to_show: 2
+      inference_mode: random_search  # Method 5: Random search with 100 samples
+      inference_kwargs:
+        num_samples: 100
+        scale: 1.0
+        include_mean_latent: True
+        include_all_latents: False
+        track_progress: True
+
+  # Remove JSON datasets entirely to focus on generator evaluation
+  json_datasets: []
+
+encoder_transformer:
+  _target_: models.utils.EncoderTransformerConfig
+  max_rows: 30
+  max_cols: 30
+  num_layers: 1
+  transformer_layer:
+    _target_: models.utils.TransformerLayerConfig
+    num_heads: 2
+    emb_dim_per_head: 2
+    mlp_dim_factor: 1.0
+    dropout_rate: 0.0
+    attention_dropout_rate: 0.0
+  latent_dim: 2  # This will be swept by Hydra
+  variational: True
+  latent_projection_bias: False
+
+decoder_transformer:
+  _target_: models.utils.DecoderTransformerConfig
+  max_rows: 30
+  max_cols: 30
+  num_layers: 1
+  transformer_layer:
+    _target_: models.utils.TransformerLayerConfig
+    num_heads: 2
+    emb_dim_per_head: 2
+    mlp_dim_factor: 1.0
+    dropout_rate: 0.0
+    attention_dropout_rate: 0.0
