@@ -526,7 +526,20 @@ class LPN(nn.Module):
             sample_accuracies = jnp.mean(log_probs, axis=-1)  # Mean over pairs dimension
             sample_losses = -sample_accuracies
             sample_improvements = sample_accuracies - sample_accuracies[0]
-            best_so_far = jnp.maximum.accumulate(sample_accuracies)
+            def cumulative_max(arr):
+                def scan_fn(carry, x):
+                    new_max = jnp.maximum(carry, x)
+                    return new_max, new_max
+                
+                if arr.size == 0:
+                    return arr
+                if arr.size == 1:
+                    return arr
+                
+                _, cummax_result = jax.lax.scan(scan_fn, arr[0], arr[1:])
+                return jnp.concatenate([arr[0:1], cummax_result])
+
+            best_so_far = cumulative_max(sample_accuracies)
             trajectory_data = {
                 "sample_accuracies": sample_accuracies,
                 "sample_losses": sample_losses,
