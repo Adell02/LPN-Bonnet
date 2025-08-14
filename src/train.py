@@ -638,7 +638,7 @@ class Trainer:
             print(f"DEBUG GRAD: Original step_accs length: {len(step_accs)}")
             if hasattr(step_accs, 'ndim') and step_accs.ndim > 1:
                 # Average over batch dimensions, keep step dimension
-                step_accs = jnp.mean(step_accs, axis=tuple(range(1, step_accs.ndim)))
+                step_accs = jnp.mean(step_accs, axis=(0, 1)) if step_accs.ndim == 3 else jnp.mean(step_accs, axis=0)
                 print(f"DEBUG GRAD: After averaging step_accs shape: {jnp.array(step_accs).shape}")
             accuracies = [float(x) for x in step_accs]
             print(f"DEBUG GRAD: Final accuracies length: {len(accuracies)}")
@@ -663,7 +663,7 @@ class Trainer:
             print(f"DEBUG SEARCH: Original best_prog length: {len(best_prog)}")
             if hasattr(best_prog, 'ndim') and best_prog.ndim > 1:
                 # Average over batch dimensions, keep sample dimension
-                best_prog = jnp.mean(best_prog, axis=tuple(range(1, best_prog.ndim)))
+                best_prog = jnp.mean(best_prog, axis=(0, 1)) if best_prog.ndim == 3 else jnp.mean(best_prog, axis=0)
                 print(f"DEBUG SEARCH: After averaging best_prog shape: {jnp.array(best_prog).shape}")
             best_progression = [float(x) for x in best_prog]
             print(f"DEBUG SEARCH: Final best_progression length: {len(best_progression)}")
