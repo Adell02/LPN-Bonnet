@@ -910,7 +910,7 @@ class Trainer:
 
     def _generate_optimization_comparison(self) -> Optional[plt.Figure]:
         """Generate comparison plot between optimization methods if data is available"""
-        if not hasattr(self, '_optimization_data') or len(self._optimization_data') == 0:
+        if not hasattr(self, '_optimization_data') or len(self._optimization_data) == 0:
             return None
         
         # Check if we have both gradient ascent and random search data
