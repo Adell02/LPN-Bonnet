@@ -643,7 +643,7 @@ class Trainer:
         if not hasattr(self, '_optimization_data'):
             self._optimization_data = {}
         
-        current_step = self.num_steps
+        current_step = state.step[0].item() if hasattr(state.step, 'item') else state.step
         
         # Extract optimization trajectories for comparison
         if 'optimization_trajectory' in generated_info:
@@ -910,6 +910,8 @@ class Trainer:
 
     def _generate_optimization_comparison(self) -> Optional[plt.Figure]:
         """Generate comparison plot between optimization methods if data is available"""
+        print(f"Starting optimization comparison with data: {self._optimization_data.keys()}")
+        
         if not hasattr(self, '_optimization_data') or len(self._optimization_data) == 0:
             return None
         
@@ -940,7 +942,7 @@ class Trainer:
                 # Use common steps
                 common_steps = np.intersect1d(steps_grad, steps_search)
                 if len(common_steps) < 2:
-                    logging.warning(f"Skipping optimization comparison plot: common_steps={common_steps}, max_budget={max_budget}")
+                    logging.warning(f"Skipping optimization comparison plot: common_steps={common_steps}")
                     continue
                 
                 # Get budget ranges

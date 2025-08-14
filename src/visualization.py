@@ -239,7 +239,7 @@ def visualize_heatmap(data, proportion):
     return fig
 
 
-def visualize_tsne(latents, program_ids, perplexity=30, max_iter=1000, random_state=42):
+def visualize_tsne(latents, program_ids, perplexity=2, max_iter=1000, random_state=42):
     """
     Create a t-SNE visualization of latent embeddings, colored by program IDs with distinct colors,
     a legend, and numbered points.
