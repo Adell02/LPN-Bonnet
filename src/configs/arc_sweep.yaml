@@ -2,8 +2,8 @@ training:
   seed: 0
   resume_from_checkpoint: null
   inference_mode: mean
-  batch_size: 4
-  gradient_accumulation_steps: 16
+  batch_size: 8
+  gradient_accumulation_steps: 8
   total_num_steps: 1000
   log_every_n_steps: 10
   eval_every_n_logs: 10  # Reduce frequency to save memory
