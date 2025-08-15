@@ -420,86 +420,85 @@ def visualize_optimization_comparison(
     Returns:
         Figure showing heatmap of accuracy differences with crossing contour
     """
-    # Convert to numpy for matplotlib compatibility
-    steps = np.array(steps)
-    budgets = np.array(budgets)
-    acc_A = np.array(acc_A)
-    acc_B = np.array(acc_B)
-    
-    # Compute accuracy difference, handling NaN values
-    diff = acc_A - acc_B
-    
-    # Filter out NaN values for color limit calculation
-    valid_diff = diff[~np.isnan(diff)]
-    if valid_diff.size > 0:
-        max_abs = max(abs(valid_diff.min()), abs(valid_diff.max()))
+    # to numpy
+    steps   = np.asarray(steps)
+    budgets = np.asarray(budgets)
+    acc_A   = np.asarray(acc_A, dtype=float)
+    acc_B   = np.asarray(acc_B, dtype=float)
+
+    # difference and color limits
+    diff = acc_A - acc_B                        # shape [B, S]
+    diff_masked = np.ma.masked_invalid(diff)
+    if diff_masked.count() > 0:
+        vmax = np.nanmax(np.abs(diff_masked))
+        vmax = float(vmax) if np.isfinite(vmax) and vmax > 0 else 1.0
     else:
-        max_abs = 1.0
-    
-    # Create coordinate grids
-    X, Y = np.meshgrid(steps, budgets)
-    
-    # Create figure
+        vmax = 1.0
+
+    # figure + axis
     fig, ax = plt.subplots(figsize=(12, 8))
-    
-    # Heatmap of differences
+
+    # heatmap (note: budgets = rows (Y), steps = cols (X))
     im = ax.imshow(
-        diff,
+        diff_masked,
         extent=[steps[0], steps[-1], budgets[0], budgets[-1]],
         origin='lower',
-        aspect='auto', 
+        aspect='auto',
         cmap='coolwarm',
-        vmin=-max_abs,
-        vmax=+max_abs
+        vmin=-vmax,
+        vmax=+vmax
     )
-    
-    # Handle NaN values by setting them to transparent
-    if np.any(np.isnan(diff)):
-        # Create a mask for NaN values
-        nan_mask = np.isnan(diff)
-        # Set NaN values to a neutral color (white) and make them transparent
-        diff_masked = np.ma.masked_where(nan_mask, diff)
-        im.set_array(diff_masked)
-    
-    # Contour for crossings (A = B)
+
+    # crossing contour (A == B)
+    # build coordinate grids matching diff
+    X, Y = np.meshgrid(steps, budgets)
     try:
-        contours = ax.contour(
+        cs = ax.contour(
             X, Y, diff,
             levels=[0.0],
             colors='black',
             linewidths=2.0,
-            alpha=0.8
+            alpha=0.9
         )
-        # Add contour labels
-        ax.clabel(contours, inline=True, fontsize=10, fmt='Equal accuracy')
+        # Optional fixed contour label
+        ax.clabel(cs, inline=True, fontsize=10, fmt=lambda *_: 'Equal accuracy')
     except (ValueError, RuntimeError):
-        # Skip contour if data doesn't support it (e.g., all same values)
-        pass
-    
-    # Labels and title
-    ax.set_xlabel("Training Step", fontsize=12)
-    ax.set_ylabel("Search Budget", fontsize=12)
-    ax.set_title(f"Optimization Strategies Comparison\n({method_A_name} vs {method_B_name})", 
-                fontsize=14, fontweight='bold')
-    
-    # Colorbar with title on top and explanatory notes on the right
-    cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label(f"Accuracy Difference\n({method_A_name} − {method_B_name})", fontsize=11, labelpad=15)
-    
-    # Add explanatory notes on the right side of the colorbar
-    # Get the colorbar position and add text annotations
-    cbar_pos = cbar.ax.get_position()
-    
-    # Add notes for each key value
-    ax.text(1.02, 0.8, f"{method_A_name} more accurate", 
-            transform=ax.transAxes, fontsize=10, va='center', ha='left',
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
-    ax.text(1.02, 0.5, "Equal accuracy", 
-            transform=ax.transAxes, fontsize=10, va='center', ha='left',
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
-    ax.text(1.02, 0.2, f"{method_B_name} more accurate", 
-            transform=ax.transAxes, fontsize=10, va='center', ha='left',
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
-    
-    plt.tight_layout()
+        pass  # skip if no contour possible
+
+    # axes labels and title
+    ax.set_xlabel("Training step", fontsize=12)
+    ax.set_ylabel("Search budget", fontsize=12)
+    ax.set_title(
+        f"Optimization strategies comparison\n({method_A_name} vs {method_B_name})",
+        fontsize=14
+    )
+
+    # show ALL ticks
+    ax.set_xticks(steps)
+    ax.set_yticks(budgets)
+
+    # rotate dense x-ticks if needed
+    if steps.size > 12:
+        for tick in ax.get_xticklabels():
+            tick.set_rotation(45)
+            tick.set_ha('right')
+
+    # make a separate colorbar axis with padding so nothing overlaps
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="4%", pad=0.6)  # pad prevents overlap
+    cbar = fig.colorbar(im, cax=cax)
+
+    # title ABOVE the colorbar
+    cbar.ax.set_title(
+        f"Accuracy diff\n({method_A_name} − {method_B_name})",
+        pad=8, fontsize=11
+    )
+
+    # optional: small legend entry for the contour instead of clabels
+    # from matplotlib.lines import Line2D
+    # h = [Line2D([0], [0], color='black', lw=2, label='A = B crossing')]
+    # ax.legend(handles=h, loc='upper left', frameon=True)
+
+    fig.tight_layout()
     return fig
+
