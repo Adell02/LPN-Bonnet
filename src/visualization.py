@@ -5,6 +5,7 @@ import chex
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, Normalize
+from matplotlib.lines import Line2D
 import jax.numpy as jnp
 import jax
 from sklearn.manifold import TSNE
@@ -494,7 +495,7 @@ def visualize_optimization_comparison(
     labels  = []
     if cs and cs.collections:
         handles.append(Line2D([0], [0], color='black', lw=2))
-        labels.append('Equal accuracy (A = B)')
+        labels.append('Equal accuracy')
     # If you want a legend entry for “A−B heatmap”, add a proxy
     # handles.append(Line2D([0],[0], color='none')) ; labels.append('A−B heatmap')
     if handles:
