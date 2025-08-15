@@ -5,6 +5,7 @@ import chex
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, Normalize
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 import jax.numpy as jnp
 import jax
 from sklearn.manifold import TSNE
