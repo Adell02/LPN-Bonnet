@@ -420,6 +420,8 @@ def visualize_optimization_comparison(
     Returns:
         Figure showing heatmap of accuracy differences with crossing contour
     """
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+
     # to numpy
     steps   = np.asarray(steps)
     budgets = np.asarray(budgets)
@@ -435,10 +437,9 @@ def visualize_optimization_comparison(
     else:
         vmax = 1.0
 
-    # figure + axis
     fig, ax = plt.subplots(figsize=(12, 8))
 
-    # heatmap (note: budgets = rows (Y), steps = cols (X))
+    # heatmap
     im = ax.imshow(
         diff_masked,
         extent=[steps[0], steps[-1], budgets[0], budgets[-1]],
@@ -449,55 +450,46 @@ def visualize_optimization_comparison(
         vmax=+vmax
     )
 
-    # crossing contour (A == B)
-    # build coordinate grids matching diff
+    # zero contour (A == B)
     X, Y = np.meshgrid(steps, budgets)
     try:
-        cs = ax.contour(
-            X, Y, diff,
-            levels=[0.0],
-            colors='black',
-            linewidths=2.0,
-            alpha=0.9
-        )
-        # Optional fixed contour label
+        cs = ax.contour(X, Y, diff, levels=[0.0], colors='black', linewidths=2.0, alpha=0.9)
         ax.clabel(cs, inline=True, fontsize=10, fmt=lambda *_: 'Equal accuracy')
     except (ValueError, RuntimeError):
-        pass  # skip if no contour possible
+        pass
 
-    # axes labels and title
     ax.set_xlabel("Training step", fontsize=12)
     ax.set_ylabel("Search budget", fontsize=12)
-    ax.set_title(
-        f"Optimization strategies comparison\n({method_A_name} vs {method_B_name})",
-        fontsize=14
-    )
+    ax.set_title(f"Optimization strategies comparison\n({method_A_name} vs {method_B_name})", fontsize=14)
 
     # show ALL ticks
     ax.set_xticks(steps)
     ax.set_yticks(budgets)
-
-    # rotate dense x-ticks if needed
     if steps.size > 12:
-        for tick in ax.get_xticklabels():
-            tick.set_rotation(45)
-            tick.set_ha('right')
+        for t in ax.get_xticklabels():
+            t.set_rotation(45)
+            t.set_ha('right')
 
-    # make a separate colorbar axis with padding so nothing overlaps
+    # colorbar in its own axis with padding so nothing overlaps
     divider = make_axes_locatable(ax)
-    cax = divider.append_axes("right", size="4%", pad=0.6)  # pad prevents overlap
+    cax = divider.append_axes("right", size="4%", pad=0.65)
     cbar = fig.colorbar(im, cax=cax)
 
-    # title ABOVE the colorbar
-    cbar.ax.set_title(
-        f"Accuracy diff\n({method_A_name} − {method_B_name})",
-        pad=8, fontsize=11
-    )
+    # FIX 3: title ABOVE colorbar, horizontal, with extra padding
+    cbar.ax.set_title(f"Accuracy diff\n({method_A_name} − {method_B_name})",
+                      fontsize=11, pad=10, rotation=0, loc='center')
 
-    # optional: small legend entry for the contour instead of clabels
-    # from matplotlib.lines import Line2D
-    # h = [Line2D([0], [0], color='black', lw=2, label='A = B crossing')]
-    # ax.legend(handles=h, loc='upper left', frameon=True)
+    # FIX 2: labels indicating which side is better; place INSIDE cbar axes
+    # top = +vmax (A better), bottom = -vmax (B better)
+    cbar.ax.text(0.5, 0.98, f"{method_A_name} more accurate",
+                 transform=cbar.ax.transAxes, ha="center", va="top",
+                 fontsize=9, bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85))
+    cbar.ax.text(0.5, 0.02, f"{method_B_name} more accurate",
+                 transform=cbar.ax.transAxes, ha="center", va="bottom",
+                 fontsize=9, bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85))
+
+    # keep ticks readable on the colorbar
+    cbar.ax.tick_params(length=3, pad=3)
 
     fig.tight_layout()
     return fig
