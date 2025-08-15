@@ -482,16 +482,23 @@ def visualize_optimization_comparison(
     ax.set_title(f"Optimization Strategies Comparison\n({method_A_name} vs {method_B_name})", 
                 fontsize=14, fontweight='bold')
     
-    # Colorbar
+    # Colorbar with title on top and explanatory notes on the right
     cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label(f"Accuracy Difference\n({method_A_name} − {method_B_name})", fontsize=11)
+    cbar.set_label(f"Accuracy Difference\n({method_A_name} − {method_B_name})", fontsize=11, labelpad=15)
     
-    # Add text annotations for interpretation
-    ax.text(0.02, 0.98, f"Warm colors: {method_A_name} better", 
-            transform=ax.transAxes, fontsize=10, va='top', ha='left',
+    # Add explanatory notes on the right side of the colorbar
+    # Get the colorbar position and add text annotations
+    cbar_pos = cbar.ax.get_position()
+    
+    # Add notes for each key value
+    ax.text(1.02, 0.8, f"{method_A_name} more accurate", 
+            transform=ax.transAxes, fontsize=10, va='center', ha='left',
             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
-    ax.text(0.02, 0.90, f"Cool colors: {method_B_name} better", 
-            transform=ax.transAxes, fontsize=10, va='top', ha='left',
+    ax.text(1.02, 0.5, "Equal accuracy", 
+            transform=ax.transAxes, fontsize=10, va='center', ha='left',
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+    ax.text(1.02, 0.2, f"{method_B_name} more accurate", 
+            transform=ax.transAxes, fontsize=10, va='center', ha='left',
             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
     
     plt.tight_layout()

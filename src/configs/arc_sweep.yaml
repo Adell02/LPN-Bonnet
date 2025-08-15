@@ -2,11 +2,11 @@ training:
   seed: 0
   resume_from_checkpoint: null
   inference_mode: mean
-  batch_size: 8
-  gradient_accumulation_steps: 8
+  batch_size: 4
+  gradient_accumulation_steps: 16
   total_num_steps: 1000
-  log_every_n_steps: 50
-  eval_every_n_logs: 1  # Reduce frequency to save memory
+  log_every_n_steps: 10
+  eval_every_n_logs: 10  # Reduce frequency to save memory
   save_checkpoint_every_n_logs: null
   learning_rate: 4e-4
   prior_kl_coeff: 1e-4
@@ -24,15 +24,15 @@ eval:
   
   # SINGLE evaluation dataset with DIFFERENT optimization methods
   test_datasets:
-    - generator: ARC
-      task_generator_kwargs:
-        only_n_tasks: ${training.task_generator.only_n_tasks}
-      name: generator_mean
-      num_pairs: 4
-      length: 32  # Reduced for memory
-      batch_size: 16
-      num_tasks_to_show: 10  # Reduced for memory
-      inference_mode: mean  # Method 1: Mean inference
+    # - generator: ARC
+    #   task_generator_kwargs:
+    #     only_n_tasks: ${training.task_generator.only_n_tasks}
+    #   name: arc_train_optimisation_comparison
+    #   num_pairs: 4
+    #   length: 20  # Reduced for memory
+    #   batch_size: 16
+    #   num_tasks_to_show: 10  # Reduced for memory
+    #   inference_mode: mean  # Method 1: Mean inference
       
     # - generator: ARC
     #   task_generator_kwargs:
@@ -53,14 +53,14 @@ eval:
     - generator: ARC
       task_generator_kwargs:
         only_n_tasks: ${training.task_generator.only_n_tasks}
-      name: generator_gradient_ascent_100
+      name: arc_train_optimisation_comparison
       num_pairs: 4
-      length: 32
-      batch_size: 16
+      length: 20
+      batch_size: 8
       num_tasks_to_show: 10
       inference_mode: gradient_ascent  # Method 3: Gradient ascent with 100 steps
       inference_kwargs:
-        num_steps: 100
+        num_steps: 200
         lr: 0.1
         optimizer: adam
         optimizer_kwargs:
@@ -85,14 +85,14 @@ eval:
     - generator: ARC
       task_generator_kwargs:
         only_n_tasks: ${training.task_generator.only_n_tasks}
-      name: generator_random_search_100
+      name: arc_train_optimisation_comparison
       num_pairs: 4
-      length: 32
-      batch_size: 16
+      length: 20
+      batch_size: 8
       num_tasks_to_show: 10
       inference_mode: random_search  # Method 5: Random search with 100 samples
       inference_kwargs:
-        num_samples: 100
+        num_samples: 200
         scale: 1.0
         include_mean_latent: True
         include_all_latents: False
