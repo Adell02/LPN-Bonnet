@@ -453,8 +453,8 @@ def visualize_optimization_comparison(
     # zero contour (A == B)
     X, Y = np.meshgrid(steps, budgets)
     try:
-        cs = ax.contour(X, Y, diff, levels=[0.0], colors='black', linewidths=2.0, alpha=0.9)
-        ax.clabel(cs, inline=True, fontsize=10, fmt=lambda *_: 'Equal accuracy')
+        cs = ax.contour(X, Y, diff, levels=[0.0], colors='black', linewidths=2.0, alpha=0.9,label='Equal accuracy')
+        #ax.clabel(cs, inline=True, fontsize=10, fmt=lambda *_: 'Equal accuracy')
     except (ValueError, RuntimeError):
         pass
 
@@ -481,15 +481,17 @@ def visualize_optimization_comparison(
 
     # FIX 2: labels indicating which side is better; place INSIDE cbar axes
     # top = +vmax (A better), bottom = -vmax (B better)
-    cbar.ax.text(0.5, 0.98, f"{method_A_name} more accurate",
+    cbar.ax.text(1.2, 0.98, f"{method_A_name} more accurate",
                  transform=cbar.ax.transAxes, ha="center", va="top",
                  fontsize=9, bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85))
-    cbar.ax.text(0.5, 0.02, f"{method_B_name} more accurate",
+    cbar.ax.text(1.2, 0.02, f"{method_B_name} more accurate",
                  transform=cbar.ax.transAxes, ha="center", va="bottom",
                  fontsize=9, bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85))
 
     # keep ticks readable on the colorbar
     cbar.ax.tick_params(length=3, pad=3)
+
+    ax.legend(loc='upper left', frameon=True)
 
     fig.tight_layout()
     return fig
