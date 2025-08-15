@@ -533,7 +533,20 @@ class LPN(nn.Module):
             random_scores = per_candidate[num_orig:]         # shape: (num_samples,)
             
             # 3) Budget curve: best-so-far after n samples
-            best_so_far = jnp.maximum.accumulate(random_scores)  # shape: (num_samples,)
+            def cumulative_max(arr):
+                def scan_fn(carry, x):
+                    new_max = jnp.maximum(carry, x)
+                    return new_max, new_max
+                
+                if arr.size == 0:
+                    return arr
+                if arr.size == 1:
+                    return arr
+                
+                _, cummax_result = jax.lax.scan(scan_fn, arr[0], arr[1:])
+                return jnp.concatenate([arr[0:1], cummax_result])
+
+            best_so_far = cumulative_max(random_scores)  # shape: (num_samples,)
             
             trajectory_data = {
                 "sample_accuracies": random_scores,                    # length = num_samples
