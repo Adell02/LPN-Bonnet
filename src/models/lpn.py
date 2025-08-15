@@ -626,6 +626,7 @@ class LPN(nn.Module):
         opt_state = optimizer.init(latents)
 
         if track_progress:
+            @jax.checkpoint
             def update_latents_with_tracking(decoder, carry, step_idx):
                 latents, opt_state = carry
                 log_probs, grads = value_and_grad_log_probs_fn(latents, input_seq, output_seq, decoder)
