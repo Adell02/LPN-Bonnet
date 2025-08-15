@@ -422,18 +422,17 @@ def visualize_optimization_comparison(
     """
     from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-    # to numpy
+    # numpy
     steps   = np.asarray(steps)
     budgets = np.asarray(budgets)
     acc_A   = np.asarray(acc_A, dtype=float)
     acc_B   = np.asarray(acc_B, dtype=float)
 
-    # difference and color limits
-    diff = acc_A - acc_B                        # shape [B, S]
+    # diff heatmap data [B,S]
+    diff = acc_A - acc_B
     diff_masked = np.ma.masked_invalid(diff)
     if diff_masked.count() > 0:
-        vmax = np.nanmax(np.abs(diff_masked))
-        vmax = float(vmax) if np.isfinite(vmax) and vmax > 0 else 1.0
+        vmax = float(np.nanmax(np.abs(diff_masked))) or 1.0
     else:
         vmax = 1.0
 
@@ -443,26 +442,26 @@ def visualize_optimization_comparison(
     im = ax.imshow(
         diff_masked,
         extent=[steps[0], steps[-1], budgets[0], budgets[-1]],
-        origin='lower',
-        aspect='auto',
-        cmap='coolwarm',
-        vmin=-vmax,
-        vmax=+vmax
+        origin='lower', aspect='auto',
+        cmap='coolwarm', vmin=-vmax, vmax=+vmax
     )
 
-    # zero contour (A == B)
+    # zero contour A==B, and make it show in legend
     X, Y = np.meshgrid(steps, budgets)
     try:
-        cs = ax.contour(X, Y, diff, levels=[0.0], colors='black', linewidths=2.0, alpha=0.9,label='Equal accuracy')
-        #ax.clabel(cs, inline=True, fontsize=10, fmt=lambda *_: 'Equal accuracy')
+        cs = ax.contour(X, Y, diff, levels=[0.0], colors='black', linewidths=2.0, alpha=0.9)
+        # label the first collection so legend picks it up
+        if cs.collections:
+            cs.collections[0].set_label('Equal accuracy (A = B)')
     except (ValueError, RuntimeError):
-        pass
+        cs = None  # ignore if not possible
 
+    # axes labels/title
     ax.set_xlabel("Training step", fontsize=12)
     ax.set_ylabel("Search budget", fontsize=12)
     ax.set_title(f"Optimization strategies comparison\n({method_A_name} vs {method_B_name})", fontsize=14)
 
-    # show ALL ticks
+    # all ticks
     ax.set_xticks(steps)
     ax.set_yticks(budgets)
     if steps.size > 12:
@@ -470,29 +469,38 @@ def visualize_optimization_comparison(
             t.set_rotation(45)
             t.set_ha('right')
 
-    # colorbar in its own axis with padding so nothing overlaps
+    # layout helper
     divider = make_axes_locatable(ax)
-    cax = divider.append_axes("right", size="4%", pad=0.65)
-    cbar = fig.colorbar(im, cax=cax)
 
-    # FIX 3: title ABOVE colorbar, horizontal, with extra padding
+    # colorbar axis
+    cax = divider.append_axes("right", size="4%", pad=0.6)
+    cbar = fig.colorbar(im, cax=cax)
+    # colorbar title ABOVE, horizontal
     cbar.ax.set_title(f"Accuracy diff\n({method_A_name} − {method_B_name})",
                       fontsize=11, pad=10, rotation=0, loc='center')
-
-    # FIX 2: labels indicating which side is better; place INSIDE cbar axes
-    # top = +vmax (A better), bottom = -vmax (B better)
-    cbar.ax.text(1.2, 0.98, f"{method_A_name} more accurate",
-                 transform=cbar.ax.transAxes, ha="center", va="top",
-                 fontsize=9, bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85))
-    cbar.ax.text(1.2, 0.02, f"{method_B_name} more accurate",
-                 transform=cbar.ax.transAxes, ha="center", va="bottom",
-                 fontsize=9, bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85))
-
-    # keep ticks readable on the colorbar
     cbar.ax.tick_params(length=3, pad=3)
 
-    ax.legend(loc='upper left', frameon=True)
+    # separate slim axis to the RIGHT of the colorbar for the explanatory texts
+    label_ax = divider.append_axes("right", size="14%", pad=0.25)
+    label_ax.axis("off")
+    # two-line labels, centered vertically near top and bottom of this axis
+    label_ax.text(0.0, 0.95, f"{method_A_name}\nmore accurate",
+                  ha="left", va="top", fontsize=10)
+    label_ax.text(0.0, 0.05, f"{method_B_name}\nmore accurate",
+                  ha="left", va="bottom", fontsize=10)
+
+    # legend: include contour and optionally a proxy for heatmap
+    handles = []
+    labels  = []
+    if cs and cs.collections:
+        handles.append(Line2D([0], [0], color='black', lw=2))
+        labels.append('Equal accuracy (A = B)')
+    # If you want a legend entry for “A−B heatmap”, add a proxy
+    # handles.append(Line2D([0],[0], color='none')) ; labels.append('A−B heatmap')
+    if handles:
+        ax.legend(handles, labels, loc='upper left', frameon=True)
 
     fig.tight_layout()
     return fig
+
 
