@@ -532,27 +532,54 @@ class LPN(nn.Module):
                 while sample_accuracies.ndim > 1:
                     sample_accuracies = jnp.mean(sample_accuracies, axis=0)
             
-            sample_losses = -sample_accuracies
-            sample_improvements = sample_accuracies - sample_accuracies[0]
-            def cumulative_max(arr):
-                def scan_fn(carry, x):
-                    new_max = jnp.maximum(carry, x)
-                    return new_max, new_max
+            # Create incremental progression: evaluate with 0, 1, 2, ..., num_samples random samples
+            incremental_accuracies = []
+            
+            # Step 0: No random samples (just original latents)
+            if latents.shape[-2] > num_samples:  # If we have original latents + random samples
+                original_latents = latents[..., :latents.shape[-2]-num_samples, :]
+                # Evaluate original latents only
+                original_input_seq, original_output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
+                original_latents_expanded = original_latents[..., None, :, :].repeat(original_output_seq.shape[-2], axis=-3)
                 
-                if arr.size == 0:
-                    return arr
-                if arr.size == 1:
-                    return arr
+                # Compute log probs for original latents
+                original_log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
+                    *self.decoder(original_input_seq, original_output_seq, original_latents_expanded, dropout_eval=True)
+                )
+                original_accuracy = jnp.mean(original_log_probs)
+                if original_accuracy.ndim > 0:
+                    original_accuracy = jnp.mean(original_accuracy)
+                incremental_accuracies.append(float(original_accuracy))
+            else:
+                incremental_accuracies.append(float(sample_accuracies[0]))
+            
+            # Steps 1 to num_samples: Add one random sample at a time
+            for i in range(1, num_samples + 1):
+                # Take first i random samples
+                current_latents = latents[..., :latents.shape[-2]-num_samples+i, :]
+                current_input_seq, current_output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
+                current_latents_expanded = current_latents[..., None, :, :].repeat(current_output_seq.shape[-2], axis=-3)
                 
-                _, cummax_result = jax.lax.scan(scan_fn, arr[0], arr[1:])
-                return jnp.concatenate([arr[0:1], cummax_result])
-
-            best_so_far = cumulative_max(sample_accuracies)
+                # Compute log probs for current latents
+                current_log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
+                    *self.decoder(current_input_seq, current_output_seq, current_latents_expanded, dropout_eval=True)
+                )
+                current_accuracy = jnp.mean(current_log_probs)
+                if current_accuracy.ndim > 0:
+                    current_accuracy = jnp.mean(current_accuracy)
+                incremental_accuracies.append(float(current_accuracy))
+            
+            # Convert to JAX array for consistency
+            incremental_accuracies = jnp.array(incremental_accuracies)
+            
+            sample_losses = -incremental_accuracies
+            sample_improvements = incremental_accuracies - incremental_accuracies[0]
+            
             trajectory_data = {
-                "sample_accuracies": sample_accuracies,
+                "sample_accuracies": incremental_accuracies,
                 "sample_losses": sample_losses,
                 "sample_improvements": sample_improvements,
-                "best_accuracy_progression": best_so_far
+                "best_accuracy_progression": incremental_accuracies  # Now represents step-by-step progression
             }
             return best_context, second_best_context, trajectory_data
 
