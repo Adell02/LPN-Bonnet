@@ -543,8 +543,9 @@ class LPN(nn.Module):
                 original_latents_expanded = original_latents[..., None, :, :].repeat(original_output_seq.shape[-2], axis=-3)
                 
                 # Compute log probs for original latents
+                original_row_logits, original_col_logits, original_grid_logits = self.decoder(original_input_seq, original_output_seq, original_latents_expanded, dropout_eval=True)
                 original_log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
-                    *self.decoder(original_input_seq, original_output_seq, original_latents_expanded, dropout_eval=True)
+                    original_row_logits, original_col_logits, original_grid_logits, original_output_seq
                 )
                 original_accuracy = jnp.mean(original_log_probs)
                 if original_accuracy.ndim > 0:
@@ -561,8 +562,9 @@ class LPN(nn.Module):
                 current_latents_expanded = current_latents[..., None, :, :].repeat(current_output_seq.shape[-2], axis=-3)
                 
                 # Compute log probs for current latents
+                current_row_logits, current_col_logits, current_grid_logits = self.decoder(current_input_seq, current_output_seq, current_latents_expanded, dropout_eval=True)
                 current_log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
-                    *self.decoder(current_input_seq, current_output_seq, current_latents_expanded, dropout_eval=True)
+                    current_row_logits, current_col_logits, current_grid_logits, current_output_seq
                 )
                 current_accuracy = jnp.mean(current_log_probs)
                 if current_accuracy.ndim > 0:
