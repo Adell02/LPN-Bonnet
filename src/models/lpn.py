@@ -578,9 +578,9 @@ class LPN(nn.Module):
         stop_gradient_latent_move: bool = True,
         track_progress: bool = False,
         **kwargs,
-    ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:  # FIXED return type
+        ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:  # FIXED return type
         """Returns the best two contexts using a gradient ascent algorithm."""
-        
+
         # MEMORY MONITORING: Track initial memory usage
         def log_memory_usage(stage: str):
             try:
@@ -598,9 +598,9 @@ class LPN(nn.Module):
                 print(f"[MEMORY] {stage}: CPU={cpu_memory:.2f}GB, GPU={gpu_memory:.2f}GB")
             except ImportError:
                 pass
-        
+
         log_memory_usage("Starting gradient ascent")
-        
+
         latents = self._prepare_latents_before_search(
             include_mean_latent, include_all_latents, latents, random_perturbation, key
         )
@@ -624,24 +624,16 @@ class LPN(nn.Module):
             log_probs = self._compute_log_probs(row_logits, col_logits, grid_logits, output_seq)
             return log_probs
 
-        # OPTIMIZATION: Use a single vmap instead of chaining multiple
-        # This reduces memory usage by ~60%
-        def single_vmap_log_probs_fn(latents_batch, input_seq_batch, output_seq_batch):
-            return jax.vmap(
-                lambda l, i, o: log_probs_fn(l, i, o, self.decoder),
-                in_axes=(0, 0, 0)
-            )(latents_batch, input_seq_batch, output_seq_batch)
-        
-        # Use the optimized single vmap approach
+        # RESTORE: Use the original working vmap chain approach
         value_and_grad_log_probs_fn = jax.vmap(
-            jax.value_and_grad(single_vmap_log_probs_fn), 
-            in_axes=(-2, None, None), 
-            out_axes=(-1, -2)
+            jax.value_and_grad(log_probs_fn), in_axes=(-2, None, None, None), out_axes=(-1, -2)
         )
-        log_memory_usage("After vmap setup")
+        # Add vmaps for batch dimensions
+        for batch_dim in range(input_seq[..., 0, 0].ndim):
+            value_and_grad_log_probs_fn = jax.vmap(value_and_grad_log_probs_fn, in_axes=(0, 0, 0, None))
 
-        # OPTIMIZATION: Use single vmap for tracking too
-        vmap_log_probs_fn = jax.vmap(single_vmap_log_probs_fn, in_axes=(-2, None, None), out_axes=-1)
+        vmap_log_probs_fn = jax.vmap(log_probs_fn, in_axes=(-2, None, None, None), out_axes=-1)
+        log_memory_usage("After vmap setup")
 
         if lr_schedule:
             lr = optax.cosine_decay_schedule(lr, num_steps, exponent=lr_schedule_exponent)
@@ -718,10 +710,10 @@ class LPN(nn.Module):
 
         # MEMORY CLEANUP: Clear intermediate variables to free memory
         del step_accuracies, step_losses, step_improvements
-        
+
         # After obtaining last_latents in both branches, compute per-latent log-probs for the final latents
         log_memory_usage("Before final log-probs computation")
-        final_log_probs = vmap_log_probs_fn(last_latents, input_seq, output_seq)
+        final_log_probs = vmap_log_probs_fn(last_latents, input_seq, output_seq, self.decoder)
         log_memory_usage("After final log-probs computation")
 
         # Concatenate original latents to all_latents and flatten all the latents.
@@ -733,7 +725,7 @@ class LPN(nn.Module):
 
         # Use final_log_probs for selection (shape: ..., num_latents)
         best_context, second_best_context = self._select_best_and_second_best_latents(final_log_probs, latents)
-        
+
         # MEMORY CLEANUP: Clear large intermediate arrays
         del final_log_probs, latents, last_latents, opt_state
         log_memory_usage("After cleanup and selection")
