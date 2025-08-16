@@ -41,7 +41,7 @@ eval:
       num_tasks_to_show: 16
       inference_mode: gradient_ascent
       inference_kwargs:
-        num_steps: 200
+        num_steps: 2
         lr: 0.1
         optimizer: adam
         optimizer_kwargs:
