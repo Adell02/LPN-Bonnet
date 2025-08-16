@@ -21,7 +21,7 @@ training:
 
 eval:
   eval_datasets:
-  
+
   # SINGLE evaluation dataset with DIFFERENT optimization methods
   test_datasets:
     # - generator: ARC
@@ -100,6 +100,9 @@ eval:
 
   # Remove JSON datasets entirely to focus on generator evaluation
   json_datasets: []
+
+  # Skip heavy visualizations during evaluation to save memory
+  light_logging: True
 
 encoder_transformer:
   _target_: models.utils.EncoderTransformerConfig

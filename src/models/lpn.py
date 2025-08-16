@@ -554,6 +554,8 @@ class LPN(nn.Module):
                 "sample_improvements": random_scores - random_scores[:1],
                 "best_accuracy_progression": best_so_far               # length = num_samples
             }
+            # Move tracking data to host memory to free GPU space
+            trajectory_data = jax.tree_map(jax.device_get, trajectory_data)
             return best_context, second_best_context, trajectory_data
 
         return best_context, second_best_context
@@ -683,8 +685,11 @@ class LPN(nn.Module):
             trajectory_data = {
                 "step_accuracies": step_accuracies,
                 "step_losses": step_losses,
-                "step_improvements": step_improvements
+                "step_improvements": step_improvements,
             }
+
+            # Move metrics to host memory to avoid keeping them on the GPU
+            trajectory_data = jax.tree_map(jax.device_get, trajectory_data)
 
         else:
             def update_latents(decoder, carry, step_idx):

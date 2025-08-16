@@ -524,10 +524,12 @@ class Trainer:
             keys,
         )
 
+        light_logging = self.cfg.eval.get("light_logging", False)
+
         # Extract search trajectory information
         search_trajectories = generated_info.get("search_trajectories", {})
 
-        # Create search progress visualization
+        # Create search progress visualization (always needed for optimization comparison)
         if search_trajectories and ("gradient_ascent" in test_name or "random_search" in test_name):
             fig_search_progress = self.visualize_search_progress(search_trajectories, test_name)
         else:
@@ -550,37 +552,41 @@ class Trainer:
             (dataset_grids, dataset_shapes, generated_grids, generated_shapes),
         )
 
-        # Create a mask based on the true shapes
-        max_rows, max_cols = self.model.decoder.config.max_rows, self.model.decoder.config.max_cols
-        grid_row_mask = jnp.arange(max_rows) < dataset_shapes[..., 0, 1:]
-        grid_col_mask = jnp.arange(max_cols) < dataset_shapes[..., 1, 1:]
-        grid_pad_mask = grid_row_mask[..., None] & grid_col_mask[..., None, :]
+        if not light_logging:
+            # Create a mask based on the true shapes
+            max_rows, max_cols = self.model.decoder.config.max_rows, self.model.decoder.config.max_cols
+            grid_row_mask = jnp.arange(max_rows) < dataset_shapes[..., 0, 1:]
+            grid_col_mask = jnp.arange(max_cols) < dataset_shapes[..., 1, 1:]
+            grid_pad_mask = grid_row_mask[..., None] & grid_col_mask[..., None, :]
 
-        # Extract the average accuracy for each pixel across batch and num_problems dimensions
-        pixel_correct_binary = (generated_grids == dataset_grids[..., 1]) * grid_pad_mask
-        pixel_accuracy = pixel_correct_binary.sum(axis=(0, 1)) / (grid_pad_mask.sum(axis=(0, 1)) + 1e-5)
+            # Extract the average accuracy for each pixel across batch and num_problems dimensions
+            pixel_correct_binary = (generated_grids == dataset_grids[..., 1]) * grid_pad_mask
+            pixel_accuracy = pixel_correct_binary.sum(axis=(0, 1)) / (grid_pad_mask.sum(axis=(0, 1)) + 1e-5)
 
-        # Create heatmap of pixel accuracy and pixel frequency
-        fig_heatmap = visualize_heatmap(
-            pixel_accuracy, (grid_pad_mask.sum(axis=(0, 1)) / grid_pad_mask.sum())
-        )
-
-        if num_tasks_to_show:
-            fig_grids = visualize_dataset_generation(
-                dataset_grids, dataset_shapes, generated_grids, generated_shapes, num_tasks_to_show
+            # Create heatmap of pixel accuracy and pixel frequency
+            fig_heatmap = visualize_heatmap(
+                pixel_accuracy, (grid_pad_mask.sum(axis=(0, 1)) / grid_pad_mask.sum())
             )
+
+            if num_tasks_to_show:
+                fig_grids = visualize_dataset_generation(
+                    dataset_grids, dataset_shapes, generated_grids, generated_shapes, num_tasks_to_show
+                )
+            else:
+                fig_grids = None
         else:
+            fig_heatmap = None
             fig_grids = None
 
-        if program_ids is not None:
+        if not light_logging and program_ids is not None:
             repeated_program_ids = jnp.repeat(program_ids, pairs_per_problem)
             fig_latents = visualize_tsne(program_context, repeated_program_ids)
-            
+
             # FIXED: Use original program_ids and actual latents_samples from generated_info
             if 'latents_samples' in generated_info:
                 fig_latents_samples = visualize_latents_samples(
-                    dataset_grids, 
-                    dataset_shapes, 
+                    dataset_grids,
+                    dataset_shapes,
                     program_ids,  # Use original program_ids (not repeated)
                     generated_info['latents_samples'],  # Use actual latents samples
                     num_tasks=min(num_tasks_to_show, 5),
