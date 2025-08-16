@@ -554,6 +554,8 @@ class LPN(nn.Module):
                 "sample_improvements": random_scores - random_scores[:1],
                 "best_accuracy_progression": best_so_far               # length = num_samples
             }
+            # Move tracking data to host memory to free GPU space
+            trajectory_data = jax.tree_map(jax.device_get, trajectory_data)
             return best_context, second_best_context, trajectory_data
 
         return best_context, second_best_context
@@ -581,34 +583,12 @@ class LPN(nn.Module):
         ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:  # FIXED return type
         """Returns the best two contexts using a gradient ascent algorithm."""
 
-        # MEMORY MONITORING: Track initial memory usage
-        def log_memory_usage(stage: str):
-            try:
-                import psutil
-                import GPUtil
-                process = psutil.Process()
-                cpu_memory = process.memory_info().rss / 1024**3  # GB
-                gpu_memory = 0
-                try:
-                    gpus = GPUtil.getGPUs()
-                    if gpus:
-                        gpu_memory = gpus[0].memoryUsed / 1024  # GB
-                except:
-                    pass
-                print(f"[MEMORY] {stage}: CPU={cpu_memory:.2f}GB, GPU={gpu_memory:.2f}GB")
-            except ImportError:
-                pass
-
-        log_memory_usage("Starting gradient ascent")
-
         latents = self._prepare_latents_before_search(
             include_mean_latent, include_all_latents, latents, random_perturbation, key
         )
-        log_memory_usage("After latent preparation")
 
         # Flatten input/output for decoding likelihood
         input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
-        log_memory_usage("After input/output flattening")
 
         # Initialize tracking arrays
         step_accuracies = []
@@ -633,7 +613,6 @@ class LPN(nn.Module):
             value_and_grad_log_probs_fn = jax.vmap(value_and_grad_log_probs_fn, in_axes=(0, 0, 0, None))
 
         vmap_log_probs_fn = jax.vmap(log_probs_fn, in_axes=(-2, None, None, None), out_axes=-1)
-        log_memory_usage("After vmap setup")
 
         if lr_schedule:
             lr = optax.cosine_decay_schedule(lr, num_steps, exponent=lr_schedule_exponent)
@@ -649,7 +628,6 @@ class LPN(nn.Module):
         else:
             raise ValueError(f"Unsupported optimizer: {optimizer}")
         opt_state = optimizer.init(latents)
-        log_memory_usage("After optimizer initialization")
 
         if track_progress:
             def update_latents_with_tracking(decoder, carry, step_idx):
@@ -668,14 +646,12 @@ class LPN(nn.Module):
                 # Return metrics as part of scan output
                 return (latents, opt_state), (current_accuracy, current_loss)
 
-            log_memory_usage("Before tracking scan")
             (last_latents, _), metrics = nn.scan(
                 update_latents_with_tracking,
                 variable_broadcast="params",
                 split_rngs={"params": False},
                 length=num_steps,
             )(self.decoder, (latents, opt_state), jnp.arange(num_steps))
-            log_memory_usage("After tracking scan")
 
             step_accuracies, step_losses = metrics
             step_improvements = step_accuracies - step_accuracies[0]
@@ -683,8 +659,11 @@ class LPN(nn.Module):
             trajectory_data = {
                 "step_accuracies": step_accuracies,
                 "step_losses": step_losses,
-                "step_improvements": step_improvements
+                "step_improvements": step_improvements,
             }
+
+            # Move metrics to host memory to avoid keeping them on the GPU
+            trajectory_data = jax.tree_map(jax.device_get, trajectory_data)
 
         else:
             def update_latents(decoder, carry, step_idx):
@@ -698,36 +677,29 @@ class LPN(nn.Module):
 
                 return (latents, opt_state), None
 
-            log_memory_usage("Before non-tracking scan")
             (last_latents, _), _ = nn.scan(
                 update_latents,
                 variable_broadcast="params",
                 split_rngs={"params": False},
                 length=num_steps,
             )(self.decoder, (latents, opt_state), jnp.arange(num_steps))
-            log_memory_usage("After non-tracking scan")
 
         # MEMORY CLEANUP: Clear intermediate variables to free memory
         del step_accuracies, step_losses, step_improvements
 
         # After obtaining last_latents in both branches, compute per-latent log-probs for the final latents
-        log_memory_usage("Before final log-probs computation")
         final_log_probs = vmap_log_probs_fn(last_latents, input_seq, output_seq, self.decoder)
-        log_memory_usage("After final log-probs computation")
 
         # Concatenate original latents to all_latents and flatten all the latents.
-        log_memory_usage("Before latent concatenation")
         latents = jnp.concatenate([latents, last_latents], axis=-2).reshape(
             *latents.shape[:-2], -1, latents.shape[-1]
         )
-        log_memory_usage("After latent concatenation")
 
         # Use final_log_probs for selection (shape: ..., num_latents)
         best_context, second_best_context = self._select_best_and_second_best_latents(final_log_probs, latents)
 
         # MEMORY CLEANUP: Clear large intermediate arrays
         del final_log_probs, latents, last_latents, opt_state
-        log_memory_usage("After cleanup and selection")
 
         if track_progress:
             return best_context, second_best_context, trajectory_data

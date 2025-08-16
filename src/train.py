@@ -21,8 +21,6 @@ import wandb
 import hydra
 import omegaconf
 
-import sys
-print(sys.path)
 
 from models.lpn import LPN
 from models.utils import DecoderTransformerConfig, EncoderTransformerConfig
@@ -524,10 +522,12 @@ class Trainer:
             keys,
         )
 
+        light_logging = self.cfg.eval.get("light_logging", False)
+
         # Extract search trajectory information
         search_trajectories = generated_info.get("search_trajectories", {})
 
-        # Create search progress visualization
+        # Create search progress visualization (always needed for optimization comparison)
         if search_trajectories and ("gradient_ascent" in test_name or "random_search" in test_name):
             fig_search_progress = self.visualize_search_progress(search_trajectories, test_name)
         else:
@@ -550,37 +550,41 @@ class Trainer:
             (dataset_grids, dataset_shapes, generated_grids, generated_shapes),
         )
 
-        # Create a mask based on the true shapes
-        max_rows, max_cols = self.model.decoder.config.max_rows, self.model.decoder.config.max_cols
-        grid_row_mask = jnp.arange(max_rows) < dataset_shapes[..., 0, 1:]
-        grid_col_mask = jnp.arange(max_cols) < dataset_shapes[..., 1, 1:]
-        grid_pad_mask = grid_row_mask[..., None] & grid_col_mask[..., None, :]
+        if not light_logging:
+            # Create a mask based on the true shapes
+            max_rows, max_cols = self.model.decoder.config.max_rows, self.model.decoder.config.max_cols
+            grid_row_mask = jnp.arange(max_rows) < dataset_shapes[..., 0, 1:]
+            grid_col_mask = jnp.arange(max_cols) < dataset_shapes[..., 1, 1:]
+            grid_pad_mask = grid_row_mask[..., None] & grid_col_mask[..., None, :]
 
-        # Extract the average accuracy for each pixel across batch and num_problems dimensions
-        pixel_correct_binary = (generated_grids == dataset_grids[..., 1]) * grid_pad_mask
-        pixel_accuracy = pixel_correct_binary.sum(axis=(0, 1)) / (grid_pad_mask.sum(axis=(0, 1)) + 1e-5)
+            # Extract the average accuracy for each pixel across batch and num_problems dimensions
+            pixel_correct_binary = (generated_grids == dataset_grids[..., 1]) * grid_pad_mask
+            pixel_accuracy = pixel_correct_binary.sum(axis=(0, 1)) / (grid_pad_mask.sum(axis=(0, 1)) + 1e-5)
 
-        # Create heatmap of pixel accuracy and pixel frequency
-        fig_heatmap = visualize_heatmap(
-            pixel_accuracy, (grid_pad_mask.sum(axis=(0, 1)) / grid_pad_mask.sum())
-        )
-
-        if num_tasks_to_show:
-            fig_grids = visualize_dataset_generation(
-                dataset_grids, dataset_shapes, generated_grids, generated_shapes, num_tasks_to_show
+            # Create heatmap of pixel accuracy and pixel frequency
+            fig_heatmap = visualize_heatmap(
+                pixel_accuracy, (grid_pad_mask.sum(axis=(0, 1)) / grid_pad_mask.sum())
             )
+
+            if num_tasks_to_show:
+                fig_grids = visualize_dataset_generation(
+                    dataset_grids, dataset_shapes, generated_grids, generated_shapes, num_tasks_to_show
+                )
+            else:
+                fig_grids = None
         else:
+            fig_heatmap = None
             fig_grids = None
 
-        if program_ids is not None:
+        if not light_logging and program_ids is not None:
             repeated_program_ids = jnp.repeat(program_ids, pairs_per_problem)
             fig_latents = visualize_tsne(program_context, repeated_program_ids)
-            
+
             # FIXED: Use original program_ids and actual latents_samples from generated_info
             if 'latents_samples' in generated_info:
                 fig_latents_samples = visualize_latents_samples(
-                    dataset_grids, 
-                    dataset_shapes, 
+                    dataset_grids,
+                    dataset_shapes,
                     program_ids,  # Use original program_ids (not repeated)
                     generated_info['latents_samples'],  # Use actual latents samples
                     num_tasks=min(num_tasks_to_show, 5),
@@ -626,48 +630,38 @@ class Trainer:
         if 'optimization_trajectory' in generated_info and 'gradient_ascent' in test_name:
             traj = generated_info['optimization_trajectory']
             method_name = test_name.replace('_gradient_ascent', '').replace('_random_search', '')
-            
+
             store = self._optimization_data.setdefault(method_name, {
                 'gradient_ascent': {},
                 'random_search': {}
             })
-            
+
             # Convert JAX arrays to numpy arrays safely - handle batch dimensions
             step_accs = traj['step_accuracies']
-            print(f"DEBUG GRAD: Original step_accs shape: {jnp.array(step_accs).shape}")
-            print(f"DEBUG GRAD: Original step_accs length: {len(step_accs)}")
             if hasattr(step_accs, 'ndim') and step_accs.ndim > 1:
                 # Average over batch dimensions, keep step dimension
                 step_accs = jnp.mean(step_accs, axis=(0, 1)) if step_accs.ndim == 3 else jnp.mean(step_accs, axis=0)
-                print(f"DEBUG GRAD: After averaging step_accs shape: {jnp.array(step_accs).shape}")
             accuracies = [float(x) for x in step_accs]
-            print(f"DEBUG GRAD: Final accuracies length: {len(accuracies)}")
-            print(f"DEBUG GRAD: Final accuracies: {accuracies}")
             store['gradient_ascent'][current_step] = {
                 'budgets': list(range(len(accuracies))),
                 'accs': accuracies,
             }
-        
+
         if 'search_trajectory' in generated_info and 'random_search' in test_name:
             search_traj = generated_info['search_trajectory']
             method_name = test_name.replace('_gradient_ascent', '').replace('_random_search', '')
-            
+
             store = self._optimization_data.setdefault(method_name, {
                 'gradient_ascent': {},
                 'random_search': {}
             })
-            
+
             # Convert JAX arrays to numpy arrays safely - handle batch dimensions
             best_prog = search_traj['best_accuracy_progression']
-            print(f"DEBUG SEARCH: Original best_prog shape: {jnp.array(best_prog).shape}")
-            print(f"DEBUG SEARCH: Original best_prog length: {len(best_prog)}")
             if hasattr(best_prog, 'ndim') and best_prog.ndim > 1:
                 # Average over batch dimensions, keep sample dimension
                 best_prog = jnp.mean(best_prog, axis=(0, 1)) if best_prog.ndim == 3 else jnp.mean(best_prog, axis=0)
-                print(f"DEBUG SEARCH: After averaging best_prog shape: {jnp.array(best_prog).shape}")
             best_progression = [float(x) for x in best_prog]
-            print(f"DEBUG SEARCH: Final best_progression length: {len(best_progression)}")
-            print(f"DEBUG SEARCH: Final best_progression: {best_progression}")
             store['random_search'][current_step] = {
                 'budgets': list(range(len(best_progression))),
                 'accs': best_progression,
@@ -900,41 +894,32 @@ class Trainer:
     def _generate_optimization_comparison(self) -> Optional[plt.Figure]:
         """Simplified: Generate comparison plot between optimization methods"""
         if not hasattr(self, '_optimization_data') or len(self._optimization_data) == 0:
-            print("DEBUG: No optimization data available for comparison")
             return None
-        
+
         # Simple approach: take the first method that has both optimization types
-        print(f"DEBUG: Available optimization data: {list(self._optimization_data.keys())}")
         for method_name, data in self._optimization_data.items():
             grad_data = data.get('gradient_ascent', {})
             search_data = data.get('random_search', {})
-            print(f"DEBUG: Method {method_name} - grad_data steps: {list(grad_data.keys())}, search_data steps: {list(search_data.keys())}")
-            
             if len(grad_data) > 0 and len(search_data) > 0:
                 try:
                     # Get common steps
                     common_steps = sorted(set(grad_data.keys()) & set(search_data.keys()))
-                    print(f"DEBUG: Common steps: {common_steps}")
                     if len(common_steps) < 2:
-                        print(f"DEBUG: Not enough common steps ({len(common_steps)} < 2)")
                         continue
-                    
+
                     # Find maximum budget size
                     max_budget = 0
                     for step in common_steps:
                         max_budget = max(max_budget, len(grad_data[step]['accs']), len(search_data[step]['accs']))
-                    
-                    print(f"DEBUG: Max budget: {max_budget}")
+
                     if max_budget < 2:
-                        print(f"DEBUG: Max budget too small ({max_budget} < 2)")
                         continue
-                    
+
                     # Create accuracy grids
                     budgets = list(range(max_budget))
                     acc_grad = np.full((max_budget, len(common_steps)), np.nan)
                     acc_search = np.full((max_budget, len(common_steps)), np.nan)
-                    print(f"DEBUG: Creating plot with {len(common_steps)} steps and {max_budget} budget points")
-                    
+
                     # Fill data
                     for j, step in enumerate(common_steps):
                         if step in grad_data:
@@ -942,15 +927,14 @@ class Trainer:
                             for i, acc in enumerate(accs):
                                 if i < max_budget:
                                     acc_grad[i, j] = acc
-                        
+
                         if step in search_data:
                             accs = search_data[step]['accs']
                             for i, acc in enumerate(accs):
                                 if i < max_budget:
                                     acc_search[i, j] = acc
-                    
+
                     # Generate plot
-                    print(f"DEBUG: Successfully generating optimization comparison plot!")
                     return visualize_optimization_comparison(
                         steps=np.array(common_steps),
                         budgets=np.array(budgets),
