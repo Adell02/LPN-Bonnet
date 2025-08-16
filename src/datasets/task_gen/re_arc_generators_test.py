@@ -1,4 +1,5 @@
 import unittest
+import random
 
 from  datasets.task_gen.re_arc_generators import GENERATORS_SRC_CODE
 
