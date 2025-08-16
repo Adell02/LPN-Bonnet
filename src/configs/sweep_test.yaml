@@ -4,9 +4,9 @@ training:
   inference_mode: mean
   batch_size: 2
   gradient_accumulation_steps: 1
-  total_num_steps: 100
+  total_num_steps: 10
   log_every_n_steps: 1
-  eval_every_n_logs: 10  # Reduce frequency to save memory
+  eval_every_n_logs: 1  # Reduce frequency to save memory
   save_checkpoint_every_n_logs: null
   learning_rate: 4e-4
   prior_kl_coeff: 1e-4
@@ -24,15 +24,15 @@ eval:
   
   # SINGLE evaluation dataset with DIFFERENT optimization methods
   test_datasets:
-    - generator: ARC
-      task_generator_kwargs:
-        only_n_tasks: ${training.task_generator.only_n_tasks}
-      name: arc_train_optimisation_comparison
-      num_pairs: 4
-      length: 4  # Reduced for memory
-      batch_size: 2
-      num_tasks_to_show: 2  # Reduced for memory
-      inference_mode: mean  # Method 1: Mean inference
+    # - generator: ARC
+    #   task_generator_kwargs:
+    #     only_n_tasks: ${training.task_generator.only_n_tasks}
+    #   name: arc_train_optimisation_comparison
+    #   num_pairs: 4
+    #   length: 4  # Reduced for memory
+    #   batch_size: 2
+    #   num_tasks_to_show: 2  # Reduced for memory
+    #   inference_mode: mean  # Method 1: Mean inference
       
     # - generator: ARC
     #   task_generator_kwargs:
