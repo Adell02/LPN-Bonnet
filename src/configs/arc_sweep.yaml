@@ -6,7 +6,7 @@ training:
   gradient_accumulation_steps: 8
   total_num_steps: 1000
   log_every_n_steps: 10
-  eval_every_n_logs: 10  # Reduce frequency to save memory
+  eval_every_n_logs: 10
   save_checkpoint_every_n_logs: null
   learning_rate: 4e-4
   prior_kl_coeff: 1e-4
@@ -21,85 +21,39 @@ training:
 
 eval:
   eval_datasets:
-
-  # SINGLE evaluation dataset with DIFFERENT optimization methods
+  
+  # Use JSON datasets instead of generators for memory efficiency
   test_datasets:
-    # - generator: ARC
-    #   task_generator_kwargs:
-    #     only_n_tasks: ${training.task_generator.only_n_tasks}
-    #   name: arc_train_optimisation_comparison
-    #   num_pairs: 4
-    #   length: 20  # Reduced for memory
-    #   batch_size: 16
-    #   num_tasks_to_show: 10  # Reduced for memory
-    #   inference_mode: mean  # Method 1: Mean inference
-      
-    # - generator: ARC
-    #   task_generator_kwargs:
-    #     only_n_tasks: ${training.task_generator.only_n_tasks}
-    #   name: generator_gradient_ascent_20
-    #   num_pairs: 4
-    #   length: 20
-    #   batch_size: 16
-    #   num_tasks_to_show: 10
-    #   inference_mode: gradient_ascent  # Method 2: Gradient ascent with 20 steps
-    #   inference_kwargs:
-    #     num_steps: 20
-    #     lr: 0.1
-    #     optimizer: adam
-    #     optimizer_kwargs:
-    #       b2: 0.9
-          
-    - generator: ARC
-      task_generator_kwargs:
-        only_n_tasks: ${training.task_generator.only_n_tasks}
-      name: arc_train_optimisation_comparison
-      num_pairs: 4
-      length: 5
-      batch_size: 5
-      num_tasks_to_show: 1
-      inference_mode: gradient_ascent  # Method 3: Gradient ascent with 100 steps
+    # JSON dataset with gradient ascent optimization
+    - challenges: json/arc-agi_training_challenges.json
+      solutions: json/arc-agi_training_solutions.json
+      name: arc_sweep
+      only_n_tasks: 5  # Limit to 5 tasks for memory
+      num_tasks_to_show: 10  # No visualization to save memory
+      inference_mode: gradient_ascent
       inference_kwargs:
-        num_steps: 50
+        num_steps: 200
         lr: 0.1
         optimizer: adam
         optimizer_kwargs:
           b2: 0.9
-        track_progress: True
-          
-    # - generator: ARC
-    #   task_generator_kwargs:
-    #     only_n_tasks: ${training.task_generator.only_n_tasks}
-    #   name: generator_random_search_20
-    #   num_pairs: 4
-    #   length: 32
-    #   batch_size: 16
-    #   num_tasks_to_show: 10
-    #   inference_mode: random_search  # Method 4: Random search with 20 samples
-    #   inference_kwargs:
-    #     num_samples: 20
-    #     scale: 1.0
-    #     include_mean_latent: True
-    #     include_all_latents: False
+        track_progress: False  # CRITICAL: No progress tracking to save memory
         
-    - generator: ARC
-      task_generator_kwargs:
-        only_n_tasks: ${training.task_generator.only_n_tasks}
-      name: arc_train_optimisation_comparison
-      num_pairs: 4
-      length: 5
-      batch_size: 5
-      num_tasks_to_show: 1
-      inference_mode: random_search  # Method 5: Random search with 100 samples
+    # JSON dataset with random search optimization
+    - challenges: json/arc-agi_training_challenges.json
+      solutions: json/arc-agi_training_solutions.json
+      name: arc_sweep
+      only_n_tasks: 5  # Limit to 5 tasks for memory
+      num_tasks_to_show: 10  # No visualization to save memory
+      inference_mode: random_search
       inference_kwargs:
-        num_samples: 50
+        num_samples: 200
         scale: 1.0
         include_mean_latent: True
         include_all_latents: False
-        track_progress: True
-        scan_batch_size: 8  # Process candidates in smaller batches to save memory
+        track_progress: False  # CRITICAL: No progress tracking to save memory
 
-  # Remove JSON datasets entirely to focus on generator evaluation
+  # Remove generator datasets entirely
   json_datasets: []
 
   # Skip heavy visualizations during evaluation to save memory
@@ -117,7 +71,7 @@ encoder_transformer:
     mlp_dim_factor: 4.0
     dropout_rate: 0.0
     attention_dropout_rate: 0.0
-  latent_dim: 32  # This will be swept by Hydra
+  latent_dim: 32
   variational: True
   latent_projection_bias: False
 
