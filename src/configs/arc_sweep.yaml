@@ -6,7 +6,7 @@ training:
   gradient_accumulation_steps: 8
   total_num_steps: 1000
   log_every_n_steps: 50
-  eval_every_n_logs: 2  # Reduce frequency to save memory
+  eval_every_n_logs: 10  # Reduce frequency to save memory
   save_checkpoint_every_n_logs: null
   learning_rate: 4e-4
   prior_kl_coeff: 1e-4
@@ -55,17 +55,17 @@ eval:
         only_n_tasks: ${training.task_generator.only_n_tasks}
       name: arc_train_optimisation_comparison
       num_pairs: 4
-      length: 20
+      length: 5
       batch_size: 8
       num_tasks_to_show: 10
       inference_mode: gradient_ascent  # Method 3: Gradient ascent with 100 steps
       inference_kwargs:
-        num_steps: 200
+        num_steps: 50
         lr: 0.1
         optimizer: adam
         optimizer_kwargs:
           b2: 0.9
-        track_progress: False
+        track_progress: True
           
     # - generator: ARC
     #   task_generator_kwargs:
@@ -87,16 +87,16 @@ eval:
         only_n_tasks: ${training.task_generator.only_n_tasks}
       name: arc_train_optimisation_comparison
       num_pairs: 4
-      length: 20
+      length: 5
       batch_size: 8
       num_tasks_to_show: 10
       inference_mode: random_search  # Method 5: Random search with 100 samples
       inference_kwargs:
-        num_samples: 200
+        num_samples: 50
         scale: 1.0
         include_mean_latent: True
         include_all_latents: False
-        track_progress: False
+        track_progress: True
 
   # Remove JSON datasets entirely to focus on generator evaluation
   json_datasets: []
