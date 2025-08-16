@@ -65,7 +65,7 @@ eval:
         optimizer: adam
         optimizer_kwargs:
           b2: 0.9
-        track_progress: True
+        track_progress: False
           
     # - generator: ARC
     #   task_generator_kwargs:
@@ -96,7 +96,7 @@ eval:
         scale: 1.0
         include_mean_latent: True
         include_all_latents: False
-        track_progress: True
+        track_progress: False
 
   # Remove JSON datasets entirely to focus on generator evaluation
   json_datasets: []
