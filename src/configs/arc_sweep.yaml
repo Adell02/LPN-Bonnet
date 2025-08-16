@@ -97,6 +97,7 @@ eval:
         include_mean_latent: True
         include_all_latents: False
         track_progress: True
+        scan_batch_size: 8  # Process candidates in smaller batches to save memory
 
   # Remove JSON datasets entirely to focus on generator evaluation
   json_datasets: []
