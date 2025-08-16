@@ -54,9 +54,9 @@ eval:
       task_generator_kwargs:
         only_n_tasks: ${training.task_generator.only_n_tasks}
       name: arc_train_optimisation_comparison
-      num_pairs: 1
-      length: 1  # Reduced for memory
-      batch_size: 1
+      num_pairs: 2
+      length: 2  # Reduced for memory
+      batch_size: 2
       num_tasks_to_show: 1
       inference_mode: gradient_ascent  # Method 3: Gradient ascent with 100 steps
       inference_kwargs:
@@ -86,9 +86,9 @@ eval:
       task_generator_kwargs:
         only_n_tasks: ${training.task_generator.only_n_tasks}
       name: arc_train_optimisation_comparison
-      num_pairs: 1
-      length: 1  # Reduced for memory
-      batch_size: 1
+      num_pairs: 2
+      length: 2  # Reduced for memory
+      batch_size: 2
       num_tasks_to_show: 1
       inference_mode: random_search  # Method 5: Random search with 100 samples
       inference_kwargs:
