@@ -4,9 +4,9 @@ training:
   inference_mode: mean
   batch_size: 2
   gradient_accumulation_steps: 1
-  total_num_steps: 5
+  total_num_steps: 100
   log_every_n_steps: 1
-  eval_every_n_logs: 1  # Reduce frequency to save memory
+  eval_every_n_logs: 10  # Reduce frequency to save memory
   save_checkpoint_every_n_logs: null
   learning_rate: 4e-4
   prior_kl_coeff: 1e-4
@@ -54,13 +54,13 @@ eval:
       task_generator_kwargs:
         only_n_tasks: ${training.task_generator.only_n_tasks}
       name: arc_train_optimisation_comparison
-      num_pairs: 4
-      length: 4  # Reduced for memory
-      batch_size: 2
-      num_tasks_to_show: 2
+      num_pairs: 1
+      length: 1  # Reduced for memory
+      batch_size: 1
+      num_tasks_to_show: 1
       inference_mode: gradient_ascent  # Method 3: Gradient ascent with 100 steps
       inference_kwargs:
-        num_steps: 10
+        num_steps: 5
         lr: 0.1
         optimizer: adam
         optimizer_kwargs:
@@ -86,13 +86,13 @@ eval:
       task_generator_kwargs:
         only_n_tasks: ${training.task_generator.only_n_tasks}
       name: arc_train_optimisation_comparison
-      num_pairs: 4
-      length: 4  # Reduced for memory
-      batch_size: 2
-      num_tasks_to_show: 2
+      num_pairs: 1
+      length: 1  # Reduced for memory
+      batch_size: 1
+      num_tasks_to_show: 1
       inference_mode: random_search  # Method 5: Random search with 100 samples
       inference_kwargs:
-        num_samples: 10
+        num_samples: 5
         scale: 1.0
         include_mean_latent: True
         include_all_latents: False

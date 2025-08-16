@@ -57,13 +57,11 @@ eval:
       num_tasks_to_show: 16
       inference_mode: random_search
       inference_kwargs:
-        num_steps: 200
-        lr: 0.1
-        optimizer: adam
-        optimizer_kwargs:
-          b2: 0.9
-        track_progress: True  # CRITICAL: No progress tracking to save memory
-   
+        num_samples: 5
+        scale: 1.0
+        include_mean_latent: True
+        include_all_latents: False
+        track_progress: True   
   # Remove generator datasets entirely
   json_datasets: []
 
