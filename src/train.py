@@ -68,6 +68,7 @@ class Trainer:
         self.pairwise_kl_coeff = cfg.training.get("pairwise_kl_coeff")
         self.train_inference_mode = cfg.training.inference_mode
         self.train_inference_kwargs = cfg.training.get("inference_kwargs") or {}
+        self.light_logging = cfg.eval.get("light_logging", False)
 
         def train_one_step_accumulate(state, batch, key):
             grad_acc = self.gradient_accumulation_steps
@@ -522,7 +523,6 @@ class Trainer:
             keys,
         )
 
-        light_logging = self.cfg.eval.get("light_logging", False)
 
         # Extract search trajectory information
         search_trajectories = generated_info.get("search_trajectories", {})
@@ -550,7 +550,7 @@ class Trainer:
             (dataset_grids, dataset_shapes, generated_grids, generated_shapes),
         )
 
-        if not light_logging:
+        if not self.light_logging:
             # Create a mask based on the true shapes
             max_rows, max_cols = self.model.decoder.config.max_rows, self.model.decoder.config.max_cols
             grid_row_mask = jnp.arange(max_rows) < dataset_shapes[..., 0, 1:]
@@ -576,7 +576,7 @@ class Trainer:
             fig_heatmap = None
             fig_grids = None
 
-        if not light_logging and program_ids is not None:
+        if not self.light_logging and program_ids is not None:
             repeated_program_ids = jnp.repeat(program_ids, pairs_per_problem)
             fig_latents = visualize_tsne(program_context, repeated_program_ids)
 
