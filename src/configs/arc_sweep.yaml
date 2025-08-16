@@ -56,8 +56,8 @@ eval:
       name: arc_train_optimisation_comparison
       num_pairs: 4
       length: 5
-      batch_size: 8
-      num_tasks_to_show: 0
+      batch_size: 5
+      num_tasks_to_show: 1
       inference_mode: gradient_ascent  # Method 3: Gradient ascent with 100 steps
       inference_kwargs:
         num_steps: 50
@@ -88,8 +88,8 @@ eval:
       name: arc_train_optimisation_comparison
       num_pairs: 4
       length: 5
-      batch_size: 8
-      num_tasks_to_show: 0
+      batch_size: 5
+      num_tasks_to_show: 1
       inference_mode: random_search  # Method 5: Random search with 100 samples
       inference_kwargs:
         num_samples: 50
