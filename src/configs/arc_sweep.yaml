@@ -24,12 +24,21 @@ eval:
   
   # Use JSON datasets instead of generators for memory efficiency
   test_datasets:
-    # JSON dataset with gradient ascent optimization
-    - challenges: json/arc-agi_training_challenges.json
-      solutions: json/arc-agi_training_solutions.json
+    - generator: ARC
+      task_generator_kwargs:
+      name: arc_train_all
+      num_pairs: 4
+      length: 32
+      batch_size: 16
+      num_tasks_to_show: 16
+    - generator: ARC
+      task_generator_kwargs:
+        only_n_tasks: ${training.task_generator.only_n_tasks}
       name: arc_sweep
-      only_n_tasks: 5  # Limit to 5 tasks for memory
-      num_tasks_to_show: 10  # No visualization to save memory
+      num_pairs: 4
+      length: 32
+      batch_size: 16
+      num_tasks_to_show: 16
       inference_mode: gradient_ascent
       inference_kwargs:
         num_steps: 200
@@ -37,22 +46,24 @@ eval:
         optimizer: adam
         optimizer_kwargs:
           b2: 0.9
-        track_progress: False  # CRITICAL: No progress tracking to save memory
-        
-    # JSON dataset with random search optimization
-    - challenges: json/arc-agi_training_challenges.json
-      solutions: json/arc-agi_training_solutions.json
+        track_progress: True  # CRITICAL: No progress tracking to save memory
+    - generator: ARC
+      task_generator_kwargs:
+        only_n_tasks: ${training.task_generator.only_n_tasks}
       name: arc_sweep
-      only_n_tasks: 5  # Limit to 5 tasks for memory
-      num_tasks_to_show: 10  # No visualization to save memory
+      num_pairs: 4
+      length: 32
+      batch_size: 16
+      num_tasks_to_show: 16
       inference_mode: random_search
       inference_kwargs:
-        num_samples: 200
-        scale: 1.0
-        include_mean_latent: True
-        include_all_latents: False
-        track_progress: False  # CRITICAL: No progress tracking to save memory
-
+        num_steps: 200
+        lr: 0.1
+        optimizer: adam
+        optimizer_kwargs:
+          b2: 0.9
+        track_progress: True  # CRITICAL: No progress tracking to save memory
+   
   # Remove generator datasets entirely
   json_datasets: []
 
