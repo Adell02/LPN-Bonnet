@@ -1,7 +1,7 @@
 wandb/*
 multirun/*
 outputs/*
-*.msgpack
+state.msgpack
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
