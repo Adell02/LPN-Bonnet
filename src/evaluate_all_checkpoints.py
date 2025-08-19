@@ -124,10 +124,10 @@ def get_all_checkpoints(
     try:
         api = wandb.Api()
         run = api.run(f"{entity}/{project_name}/{run_name}")
-        artifacts = run.logged_artifacts()
-
+            artifacts = run.logged_artifacts()
+            
         checkpoints: List[Dict[str, Any]] = []
-        for artifact in artifacts:
+            for artifact in artifacts:
             # Only keep artifacts that look like checkpoints
             if "checkpoint" not in artifact.name.lower():
                 continue
@@ -142,11 +142,11 @@ def get_all_checkpoints(
 
             # Fallback to alias pattern: num_steps_XXX
             if step_match is None:
-                for alias in artifact.aliases:
-                    if alias.startswith("num_steps_"):
+                        for alias in artifact.aliases:
+                            if alias.startswith("num_steps_"):
                         try:
-                            step_match = int(alias.split("_")[-1])
-                            break
+                                step_match = int(alias.split("_")[-1])
+                                break
                         except ValueError:
                             pass
 
@@ -161,16 +161,16 @@ def get_all_checkpoints(
 
         # Sort by step if available
         checkpoints.sort(key=lambda x: x["step"] if x["step"] is not None else -1)
-
-        print(f"Found {len(checkpoints)} checkpoints:")
-        for cp in checkpoints:
-            print(f"  - {cp['name']} (Step: {cp['step']})")
-        return checkpoints
-
-    except Exception as e:
-        print(f"Error accessing run: {e}")
-        return []
-
+            
+            print(f"Found {len(checkpoints)} checkpoints:")
+            for cp in checkpoints:
+                print(f"  - {cp['name']} (Step: {cp['step']})")
+            return checkpoints
+            
+        except Exception as e:
+            print(f"Error accessing run: {e}")
+            return []
+    
 
 def run_evaluation(
     artifact_path: str,
@@ -363,8 +363,8 @@ def run_evaluation(
                 if stderr.strip():
                     print(f"Error output:\n{stderr}")
                 return False, acc, metrics, stdout
-
-    except Exception as e:
+            
+        except Exception as e:
         print(f"❌ Error running {method} evaluation: {e}")
         return False, None, {}, ""
 
@@ -490,10 +490,10 @@ def main():
 
     # Fetch checkpoints
     checkpoints = get_all_checkpoints(args.run_name, args.project, args.entity)
-    if not checkpoints:
+        if not checkpoints:
         print("❌ No checkpoints found. Exiting.")
-        return
-
+            return
+        
     # Budgets
     # Use the same budgets for both methods
     ga_steps = shared_budgets      # Gradient ascent uses num_steps
@@ -548,7 +548,7 @@ def main():
             if step is None:
                 print(f"⚠️  Skipping checkpoint {checkpoint['name']} (no step info)")
                 continue
-
+            
             print("\n" + "=" * 60)
             print(f"📊 Checkpoint {i}/{len(checkpoints)}: Step {step}")
             print(f"📁 Artifact: {checkpoint['name']}")
@@ -593,7 +593,7 @@ def main():
                             f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
                             f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
                         })
-                    except Exception as e:
+            except Exception as e:
                         print(f"⚠️  Failed to log to W&B: {e}")
                 else:
                     results["method_results"]["gradient_ascent"]["failed"] += 1
@@ -659,6 +659,104 @@ def main():
             total_expected = len(ga_steps) + len(rs_samples)
             print(f"\n📊 Checkpoint {i}/{len(checkpoints)} complete. Total evaluations: {total_evals}/{total_expected * i}")
             
+            # Generate and upload comparison plot for this step
+            try:
+                # Read current CSV data to get available data for plotting
+                step_data = {
+                    "gradient_ascent": {},
+                    "random_search": {}
+                }
+                
+                # Read the CSV to get data for current step and all previous steps
+                if out_csv.exists():
+                    with out_csv.open("r") as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            try:
+                                row_step = int(row["checkpoint_step"]) if row["checkpoint_step"] else None
+                                if row_step is None:
+                                    continue
+                                    
+                                method = row["method"]
+                                budget = int(row["budget"]) if row["budget"] else None
+                                if budget is None:
+                                    continue
+                                    
+                                acc = None
+                                try:
+                                    acc = float(row["overall_accuracy"]) if row["overall_accuracy"] not in ("", None) else np.nan
+                                except Exception:
+                                    acc = np.nan
+                                
+                                if method == "gradient_ascent":
+                                    step_data["gradient_ascent"].setdefault(row_step, {})[budget] = acc
+                                elif method == "random_search":
+                                    step_data["random_search"].setdefault(row_step, {})[budget] = acc
+                            except Exception:
+                                continue
+                
+                # Generate comparison plot with available data
+                if step_data["gradient_ascent"] or step_data["random_search"]:
+                    # Get all available steps and budgets
+                    all_steps = sorted(set(list(step_data["gradient_ascent"].keys()) + list(step_data["random_search"].keys())))
+                    all_budgets = sorted(set(
+                        [b for step_data_ga in step_data["gradient_ascent"].values() for b in step_data_ga.keys()] +
+                        [b for step_data_rs in step_data["random_search"].values() for b in step_data_rs.keys()]
+                    ))
+                    
+                    if all_steps and all_budgets:
+                        # Create matrices for plotting
+                        A = np.full((len(all_budgets), len(all_steps)), np.nan)
+                        B = np.full((len(all_budgets), len(all_steps)), np.nan)
+                        
+                        for j, s in enumerate(all_steps):
+                            for k, b in enumerate(all_budgets):
+                                A[k, j] = step_data["gradient_ascent"].get(s, {}).get(b, np.nan)
+                                B[k, j] = step_data["random_search"].get(s, {}).get(b, np.nan)
+                        
+                        # Generate the comparison plot
+                        fig = visualize_optimization_comparison(
+                            steps=np.array(all_steps),
+                            budgets=np.array(all_budgets),
+                            acc_A=A,
+                            acc_B=B,
+                            method_A_name="Gradient Ascent",
+                            method_B_name="Random Search",
+                        )
+                        
+                        # Add step tracker information
+                        fig.suptitle(f"Optimization Comparison - Step {step} (Checkpoint {i}/{len(checkpoints)})", 
+                                   fontsize=14, y=0.98)
+                        
+                        # Save and upload the plot
+                        step_plot_path = out_dir / f"optim_comparison_step_{step}.png"
+                        fig.savefig(step_plot_path, dpi=200, bbox_inches='tight')
+                        plt.close(fig)
+                        
+                        # Upload to W&B with step information
+                        wandb.log({
+                            f"checkpoint_{step}/optimization_comparison": wandb.Image(str(step_plot_path)),
+                            f"checkpoint_{step}/plot_step": step,
+                            f"checkpoint_{step}/plot_checkpoint_number": i,
+                            f"checkpoint_{step}/plot_total_checkpoints": len(checkpoints),
+                            f"checkpoint_{step}/plot_available_steps": len(all_steps),
+                            f"checkpoint_{step}/plot_available_budgets": len(all_budgets),
+                        })
+                        
+                        # Also log to a dedicated plot progression section for easy tracking
+                        wandb.log({
+                            "plot_progression/current_step": step,
+                            "plot_progression/checkpoint_number": i,
+                            "plot_progression/total_checkpoints": len(checkpoints),
+                            "plot_progression/comparison_plot": wandb.Image(str(step_plot_path)),
+                            "plot_progression/available_data_points": len([v for method_data in step_data.values() for step_data in method_data.values() for v in step_data.values() if not np.isnan(v)]),
+                        })
+                        
+                        print(f"📊 Generated and uploaded comparison plot for step {step}")
+                        
+            except Exception as e:
+                print(f"⚠️  Failed to generate comparison plot for step {step}: {e}")
+            
             # Log checkpoint completion to W&B
             try:
                 wandb.log({
@@ -686,10 +784,10 @@ def main():
         artifact = wandb.Artifact(f"{args.run_name}--budgets-eval", type="evaluation")
         artifact.add_file(str(out_csv))
         run.log_artifact(artifact)
-    except Exception as e:
+        except Exception as e:
         print(f"⚠️  Failed to upload CSV artifact: {e}")
 
-    # Build optimization comparison plot from CSV
+    # Build final optimization comparison plot from CSV (overall summary)
     try:
         steps_list: list[int] = []
         ga_map: dict[int, dict[int, float]] = {}
@@ -722,34 +820,54 @@ def main():
                     rs_map.setdefault(step, {})[budget] = acc
 
         steps_sorted = sorted(set(steps_list))
-        budgets_ga = [1] + list(range(5, 101, 5))
-        budgets_rs = [1] + list(range(5, 101, 5))
-        A = np.full((len(budgets_ga), len(steps_sorted)), np.nan)
-        B = np.full((len(budgets_rs), len(steps_sorted)), np.nan)
+        
+        # Use the actual budgets from the shared configuration
+        actual_budgets = shared_budgets
+        
+        A = np.full((len(actual_budgets), len(steps_sorted)), np.nan)
+        B = np.full((len(actual_budgets), len(steps_sorted)), np.nan)
         for j, s in enumerate(steps_sorted):
-            for i, b in enumerate(budgets_ga):
-                A[i, j] = ga_map.get(s, {}).get(b, np.nan)
-            for i, b in enumerate(budgets_rs):
-                B[i, j] = rs_map.get(s, {}).get(b, np.nan)
+            for k, b in enumerate(actual_budgets):
+                A[k, j] = ga_map.get(s, {}).get(b, np.nan)
+                B[k, j] = rs_map.get(s, {}).get(b, np.nan)
 
+        # Generate the final comparison plot
         fig = visualize_optimization_comparison(
             steps=np.array(steps_sorted),
-            budgets=np.array(budgets_ga),
+            budgets=np.array(actual_budgets),
             acc_A=A,
             acc_B=B,
             method_A_name="Gradient Ascent",
             method_B_name="Random Search",
         )
-        plot_path = out_dir / f"optim_comparison_{args.run_name}.png"
-        fig.savefig(plot_path, dpi=200)
+        
+        # Add comprehensive title with run information
+        fig.suptitle(f"Final Optimization Comparison - {args.run_name}\n"
+                    f"Checkpoints: {len(steps_sorted)}, Budgets: {len(actual_budgets)}", 
+                    fontsize=14, y=0.98)
+        
+        plot_path = out_dir / f"optim_comparison_final_{args.run_name}.png"
+        fig.savefig(plot_path, dpi=200, bbox_inches='tight')
         plt.close(fig)
-        wandb.log({"optimization_comparison/methods": wandb.Image(str(plot_path))})
+        
+        # Upload to W&B
+        wandb.log({
+            "final/optimization_comparison": wandb.Image(str(plot_path)),
+            "final/total_checkpoints": len(steps_sorted),
+            "final/total_budgets": len(actual_budgets),
+            "final/checkpoint_steps": steps_sorted,
+            "final/budget_values": actual_budgets,
+        })
+        
         # Also upload as artifact
-        plot_art = wandb.Artifact(f"{args.run_name}--optim-comparison", type="evaluation")
+        plot_art = wandb.Artifact(f"{args.run_name}--final-optim-comparison", type="evaluation")
         plot_art.add_file(str(plot_path))
         run.log_artifact(plot_art)
+        
+        print(f"📊 Generated and uploaded final comparison plot with {len(steps_sorted)} checkpoints and {len(actual_budgets)} budgets")
+        
     except Exception as e:
-        print(f"⚠️  Failed to generate or upload comparison plot: {e}")
+        print(f"⚠️  Failed to generate or upload final comparison plot: {e}")
 
     # Summary
     print("\n" + "=" * 60)
