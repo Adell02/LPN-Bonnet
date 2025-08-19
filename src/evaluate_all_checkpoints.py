@@ -2,6 +2,102 @@
 """
 Evaluate all checkpoints from a specific Weights & Biases run using src/evaluate_checkpoint.py.
 Runs both gradient_ascent and random_search for each checkpoint and logs results to CSV.
+
+USAGE EXAMPLES:
+==============
+
+1. BASIC USAGE (evaluate all checkpoints with default budgets):
+   python3 src/evaluate_all_checkpoints.py \
+     --run_name "winter-fire-132" \
+     --json_challenges json/arc-agi_evaluation_challenges.json \
+     --json_solutions json/arc-agi_evaluation_solutions.json
+
+2. LIMIT CHECKPOINTS (evaluate only 5 evenly spaced checkpoints):
+   python3 src/evaluate_all_checkpoints.py \
+     --run_name "winter-fire-132" \
+     --json_challenges json/arc-agi_evaluation_challenges.json \
+     --json_solutions json/arc-agi_evaluation_solutions.json \
+     --max_checkpoints 5 \
+     --checkpoint_strategy even
+
+3. CUSTOM BUDGETS (evaluate with custom budget range):
+   python3 src/evaluate_all_checkpoints.py \
+     --run_name "winter-fire-132" \
+     --json_challenges json/arc-agi_evaluation_challenges.json \
+     --json_solutions json/arc-agi_evaluation_solutions.json \
+     --budget_start 1 \
+     --budget_end 50 \
+     --budget_period 10
+
+4. QUICK TEST (limit tasks and checkpoints for fast testing):
+   python3 src/evaluate_all_checkpoints.py \
+     --run_name "winter-fire-132" \
+     --json_challenges json/arc-agi_evaluation_challenges.json \
+     --json_solutions json/arc-agi_evaluation_solutions.json \
+     --only_n_tasks 5 \
+     --max_checkpoints 3 \
+     --budget_period 50
+
+5. DATASET EVALUATION (use custom dataset instead of JSON):
+   python3 src/evaluate_all_checkpoints.py \
+     --run_name "winter-fire-132" \
+     --dataset_folder pattern2d_eval \
+     --dataset_length 100 \
+     --max_checkpoints 5
+
+ARGUMENT REFERENCE:
+==================
+
+REQUIRED:
+  --run_name          Name of the W&B run to evaluate
+
+EVALUATION SOURCE (choose one):
+  --json_challenges   Path to JSON challenges file
+  --json_solutions    Path to JSON solutions file
+  OR
+  --dataset_folder    Dataset folder under 'src/datasets'
+
+CHECKPOINT SELECTION:
+  --max_checkpoints   Maximum number of checkpoints to evaluate
+  --checkpoint_strategy  How to select checkpoints:
+                        'even' = evenly spaced (default)
+                        'first' = first N checkpoints  
+                        'last' = last N checkpoints
+                        'random' = random selection
+
+BUDGET CONFIGURATION:
+  --budget_start      Starting budget value (default: 1)
+  --budget_end        Ending budget value (default: 100)
+  --budget_period     Period between budget values (default: 25)
+                      Result: [1, 26, 51, 76] for default values
+
+TASK LIMITATION:
+  --only_n_tasks     Limit number of tasks evaluated (faster testing)
+
+DATASET OPTIONS (when using --dataset_folder):
+  --dataset_length    Maximum examples to evaluate
+  --dataset_batch_size Batch size for dataset evaluation
+  --dataset_use_hf   Use HuggingFace hub (true/false)
+  --dataset_seed      Seed for dataset subsampling
+
+W&B CONFIGURATION:
+  --project          W&B project name (default: LPN-ARC)
+  --entity           W&B entity (default: ga624-imperial-college-london)
+
+OUTPUT:
+=======
+- CSV file: results/eval_{run_name}.csv
+- W&B logging: Real-time metrics and progress
+- W&B artifacts: CSV and comparison plots
+- Console: Progress updates and summary
+
+PERFORMANCE TIPS:
+================
+1. Start with --only_n_tasks 5 for quick testing
+2. Use --max_checkpoints 3-5 for initial evaluation
+3. Increase --budget_period for faster evaluation (fewer budget points)
+4. Monitor GPU memory usage with larger batch sizes
+5. Use --dataset_length to limit dataset size for faster evaluation
 """
 
 import os
@@ -301,6 +397,57 @@ def main():
                    help="Batch size for evaluation (larger = faster but more memory)")
     parser.add_argument("--parallel_tasks", type=int, default=1, 
                    help="Number of tasks to process in parallel")
+    
+    # Checkpoint selection options
+    parser.add_argument("--max_checkpoints", type=int, default=None,
+                       help="Maximum number of checkpoints to evaluate (default: all)")
+    parser.add_argument("--checkpoint_strategy", type=str, default="even", 
+                       choices=["even", "first", "last", "random"],
+                       help="Strategy for selecting checkpoints: 'even'=evenly spaced, 'first'=first N, 'last'=last N, 'random'=random N (default: even)")
+    
+    # Budget configuration options
+    parser.add_argument("--budget_start", type=int, default=1, 
+                       help="Starting budget value (default: 1)")
+    parser.add_argument("--budget_end", type=int, default=100, 
+                       help="Ending budget value (default: 100)")
+    parser.add_argument("--budget_period", type=int, default=25, 
+                       help="Period between budget values (default: 25)")
+    
+    # Shared budget configuration
+    BUDGET_CONFIG = {
+        "start": 1,           # Start value (inclusive)
+        "end": 100,           # End value (inclusive) 
+        "period": 25,         # Step size between values
+        "include_start": True, # Whether to include the start value
+    }
+    
+    # Generate budgets based on configuration
+    def generate_budgets(config):
+        budgets = []
+        if config["include_start"]:
+            budgets.append(config["start"])
+        
+        # Generate range from start to end with period
+        current = config["start"]
+        while current <= config["end"]:
+            if current not in budgets:  # Avoid duplicates
+                budgets.append(current)
+            current += config["period"]
+        
+        return sorted(budgets)
+    
+    # Generate shared budgets
+    shared_budgets = generate_budgets(BUDGET_CONFIG)
+    
+    # Use the same budgets for both methods
+    ga_steps = shared_budgets      # Gradient ascent uses num_steps
+    rs_samples = shared_budgets    # Random search uses num_samples
+    
+    print(f"📊 Using shared budgets: {shared_budgets}")
+    print(f"   - Start: {BUDGET_CONFIG['start']}")
+    print(f"   - End: {BUDGET_CONFIG['end']}")
+    print(f"   - Period: {BUDGET_CONFIG['period']}")
+    print(f"   - Total budget points: {len(shared_budgets)}")
 
     args = parser.parse_args()
 
@@ -348,9 +495,10 @@ def main():
         return
 
     # Budgets
-    ga_steps = [1] + list(range(25, 101, 25))    # 1,5,10,...,100
-    rs_samples = [1] + list(range(25, 101, 25))  # 1,5,10,...,100
-
+    # Use the same budgets for both methods
+    ga_steps = shared_budgets      # Gradient ascent uses num_steps
+    rs_samples = shared_budgets    # Random search uses num_samples
+    
     # Base method configs
     base_methods = {
         "gradient_ascent": {
