@@ -15,15 +15,15 @@ import csv
 from pathlib import Path
 
 def get_all_checkpoints(run_name: str, project_name: str = "LPN-ARC", entity: str = "ga624-imperial-college-london") -> List[Dict[str, Any]]:
-    """Get all checkpoint artifacts from the specified run."""
-    try:
+        """Get all checkpoint artifacts from the specified run."""
+        try:
         api = wandb.Api()
         run = api.run(f"{entity}/{project_name}/{run_name}")
-        artifacts = run.logged_artifacts()
-
+            artifacts = run.logged_artifacts()
+            
         checkpoints: List[Dict[str, Any]] = []
-        for artifact in artifacts:
-            if "checkpoint" in artifact.name.lower():
+            for artifact in artifacts:
+                if "checkpoint" in artifact.name.lower():
                 # Parse checkpoint name pattern: ...-{num_checkpoint}--checkpoint
                 step_match: Optional[int] = None
 
@@ -38,11 +38,11 @@ def get_all_checkpoints(run_name: str, project_name: str = "LPN-ARC", entity: st
 
                 # Also check aliases as backup
                 if step_match is None:
-                    for alias in artifact.aliases:
-                        if alias.startswith("num_steps_"):
-                            step_match = int(alias.split("_")[-1])
-                            break
-
+                        for alias in artifact.aliases:
+                            if alias.startswith("num_steps_"):
+                                step_match = int(alias.split("_")[-1])
+                                break
+                    
                 checkpoints.append(
                     {
                         "artifact": artifact,
@@ -51,19 +51,19 @@ def get_all_checkpoints(run_name: str, project_name: str = "LPN-ARC", entity: st
                         "aliases": artifact.aliases,
                     }
                 )
-
-        # Sort by step number
+            
+            # Sort by step number
         checkpoints.sort(key=lambda x: x["step"] if x["step"] is not None else 0)
-
-        print(f"Found {len(checkpoints)} checkpoints:")
-        for cp in checkpoints:
-            print(f"  - {cp['name']} (Step: {cp['step']})")
-
-        return checkpoints
-
-    except Exception as e:
-        print(f"Error accessing run: {e}")
-        return []
+            
+            print(f"Found {len(checkpoints)} checkpoints:")
+            for cp in checkpoints:
+                print(f"  - {cp['name']} (Step: {cp['step']})")
+            
+            return checkpoints
+            
+        except Exception as e:
+            print(f"Error accessing run: {e}")
+            return []
     
 def run_evaluation(
     artifact_path: str,
@@ -146,8 +146,8 @@ def run_evaluation(
             print(f"❌ {method} evaluation failed with return code {result.returncode}")
             print(f"Error output: {result.stderr}")
             return False, acc, stdout
-
-    except Exception as e:
+            
+        except Exception as e:
         print(f"❌ Error running {method} evaluation: {e}")
         return False, None, ""
 
@@ -196,24 +196,24 @@ def main():
     # Get all checkpoints
     checkpoints = get_all_checkpoints(args.run_name, args.project, args.entity)
     
-    if not checkpoints:
+        if not checkpoints:
         print("❌ No checkpoints found! Exiting.")
-        return
-    
+            return
+        
     # Hard-coded budget schedules
     ga_steps = [1] + list(range(5, 101, 5))   # [1,5,10,...,100]
     rs_samples = [1] + list(range(5, 101, 5)) # [1,5,10,...,100]
 
     # Base evaluation hyperparameters
     base_methods = {
-        'gradient_ascent': {
-            'lr': 0.1,
-            'optimizer': 'adam',
+            'gradient_ascent': {
+                'lr': 0.1,
+                'optimizer': 'adam',
             'lr_schedule': False,
             'lr_schedule_exponent': 0.5,
-        },
-        'random_search': {
-            'scale': 1.0,
+            },
+            'random_search': {
+                'scale': 1.0,
             'scan_batch_size': 10,
             'random_search_seed': 0,
         },
@@ -241,40 +241,40 @@ def main():
         writer = csv.writer(f_csv)
         if write_header:
             writer.writerow(["run_name", "checkpoint_name", "checkpoint_step", "method", "budget_type", "budget", "accuracy"])  
-
+        
         # Evaluate each checkpoint
         for i, checkpoint in enumerate(checkpoints, 1):
-        step = checkpoint['step']
-        if step is None:
-            print(f"⚠️  Skipping checkpoint {checkpoint['name']} - no step info")
-            continue
-        
-        print(f"\n{'='*60}")
-        print(f"📊 Checkpoint {i}/{len(checkpoints)}: Step {step}")
-        print(f"📁 Artifact: {checkpoint['name']}")
-        print(f"{'='*60}")
-        
-        # Build artifact path for evaluate_checkpoint.py
-        artifact_path = f"{args.entity}/{args.project}/{checkpoint['name']}"
-        
+            step = checkpoint['step']
+            if step is None:
+                print(f"⚠️  Skipping checkpoint {checkpoint['name']} - no step info")
+                continue
+            
+            print(f"\n{'='*60}")
+            print(f"📊 Checkpoint {i}/{len(checkpoints)}: Step {step}")
+            print(f"📁 Artifact: {checkpoint['name']}")
+            print(f"{'='*60}")
+            
+            # Build artifact path for evaluate_checkpoint.py
+            artifact_path = f"{args.entity}/{args.project}/{checkpoint['name']}"
+            
             # Evaluate GA across budgets
             print("\n🔧 Testing gradient_ascent across budgets...")
             for num_steps in ga_steps:
-            method_kwargs = dict(base_methods['gradient_ascent'])
-            method_kwargs['num_steps'] = num_steps
-            ok, acc, _ = run_evaluation(
-                artifact_path=artifact_path,
-                method='gradient_ascent',
-                method_kwargs=method_kwargs,
-                json_challenges=args.json_challenges,
-                json_solutions=args.json_solutions,
-                only_n_tasks=args.only_n_tasks,
-                dataset_folder=args.dataset_folder,
-                dataset_length=args.dataset_length,
-                dataset_batch_size=args.dataset_batch_size,
-                dataset_use_hf=(str(args.dataset_use_hf).lower() == 'true'),
-                dataset_seed=args.dataset_seed,
-            )
+                method_kwargs = dict(base_methods['gradient_ascent'])
+                method_kwargs['num_steps'] = num_steps
+                ok, acc, _ = run_evaluation(
+                    artifact_path=artifact_path,
+                    method='gradient_ascent',
+                    method_kwargs=method_kwargs,
+                    json_challenges=args.json_challenges,
+                    json_solutions=args.json_solutions,
+                    only_n_tasks=args.only_n_tasks,
+                    dataset_folder=args.dataset_folder,
+                    dataset_length=args.dataset_length,
+                    dataset_batch_size=args.dataset_batch_size,
+                    dataset_use_hf=(str(args.dataset_use_hf).lower() == 'true'),
+                    dataset_seed=args.dataset_seed,
+                )
                 if ok:
                     results['method_results']['gradient_ascent']['success'] += 1
                     results['successful_evals'] += 1
@@ -287,25 +287,25 @@ def main():
             # Evaluate RS across budgets
             print("\n🔧 Testing random_search across budgets...")
             for num_samples in rs_samples:
-            method_kwargs = dict(base_methods['random_search'])
-            method_kwargs['num_samples'] = num_samples
-            ok, acc, _ = run_evaluation(
-                artifact_path=artifact_path,
-                method='random_search',
-                method_kwargs=method_kwargs,
-                json_challenges=args.json_challenges,
-                json_solutions=args.json_solutions,
-                only_n_tasks=args.only_n_tasks,
-                dataset_folder=args.dataset_folder,
-                dataset_length=args.dataset_length,
-                dataset_batch_size=args.dataset_batch_size,
-                dataset_use_hf=(str(args.dataset_use_hf).lower() == 'true'),
-                dataset_seed=args.dataset_seed,
-            )
+                method_kwargs = dict(base_methods['random_search'])
+                method_kwargs['num_samples'] = num_samples
+                ok, acc, _ = run_evaluation(
+                    artifact_path=artifact_path,
+                    method='random_search',
+                    method_kwargs=method_kwargs,
+                    json_challenges=args.json_challenges,
+                    json_solutions=args.json_solutions,
+                    only_n_tasks=args.only_n_tasks,
+                    dataset_folder=args.dataset_folder,
+                    dataset_length=args.dataset_length,
+                    dataset_batch_size=args.dataset_batch_size,
+                    dataset_use_hf=(str(args.dataset_use_hf).lower() == 'true'),
+                    dataset_seed=args.dataset_seed,
+                )
                 if ok:
                     results['method_results']['random_search']['success'] += 1
                     results['successful_evals'] += 1
-                else:
+                        else:
                     results['method_results']['random_search']['failed'] += 1
                     results['failed_evals'] += 1
                 # Log CSV row
