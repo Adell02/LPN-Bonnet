@@ -440,9 +440,12 @@ def visualize_optimization_comparison(
     fig, ax = plt.subplots(figsize=(12, 8))
 
     # heatmap
+    # Handle single-point axes for sane extents
+    x0, x1 = (steps[0] - 0.5, steps[0] + 0.5) if steps.size == 1 else (steps[0], steps[-1])
+    y0, y1 = (budgets[0] - 0.5, budgets[0] + 0.5) if budgets.size == 1 else (budgets[0], budgets[-1])
     im = ax.imshow(
         diff_masked,
-        extent=[steps[0], steps[-1], budgets[0], budgets[-1]],
+        extent=[x0, x1, y0, y1],
         origin='lower', aspect='auto',
         cmap='coolwarm', vmin=-vmax, vmax=+vmax
     )
@@ -454,7 +457,7 @@ def visualize_optimization_comparison(
         # label the first collection so legend picks it up
         if cs.collections:
             cs.collections[0].set_label('Equal accuracy (A = B)')
-    except (ValueError, RuntimeError):
+    except (ValueError, RuntimeError, TypeError):
         cs = None  # ignore if not possible
 
     # axes labels/title
