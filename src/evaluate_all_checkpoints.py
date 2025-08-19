@@ -170,10 +170,57 @@ def run_evaluation(
             )
             return True, acc, stdout
         else:
-            print(f"❌ {method} evaluation failed with return code {result.returncode}")
-            if stderr.strip():
-                print(f"Error output:\n{stderr}")
-            return False, acc, stdout
+            # Optionally retry random_search with smaller scan_batch_size to avoid XLA fusion issues
+            should_retry = (
+                method == "random_search"
+                and "gpu_fusible" in stderr.lower()
+                or "fusion root" in stderr.lower()
+                or result.returncode != 0
+            )
+            if should_retry:
+                try:
+                    # Determine smaller scan_batch_size
+                    current_sbs = int(method_kwargs.get("scan_batch_size", 10) or 10)
+                    new_sbs = max(1, min(8, current_sbs // 2 if current_sbs > 2 else 5))
+                    retry_cmd = [
+                        *cmd,
+                        "--scan-batch-size",
+                        str(new_sbs),
+                    ]
+                    print(f"Retrying random_search with --scan-batch-size {new_sbs}...")
+                    retry_res = subprocess.run(retry_cmd, capture_output=True, text=True, cwd=os.getcwd())
+                    retry_stdout = retry_res.stdout or ""
+                    retry_stderr = retry_res.stderr or ""
+                    retry_acc = None
+                    try:
+                        m2 = re.search(r"accuracy:\s*([0-9]*\.?[0-9]+)", retry_stdout.lower())
+                        if m2:
+                            retry_acc = float(m2.group(1))
+                    except Exception:
+                        retry_acc = None
+                    if retry_res.returncode == 0:
+                        print(
+                            f"✅ {method} evaluation (retry) completed successfully"
+                            + (f" | accuracy={retry_acc}" if retry_acc is not None else "")
+                        )
+                        return True, retry_acc, retry_stdout
+                    else:
+                        print(f"❌ {method} evaluation failed with return code {result.returncode}")
+                        if stderr.strip():
+                            print(f"Error output:\n{stderr}")
+                        if retry_stderr.strip():
+                            print(f"Retry error output:\n{retry_stderr}")
+                        return False, acc, stdout
+                except Exception:
+                    print(f"❌ {method} evaluation failed with return code {result.returncode}")
+                    if stderr.strip():
+                        print(f"Error output:\n{stderr}")
+                    return False, acc, stdout
+            else:
+                print(f"❌ {method} evaluation failed with return code {result.returncode}")
+                if stderr.strip():
+                    print(f"Error output:\n{stderr}")
+                return False, acc, stdout
 
     except Exception as e:
         print(f"❌ Error running {method} evaluation: {e}")

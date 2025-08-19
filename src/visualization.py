@@ -447,7 +447,7 @@ def visualize_optimization_comparison(
         diff_masked,
         extent=[x0, x1, y0, y1],
         origin='lower', aspect='auto',
-        cmap='coolwarm', vmin=-vmax, vmax=+vmax
+        cmap='viridis', vmin=-vmax, vmax=+vmax
     )
 
     # zero contour A==B, and make it show in legend
@@ -484,14 +484,14 @@ def visualize_optimization_comparison(
                       fontsize=11, pad=10, rotation=0, loc='center')
     cbar.ax.tick_params(length=3, pad=3)
 
-    # separate slim axis to the RIGHT of the colorbar for the explanatory texts
-    label_ax = divider.append_axes("right", size="14%", pad=0.25)
+    # separate slim axis to the RIGHT of the colorbar for the explanatory texts (increase padding to avoid overlap)
+    label_ax = divider.append_axes("right", size="12%", pad=0.8)
     label_ax.axis("off")
     # two-line labels, centered vertically near top and bottom of this axis
-    label_ax.text(0.0, 0.95, f"{method_A_name}\nmore accurate",
-                  ha="left", va="top", fontsize=10)
-    label_ax.text(0.0, 0.05, f"{method_B_name}\nmore accurate",
-                  ha="left", va="bottom", fontsize=10)
+    label_ax.text(0.05, 0.95, f"{method_A_name}\nmore accurate",
+                  ha="left", va="top", fontsize=9)
+    label_ax.text(0.05, 0.05, f"{method_B_name}\nmore accurate",
+                  ha="left", va="bottom", fontsize=9)
 
     # legend: include contour and optionally a proxy for heatmap
     handles = []
