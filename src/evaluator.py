@@ -12,16 +12,20 @@ from  datasets.task_gen.re_arc_generators import ARC_TASK_NAMES
 
 
 class Evaluator:
-    def __init__(
-        self, model: LPN, inference_mode: str, inference_mode_kwargs: dict, devices: Optional[dict] = None
-    ):
+    def __init__(self, model: LPN, inference_mode: str, inference_mode_kwargs: dict, devices: Optional[list] = None):
         self.model = model
         self.inference_mode = inference_mode
         self.inference_mode_kwargs = inference_mode_kwargs
         self.max_rows = self.model.encoder.config.max_rows
         self.max_cols = self.model.encoder.config.max_cols
+        
+        # Use all available GPUs if none specified
         self.devices = devices or jax.local_devices()
-        self.debug_msg = False
+        self.num_devices = len(self.devices)
+        
+        print(f"🚀 Using {self.num_devices} devices: {[d.device_kind for d in self.devices]}")
+        
+        # Create pmap function for all devices
         self.pmap_generate_output = jax.pmap(
             partial(
                 model.apply,
@@ -32,8 +36,8 @@ class Evaluator:
                 method=model.generate_output,
             ),
             axis_name="devices",
-            devices=self.devices[:1],
-            donate_argnums=(3, 4),  # donate input and input_grid_shape
+            devices=self.devices,  # Use ALL devices, not just [:1]
+            donate_argnums=(3, 4),
         )
 
     def json_submission(
@@ -47,7 +51,7 @@ class Evaluator:
         train: bool = False,
     ) -> dict[str, list]:
         # Only use the first device for the forward pass
-        single_device_params = jax.tree_util.tree_map(lambda x: x[:1], params)
+        multi_device_params = jax.tree_util.tree_map(lambda x: x, params)  # Keep all devices
         if key is None:
             key = jax.random.PRNGKey(0)
         assert only_n_tasks is None or overfit_task is None, "Cannot use both only_n_tasks and overfit_task."
@@ -91,10 +95,10 @@ class Evaluator:
                 # Add batch dim and duplicate to 1 device (pmap is run on 1 device only).
                 b_pairs, b_grid_shapes, b_input, b_input_grid_shape, sub_key = jax.device_put_replicated(
                     (pairs[None], grid_shapes[None], input[None], input_grid_shape[None], sub_key),
-                    self.devices[:1],
+                    self.devices,  # Use ALL devices
                 )
                 *outputs, _ = self.pmap_generate_output(
-                    {"params": single_device_params},
+                    {"params": multi_device_params},
                     b_pairs,
                     b_grid_shapes,
                     b_input,

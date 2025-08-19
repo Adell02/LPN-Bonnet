@@ -88,7 +88,7 @@ def run_evaluation(
     dataset_batch_size: Optional[int] = None,
     dataset_use_hf: bool = True,
     dataset_seed: int = 0,
-) -> Tuple[bool, Optional[float], str]:
+) -> Tuple[bool, Optional[float], Dict[str, Optional[float]], str]:
     """Invoke evaluate_checkpoint.py for a specific method and checkpoint."""
     cmd = [sys.executable, "src/evaluate_checkpoint.py", "-w", artifact_path, "-i", method]
 
@@ -154,21 +154,48 @@ def run_evaluation(
         stdout = result.stdout or ""
         stderr = result.stderr or ""
 
-        # Parse accuracy from stdout (case-insensitive)
+        # Parse metrics from stdout
+        metrics = {}
         acc: Optional[float] = None
+        
+        # Parse overall accuracy (case-insensitive)
         try:
             m = re.search(r"accuracy:\s*([0-9]*\.?[0-9]+)", stdout.lower())
             if m:
                 acc = float(m.group(1))
+                metrics["overall_accuracy"] = acc
         except Exception:
             acc = None
+            metrics["overall_accuracy"] = None
+
+        # Parse additional metrics
+        metric_patterns = {
+            "top_1_shape_accuracy": r"top_1_shape_accuracy:\s*([0-9]*\.?[0-9]+)",
+            "top_1_accuracy": r"top_1_accuracy:\s*([0-9]*\.?[0-9]+)", 
+            "top_1_pixel_correctness": r"top_1_pixel_correctness:\s*([0-9]*\.?[0-9]+)",
+            "top_2_shape_accuracy": r"top_2_shape_accuracy:\s*([0-9]*\.?[0-9]+)",
+            "top_2_accuracy": r"top_2_accuracy:\s*([0-9]*\.?[0-9]+)",
+            "top_2_pixel_correctness": r"top_2_pixel_correctness:\s*([0-9]*\.?[0-9]+)",
+        }
+        
+        for metric_name, pattern in metric_patterns.items():
+            try:
+                m = re.search(pattern, stdout.lower())
+                if m:
+                    metrics[metric_name] = float(m.group(1))
+                else:
+                    metrics[metric_name] = None
+            except Exception:
+                metrics[metric_name] = None
 
         if result.returncode == 0:
             print(
                 f"✅ {method} evaluation completed successfully"
                 + (f" | accuracy={acc}" if acc is not None else "")
+                + (f" | shape_acc={metrics.get('top_1_shape_accuracy', 'N/A')}" if metrics.get('top_1_shape_accuracy') is not None else "")
+                + (f" | pixel_acc={metrics.get('top_1_pixel_correctness', 'N/A')}" if metrics.get('top_1_pixel_correctness') is not None else "")
             )
-            return True, acc, stdout
+            return True, acc, metrics, stdout
         else:
             # Optionally retry random_search with smaller scan_batch_size to avoid XLA fusion issues
             should_retry = (
@@ -192,39 +219,58 @@ def run_evaluation(
                     retry_stdout = retry_res.stdout or ""
                     retry_stderr = retry_res.stderr or ""
                     retry_acc = None
+                    retry_metrics = {}
+                    
+                    # Parse retry metrics
                     try:
                         m2 = re.search(r"accuracy:\s*([0-9]*\.?[0-9]+)", retry_stdout.lower())
                         if m2:
                             retry_acc = float(m2.group(1))
+                            retry_metrics["overall_accuracy"] = retry_acc
                     except Exception:
                         retry_acc = None
+                        retry_metrics["overall_accuracy"] = None
+                    
+                    # Parse retry additional metrics
+                    for metric_name, pattern in metric_patterns.items():
+                        try:
+                            m2 = re.search(pattern, retry_stdout.lower())
+                            if m2:
+                                retry_metrics[metric_name] = float(m2.group(1))
+                            else:
+                                retry_metrics[metric_name] = None
+                        except Exception:
+                            retry_metrics[metric_name] = None
+                    
                     if retry_res.returncode == 0:
                         print(
                             f"✅ {method} evaluation (retry) completed successfully"
                             + (f" | accuracy={retry_acc}" if retry_acc is not None else "")
+                            + (f" | shape_acc={retry_metrics.get('top_1_shape_accuracy', 'N/A')}" if retry_metrics.get('top_1_shape_accuracy') is not None else "")
+                            + (f" | pixel_acc={retry_metrics.get('top_1_pixel_correctness', 'N/A')}" if retry_metrics.get('top_1_pixel_correctness') is not None else "")
                         )
-                        return True, retry_acc, retry_stdout
+                        return True, retry_acc, retry_metrics, retry_stdout
                     else:
                         print(f"❌ {method} evaluation failed with return code {result.returncode}")
                         if stderr.strip():
                             print(f"Error output:\n{stderr}")
                         if retry_stderr.strip():
                             print(f"Retry error output:\n{retry_stderr}")
-                        return False, acc, stdout
+                        return False, acc, metrics, stdout
                 except Exception:
                     print(f"❌ {method} evaluation failed with return code {result.returncode}")
                     if stderr.strip():
                         print(f"Error output:\n{stderr}")
-                    return False, acc, stdout
+                    return False, acc, metrics, stdout
             else:
                 print(f"❌ {method} evaluation failed with return code {result.returncode}")
                 if stderr.strip():
                     print(f"Error output:\n{stderr}")
-                return False, acc, stdout
+                return False, acc, metrics, stdout
 
     except Exception as e:
         print(f"❌ Error running {method} evaluation: {e}")
-        return False, None, ""
+        return False, None, {}, ""
 
 
 def main():
@@ -247,6 +293,14 @@ def main():
     parser.add_argument("--dataset_seed", type=int, default=0, help="Seed for dataset subsampling")
     parser.add_argument("--project", type=str, default="LPN-ARC", help="W&B project name")
     parser.add_argument("--entity", type=str, default="ga624-imperial-college-london", help="W&B entity")
+    parser.add_argument("--use_all_gpus", action="store_true", 
+                   help="Use all available GPUs instead of just one")
+    parser.add_argument("--gpu_ids", type=str, default=None,
+                   help="Comma-separated list of GPU IDs to use (e.g., '0,1,2')")
+    parser.add_argument("--batch_size", type=int, default=1, 
+                   help="Batch size for evaluation (larger = faster but more memory)")
+    parser.add_argument("--parallel_tasks", type=int, default=1, 
+                   help="Number of tasks to process in parallel")
 
     args = parser.parse_args()
 
@@ -335,7 +389,9 @@ def main():
         writer = csv.writer(f_csv)
         if write_header:
             writer.writerow(
-                ["run_name", "checkpoint_name", "checkpoint_step", "method", "budget_type", "budget", "accuracy"]
+                ["run_name", "checkpoint_name", "checkpoint_step", "method", "budget_type", "budget", 
+                 "overall_accuracy", "top_1_shape_accuracy", "top_1_accuracy", "top_1_pixel_correctness",
+                 "top_2_shape_accuracy", "top_2_accuracy", "top_2_pixel_correctness"]
             )
 
         # Iterate checkpoints
@@ -360,7 +416,7 @@ def main():
                 method_kwargs = dict(base_methods["gradient_ascent"])
                 method_kwargs["num_steps"] = num_steps
 
-                ok, acc, _ = run_evaluation(
+                ok, acc, metrics, _ = run_evaluation(
                     artifact_path=artifact_path,
                     method="gradient_ascent",
                     method_kwargs=method_kwargs,
@@ -377,12 +433,29 @@ def main():
                 if ok:
                     results["method_results"]["gradient_ascent"]["success"] += 1
                     results["successful_evals"] += 1
+                    
+                    # Log to W&B immediately
+                    try:
+                        wandb.log({
+                            f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/overall_accuracy": acc or 0.0,
+                            f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
+                            f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
+                            f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
+                            f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
+                            f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
+                            f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
+                        })
+                    except Exception as e:
+                        print(f"⚠️  Failed to log to W&B: {e}")
                 else:
                     results["method_results"]["gradient_ascent"]["failed"] += 1
                     results["failed_evals"] += 1
 
                 writer.writerow(
-                    [args.run_name, checkpoint["name"], step, "gradient_ascent", "num_steps", num_steps, acc or ""]
+                    [args.run_name, checkpoint["name"], step, "gradient_ascent", "num_steps", num_steps, 
+                     acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
+                     metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
+                     metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
                 )
 
             # Random Search sweeps
@@ -391,7 +464,7 @@ def main():
                 method_kwargs = dict(base_methods["random_search"])
                 method_kwargs["num_samples"] = num_samples
 
-                ok, acc, _ = run_evaluation(
+                ok, acc, metrics, _ = run_evaluation(
                     artifact_path=artifact_path,
                     method="random_search",
                     method_kwargs=method_kwargs,
@@ -408,13 +481,57 @@ def main():
                 if ok:
                     results["method_results"]["random_search"]["success"] += 1
                     results["successful_evals"] += 1
+                    
+                    # Log to W&B immediately
+                    try:
+                        wandb.log({
+                            f"checkpoint_{step}/random_search/num_samples_{num_samples}/overall_accuracy": acc or 0.0,
+                            f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
+                            f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
+                            f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
+                            f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
+                            f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
+                            f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
+                        })
+                    except Exception as e:
+                        print(f"⚠️  Failed to log to W&B: {e}")
                 else:
                     results["method_results"]["random_search"]["failed"] += 1
                     results["failed_evals"] += 1
 
                 writer.writerow(
-                    [args.run_name, checkpoint["name"], step, "random_search", "num_samples", num_samples, acc or ""]
+                    [args.run_name, checkpoint["name"], step, "random_search", "num_samples", num_samples, 
+                     acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
+                     metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
+                     metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
                 )
+            
+            # Progress update after each checkpoint
+            total_evals = results["successful_evals"] + results["failed_evals"]
+            total_expected = len(ga_steps) + len(rs_samples)
+            print(f"\n📊 Checkpoint {i}/{len(checkpoints)} complete. Total evaluations: {total_evals}/{total_expected * i}")
+            
+            # Log checkpoint completion to W&B
+            try:
+                wandb.log({
+                    f"checkpoint_{step}/completion": 1.0,
+                    f"checkpoint_{step}/total_evaluations": total_evals,
+                    f"checkpoint_{step}/successful_evaluations": results["successful_evals"],
+                    f"checkpoint_{step}/failed_evaluations": results["failed_evals"],
+                })
+                
+                # Also log overall progress
+                overall_progress = i / len(checkpoints)
+                wandb.log({
+                    "overall/progress": overall_progress,
+                    "overall/checkpoints_completed": i,
+                    "overall/total_checkpoints": len(checkpoints),
+                    "overall/total_evaluations": total_evals,
+                    "overall/successful_evaluations": results["successful_evals"],
+                    "overall/failed_evaluations": results["failed_evals"],
+                })
+            except Exception as e:
+                print(f"⚠️  Failed to log checkpoint completion to W&B: {e}")
 
     # Upload CSV artifact
     try:
@@ -446,7 +563,7 @@ def main():
                     budget = None
                 acc = None
                 try:
-                    acc = float(row["accuracy"]) if row["accuracy"] not in ("", None) else np.nan
+                    acc = float(row["overall_accuracy"]) if row["overall_accuracy"] not in ("", None) else np.nan
                 except Exception:
                     acc = np.nan
                 if budget is None:
@@ -504,6 +621,16 @@ def main():
         print("🎊 All evaluations completed successfully!")
     else:
         print(f"⚠️  {results['failed_evals']} evaluations failed. Check the logs above for details.")
+    
+    print(f"\n📊 CSV saved to: {out_csv}")
+    print("📈 Available metrics in CSV:")
+    print("   - overall_accuracy: Overall task accuracy")
+    print("   - top_1_shape_accuracy: Shape accuracy for first attempt")
+    print("   - top_1_accuracy: Task accuracy for first attempt") 
+    print("   - top_1_pixel_correctness: Pixel-level correctness for first attempt")
+    print("   - top_2_shape_accuracy: Shape accuracy for best of two attempts")
+    print("   - top_2_accuracy: Task accuracy for best of two attempts")
+    print("   - top_2_pixel_correctness: Pixel-level correctness for best of two attempts")
 
     # Finish W&B run
     try:

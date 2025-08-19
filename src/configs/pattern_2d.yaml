@@ -8,7 +8,7 @@ training:
   total_num_steps: 10000
   log_every_n_steps: 100  # this has to respect dataset_size >= batch_size * log_every_n_steps
   eval_every_n_logs: 1  # null to disable eval
-  save_checkpoint_every_n_logs: null  # null to disable checkpointing
+  save_checkpoint_every_n_logs: 10  # null to disable checkpointing
   learning_rate: 4e-4
   prior_kl_coeff: 1e-3
   pairwise_kl_coeff: null
