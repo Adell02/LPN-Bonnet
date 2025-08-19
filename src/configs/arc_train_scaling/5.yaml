@@ -8,8 +8,8 @@ training:
   gradient_accumulation_steps: 8  # the higher the slower but the lower memory usage while keeping effective batch size constant
   total_num_steps: 1000
   log_every_n_steps: 5  # this has to respect dataset_size >= batch_size * log_every_n_steps
-  eval_every_n_logs: 20  # null to disable eval
-  save_checkpoint_every_n_logs: 10  # null to disable checkpointing
+  eval_every_n_logs: 200  # null to disable eval
+  save_checkpoint_every_n_logs: 50  # null to disable checkpointing
   learning_rate: 4e-4
   prior_kl_coeff: 1e-4
   pairwise_kl_coeff: null
@@ -26,21 +26,21 @@ training:
 eval:
   eval_datasets:
   test_datasets:
-    - generator: ARC
-      task_generator_kwargs:
-      name: arc_train_all
-      num_pairs: 4
-      length: 32
-      batch_size: 16
-      num_tasks_to_show: 16
-    - generator: ARC
-      task_generator_kwargs:
-        only_n_tasks: ${training.task_generator.only_n_tasks}
-      name: arc_train
-      num_pairs: 4
-      length: 32
-      batch_size: 16
-      num_tasks_to_show: 16
+    # - generator: ARC
+    #   task_generator_kwargs:
+    #   name: arc_train_all
+    #   num_pairs: 4
+    #   length: 32
+    #   batch_size: 16
+    #   num_tasks_to_show: 16
+    # - generator: ARC
+    #   task_generator_kwargs:
+    #     only_n_tasks: ${training.task_generator.only_n_tasks}
+    #   name: arc_train
+    #   num_pairs: 4
+    #   length: 32
+    #   batch_size: 16
+    #   num_tasks_to_show: 16
   json_datasets:
     - challenges: json/arc-agi_training_challenges.json
       solutions: json/arc-agi_training_solutions.json
