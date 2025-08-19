@@ -124,10 +124,10 @@ def get_all_checkpoints(
     try:
         api = wandb.Api()
         run = api.run(f"{entity}/{project_name}/{run_name}")
-            artifacts = run.logged_artifacts()
-            
+        artifacts = run.logged_artifacts()
+        
         checkpoints: List[Dict[str, Any]] = []
-            for artifact in artifacts:
+        for artifact in artifacts:
             # Only keep artifacts that look like checkpoints
             if "checkpoint" not in artifact.name.lower():
                 continue
@@ -142,11 +142,11 @@ def get_all_checkpoints(
 
             # Fallback to alias pattern: num_steps_XXX
             if step_match is None:
-                        for alias in artifact.aliases:
-                            if alias.startswith("num_steps_"):
+                for alias in artifact.aliases:
+                    if alias.startswith("num_steps_"):
                         try:
-                                step_match = int(alias.split("_")[-1])
-                                break
+                            step_match = int(alias.split("_")[-1])
+                            break
                         except ValueError:
                             pass
 
@@ -161,15 +161,15 @@ def get_all_checkpoints(
 
         # Sort by step if available
         checkpoints.sort(key=lambda x: x["step"] if x["step"] is not None else -1)
-            
-            print(f"Found {len(checkpoints)} checkpoints:")
-            for cp in checkpoints:
-                print(f"  - {cp['name']} (Step: {cp['step']})")
-            return checkpoints
-            
-        except Exception as e:
-            print(f"Error accessing run: {e}")
-            return []
+        
+        print(f"Found {len(checkpoints)} checkpoints:")
+        for cp in checkpoints:
+            print(f"  - {cp['name']} (Step: {cp['step']})")
+        return checkpoints
+        
+    except Exception as e:
+        print(f"Error accessing run: {e}")
+        return []
     
 
 def run_evaluation(
@@ -364,7 +364,7 @@ def run_evaluation(
                     print(f"Error output:\n{stderr}")
                 return False, acc, metrics, stdout
             
-        except Exception as e:
+    except Exception as e:
         print(f"❌ Error running {method} evaluation: {e}")
         return False, None, {}, ""
 
@@ -490,9 +490,9 @@ def main():
 
     # Fetch checkpoints
     checkpoints = get_all_checkpoints(args.run_name, args.project, args.entity)
-        if not checkpoints:
+    if not checkpoints:
         print("❌ No checkpoints found. Exiting.")
-            return
+        return
         
     # Budgets
     # Use the same budgets for both methods
@@ -593,7 +593,7 @@ def main():
                             f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
                             f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
                         })
-            except Exception as e:
+                    except Exception as e:
                         print(f"⚠️  Failed to log to W&B: {e}")
                 else:
                     results["method_results"]["gradient_ascent"]["failed"] += 1
@@ -784,7 +784,7 @@ def main():
         artifact = wandb.Artifact(f"{args.run_name}--budgets-eval", type="evaluation")
         artifact.add_file(str(out_csv))
         run.log_artifact(artifact)
-        except Exception as e:
+    except Exception as e:
         print(f"⚠️  Failed to upload CSV artifact: {e}")
 
     # Build final optimization comparison plot from CSV (overall summary)
