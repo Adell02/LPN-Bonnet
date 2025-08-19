@@ -9,7 +9,7 @@ import subprocess
 import sys
 import argparse
 import wandb
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import re
 
 def get_all_checkpoints(run_name: str, project_name: str = "LPN-ARC", entity: str = "ga624-imperial-college-london") -> List[Dict[str, Any]]:
