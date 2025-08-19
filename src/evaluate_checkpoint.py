@@ -446,15 +446,18 @@ def main(
     inference_mode_kwargs: dict,
     random_search_seed: int,
     mixed_precision: bool,
+    no_wandb_run: bool = False,
 ) -> None:
-    # Make sure the wandb mode is enabled.
-    os.environ["WANDB_MODE"] = "run"
-
     print("Downloading the model artifact...")
-    # Download the artifact and save the config file
-    run = wandb.init()
-    artifact = run.use_artifact(artifact_path, type="model")
-    run.finish()
+    # Download the artifact and save the config file without creating separate W&B runs if requested
+    if no_wandb_run:
+        api = wandb.Api()
+        artifact = api.artifact(artifact_path, type="model")
+    else:
+        os.environ["WANDB_MODE"] = "run"
+        run = wandb.init()
+        artifact = run.use_artifact(artifact_path, type="model")
+        run.finish()
     cfg = omegaconf.OmegaConf.create(artifact.metadata)
     artifact_dir = artifact.download()
     omegaconf.OmegaConf.save(config=cfg, f=os.path.join(artifact_dir, "config.yaml"))
@@ -706,6 +709,14 @@ if __name__ == "__main__":
         default=True,
         help="Whether to use mixed precision for inference.",
     )
+    parser.add_argument(
+        "--no-wandb-run",
+        dest="no_wandb_run",
+        type=true_or_false_from_arg,
+        required=False,
+        default=False,
+        help="If True, do not create a W&B run; download artifact via API instead.",
+    )
     args = parser.parse_args()
     if (
         args.json_challenges_file is None
@@ -766,4 +777,5 @@ if __name__ == "__main__":
         inference_mode_kwargs=inference_mode_kwargs,
         random_search_seed=args.random_search_seed,
         mixed_precision=args.mixed_precision,
+        no_wandb_run=args.no_wandb_run,
     )

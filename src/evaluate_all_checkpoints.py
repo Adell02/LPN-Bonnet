@@ -12,8 +12,11 @@ import argparse
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
+import numpy as np
+from matplotlib import pyplot as plt
 import subprocess
 import wandb
+from visualization import visualize_optimization_comparison
 
 
 def get_all_checkpoints(
@@ -141,6 +144,9 @@ def run_evaluation(
         print(f"❌ Unknown method: {method}")
         return False, None, ""
 
+    # Avoid creating a W&B run inside evaluate_checkpoint
+    cmd.extend(["--no-wandb-run", "true"])
+
     print(f"\nRunning: {' '.join(cmd)}")
 
     try:
@@ -220,6 +226,19 @@ def main():
     if not (using_json or using_dataset) or (using_json and using_dataset):
         print("❌ Provide either both JSON files or a dataset folder (but not both).")
         return
+
+    # Start a single W&B run for this sweep
+    run = wandb.init(
+        entity=args.entity,
+        project=args.project,
+        name=f"evaluate_all_checkpoints::{args.run_name}",
+        settings=wandb.Settings(console="off"),
+        config={
+            "run_name": args.run_name,
+            "using_json": using_json,
+            "dataset_folder": args.dataset_folder,
+        },
+    )
 
     # Fetch checkpoints
     checkpoints = get_all_checkpoints(args.run_name, args.project, args.entity)
@@ -350,6 +369,76 @@ def main():
                     [args.run_name, checkpoint["name"], step, "random_search", "num_samples", num_samples, acc or ""]
                 )
 
+    # Upload CSV artifact
+    try:
+        artifact = wandb.Artifact(f"{args.run_name}--budgets-eval", type="evaluation")
+        artifact.add_file(str(out_csv))
+        run.log_artifact(artifact)
+    except Exception as e:
+        print(f"⚠️  Failed to upload CSV artifact: {e}")
+
+    # Build optimization comparison plot from CSV
+    try:
+        steps_list: list[int] = []
+        ga_map: dict[int, dict[int, float]] = {}
+        rs_map: dict[int, dict[int, float]] = {}
+        with out_csv.open("r") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    step = int(row["checkpoint_step"]) if row["checkpoint_step"] else None
+                except Exception:
+                    step = None
+                if step is None:
+                    continue
+                steps_list.append(step)
+                method = row["method"]
+                try:
+                    budget = int(row["budget"]) if row["budget"] else None
+                except Exception:
+                    budget = None
+                acc = None
+                try:
+                    acc = float(row["accuracy"]) if row["accuracy"] not in ("", None) else np.nan
+                except Exception:
+                    acc = np.nan
+                if budget is None:
+                    continue
+                if method == "gradient_ascent":
+                    ga_map.setdefault(step, {})[budget] = acc
+                elif method == "random_search":
+                    rs_map.setdefault(step, {})[budget] = acc
+
+        steps_sorted = sorted(set(steps_list))
+        budgets_ga = [1] + list(range(5, 101, 5))
+        budgets_rs = [1] + list(range(5, 101, 5))
+        A = np.full((len(budgets_ga), len(steps_sorted)), np.nan)
+        B = np.full((len(budgets_rs), len(steps_sorted)), np.nan)
+        for j, s in enumerate(steps_sorted):
+            for i, b in enumerate(budgets_ga):
+                A[i, j] = ga_map.get(s, {}).get(b, np.nan)
+            for i, b in enumerate(budgets_rs):
+                B[i, j] = rs_map.get(s, {}).get(b, np.nan)
+
+        fig = visualize_optimization_comparison(
+            steps=np.array(steps_sorted),
+            budgets=np.array(budgets_ga),
+            acc_A=A,
+            acc_B=B,
+            method_A_name="Gradient Ascent",
+            method_B_name="Random Search",
+        )
+        plot_path = out_dir / f"optim_comparison_{args.run_name}.png"
+        fig.savefig(plot_path, dpi=200)
+        plt.close(fig)
+        wandb.log({"optimization_comparison/methods": wandb.Image(str(plot_path))})
+        # Also upload as artifact
+        plot_art = wandb.Artifact(f"{args.run_name}--optim-comparison", type="evaluation")
+        plot_art.add_file(str(plot_path))
+        run.log_artifact(plot_art)
+    except Exception as e:
+        print(f"⚠️  Failed to generate or upload comparison plot: {e}")
+
     # Summary
     print("\n" + "=" * 60)
     print("📈 EVALUATION SUMMARY")
@@ -368,6 +457,12 @@ def main():
         print("🎊 All evaluations completed successfully!")
     else:
         print(f"⚠️  {results['failed_evals']} evaluations failed. Check the logs above for details.")
+
+    # Finish W&B run
+    try:
+        run.finish()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
