@@ -348,8 +348,8 @@ def main():
         return
 
     # Budgets
-    ga_steps = [1] + list(range(5, 101, 5))    # 1,5,10,...,100
-    rs_samples = [1] + list(range(5, 101, 5))  # 1,5,10,...,100
+    ga_steps = [1] + list(range(25, 101, 25))    # 1,5,10,...,100
+    rs_samples = [1] + list(range(25, 101, 25))  # 1,5,10,...,100
 
     # Base method configs
     base_methods = {
