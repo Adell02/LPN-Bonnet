@@ -15,53 +15,55 @@ import csv
 from pathlib import Path
 
 def get_all_checkpoints(run_name: str, project_name: str = "LPN-ARC", entity: str = "ga624-imperial-college-london") -> List[Dict[str, Any]]:
-        """Get all checkpoint artifacts from the specified run."""
-        try:
+    """Get all checkpoint artifacts from the specified run."""
+    try:
         api = wandb.Api()
         run = api.run(f"{entity}/{project_name}/{run_name}")
-            artifacts = run.logged_artifacts()
-            
-            checkpoints = []
-            for artifact in artifacts:
-                if "checkpoint" in artifact.name.lower():
+        artifacts = run.logged_artifacts()
+
+        checkpoints: List[Dict[str, Any]] = []
+        for artifact in artifacts:
+            if "checkpoint" in artifact.name.lower():
                 # Parse checkpoint name pattern: ...-{num_checkpoint}--checkpoint
-                    step_match = None
-                
+                step_match: Optional[int] = None
+
                 # Try to extract step number from artifact name
                 if "--checkpoint" in artifact.name:
                     # Extract the part before --checkpoint
                     name_part = artifact.name.split("--checkpoint")[0]
                     # Look for the last number in the name (should be the step number)
-                    numbers = re.findall(r'\d+', name_part)
+                    numbers = re.findall(r"\d+", name_part)
                     if numbers:
                         step_match = int(numbers[-1])  # Take the last number
-                
+
                 # Also check aliases as backup
-                if step_match is None and "num_steps" in artifact.aliases:
-                        for alias in artifact.aliases:
-                            if alias.startswith("num_steps_"):
-                                step_match = int(alias.split("_")[-1])
-                                break
-                    
-                    checkpoints.append({
-                        'artifact': artifact,
-                        'name': artifact.name,
-                        'step': step_match,
-                        'aliases': artifact.aliases
-                    })
-            
-            # Sort by step number
-            checkpoints.sort(key=lambda x: x['step'] if x['step'] is not None else 0)
-            
-            print(f"Found {len(checkpoints)} checkpoints:")
-            for cp in checkpoints:
-                print(f"  - {cp['name']} (Step: {cp['step']})")
-            
-            return checkpoints
-            
-        except Exception as e:
-            print(f"Error accessing run: {e}")
-            return []
+                if step_match is None:
+                    for alias in artifact.aliases:
+                        if alias.startswith("num_steps_"):
+                            step_match = int(alias.split("_")[-1])
+                            break
+
+                checkpoints.append(
+                    {
+                        "artifact": artifact,
+                        "name": artifact.name,
+                        "step": step_match,
+                        "aliases": artifact.aliases,
+                    }
+                )
+
+        # Sort by step number
+        checkpoints.sort(key=lambda x: x["step"] if x["step"] is not None else 0)
+
+        print(f"Found {len(checkpoints)} checkpoints:")
+        for cp in checkpoints:
+            print(f"  - {cp['name']} (Step: {cp['step']})")
+
+        return checkpoints
+
+    except Exception as e:
+        print(f"Error accessing run: {e}")
+        return []
     
 def run_evaluation(
     artifact_path: str,
@@ -95,7 +97,7 @@ def run_evaluation(
         cmd.extend(["--dataset-seed", str(dataset_seed)])
     else:
         print("❌ You must provide either JSON files or a dataset folder.")
-        return False
+        return False, None, ""
     
     # Add method-specific arguments
     if method == "gradient_ascent":
@@ -135,14 +137,17 @@ def run_evaluation(
             acc = None
 
         if result.returncode == 0:
-            print(f"✅ {method} evaluation completed successfully" + (f" | accuracy={acc}" if acc is not None else ""))
+            print(
+                f"✅ {method} evaluation completed successfully"
+                + (f" | accuracy={acc}" if acc is not None else "")
+            )
             return True, acc, stdout
-                        else:
+        else:
             print(f"❌ {method} evaluation failed with return code {result.returncode}")
             print(f"Error output: {result.stderr}")
             return False, acc, stdout
-            
-        except Exception as e:
+
+    except Exception as e:
         print(f"❌ Error running {method} evaluation: {e}")
         return False, None, ""
 
@@ -219,7 +224,10 @@ def main():
         'total_checkpoints': len(checkpoints),
         'successful_evals': 0,
         'failed_evals': 0,
-        'method_results': {method: {'success': 0, 'failed': 0} for method in methods}
+        'method_results': {
+            'gradient_ascent': {'success': 0, 'failed': 0},
+            'random_search': {'success': 0, 'failed': 0},
+        },
     }
     
     print(f"\n🚀 Starting evaluation of {len(checkpoints)} checkpoints...")
@@ -233,9 +241,9 @@ def main():
         writer = csv.writer(f_csv)
         if write_header:
             writer.writerow(["run_name", "checkpoint_name", "checkpoint_step", "method", "budget_type", "budget", "accuracy"])  
-    
-    # Evaluate each checkpoint
-    for i, checkpoint in enumerate(checkpoints, 1):
+
+        # Evaluate each checkpoint
+        for i, checkpoint in enumerate(checkpoints, 1):
         step = checkpoint['step']
         if step is None:
             print(f"⚠️  Skipping checkpoint {checkpoint['name']} - no step info")
@@ -249,9 +257,9 @@ def main():
         # Build artifact path for evaluate_checkpoint.py
         artifact_path = f"{args.entity}/{args.project}/{checkpoint['name']}"
         
-        # Evaluate GA across budgets
-        print("\n🔧 Testing gradient_ascent across budgets...")
-        for num_steps in ga_steps:
+            # Evaluate GA across budgets
+            print("\n🔧 Testing gradient_ascent across budgets...")
+            for num_steps in ga_steps:
             method_kwargs = dict(base_methods['gradient_ascent'])
             method_kwargs['num_steps'] = num_steps
             ok, acc, _ = run_evaluation(
@@ -267,18 +275,18 @@ def main():
                 dataset_use_hf=(str(args.dataset_use_hf).lower() == 'true'),
                 dataset_seed=args.dataset_seed,
             )
-            if ok:
-                results['method_results']['gradient_ascent']['success'] += 1
-                results['successful_evals'] += 1
-            else:
-                results['method_results']['gradient_ascent']['failed'] += 1
-                results['failed_evals'] += 1
-            # Log CSV row
-            writer.writerow([args.run_name, checkpoint['name'], step, 'gradient_ascent', 'num_steps', num_steps, acc if acc is not None else ""])  
+                if ok:
+                    results['method_results']['gradient_ascent']['success'] += 1
+                    results['successful_evals'] += 1
+                else:
+                    results['method_results']['gradient_ascent']['failed'] += 1
+                    results['failed_evals'] += 1
+                # Log CSV row
+                writer.writerow([args.run_name, checkpoint['name'], step, 'gradient_ascent', 'num_steps', num_steps, acc if acc is not None else ""])  
 
-        # Evaluate RS across budgets
-        print("\n🔧 Testing random_search across budgets...")
-        for num_samples in rs_samples:
+            # Evaluate RS across budgets
+            print("\n🔧 Testing random_search across budgets...")
+            for num_samples in rs_samples:
             method_kwargs = dict(base_methods['random_search'])
             method_kwargs['num_samples'] = num_samples
             ok, acc, _ = run_evaluation(
@@ -294,14 +302,14 @@ def main():
                 dataset_use_hf=(str(args.dataset_use_hf).lower() == 'true'),
                 dataset_seed=args.dataset_seed,
             )
-            if ok:
-                results['method_results']['random_search']['success'] += 1
-                results['successful_evals'] += 1
-            else:
-                results['method_results']['random_search']['failed'] += 1
-                results['failed_evals'] += 1
-            # Log CSV row
-            writer.writerow([args.run_name, checkpoint['name'], step, 'random_search', 'num_samples', num_samples, acc if acc is not None else ""])  
+                if ok:
+                    results['method_results']['random_search']['success'] += 1
+                    results['successful_evals'] += 1
+                else:
+                    results['method_results']['random_search']['failed'] += 1
+                    results['failed_evals'] += 1
+                # Log CSV row
+                writer.writerow([args.run_name, checkpoint['name'], step, 'random_search', 'num_samples', num_samples, acc if acc is not None else ""])  
     
     # Print summary
     print(f"\n{'='*60}")
