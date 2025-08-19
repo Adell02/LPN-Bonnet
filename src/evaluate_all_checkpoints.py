@@ -11,19 +11,21 @@ import argparse
 import wandb
 from typing import List, Dict, Any, Optional
 import re
+import csv
+from pathlib import Path
 
 def get_all_checkpoints(run_name: str, project_name: str = "LPN-ARC", entity: str = "ga624-imperial-college-london") -> List[Dict[str, Any]]:
-    """Get all checkpoint artifacts from the specified run."""
-    try:
+        """Get all checkpoint artifacts from the specified run."""
+        try:
         api = wandb.Api()
         run = api.run(f"{entity}/{project_name}/{run_name}")
-        artifacts = run.logged_artifacts()
-        
-        checkpoints = []
-        for artifact in artifacts:
-            if "checkpoint" in artifact.name.lower():
+            artifacts = run.logged_artifacts()
+            
+            checkpoints = []
+            for artifact in artifacts:
+                if "checkpoint" in artifact.name.lower():
                 # Parse checkpoint name pattern: ...-{num_checkpoint}--checkpoint
-                step_match = None
+                    step_match = None
                 
                 # Try to extract step number from artifact name
                 if "--checkpoint" in artifact.name:
@@ -36,31 +38,31 @@ def get_all_checkpoints(run_name: str, project_name: str = "LPN-ARC", entity: st
                 
                 # Also check aliases as backup
                 if step_match is None and "num_steps" in artifact.aliases:
-                    for alias in artifact.aliases:
-                        if alias.startswith("num_steps_"):
-                            step_match = int(alias.split("_")[-1])
-                            break
-                
-                checkpoints.append({
-                    'artifact': artifact,
-                    'name': artifact.name,
-                    'step': step_match,
-                    'aliases': artifact.aliases
-                })
-        
-        # Sort by step number
-        checkpoints.sort(key=lambda x: x['step'] if x['step'] is not None else 0)
-        
-        print(f"Found {len(checkpoints)} checkpoints:")
-        for cp in checkpoints:
-            print(f"  - {cp['name']} (Step: {cp['step']})")
-        
-        return checkpoints
-        
-    except Exception as e:
-        print(f"Error accessing run: {e}")
-        return []
-
+                        for alias in artifact.aliases:
+                            if alias.startswith("num_steps_"):
+                                step_match = int(alias.split("_")[-1])
+                                break
+                    
+                    checkpoints.append({
+                        'artifact': artifact,
+                        'name': artifact.name,
+                        'step': step_match,
+                        'aliases': artifact.aliases
+                    })
+            
+            # Sort by step number
+            checkpoints.sort(key=lambda x: x['step'] if x['step'] is not None else 0)
+            
+            print(f"Found {len(checkpoints)} checkpoints:")
+            for cp in checkpoints:
+                print(f"  - {cp['name']} (Step: {cp['step']})")
+            
+            return checkpoints
+            
+        except Exception as e:
+            print(f"Error accessing run: {e}")
+            return []
+    
 def run_evaluation(
     artifact_path: str,
     method: str,
@@ -73,7 +75,7 @@ def run_evaluation(
     dataset_batch_size: Optional[int] = None,
     dataset_use_hf: bool = True,
     dataset_seed: int = 0,
-) -> bool:
+) -> tuple[bool, Optional[float], str]:
     """Run evaluate_checkpoint.py for a specific method and checkpoint."""
     # Build the base command
     cmd = [sys.executable, "src/evaluate_checkpoint.py", "-w", artifact_path, "-i", method]
@@ -121,18 +123,28 @@ def run_evaluation(
     try:
         # Run the evaluation
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd())
-        
+
+        # Attempt to parse accuracy from stdout
+        stdout = result.stdout or ""
+        acc = None
+        try:
+            m = re.search(r"accuracy:\s*([0-9]*\.?[0-9]+)", stdout.lower())
+            if m:
+                acc = float(m.group(1))
+        except Exception:
+            acc = None
+
         if result.returncode == 0:
-            print(f"✅ {method} evaluation completed successfully")
-            return True
-        else:
+            print(f"✅ {method} evaluation completed successfully" + (f" | accuracy={acc}" if acc is not None else ""))
+            return True, acc, stdout
+                        else:
             print(f"❌ {method} evaluation failed with return code {result.returncode}")
             print(f"Error output: {result.stderr}")
-            return False
+            return False, acc, stdout
             
-    except Exception as e:
+        except Exception as e:
         print(f"❌ Error running {method} evaluation: {e}")
-        return False
+        return False, None, ""
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate all checkpoints from a WandB run')
@@ -183,21 +195,23 @@ def main():
         print("❌ No checkpoints found! Exiting.")
         return
     
-    # Define evaluation methods and their parameters
-    methods = {
+    # Hard-coded budget schedules
+    ga_steps = [1] + list(range(5, 101, 5))   # [1,5,10,...,100]
+    rs_samples = [1] + list(range(5, 101, 5)) # [1,5,10,...,100]
+
+    # Base evaluation hyperparameters
+    base_methods = {
         'gradient_ascent': {
-            'num_steps': 100,
             'lr': 0.1,
             'optimizer': 'adam',
             'lr_schedule': False,
-            'lr_schedule_exponent': 0.5
+            'lr_schedule_exponent': 0.5,
         },
         'random_search': {
-            'num_samples': 100,
             'scale': 1.0,
             'scan_batch_size': 10,
-            'random_search_seed': 0
-        }
+            'random_search_seed': 0,
+        },
     }
     
     # Track results
@@ -209,6 +223,16 @@ def main():
     }
     
     print(f"\n🚀 Starting evaluation of {len(checkpoints)} checkpoints...")
+
+    # Prepare CSV logging
+    out_dir = Path("results")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_csv = out_dir / f"eval_{args.run_name}.csv"
+    write_header = not out_csv.exists()
+    with out_csv.open("a", newline="") as f_csv:
+        writer = csv.writer(f_csv)
+        if write_header:
+            writer.writerow(["run_name", "checkpoint_name", "checkpoint_step", "method", "budget_type", "budget", "accuracy"])  
     
     # Evaluate each checkpoint
     for i, checkpoint in enumerate(checkpoints, 1):
@@ -225,13 +249,14 @@ def main():
         # Build artifact path for evaluate_checkpoint.py
         artifact_path = f"{args.entity}/{args.project}/{checkpoint['name']}"
         
-        # Evaluate with each method
-        for method_name, method_kwargs in methods.items():
-            print(f"\n🔧 Testing {method_name}...")
-            
-            success = run_evaluation(
+        # Evaluate GA across budgets
+        print("\n🔧 Testing gradient_ascent across budgets...")
+        for num_steps in ga_steps:
+            method_kwargs = dict(base_methods['gradient_ascent'])
+            method_kwargs['num_steps'] = num_steps
+            ok, acc, _ = run_evaluation(
                 artifact_path=artifact_path,
-                method=method_name,
+                method='gradient_ascent',
                 method_kwargs=method_kwargs,
                 json_challenges=args.json_challenges,
                 json_solutions=args.json_solutions,
@@ -242,13 +267,41 @@ def main():
                 dataset_use_hf=(str(args.dataset_use_hf).lower() == 'true'),
                 dataset_seed=args.dataset_seed,
             )
-            
-            if success:
-                results['method_results'][method_name]['success'] += 1
+            if ok:
+                results['method_results']['gradient_ascent']['success'] += 1
                 results['successful_evals'] += 1
             else:
-                results['method_results'][method_name]['failed'] += 1
+                results['method_results']['gradient_ascent']['failed'] += 1
                 results['failed_evals'] += 1
+            # Log CSV row
+            writer.writerow([args.run_name, checkpoint['name'], step, 'gradient_ascent', 'num_steps', num_steps, acc if acc is not None else ""])  
+
+        # Evaluate RS across budgets
+        print("\n🔧 Testing random_search across budgets...")
+        for num_samples in rs_samples:
+            method_kwargs = dict(base_methods['random_search'])
+            method_kwargs['num_samples'] = num_samples
+            ok, acc, _ = run_evaluation(
+                artifact_path=artifact_path,
+                method='random_search',
+                method_kwargs=method_kwargs,
+                json_challenges=args.json_challenges,
+                json_solutions=args.json_solutions,
+                only_n_tasks=args.only_n_tasks,
+                dataset_folder=args.dataset_folder,
+                dataset_length=args.dataset_length,
+                dataset_batch_size=args.dataset_batch_size,
+                dataset_use_hf=(str(args.dataset_use_hf).lower() == 'true'),
+                dataset_seed=args.dataset_seed,
+            )
+            if ok:
+                results['method_results']['random_search']['success'] += 1
+                results['successful_evals'] += 1
+            else:
+                results['method_results']['random_search']['failed'] += 1
+                results['failed_evals'] += 1
+            # Log CSV row
+            writer.writerow([args.run_name, checkpoint['name'], step, 'random_search', 'num_samples', num_samples, acc if acc is not None else ""])  
     
     # Print summary
     print(f"\n{'='*60}")
