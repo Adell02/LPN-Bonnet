@@ -413,12 +413,14 @@ def main():
     parser.add_argument("--budget_period", type=int, default=25, 
                        help="Period between budget values (default: 25)")
     
-    # Shared budget configuration
+    args = parser.parse_args()
+    
+    # Shared budget configuration - now using command line arguments
     BUDGET_CONFIG = {
-        "start": 1,           # Start value (inclusive)
-        "end": 100,           # End value (inclusive) 
-        "period": 25,         # Step size between values
-        "include_start": True, # Whether to include the start value
+        "start": args.budget_start,           # Start value (inclusive)
+        "end": args.budget_end,              # End value (inclusive) 
+        "period": args.budget_period,        # Step size between values
+        "include_start": True,               # Whether to include the start value
     }
     
     # Generate budgets based on configuration
@@ -448,8 +450,6 @@ def main():
     print(f"   - End: {BUDGET_CONFIG['end']}")
     print(f"   - Period: {BUDGET_CONFIG['period']}")
     print(f"   - Total budget points: {len(shared_budgets)}")
-
-    args = parser.parse_args()
 
     print(f"🔍 Checking checkpoints for run: {args.run_name}")
     print(f"📁 Project: {args.project}")
@@ -549,9 +549,22 @@ def main():
                 print(f"⚠️  Skipping checkpoint {checkpoint['name']} (no step info)")
                 continue
             
+            # Extract training progress from checkpoint version (like plot_from_csv.py)
+            checkpoint_name = checkpoint["name"]
+            training_progress = 0  # Default to v0
+            
+            if "--checkpoint:" in checkpoint_name:
+                version_part = checkpoint_name.split("--checkpoint:")[1]
+                try:
+                    version_match = int(version_part[1:])  # Remove 'v' and convert to int
+                    training_progress = version_match
+                except ValueError:
+                    training_progress = 0
+            
             print("\n" + "=" * 60)
-            print(f"📊 Checkpoint {i}/{len(checkpoints)}: Step {step}")
+            print(f"📊 Checkpoint {i}/{len(checkpoints)}: Step {step} (v{training_progress})")
             print(f"📁 Artifact: {checkpoint['name']}")
+            print(f"🎯 Training Progress: {training_progress}/{len(checkpoints)-1} ({int((training_progress/(len(checkpoints)-1))*100)}%)")
             print("=" * 60)
 
             # Build artifact path for evaluate_checkpoint.py
@@ -600,7 +613,7 @@ def main():
                     results["failed_evals"] += 1
 
                 writer.writerow(
-                    [args.run_name, checkpoint["name"], step, "gradient_ascent", "num_steps", num_steps, 
+                    [args.run_name, checkpoint["name"], training_progress, "gradient_ascent", "num_steps", num_steps, 
                      acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
                      metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
                      metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
@@ -648,7 +661,7 @@ def main():
                     results["failed_evals"] += 1
 
                 writer.writerow(
-                    [args.run_name, checkpoint["name"], step, "random_search", "num_samples", num_samples, 
+                    [args.run_name, checkpoint["name"], training_progress, "random_search", "num_samples", num_samples, 
                      acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
                      metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
                      metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
@@ -699,13 +712,12 @@ def main():
                 if step_data["gradient_ascent"] or step_data["random_search"]:
                     # Get all available steps and budgets
                     all_steps = sorted(set(list(step_data["gradient_ascent"].keys()) + list(step_data["random_search"].keys())))
-                    all_budgets = sorted(set(
-                        [b for step_data_ga in step_data["gradient_ascent"].values() for b in step_data_ga.keys()] +
-                        [b for step_data_rs in step_data["random_search"].values() for b in step_data_rs.keys()]
-                    ))
+                    
+                    # Use the actual shared budgets to ensure consistency
+                    all_budgets = sorted(shared_budgets)
                     
                     if all_steps and all_budgets:
-                        # Create matrices for plotting
+                        # Create matrices for plotting with proper budget alignment
                         A = np.full((len(all_budgets), len(all_steps)), np.nan)
                         B = np.full((len(all_budgets), len(all_steps)), np.nan)
                         
@@ -724,46 +736,54 @@ def main():
                             method_B_name="Random Search",
                         )
                         
-                        # Add step tracker information
-                        fig.suptitle(f"Optimization Comparison - Step {step} (Checkpoint {i}/{len(checkpoints)})", 
+                        # Add step tracker information showing accumulation
+                        fig.suptitle(f"Optimization Comparison - Accumulated Data\n"
+                                   f"Current Training Progress: {training_progress}/{len(checkpoints)-1} ({int((training_progress/(len(checkpoints)-1))*100)}%)\n"
+                                   f"Checkpoint {i}/{len(checkpoints)} | Total Steps: {len(all_steps)}, Budgets: {len(all_budgets)}", 
                                    fontsize=14, y=0.98)
                         
                         # Save and upload the plot
-                        step_plot_path = out_dir / f"optim_comparison_step_{step}.png"
+                        step_plot_path = out_dir / f"optim_comparison_accumulated_progress_{training_progress}.png"
                         fig.savefig(step_plot_path, dpi=200, bbox_inches='tight')
                         plt.close(fig)
                         
                         # Upload to W&B with step information
                         wandb.log({
-                            f"checkpoint_{step}/optimization_comparison": wandb.Image(str(step_plot_path)),
-                            f"checkpoint_{step}/plot_step": step,
-                            f"checkpoint_{step}/plot_checkpoint_number": i,
-                            f"checkpoint_{step}/plot_total_checkpoints": len(checkpoints),
-                            f"checkpoint_{step}/plot_available_steps": len(all_steps),
-                            f"checkpoint_{step}/plot_available_budgets": len(all_budgets),
+                            f"checkpoint_{training_progress}/optimization_comparison": wandb.Image(str(step_plot_path)),
+                            f"checkpoint_{training_progress}/plot_step": training_progress,
+                            f"checkpoint_{training_progress}/plot_checkpoint_number": i,
+                            f"checkpoint_{training_progress}/plot_total_checkpoints": len(checkpoints),
+                            f"checkpoint_{training_progress}/plot_available_steps": len(all_steps),
+                            f"checkpoint_{training_progress}/plot_available_budgets": len(all_budgets),
+                            f"checkpoint_{training_progress}/plot_accumulated_data": True,
                         })
                         
                         # Also log to a dedicated plot progression section for easy tracking
                         wandb.log({
-                            "plot_progression/current_step": step,
+                            "plot_progression/current_step": training_progress,
                             "plot_progression/checkpoint_number": i,
                             "plot_progression/total_checkpoints": len(checkpoints),
                             "plot_progression/comparison_plot": wandb.Image(str(step_plot_path)),
                             "plot_progression/available_data_points": len([v for method_data in step_data.values() for step_data in method_data.values() for v in step_data.values() if not np.isnan(v)]),
+                            "plot_progression/accumulated_steps": len(all_steps),
+                            "plot_progression/accumulated_budgets": len(all_budgets),
                         })
                         
-                        print(f"📊 Generated and uploaded comparison plot for step {step}")
+                        print(f"📊 Generated and uploaded accumulated comparison plot for training progress {training_progress}/{len(checkpoints)-1} ({int((training_progress/(len(checkpoints)-1))*100)}%)")
+                        print(f"   📈 Available steps: {all_steps}")
+                        print(f"   💰 Available budgets: {all_budgets}")
+                        print(f"   🔍 Data coverage: {len([v for method_data in step_data.values() for step_data in method_data.values() for v in step_data.values() if not np.isnan(v)])} data points")
                         
             except Exception as e:
-                print(f"⚠️  Failed to generate comparison plot for step {step}: {e}")
+                print(f"⚠️  Failed to generate comparison plot for training progress {training_progress}: {e}")
             
             # Log checkpoint completion to W&B
             try:
                 wandb.log({
-                    f"checkpoint_{step}/completion": 1.0,
-                    f"checkpoint_{step}/total_evaluations": total_evals,
-                    f"checkpoint_{step}/successful_evaluations": results["successful_evals"],
-                    f"checkpoint_{step}/failed_evaluations": results["failed_evals"],
+                    f"checkpoint_{training_progress}/completion": 1.0,
+                    f"checkpoint_{training_progress}/total_evaluations": total_evals,
+                    f"checkpoint_{training_progress}/successful_evaluations": results["successful_evals"],
+                    f"checkpoint_{training_progress}/failed_evaluations": results["failed_evals"],
                 })
                 
                 # Also log overall progress
@@ -841,9 +861,12 @@ def main():
             method_B_name="Random Search",
         )
         
-        # Add comprehensive title with run information
+        # Add comprehensive title with run information and training progress context
+        max_progress = max(steps_sorted) if steps_sorted else 0
+        progress_percentage = int((max_progress / max(len(checkpoints)-1, 1)) * 100) if steps_sorted else 0
+        
         fig.suptitle(f"Final Optimization Comparison - {args.run_name}\n"
-                    f"Checkpoints: {len(steps_sorted)}, Budgets: {len(actual_budgets)}", 
+                    f"Training Progress: {len(steps_sorted)} steps (0% → {progress_percentage}%), Budgets: {len(actual_budgets)}", 
                     fontsize=14, y=0.98)
         
         plot_path = out_dir / f"optim_comparison_final_{args.run_name}.png"
@@ -857,6 +880,7 @@ def main():
             "final/total_budgets": len(actual_budgets),
             "final/checkpoint_steps": steps_sorted,
             "final/budget_values": actual_budgets,
+            "final/training_progress_percentage": progress_percentage,
         })
         
         # Also upload as artifact
@@ -864,7 +888,7 @@ def main():
         plot_art.add_file(str(plot_path))
         run.log_artifact(plot_art)
         
-        print(f"📊 Generated and uploaded final comparison plot with {len(steps_sorted)} checkpoints and {len(actual_budgets)} budgets")
+        print(f"📊 Generated and uploaded final comparison plot with {len(steps_sorted)} training progress steps (0% → {progress_percentage}%) and {len(actual_budgets)} budgets")
         
     except Exception as e:
         print(f"⚠️  Failed to generate or upload final comparison plot: {e}")
