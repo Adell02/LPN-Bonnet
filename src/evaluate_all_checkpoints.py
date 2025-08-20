@@ -177,33 +177,33 @@ def run_evaluation(
                 str(method_kwargs.get("lr_schedule_exponent", 0.5)),
             ]
         )
-            elif method == "random_search":
-            cmd.extend(
-                [
-                    "--num-samples",
-                    str(method_kwargs.get("num_samples", 100)),
-                    "--scale",
-                    str(method_kwargs.get("scale", 1.0)),
-                    "--scan-batch-size",
-                    str(method_kwargs.get("scan_batch_size", 10)),
-                    "--random-search-seed",
-                    str(method_kwargs.get("random_search_seed", 0)),
-                ]
-            )
-        elif method == "evolutionary_search":
-            cmd.extend(
-                [
-                    "--population-size",
-                    str(method_kwargs.get("population_size", 32)),
-                    "--num-generations",
-                    str(method_kwargs.get("num_generations", 25)),
-                    "--mutation-std",
-                    str(method_kwargs.get("mutation_std", 0.2)),
-                ]
-            )
-        else:
-            print(f"❌ Unknown method: {method}")
-            return False, None, {}, ""
+    elif method == "random_search":
+        cmd.extend(
+            [
+                "--num-samples",
+                str(method_kwargs.get("num_samples", 100)),
+                "--scale",
+                str(method_kwargs.get("scale", 1.0)),
+                "--scan-batch-size",
+                str(method_kwargs.get("scan_batch_size", 10)),
+                "--random-search-seed",
+                str(method_kwargs.get("random_search_seed", 0)),
+            ]
+        )
+    elif method == "evolutionary_search":
+        cmd.extend(
+            [
+                "--population-size",
+                str(method_kwargs.get("population_size", 32)),
+                "--num-generations",
+                str(method_kwargs.get("num_generations", 25)),
+                "--mutation-std",
+                str(method_kwargs.get("mutation_std", 0.2)),
+            ]
+        )
+    else:
+        print(f"❌ Unknown method: {method}")
+        return False, None, {}, ""
 
     # Avoid creating a W&B run inside evaluate_checkpoint
     cmd.extend(["--no-wandb-run", "true"])

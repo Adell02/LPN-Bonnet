@@ -101,6 +101,7 @@ class LPN(nn.Module):
             )  # (*B, N, H)
             # Compute the loss for each pair using the context from the random search. Shape (*B, N).
             loss, metrics = self._loss_from_pair_and_context(context, pairs, grid_shapes, dropout_eval)
+        
         elif mode == "gradient_ascent":
             for arg in ["num_steps", "lr"]:
                 assert arg in mode_kwargs, f"'{arg}' argument required for 'gradient_ascent' training mode."
@@ -124,6 +125,7 @@ class LPN(nn.Module):
                 context = first_context
             # Compute the loss for each pair using the context from the gradient ascent. Shape (*B, N).
             loss, metrics = self._loss_from_pair_and_context(context, pairs, grid_shapes, dropout_eval)
+        
         elif mode == "evolutionary_search":
             for arg in ["population_size", "num_generations", "mutation_std"]:
                 assert arg in mode_kwargs, f"'{arg}' argument required for 'evolutionary_search' mode."
