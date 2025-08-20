@@ -989,6 +989,12 @@ class LPN(nn.Module):
         print(f"            📊 Flattened sequences: input={input_seq.shape}, output={output_seq.shape}")
         
         # Replicate latents over pairs (identical to random search)
+        # The issue is that we need to replicate latents to match the number of pairs
+        # but we need to be careful about the dimensions
+        
+        print(f"            📊 Output sequence shape: {output_seq.shape}")
+        print(f"            📊 Number of pairs: {output_seq.shape[-2]}")
+        
         # Ensure latents has the right shape for broadcasting
         if population_latents.ndim == 2:
             # (population, features) -> (1, population, 1, features)
@@ -999,19 +1005,45 @@ class LPN(nn.Module):
             latents = population_latents[..., None, :]
             print(f"            📊 Reshaped latents (ND): {latents.shape}")
         
-        latents = latents.repeat(output_seq.shape[-2], axis=-3)
-        print(f"            📊 Replicated latents: {latents.shape}")
+        # Replicate latents to match the number of pairs
+        # We need to replicate along the pairs dimension, not the population dimension
+        print(f"            📊 Before replication - latents: {latents.shape}, output_seq: {output_seq.shape}")
+        print(f"            📊 Replicating along axis -2 (pairs dimension) {output_seq.shape[-2]} times")
+        
+        # The issue is that we need to understand the dimension structure
+        # latents should be: (batch, population, pairs, features)
+        # but we're getting: (batch, population, 1, features) and trying to replicate
+        
+        # Let me fix this by properly understanding the dimensions
+        if latents.ndim == 4:  # (batch, population, 1, features)
+            # We need to replicate the pairs dimension
+            latents = latents.repeat(output_seq.shape[-2], axis=2)
+            print(f"            📊 Replicated latents (axis 2): {latents.shape}")
+        else:
+            print(f"            ⚠️ Unexpected latents shape: {latents.shape}")
+            latents = latents.repeat(output_seq.shape[-2], axis=-2)
+            print(f"            📊 Replicated latents (axis -2): {latents.shape}")
         
         # Batch decode (identical to random search)
         batch_size = scan_batch_size or latents.shape[-2]
         num_batches = latents.shape[-2] // batch_size
+        print(f"            📊 Batch processing: size={batch_size}, batches={num_batches}")
         
         if num_batches > 0:
+            print(f"            📊 Processing {num_batches} batches...")
             batched_latents = jnp.reshape(
                 latents[..., : num_batches * batch_size, :],
                 (*latents.shape[:-2], num_batches, batch_size, latents.shape[-1]),
             )
+            print(f"            📊 Batched latents: {batched_latents.shape}")
+            
             dropout_eval = True  # no dropout during decoder inference
+            print(f"            📊 About to call decoder with:")
+            print(f"               - input_seq: {input_seq.shape}")
+            print(f"               - output_seq: {output_seq.shape}")
+            print(f"               - batched_latents: {batched_latents.shape}")
+            print(f"               - dropout_eval: {dropout_eval}")
+            
             _, (row_logits, col_logits, grid_logits) = nn.scan(
                 lambda decoder, _, latents: (
                     None,
@@ -1027,9 +1059,17 @@ class LPN(nn.Module):
             row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
                 lambda x: x.reshape(*x.shape[:-3], -1, x.shape[-1]), (row_logits, col_logits, grid_logits)
             )
+            print(f"            📊 Batch logits: row={row_logits.shape}, col={col_logits.shape}, grid={grid_logits.shape}")
             
             if num_batches * batch_size < latents.shape[-2]:
                 remaining_latents = latents[..., num_batches * batch_size :, :]
+                print(f"            📊 Processing remaining {remaining_latents.shape[-2]} latents...")
+                print(f"            📊 About to call decoder with remaining latents:")
+                print(f"               - input_seq: {input_seq.shape}")
+                print(f"               - output_seq: {output_seq.shape}")
+                print(f"               - remaining_latents: {remaining_latents.shape}")
+                print(f"               - dropout_eval: {dropout_eval}")
+                
                 row_logits_remainder, col_logits_remainder, grid_logits_remainder = jax.vmap(
                     self.decoder, in_axes=(None, None, -2, None), out_axes=-2
                 )(input_seq, output_seq, remaining_latents, dropout_eval)
@@ -1038,11 +1078,20 @@ class LPN(nn.Module):
                     (row_logits, col_logits, grid_logits),
                     (row_logits_remainder, col_logits_remainder, grid_logits_remainder),
                 )
+                print(f"            📊 Combined logits: row={row_logits.shape}, col={col_logits.shape}, grid={grid_logits.shape}")
         else:
             # Single batch case
+            print(f"            📊 Single batch processing...")
+            print(f"            📊 About to call decoder with:")
+            print(f"               - input_seq: {input_seq.shape}")
+            print(f"               - output_seq: {output_seq.shape}")
+            print(f"               - latents: {latents.shape}")
+            print(f"               - dropout_eval: True")
+            
             row_logits, col_logits, grid_logits = jax.vmap(
                 self.decoder, in_axes=(None, None, -2, None), out_axes=-2
             )(input_seq, output_seq, latents, dropout_eval=True)
+            print(f"            📊 Single batch logits: row={row_logits.shape}, col={col_logits.shape}, grid={grid_logits.shape}")
         
         # Compute fitness (identical to random search)
         log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
@@ -1255,6 +1304,7 @@ class LPN(nn.Module):
                 assert arg in random_perturbation, f"'{arg}' argument required for random perturbation."
             num_samples = random_perturbation["num_samples"]
             scale = random_perturbation["scale"]
+            print(f"         📊 Adding random perturbations: {num_samples} samples, scale={scale}")
             
             # Handle different latent dimensions properly
             if latents.ndim == 2:
@@ -1262,44 +1312,65 @@ class LPN(nn.Module):
                 mean_latent = latents.mean(axis=0, keepdims=True)
                 random_vectors = jax.random.normal(key, (num_samples, latents.shape[-1]))
                 random_latents = mean_latent + scale * random_vectors
+                print(f"         📊 Random perturbations (2D): {random_latents.shape}")
             else:
                 # (batch, population, features) -> (batch, 1, features)
                 mean_latent = latents.mean(axis=-2, keepdims=True)
                 random_vectors = jax.random.normal(key, (*latents.shape[:-2], num_samples, latents.shape[-1]))
                 random_latents = mean_latent + scale * random_vectors
+                print(f"         📊 Random perturbations (ND): {random_latents.shape}")
             
             prep_latents = jnp.concatenate([prep_latents, random_latents], axis=-2)
+            print(f"         📊 Final latents with perturbations: {prep_latents.shape}")
         
         # Ensure the output has the expected shape
         if prep_latents.ndim < 2:
             raise ValueError(f"prep_latents must have at least 2 dimensions, got {prep_latents.ndim}")
         
+        print(f"         ✅ Final prepared latents: {prep_latents.shape}")
         return prep_latents
 
     @classmethod
     def _flatten_input_output_for_decoding(
         cls, pairs: chex.Array, grid_shapes: chex.Array
     ) -> tuple[chex.Array, chex.Array]:
+        print(f"            📊 Flattening pairs: {pairs.shape} -> {(*pairs.shape[:-3], -1, 2)}")
         flattened_pairs = jnp.reshape(pairs, (*pairs.shape[:-3], -1, 2))
+        
         input_seq = jnp.concatenate([grid_shapes[..., 0], flattened_pairs[..., 0]], axis=-1)
         output_seq = jnp.concatenate([grid_shapes[..., 1], flattened_pairs[..., 1]], axis=-1)
+        
+        print(f"            📊 Input sequence: {input_seq.shape}")
+        print(f"            📊 Output sequence: {output_seq.shape}")
+        
         return input_seq, output_seq
 
     @classmethod
     def _select_best_and_second_best_latents(
         cls, log_probs: chex.Array, latents: chex.Array
     ) -> tuple[chex.Array, chex.Array]:
+        print(f"         📊 Selecting best contexts from {latents.shape} latents")
+        print(f"         📊 Log probs shape: {log_probs.shape}")
+        
         sorted_log_probs_indices = jnp.argsort(log_probs, axis=-1, descending=True)
+        print(f"         📊 Sorted indices shape: {sorted_log_probs_indices.shape}")
+        
         best_context = jnp.take_along_axis(
             latents, sorted_log_probs_indices[..., 0:1, None], axis=-2
         ).squeeze(axis=-2)
+        print(f"         📊 Best context shape: {best_context.shape}")
+        
         try:
             second_best_context = jnp.take_along_axis(
                 latents, sorted_log_probs_indices[..., 1:2, None], axis=-2
             ).squeeze(axis=-2)
+            print(f"         📊 Second best context shape: {second_best_context.shape}")
         except ValueError:
             # If there is only one latent, the second best context is the same as the best context.
             second_best_context = best_context
+            print(f"         📊 Only one latent available, using same for second best")
+        
+        print(f"         ✅ Context selection completed")
         return best_context, second_best_context
 
     def _compute_log_probs(
