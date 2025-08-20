@@ -142,11 +142,11 @@ def get_all_checkpoints(
 
             # Fallback to alias pattern: num_steps_XXX
             if step_match is None:
-                        for alias in artifact.aliases:
-                            if alias.startswith("num_steps_"):
+                for alias in artifact.aliases:
+                    if alias.startswith("num_steps_"):
                         try:
-                                step_match = int(alias.split("_")[-1])
-                                break
+                            step_match = int(alias.split("_")[-1])
+                            break
                         except ValueError:
                             pass
 
