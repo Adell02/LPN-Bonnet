@@ -44,60 +44,6 @@ USAGE EXAMPLES:
      --dataset_folder pattern2d_eval \
      --dataset_length 100 \
      --max_checkpoints 5
-
-ARGUMENT REFERENCE:
-==================
-
-REQUIRED:
-  --run_name          Name of the W&B run to evaluate
-
-EVALUATION SOURCE (choose one):
-  --json_challenges   Path to JSON challenges file
-  --json_solutions    Path to JSON solutions file
-  OR
-  --dataset_folder    Dataset folder under 'src/datasets'
-
-CHECKPOINT SELECTION:
-  --max_checkpoints   Maximum number of checkpoints to evaluate
-  --checkpoint_strategy  How to select checkpoints:
-                        'even' = evenly spaced (default)
-                        'first' = first N checkpoints  
-                        'last' = last N checkpoints
-                        'random' = random selection
-
-BUDGET CONFIGURATION:
-  --budget_start      Starting budget value (default: 1)
-  --budget_end        Ending budget value (default: 100)
-  --budget_period     Period between budget values (default: 25)
-                      Result: [1, 26, 51, 76] for default values
-
-TASK LIMITATION:
-  --only_n_tasks     Limit number of tasks evaluated (faster testing)
-
-DATASET OPTIONS (when using --dataset_folder):
-  --dataset_length    Maximum examples to evaluate
-  --dataset_batch_size Batch size for dataset evaluation
-  --dataset_use_hf   Use HuggingFace hub (true/false)
-  --dataset_seed      Seed for dataset subsampling
-
-W&B CONFIGURATION:
-  --project          W&B project name (default: LPN-ARC)
-  --entity           W&B entity (default: ga624-imperial-college-london)
-
-OUTPUT:
-=======
-- CSV file: results/eval_{run_name}.csv
-- W&B logging: Real-time metrics and progress
-- W&B artifacts: CSV and comparison plots
-- Console: Progress updates and summary
-
-PERFORMANCE TIPS:
-================
-1. Start with --only_n_tasks 5 for quick testing
-2. Use --max_checkpoints 3-5 for initial evaluation
-3. Increase --budget_period for faster evaluation (fewer budget points)
-4. Monitor GPU memory usage with larger batch sizes
-5. Use --dataset_length to limit dataset size for faster evaluation
 """
 
 import os
@@ -205,7 +151,7 @@ def run_evaluation(
             cmd.extend(["--only-n-tasks", str(only_n_tasks)])
     else:
         print("❌ You must provide either JSON files or a dataset folder.")
-        return False, None, ""
+        return False, None, {}, ""
 
     # Method-specific args
     if method == "gradient_ascent":
@@ -238,7 +184,7 @@ def run_evaluation(
         )
     else:
         print(f"❌ Unknown method: {method}")
-        return False, None, ""
+        return False, None, {}, ""
 
     # Avoid creating a W&B run inside evaluate_checkpoint
     cmd.extend(["--no-wandb-run", "true"])
@@ -251,7 +197,7 @@ def run_evaluation(
         stderr = result.stderr or ""
 
         # Parse metrics from stdout
-        metrics = {}
+        metrics: Dict[str, Optional[float]] = {}
         acc: Optional[float] = None
         
         # Parse overall accuracy (case-insensitive)
@@ -298,16 +244,17 @@ def run_evaluation(
             )
             return True, acc, metrics, stdout
         else:
-            # Optionally retry random_search with smaller scan_batch_size to avoid XLA fusion issues
+            # Retry random_search with smaller scan_batch_size if certain errors show up
             should_retry = (
-                method == "random_search"
-                and "gpu_fusible" in stderr.lower()
-                or "fusion root" in stderr.lower()
-                or result.returncode != 0
+                (method == "random_search")
+                and (
+                    ("gpu_fusible" in stderr.lower())
+                    or ("fusion root" in stderr.lower())
+                    or (result.returncode != 0)
+                )
             )
             if should_retry:
                 try:
-                    # Determine smaller scan_batch_size
                     current_sbs = int(method_kwargs.get("scan_batch_size", 10) or 10)
                     new_sbs = max(1, min(8, current_sbs // 2 if current_sbs > 2 else 5))
                     retry_cmd = [
@@ -319,10 +266,9 @@ def run_evaluation(
                     retry_res = subprocess.run(retry_cmd, capture_output=True, text=True, cwd=os.getcwd())
                     retry_stdout = retry_res.stdout or ""
                     retry_stderr = retry_res.stderr or ""
-                    retry_acc = None
-                    retry_metrics = {}
+                    retry_metrics: Dict[str, Optional[float]] = {}
+                    retry_acc: Optional[float] = None
                     
-                    # Parse retry metrics
                     try:
                         m2 = re.search(r"accuracy:\s*([0-9]*\.?[0-9]+)", retry_stdout.lower())
                         if m2:
@@ -332,7 +278,6 @@ def run_evaluation(
                         retry_acc = None
                         retry_metrics["overall_accuracy"] = None
                     
-                    # Parse retry additional metrics
                     for metric_name, pattern in metric_patterns.items():
                         try:
                             m2 = re.search(pattern, retry_stdout.lower())
@@ -371,9 +316,9 @@ def run_evaluation(
                     print(f"Error output:\n{stderr}")
                 return False, acc, metrics, stdout
             
-        except Exception as e:
-            print(f"❌ Error running {method} evaluation: {e}")
-            return False, None, {}, ""
+    except Exception as e:
+        print(f"❌ Error running {method} evaluation: {e}")
+        return False, None, {}, ""
 
 
 def main():
@@ -422,12 +367,12 @@ def main():
     
     args = parser.parse_args()
     
-    # Shared budget configuration - now using command line arguments
+    # Shared budget configuration
     BUDGET_CONFIG = {
         "start": args.budget_start,           # Start value (inclusive)
-        "end": args.budget_end,              # End value (inclusive) 
-        "period": args.budget_period,        # Step size between values
-        "include_start": True,               # Whether to include the start value
+        "end": args.budget_end,               # End value (inclusive) 
+        "period": args.budget_period,         # Step size between values
+        "include_start": True,                # Whether to include the start value
     }
     
     # Generate budgets based on configuration
@@ -435,14 +380,11 @@ def main():
         budgets = []
         if config["include_start"]:
             budgets.append(config["start"])
-        
-        # Generate range from start to end with period
         current = config["start"]
         while current <= config["end"]:
-            if current not in budgets:  # Avoid duplicates
+            if current not in budgets:
                 budgets.append(current)
             current += config["period"]
-        
         return sorted(budgets)
     
     # Generate shared budgets
@@ -499,12 +441,15 @@ def main():
     checkpoints = get_all_checkpoints(args.run_name, args.project, args.entity)
     if not checkpoints:
         print("❌ No checkpoints found. Exiting.")
+        try:
+            run.finish()
+        except Exception:
+            pass
         return
         
-    # Budgets
-    # Use the same budgets for both methods
-    ga_steps = shared_budgets      # Gradient ascent uses num_steps
-    rs_samples = shared_budgets    # Random search uses num_samples
+    # Budgets (already built)
+    ga_steps = shared_budgets
+    rs_samples = shared_budgets
     
     # Base method configs
     base_methods = {
@@ -563,19 +508,21 @@ def main():
             if "--checkpoint:" in checkpoint_name:
                 version_part = checkpoint_name.split("--checkpoint:")[1]
                 try:
-                    version_match = int(version_part[1:])  # Remove 'v' and convert to int
-                    training_progress = version_match
+                    version_num = int(version_part[1:])  # Remove 'v' and convert to int
+                    training_progress = version_num
                 except ValueError:
                     training_progress = 0
             
+            denom = max(len(checkpoints) - 1, 1)
+            pct = int((training_progress / denom) * 100)
+
             print("\n" + "=" * 60)
             print(f"📊 Checkpoint {i}/{len(checkpoints)}: Step {step} (v{training_progress})")
             print(f"📁 Artifact: {checkpoint['name']}")
-            print(f"🎯 Training Progress: {training_progress}/{len(checkpoints)-1} ({int((training_progress/(len(checkpoints)-1))*100)}%)")
+            print(f"🎯 Training Progress: {training_progress}/{denom} ({pct}%)")
             print("=" * 60)
 
             # Build artifact path for evaluate_checkpoint.py
-            # W&B expects '{entity}/{project}/{artifact_name}' where artifact_name includes ':version' or alias
             artifact_path = f"{args.entity}/{args.project}/{checkpoint['name']}"
 
             # Gradient Ascent sweeps
@@ -681,13 +628,12 @@ def main():
             
             # Generate and upload comparison plot for this step
             try:
-                # Read current CSV data to get available data for plotting
-                step_data = {
+                # Accumulate data from CSV
+                method_to_step_to_budget: Dict[str, Dict[int, Dict[int, float]]] = {
                     "gradient_ascent": {},
                     "random_search": {}
                 }
                 
-                # Read the CSV to get data for current step and all previous steps
                 if out_csv.exists():
                     with out_csv.open("r") as f:
                         reader = csv.DictReader(f)
@@ -696,44 +642,33 @@ def main():
                                 row_step = int(row["checkpoint_step"]) if row["checkpoint_step"] else None
                                 if row_step is None:
                                     continue
-                                    
                                 method = row["method"]
                                 budget = int(row["budget"]) if row["budget"] else None
                                 if budget is None:
                                     continue
-                                    
-                                acc = None
                                 try:
-                                    acc = float(row["overall_accuracy"]) if row["overall_accuracy"] not in ("", None) else np.nan
+                                    acc_val = float(row["overall_accuracy"]) if row["overall_accuracy"] not in ("", None) else np.nan
                                 except Exception:
-                                    acc = np.nan
+                                    acc_val = np.nan
                                 
-                                if method == "gradient_ascent":
-                                    step_data["gradient_ascent"].setdefault(row_step, {})[budget] = acc
-                                elif method == "random_search":
-                                    step_data["random_search"].setdefault(row_step, {})[budget] = acc
+                                method_to_step_to_budget[method].setdefault(row_step, {})[budget] = acc_val
                             except Exception:
                                 continue
                 
-                # Generate comparison plot with available data
-                if step_data["gradient_ascent"] or step_data["random_search"]:
-                    # Get all available steps and budgets
-                    all_steps = sorted(set(list(step_data["gradient_ascent"].keys()) + list(step_data["random_search"].keys())))
-                    
-                    # Use the actual shared budgets to ensure consistency
+                if method_to_step_to_budget["gradient_ascent"] or method_to_step_to_budget["random_search"]:
+                    all_steps = sorted(set(list(method_to_step_to_budget["gradient_ascent"].keys()) +
+                                           list(method_to_step_to_budget["random_search"].keys())))
                     all_budgets = sorted(shared_budgets)
                     
                     if all_steps and all_budgets:
-                        # Create matrices for plotting with proper budget alignment
                         A = np.full((len(all_budgets), len(all_steps)), np.nan)
                         B = np.full((len(all_budgets), len(all_steps)), np.nan)
                         
                         for j, s in enumerate(all_steps):
                             for k, b in enumerate(all_budgets):
-                                A[k, j] = step_data["gradient_ascent"].get(s, {}).get(b, np.nan)
-                                B[k, j] = step_data["random_search"].get(s, {}).get(b, np.nan)
+                                A[k, j] = method_to_step_to_budget["gradient_ascent"].get(s, {}).get(b, np.nan)
+                                B[k, j] = method_to_step_to_budget["random_search"].get(s, {}).get(b, np.nan)
                         
-                        # Generate the comparison plot
                         fig = visualize_optimization_comparison(
                             steps=np.array(all_steps),
                             budgets=np.array(all_budgets),
@@ -743,18 +678,25 @@ def main():
                             method_B_name="Random Search",
                         )
                         
-                        # Add step tracker information showing accumulation
-                        fig.suptitle(f"Optimization Comparison - Accumulated Data\n"
-                                   f"Current Training Progress: {training_progress}/{len(checkpoints)-1} ({int((training_progress/(len(checkpoints)-1))*100)}%)\n"
-                                   f"Checkpoint {i}/{len(checkpoints)} | Total Steps: {len(all_steps)}, Budgets: {len(all_budgets)}", 
-                                   fontsize=14, y=0.98)
+                        fig.suptitle(
+                            f"Optimization Comparison - Accumulated Data\n"
+                            f"Current Training Progress: {training_progress}/{denom} ({pct}%)\n"
+                            f"Checkpoint {i}/{len(checkpoints)} | Total Steps: {len(all_steps)}, Budgets: {len(all_budgets)}",
+                            fontsize=14, y=0.98
+                        )
                         
-                        # Save and upload the plot
                         step_plot_path = out_dir / f"optim_comparison_accumulated_progress_{training_progress}.png"
                         fig.savefig(step_plot_path, dpi=200, bbox_inches='tight')
                         plt.close(fig)
                         
-                        # Upload to W&B with step information
+                        # Count available data points without shadowing names
+                        data_point_count = 0
+                        for method_name, step_map in method_to_step_to_budget.items():
+                            for _step, budget_map in step_map.items():
+                                for v in budget_map.values():
+                                    if not np.isnan(v):
+                                        data_point_count += 1
+                        
                         wandb.log({
                             f"checkpoint_{training_progress}/optimization_comparison": wandb.Image(str(step_plot_path)),
                             f"checkpoint_{training_progress}/plot_step": training_progress,
@@ -765,21 +707,20 @@ def main():
                             f"checkpoint_{training_progress}/plot_accumulated_data": True,
                         })
                         
-                        # Also log to a dedicated plot progression section for easy tracking
                         wandb.log({
                             "plot_progression/current_step": training_progress,
                             "plot_progression/checkpoint_number": i,
                             "plot_progression/total_checkpoints": len(checkpoints),
                             "plot_progression/comparison_plot": wandb.Image(str(step_plot_path)),
-                            "plot_progression/available_data_points": len([v for method_data in step_data.values() for step_data in method_data.values() for v in step_data.values() if not np.isnan(v)]),
+                            "plot_progression/available_data_points": data_point_count,
                             "plot_progression/accumulated_steps": len(all_steps),
                             "plot_progression/accumulated_budgets": len(all_budgets),
                         })
                         
-                        print(f"📊 Generated and uploaded accumulated comparison plot for training progress {training_progress}/{len(checkpoints)-1} ({int((training_progress/(len(checkpoints)-1))*100)}%)")
+                        print(f"📊 Generated and uploaded accumulated comparison plot for training progress {training_progress}/{denom} ({pct}%)")
                         print(f"   📈 Available steps: {all_steps}")
                         print(f"   💰 Available budgets: {all_budgets}")
-                        print(f"   🔍 Data coverage: {len([v for method_data in step_data.values() for step_data in method_data.values() for v in step_data.values() if not np.isnan(v)])} data points")
+                        print(f"   🔍 Data coverage: {data_point_count} data points")
                         
             except Exception as e:
                 print(f"⚠️  Failed to generate comparison plot for training progress {training_progress}: {e}")
@@ -793,7 +734,6 @@ def main():
                     f"checkpoint_{training_progress}/failed_evaluations": results["failed_evals"],
                 })
                 
-                # Also log overall progress
                 overall_progress = i / len(checkpoints)
                 wandb.log({
                     "overall/progress": overall_progress,
@@ -816,9 +756,9 @@ def main():
 
     # Build final optimization comparison plot from CSV (overall summary)
     try:
-        steps_list: list[int] = []
-        ga_map: dict[int, dict[int, float]] = {}
-        rs_map: dict[int, dict[int, float]] = {}
+        steps_list: List[int] = []
+        ga_map: Dict[int, Dict[int, float]] = {}
+        rs_map: Dict[int, Dict[int, float]] = {}
         with out_csv.open("r") as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -834,21 +774,18 @@ def main():
                     budget = int(row["budget"]) if row["budget"] else None
                 except Exception:
                     budget = None
-                acc = None
                 try:
-                    acc = float(row["overall_accuracy"]) if row["overall_accuracy"] not in ("", None) else np.nan
+                    acc_val = float(row["overall_accuracy"]) if row["overall_accuracy"] not in ("", None) else np.nan
                 except Exception:
-                    acc = np.nan
+                    acc_val = np.nan
                 if budget is None:
                     continue
                 if method == "gradient_ascent":
-                    ga_map.setdefault(step, {})[budget] = acc
+                    ga_map.setdefault(step, {})[budget] = acc_val
                 elif method == "random_search":
-                    rs_map.setdefault(step, {})[budget] = acc
+                    rs_map.setdefault(step, {})[budget] = acc_val
 
         steps_sorted = sorted(set(steps_list))
-        
-        # Use the actual budgets from the shared configuration
         actual_budgets = shared_budgets
         
         A = np.full((len(actual_budgets), len(steps_sorted)), np.nan)
@@ -858,7 +795,6 @@ def main():
                 A[k, j] = ga_map.get(s, {}).get(b, np.nan)
                 B[k, j] = rs_map.get(s, {}).get(b, np.nan)
 
-        # Generate the final comparison plot
         fig = visualize_optimization_comparison(
             steps=np.array(steps_sorted),
             budgets=np.array(actual_budgets),
@@ -868,19 +804,20 @@ def main():
             method_B_name="Random Search",
         )
         
-        # Add comprehensive title with run information and training progress context
         max_progress = max(steps_sorted) if steps_sorted else 0
-        progress_percentage = int((max_progress / max(len(checkpoints)-1, 1)) * 100) if steps_sorted else 0
+        denom_final = max(len(checkpoints) - 1, 1)
+        progress_percentage = int((max_progress / denom_final) * 100) if steps_sorted else 0
         
-        fig.suptitle(f"Final Optimization Comparison - {args.run_name}\n"
-                    f"Training Progress: {len(steps_sorted)} steps (0% → {progress_percentage}%), Budgets: {len(actual_budgets)}", 
-                    fontsize=14, y=0.98)
+        fig.suptitle(
+            f"Final Optimization Comparison - {args.run_name}\n"
+            f"Training Progress: {len(steps_sorted)} steps (0% → {progress_percentage}%), Budgets: {len(actual_budgets)}", 
+            fontsize=14, y=0.98
+        )
         
         plot_path = out_dir / f"optim_comparison_final_{args.run_name}.png"
         fig.savefig(plot_path, dpi=200, bbox_inches='tight')
         plt.close(fig)
         
-        # Upload to W&B
         wandb.log({
             "final/optimization_comparison": wandb.Image(str(plot_path)),
             "final/total_checkpoints": len(steps_sorted),
@@ -890,7 +827,6 @@ def main():
             "final/training_progress_percentage": progress_percentage,
         })
         
-        # Also upload as artifact
         plot_art = wandb.Artifact(f"{args.run_name}--final-optim-comparison", type="evaluation")
         plot_art.add_file(str(plot_path))
         run.log_artifact(plot_art)
@@ -913,23 +849,16 @@ def main():
         print(f"  ✅ Success: {stats['success']}")
         print(f"  ❌ Failed: {stats['failed']}")
 
-    print("\n🎉 Evaluation complete!")
-    if results["failed_evals"] == 0:
-        print("🎊 All evaluations completed successfully!")
-    else:
-        print(f"⚠️  {results['failed_evals']} evaluations failed. Check the logs above for details.")
-    
     print(f"\n📊 CSV saved to: {out_csv}")
     print("📈 Available metrics in CSV:")
-    print("   - overall_accuracy: Overall task accuracy")
-    print("   - top_1_shape_accuracy: Shape accuracy for first attempt")
-    print("   - top_1_accuracy: Task accuracy for first attempt") 
-    print("   - top_1_pixel_correctness: Pixel-level correctness for first attempt")
-    print("   - top_2_shape_accuracy: Shape accuracy for best of two attempts")
-    print("   - top_2_accuracy: Task accuracy for best of two attempts")
-    print("   - top_2_pixel_correctness: Pixel-level correctness for best of two attempts")
+    print("   - overall_accuracy")
+    print("   - top_1_shape_accuracy") 
+    print("   - top_1_accuracy")
+    print("   - top_1_pixel_correctness")
+    print("   - top_2_shape_accuracy")
+    print("   - top_2_accuracy")
+    print("   - top_2_pixel_correctness")
 
-    # Finish W&B run
     try:
         run.finish()
     except Exception:
