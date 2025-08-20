@@ -991,19 +991,20 @@ class LPN(nn.Module):
                 (*latents_.shape[:-2], num_batches, batch_size, latents_.shape[-1]),
             )  # (B, P, NB, BS, H)
 
-            # scan over NB, vmap over BS; sequences stay (B, P, T)
-            _, (row_logits, col_logits, grid_logits) = nn.scan(
-                lambda decoder, _, lts: (
-                    None,
-                    jax.vmap(decoder, in_axes=(None, None, -2, None), out_axes=-2)(
-                        input_seq, output_seq, lts, dropout_eval
-                    ),
-                ),
-                variable_broadcast="params",
-                split_rngs={"params": False},
-                in_axes=-3,  # NB
-                out_axes=-3,
-            )(self.decoder, None, batched)
+            # Use jax.lax.scan instead of nn.scan to avoid nested scan issues
+            def batch_step(carry, batch_latents):
+                # batch_latents: (B, P, BS, H)
+                logits = jax.vmap(self.decoder, in_axes=(None, None, -2, None), out_axes=-2)(
+                    input_seq, output_seq, batch_latents, dropout_eval
+                )
+                return carry, logits
+            
+            _, (row_logits, col_logits, grid_logits) = jax.lax.scan(
+                batch_step,
+                init=None,
+                xs=batched,
+                length=num_batches
+            )
 
             # collapse NB×BS back to C
             row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
