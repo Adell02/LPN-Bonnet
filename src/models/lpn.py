@@ -950,15 +950,31 @@ class LPN(nn.Module):
         # Latents: (B, C, H)  -> (B, P, C, H)
         if population_latents.ndim == 2:   # (C,H) -> (1,C,H)
             population_latents = population_latents[None, ...]
+        
+        print(f"            📊 Population latents shape: {population_latents.shape}")
+        print(f"            📊 Output seq pairs: {output_seq.shape[-2]}")
+        
+        # Replicate latents across pairs: (B, C, H) -> (B, P, C, H)
+        # population_latents: (B, C, H), output_seq.shape[-2]: P (number of pairs)
+        # We need: (B, P, C, H) where P=pairs, C=candidates
         latents = population_latents[..., None, :, :].repeat(output_seq.shape[-2], axis=-3)
+        print(f"            📊 After replication: {latents.shape}")
+        
+        # Now latents has shape (B, C, P, H), but we need (B, P, C, H)
+        # So we need to transpose the pairs and candidates dimensions
+        latents = latents.transpose(0, 2, 1, 3)  # (B, C, P, H) -> (B, P, C, H)
+        print(f"            📊 After transpose: {latents.shape}")
 
         # Batch candidates with nn.scan (Flax lift that shares decoder params)
         batch_size = scan_batch_size or latents.shape[-2]  # candidates axis
         num_batches = latents.shape[-2] // batch_size
+        print(f"            📊 Batching: batch_size={batch_size}, num_batches={num_batches}")
+        
         batched_latents = jnp.reshape(
             latents[..., : num_batches * batch_size, :],
             (*latents.shape[:-2], num_batches, batch_size, latents.shape[-1]),
         )
+        print(f"            📊 Batched latents shape: {batched_latents.shape}")
         dropout_eval = True
 
         # One lifted scan over the decoder; inside, vmap the decoder over the batch
