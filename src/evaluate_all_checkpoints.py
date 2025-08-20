@@ -161,15 +161,15 @@ def get_all_checkpoints(
 
         # Sort by step if available
         checkpoints.sort(key=lambda x: x["step"] if x["step"] is not None else -1)
-            
-            print(f"Found {len(checkpoints)} checkpoints:")
-            for cp in checkpoints:
-                print(f"  - {cp['name']} (Step: {cp['step']})")
-            return checkpoints
-            
-        except Exception as e:
-            print(f"Error accessing run: {e}")
-            return []
+        
+        print(f"Found {len(checkpoints)} checkpoints:")
+        for cp in checkpoints:
+            print(f"  - {cp['name']} (Step: {cp['step']})")
+        return checkpoints
+        
+    except Exception as e:
+        print(f"Error accessing run: {e}")
+        return []
     
 
 def run_evaluation(
@@ -372,8 +372,8 @@ def run_evaluation(
                 return False, acc, metrics, stdout
             
         except Exception as e:
-        print(f"❌ Error running {method} evaluation: {e}")
-        return False, None, {}, ""
+            print(f"❌ Error running {method} evaluation: {e}")
+            return False, None, {}, ""
 
 
 def main():
@@ -497,9 +497,9 @@ def main():
 
     # Fetch checkpoints
     checkpoints = get_all_checkpoints(args.run_name, args.project, args.entity)
-        if not checkpoints:
+    if not checkpoints:
         print("❌ No checkpoints found. Exiting.")
-            return
+        return
         
     # Budgets
     # Use the same budgets for both methods
@@ -897,7 +897,7 @@ def main():
         
         print(f"📊 Generated and uploaded final comparison plot with {len(steps_sorted)} training progress steps (0% → {progress_percentage}%) and {len(actual_budgets)} budgets")
             
-        except Exception as e:
+    except Exception as e:
         print(f"⚠️  Failed to generate or upload final comparison plot: {e}")
 
     # Summary
