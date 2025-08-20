@@ -917,7 +917,7 @@ class LPN(nn.Module):
         print(f"      ✅ Population dict created with keys: {list(result.keys())}")
         return result
 
-        def _evolutionary_loop(
+    def _evolutionary_loop(
         self, population: dict, pairs: chex.Array, grid_shapes: chex.Array,
         key: chex.PRNGKey, num_generations: int, population_size: int,
         mutation_std: float, scan_batch_size: Optional[int]
