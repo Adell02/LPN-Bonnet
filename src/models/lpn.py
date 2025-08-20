@@ -970,76 +970,92 @@ class LPN(nn.Module):
         num_batches = latents.shape[-2] // batch_size
         print(f"            📊 Batching: batch_size={batch_size}, num_batches={num_batches}")
         
-        batched_latents = jnp.reshape(
-            latents[..., : num_batches * batch_size, :],
-            (*latents.shape[:-2], num_batches, batch_size, latents.shape[-1]),
-        )
-        print(f"            📊 Batched latents shape: {batched_latents.shape}")
         dropout_eval = True
-
-        # One lifted scan over the decoder; inside, vmap the decoder over the batch
-        print(f"            🔍 DEBUG: About to call nn.scan with:")
-        print(f"               - input_seq shape: {input_seq.shape}")
-        print(f"               - output_seq shape: {output_seq.shape}")
-        print(f"               - batched_latents shape: {batched_latents.shape}")
-        print(f"               - batched_latents ndim: {batched_latents.ndim}")
         
-        # Add lambda debugging to see what's actually being passed to the decoder
-        def debug_lambda(decoder, _, lat_batch):
-            print(f"            🔍 DEBUG: Inside lambda, lat_batch shape: {lat_batch.shape}")
-            print(f"            🔍 DEBUG: About to call vmap with lat_batch")
-            result = jax.vmap(decoder, in_axes=(None, None, -2, None), out_axes=-2)(
-                input_seq, output_seq, lat_batch, dropout_eval
+        # Handle single batch case properly to avoid 5D tensors
+        if num_batches == 1:
+            print(f"            🔧 Single batch case - processing directly")
+            # Process all latents at once without batching
+            row_logits, col_logits, grid_logits = jax.vmap(
+                self.decoder, in_axes=(None, None, -2, None), out_axes=-2
+            )(input_seq, output_seq, latents, dropout_eval)
+            print(f"            🔍 DEBUG: Direct vmap results:")
+            print(f"               - row_logits shape: {row_logits.shape}")
+            print(f"               - col_logits shape: {col_logits.shape}")
+            print(f"               - grid_logits shape: {grid_logits.shape}")
+        else:
+            print(f"            🔧 Multiple batches - using nn.scan")
+            batched_latents = jnp.reshape(
+                latents[..., : num_batches * batch_size, :],
+                (*latents.shape[:-2], num_batches, batch_size, latents.shape[-1]),
             )
-            print(f"            🔍 DEBUG: vmap result shapes: {[x.shape for x in result]}")
-            return None, result
-        
-        _, (row_logits, col_logits, grid_logits) = nn.scan(
-            debug_lambda,
-            variable_broadcast="params",
-            split_rngs={"params": False},
-            in_axes=-3,
-            out_axes=-3,
-        )(self.decoder, None, batched_latents)
+            print(f"            📊 Batched latents shape: {batched_latents.shape}")
+            
+            # Continue with nn.scan for multiple batches...
 
-        # Collapse (num_batches, batch_size) -> candidates
-        print(f"            🔍 DEBUG: Before reshape collapse:")
-        print(f"               - row_logits shape: {row_logits.shape}")
-        print(f"               - col_logits shape: {col_logits.shape}")
-        print(f"               - grid_logits shape: {grid_logits.shape}")
-        
-        row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
-            lambda x: x.reshape(*x.shape[:-3], -1, x.shape[-1]),
-            (row_logits, col_logits, grid_logits),
-        )
-        
-        print(f"            🔍 DEBUG: After reshape collapse:")
-        print(f"               - row_logits shape: {row_logits.shape}")
-        print(f"               - col_logits shape: {col_logits.shape}")
-        print(f"               - grid_logits shape: {grid_logits.shape}")
-
-        # Remainder candidates (if any)
-        if num_batches * batch_size < latents.shape[-2]:
-            remaining = latents[..., num_batches * batch_size :, :]
-            print(f"            🔍 DEBUG: Processing remainder:")
-            print(f"               - remaining shape: {remaining.shape}")
+            # One lifted scan over the decoder; inside, vmap the decoder over the batch
+            print(f"            🔍 DEBUG: About to call nn.scan with:")
             print(f"               - input_seq shape: {input_seq.shape}")
             print(f"               - output_seq shape: {output_seq.shape}")
+            print(f"               - batched_latents shape: {batched_latents.shape}")
+            print(f"               - batched_latents ndim: {batched_latents.ndim}")
             
-            r_row, r_col, r_grid = jax.vmap(
-                self.decoder, in_axes=(None, None, -2, None), out_axes=-2
-            )(input_seq, output_seq, remaining, dropout_eval)
+            # Add lambda debugging to see what's actually being passed to the decoder
+            def debug_lambda(decoder, _, lat_batch):
+                print(f"            🔍 DEBUG: Inside lambda, lat_batch shape: {lat_batch.shape}")
+                print(f"            🔍 DEBUG: About to call vmap with lat_batch")
+                result = jax.vmap(decoder, in_axes=(None, None, -2, None), out_axes=-2)(
+                    input_seq, output_seq, lat_batch, dropout_eval
+                )
+                print(f"            🔍 DEBUG: vmap result shapes: {[x.shape for x in result]}")
+                return None, result
             
-            print(f"            🔍 DEBUG: Remainder results:")
-            print(f"               - r_row shape: {r_row.shape}")
-            print(f"               - r_col shape: {r_col.shape}")
-            print(f"               - r_grid shape: {r_grid.shape}")
+            _, (row_logits, col_logits, grid_logits) = nn.scan(
+                debug_lambda,
+                variable_broadcast="params",
+                split_rngs={"params": False},
+                in_axes=-3,
+                out_axes=-3,
+            )(self.decoder, None, batched_latents)
+
+            # Collapse (num_batches, batch_size) -> candidates
+            print(f"            🔍 DEBUG: Before reshape collapse:")
+            print(f"               - row_logits shape: {row_logits.shape}")
+            print(f"               - col_logits shape: {col_logits.shape}")
+            print(f"               - grid_logits shape: {grid_logits.shape}")
             
             row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
-                lambda x, y: jnp.concatenate([x, y], axis=-2),
+                lambda x: x.reshape(*x.shape[:-3], -1, x.shape[-1]),
                 (row_logits, col_logits, grid_logits),
-                (r_row, r_col, r_grid),
             )
+            
+            print(f"            🔍 DEBUG: After reshape collapse:")
+            print(f"               - row_logits shape: {row_logits.shape}")
+            print(f"               - col_logits shape: {col_logits.shape}")
+            print(f"               - grid_logits shape: {grid_logits.shape}")
+
+            # Remainder candidates (if any)
+            if num_batches * batch_size < latents.shape[-2]:
+                remaining = latents[..., num_batches * batch_size :, :]
+                print(f"            🔍 DEBUG: Processing remainder:")
+                print(f"               - remaining shape: {remaining.shape}")
+                print(f"               - input_seq shape: {input_seq.shape}")
+                print(f"               - output_seq shape: {output_seq.shape}")
+                
+                r_row, r_col, r_grid = jax.vmap(
+                    self.decoder, in_axes=(None, None, -2, None), out_axes=-2
+                )(input_seq, output_seq, remaining, dropout_eval)
+                
+                print(f"            🔍 DEBUG: Remainder results:")
+                print(f"               - r_row shape: {r_row.shape}")
+                print(f"               - r_col shape: {r_col.shape}")
+                print(f"               - r_grid shape: {r_grid.shape}")
+                
+                row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
+                    lambda x, y: jnp.concatenate([x, y], axis=-2),
+                    (row_logits, col_logits, grid_logits),
+                    (r_row, r_col, r_grid),
+                )
 
         # Score candidates: (B, P, C)
         log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
