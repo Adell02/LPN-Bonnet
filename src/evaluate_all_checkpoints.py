@@ -438,14 +438,47 @@ def main():
     )
 
     # Fetch checkpoints
-    checkpoints = get_all_checkpoints(args.run_name, args.project, args.entity)
-    if not checkpoints:
+    all_checkpoints = get_all_checkpoints(args.run_name, args.project, args.entity)
+    if not all_checkpoints:
         print("❌ No checkpoints found. Exiting.")
         try:
             run.finish()
         except Exception:
             pass
         return
+    
+    # Apply checkpoint selection strategy
+    if args.max_checkpoints is not None and args.max_checkpoints < len(all_checkpoints):
+        if args.checkpoint_strategy == "even":
+            # Select evenly spaced checkpoints
+            step = len(all_checkpoints) // args.max_checkpoints
+            indices = list(range(0, len(all_checkpoints), step))[:args.max_checkpoints]
+            checkpoints = [all_checkpoints[i] for i in indices]
+            print(f"📊 Selected {len(checkpoints)} evenly spaced checkpoints from {len(all_checkpoints)} total")
+        elif args.checkpoint_strategy == "first":
+            # Select first N checkpoints
+            checkpoints = all_checkpoints[:args.max_checkpoints]
+            print(f"📊 Selected first {len(checkpoints)} checkpoints from {len(all_checkpoints)} total")
+        elif args.checkpoint_strategy == "last":
+            # Select last N checkpoints
+            checkpoints = all_checkpoints[-args.max_checkpoints:]
+            print(f"📊 Selected last {len(checkpoints)} checkpoints from {len(all_checkpoints)} total")
+        elif args.checkpoint_strategy == "random":
+            # Select random N checkpoints
+            import random
+            random.seed(42)  # Fixed seed for reproducibility
+            checkpoints = random.sample(all_checkpoints, args.max_checkpoints)
+            checkpoints.sort(key=lambda x: x["step"] if x["step"] is not None else -1)  # Keep sorted
+            print(f"📊 Selected {len(checkpoints)} random checkpoints from {len(all_checkpoints)} total")
+        else:
+            print(f"⚠️  Unknown checkpoint strategy: {args.checkpoint_strategy}. Using all checkpoints.")
+            checkpoints = all_checkpoints
+    else:
+        checkpoints = all_checkpoints
+        if args.max_checkpoints is not None:
+            print(f"📊 Using all {len(checkpoints)} checkpoints (max_checkpoints={args.max_checkpoints} >= total)")
+        else:
+            print(f"📊 Using all {len(checkpoints)} checkpoints (no max_checkpoints specified)")
         
     # Budgets (already built)
     ga_steps = shared_budgets
