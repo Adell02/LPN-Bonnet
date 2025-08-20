@@ -790,33 +790,61 @@ class LPN(nn.Module):
     ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:
         """Evolutionary search for optimal latent context."""
         
+        print(f"🔬 EVOLUTIONARY SEARCH START")
+        print(f"   📊 Input latents shape: {latents.shape}")
+        print(f"   📊 Pairs shape: {pairs.shape}")
+        print(f"   📊 Grid shapes shape: {grid_shapes.shape}")
+        print(f"   🎯 Population size: {population_size}")
+        print(f"   🎯 Generations: {num_generations}")
+        print(f"   🎯 Mutation std: {mutation_std}")
+        print(f"   🎯 Include mean latent: {include_mean_latent}")
+        print(f"   🎯 Include all latents: {include_all_latents}")
+        print(f"   🎯 Track progress: {track_progress}")
+        
         # 1. Prepare initial population using existing helper
+        print(f"   🔧 Step 1: Preparing base latents...")
         base_latents = self._prepare_latents_before_search(
             include_mean_latent, include_all_latents, latents
         )
+        print(f"   ✅ Base latents prepared: {base_latents.shape}")
+        
+        # Validate base_latents shape
+        if base_latents.ndim < 2:
+            raise ValueError(f"base_latents must have at least 2 dimensions, got {base_latents.ndim}")
+        if base_latents.shape[-1] != latents.shape[-1]:
+            raise ValueError(f"base_latents feature dimension mismatch: {base_latents.shape[-1]} vs {latents.shape[-1]}")
         
         # 2. Initialize population with Gaussian perturbations
+        print(f"   🔧 Step 2: Initializing population...")
         key, pop_key = jax.random.split(key)
         population = self._initialize_evolutionary_population(
             base_latents, population_size, mutation_std, pop_key
         )
+        print(f"   ✅ Population initialized: {population['latents'].shape}")
         
         # 3. Evolutionary loop
+        print(f"   🔧 Step 3: Running evolutionary loop...")
         if track_progress:
             population, trajectory_data = self._evolutionary_loop_with_tracking(
                 population, pairs, grid_shapes, key, num_generations, 
                 population_size, mutation_std, scan_batch_size
             )
+            print(f"   ✅ Evolutionary loop with tracking completed")
         else:
             population = self._evolutionary_loop(
                 population, pairs, grid_shapes, key, num_generations,
                 population_size, mutation_std, scan_batch_size
             )
+            print(f"   ✅ Evolutionary loop completed")
         
         # 4. Select best contexts
+        print(f"   🔧 Step 4: Selecting best contexts...")
         best_context, second_best_context = self._select_best_and_second_best_latents(
             population["fitness"], population["latents"]
         )
+        print(f"   ✅ Best contexts selected: {best_context.shape}, {second_best_context.shape}")
+        
+        print(f"🔬 EVOLUTIONARY SEARCH COMPLETED SUCCESSFULLY")
         
         if track_progress:
             return best_context, second_best_context, trajectory_data
@@ -828,29 +856,66 @@ class LPN(nn.Module):
     ) -> dict:
         """Initialize population with base latents + Gaussian perturbations."""
         
+        # Validate inputs
+        if base_latents.ndim < 2:
+            raise ValueError(f"base_latents must have at least 2 dimensions, got {base_latents.ndim}")
+        if population_size <= 0:
+            raise ValueError(f"population_size must be positive, got {population_size}")
+        if mutation_std <= 0:
+            raise ValueError(f"mutation_std must be positive, got {mutation_std}")
+        
         # Start with base latents (elite)
         elite_size = base_latents.shape[-2]
+        print(f"      📊 Elite size: {elite_size}")
+        
+        # Ensure population size is reasonable
+        if elite_size > population_size:
+            raise ValueError(f"elite_size ({elite_size}) cannot be larger than population_size ({population_size})")
         
         # Generate perturbations for remaining slots
         remaining_size = population_size - elite_size
+        print(f"      📊 Remaining slots for perturbations: {remaining_size}")
+        
         if remaining_size > 0:
             key, noise_key = jax.random.split(key)
-            noise = jax.random.normal(
-                noise_key, 
-                (*base_latents.shape[:-2], remaining_size, base_latents.shape[-1])
-            )
-            perturbations = base_latents.mean(axis=-2, keepdims=True) + mutation_std * noise
+            
+            # Get mean latent for perturbations
+            if base_latents.ndim == 2:
+                # (population, features) -> (1, features)
+                mean_latent = base_latents.mean(axis=0, keepdims=True)
+                print(f"      📊 Mean latent shape (2D): {mean_latent.shape}")
+            else:
+                # (batch, population, features) -> (batch, 1, features)
+                mean_latent = base_latents.mean(axis=-2, keepdims=True)
+                print(f"      📊 Mean latent shape (ND): {mean_latent.shape}")
+            
+            # Generate noise with correct shape
+            if base_latents.ndim == 2:
+                noise = jax.random.normal(noise_key, (remaining_size, base_latents.shape[-1]))
+                perturbations = mean_latent + mutation_std * noise
+                print(f"      📊 Perturbations shape (2D): {perturbations.shape}")
+            else:
+                noise = jax.random.normal(
+                    noise_key, 
+                    (*base_latents.shape[:-2], remaining_size, base_latents.shape[-1])
+                )
+                perturbations = mean_latent + mutation_std * noise
+                print(f"      📊 Perturbations shape (ND): {perturbations.shape}")
             
             # Combine elite + perturbations
             population_latents = jnp.concatenate([base_latents, perturbations], axis=-2)
+            print(f"      📊 Combined population shape: {population_latents.shape}")
         else:
             population_latents = base_latents
+            print(f"      📊 No perturbations needed, using base latents: {population_latents.shape}")
         
-        return {
+        result = {
             "latents": population_latents,
             "fitness": jnp.full(population_size, -jnp.inf),  # Initialize fitness
             "generation": 0
         }
+        print(f"      ✅ Population dict created with keys: {list(result.keys())}")
+        return result
 
     def _evolutionary_loop(
         self, population: dict, pairs: chex.Array, grid_shapes: chex.Array,
@@ -858,6 +923,11 @@ class LPN(nn.Module):
         mutation_std: float, scan_batch_size: Optional[int]
     ) -> dict:
         """Main evolutionary loop without progress tracking."""
+        
+        print(f"      🔄 Starting evolutionary loop with {num_generations} generations")
+        print(f"         📊 Initial population shape: {population['latents'].shape}")
+        print(f"         📊 Population size: {population_size}")
+        print(f"         📊 Mutation std: {mutation_std}")
         
         def evolution_step(decoder, carry, generation_idx):
             population, key = carry
@@ -885,6 +955,7 @@ class LPN(nn.Module):
             return (new_population, key), None
         
         # Run evolution
+        print(f"         🔄 Running {num_generations} evolution steps with nn.scan...")
         (final_population, _), _ = nn.scan(
             evolution_step,
             variable_broadcast="params",
@@ -892,6 +963,8 @@ class LPN(nn.Module):
             length=num_generations
         )(self.decoder, (population, key), jnp.arange(num_generations))
         
+        print(f"         ✅ Evolutionary loop completed")
+        print(f"         📊 Final population shape: {final_population['latents'].shape}")
         return final_population
 
     def _evaluate_population(
@@ -900,11 +973,34 @@ class LPN(nn.Module):
     ) -> chex.Array:
         """Evaluate population using existing scoring pipeline."""
         
+        # Ensure we have the right dimensions
+        if population_latents.ndim < 2:
+            raise ValueError(f"population_latents must have at least 2 dimensions, got {population_latents.ndim}")
+        if pairs.ndim < 4:
+            raise ValueError(f"pairs must have at least 4 dimensions, got {pairs.ndim}")
+        if grid_shapes.ndim < 3:
+            raise ValueError(f"grid_shapes must have at least 3 dimensions, got {grid_shapes.ndim}")
+        
+        print(f"            📊 Evaluating population: {population_latents.shape}")
+        print(f"            📊 Pairs: {pairs.shape}, Grid shapes: {grid_shapes.shape}")
+        
         # Reuse exact same evaluation logic as random search
         input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
+        print(f"            📊 Flattened sequences: input={input_seq.shape}, output={output_seq.shape}")
         
         # Replicate latents over pairs (identical to random search)
-        latents = population_latents[..., None, :, :].repeat(output_seq.shape[-2], axis=-3)
+        # Ensure latents has the right shape for broadcasting
+        if population_latents.ndim == 2:
+            # (population, features) -> (1, population, 1, features)
+            latents = population_latents[None, :, None, :]
+            print(f"            📊 Reshaped latents (2D): {latents.shape}")
+        else:
+            # (batch, population, features) -> (batch, population, 1, features)
+            latents = population_latents[..., None, :]
+            print(f"            📊 Reshaped latents (ND): {latents.shape}")
+        
+        latents = latents.repeat(output_seq.shape[-2], axis=-3)
+        print(f"            📊 Replicated latents: {latents.shape}")
         
         # Batch decode (identical to random search)
         batch_size = scan_batch_size or latents.shape[-2]
@@ -952,25 +1048,55 @@ class LPN(nn.Module):
         log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
             row_logits, col_logits, grid_logits, output_seq
         )
+        print(f"            📊 Log probabilities shape: {log_probs.shape}")
         
         # Reduce to scalar per candidate
         fitness = jnp.mean(log_probs, axis=tuple(range(log_probs.ndim - 1)))
+        print(f"            📊 Fitness shape: {fitness.shape}")
+        print(f"            📊 Fitness range: [{jnp.min(fitness):.4f}, {jnp.max(fitness):.4f}]")
         return fitness
 
     def _select_survivors(
         self, latents: chex.Array, fitness: chex.Array, num_survivors: int
     ) -> chex.Array:
         """Select top candidates based on fitness."""
+        # Ensure we have valid inputs
+        if latents.ndim < 2:
+            raise ValueError(f"latents must have at least 2 dimensions, got {latents.ndim}")
+        if fitness.size < num_survivors:
+            raise ValueError(f"fitness array size {fitness.size} is smaller than requested survivors {num_survivors}")
+        if num_survivors <= 0:
+            raise ValueError(f"num_survivors must be positive, got {num_survivors}")
+        
         # Flatten fitness to get global ranking
         fitness_flat = fitness.reshape(-1)
         latents_flat = latents.reshape(-1, latents.shape[-1])
+        print(f"            📊 Flattened fitness: {fitness_flat.shape}, latents: {latents_flat.shape}")
         
         # Get top indices from flattened fitness
         top_indices = jnp.argsort(fitness_flat, descending=True)[:num_survivors]
+        print(f"            📊 Top {num_survivors} indices: {top_indices}")
         
         # Select top latents and reshape back to original structure
         top_latents = latents_flat[top_indices]
-        return top_latents.reshape(*latents.shape[:-2], num_survivors, latents.shape[-1])
+        print(f"            📊 Selected top latents: {top_latents.shape}")
+        
+        # Handle different input shapes more robustly
+        if latents.ndim == 2:
+            # Simple 2D case: (population, features)
+            result = top_latents
+            print(f"            📊 Returning 2D survivors: {result.shape}")
+            return result
+        elif latents.ndim == 3:
+            # 3D case: (batch, population, features)
+            result = top_latents.reshape(num_survivors, latents.shape[-1])
+            print(f"            📊 Returning 3D survivors: {result.shape}")
+            return result
+        else:
+            # Higher dimensional case: preserve all but last two dimensions
+            result = top_latents.reshape(*latents.shape[:-2], num_survivors, latents.shape[-1])
+            print(f"            📊 Returning ND survivors: {result.shape}")
+            return result
 
     def _mutate_population(
         self, survivors: chex.Array, target_size: int, 
@@ -978,26 +1104,56 @@ class LPN(nn.Module):
     ) -> chex.Array:
         """Generate offspring through Gaussian mutation."""
         
+        # Validate inputs
+        if survivors.ndim < 2:
+            raise ValueError(f"survivors must have at least 2 dimensions, got {survivors.ndim}")
+        if target_size <= 0:
+            raise ValueError(f"target_size must be positive, got {target_size}")
+        if mutation_std <= 0:
+            raise ValueError(f"mutation_std must be positive, got {mutation_std}")
+        
         num_survivors = survivors.shape[-2]
         num_offspring = target_size - num_survivors
         
+        # Validate target size
+        if target_size < num_survivors:
+            raise ValueError(f"target_size ({target_size}) cannot be smaller than num_survivors ({num_survivors})")
+        
         if num_offspring <= 0:
+            print(f"            📊 No offspring needed, returning survivors: {survivors.shape}")
             return survivors
+        
+        print(f"            📊 Generating {num_offspring} offspring from {num_survivors} survivors")
         
         # Sample parents for offspring
         key, parent_key = jax.random.split(key)
         parent_indices = jax.random.randint(
             parent_key, (num_offspring,), 0, num_survivors
         )
-        parents = jnp.take_along_axis(survivors, parent_indices[..., None], axis=-2)
+        print(f"            📊 Parent indices: {parent_indices}")
+        
+        # Handle multi-dimensional survivors properly
+        if survivors.ndim > 2:
+            # Reshape survivors to 2D for indexing, then reshape back
+            survivors_2d = survivors.reshape(-1, survivors.shape[-1])
+            parents_2d = survivors_2d[parent_indices]
+            parents = parents_2d.reshape(num_offspring, *survivors.shape[1:-1], survivors.shape[-1])
+            print(f"            📊 Parents (ND): {parents.shape}")
+        else:
+            # Simple 2D case
+            parents = survivors[parent_indices]
+            print(f"            📊 Parents (2D): {parents.shape}")
         
         # Add Gaussian noise
         key, noise_key = jax.random.split(key)
         noise = jax.random.normal(noise_key, parents.shape)
         offspring = parents + mutation_std * noise
+        print(f"            📊 Offspring: {offspring.shape}")
         
         # Combine survivors + offspring
-        return jnp.concatenate([survivors, offspring], axis=-2)
+        result = jnp.concatenate([survivors, offspring], axis=-2)
+        print(f"            📊 Combined population: {result.shape}")
+        return result
 
     def _evolutionary_loop_with_tracking(
         self, population: dict, pairs: chex.Array, grid_shapes: chex.Array,
@@ -1005,6 +1161,11 @@ class LPN(nn.Module):
         mutation_std: float, scan_batch_size: Optional[int]
     ) -> tuple[dict, dict]:
         """Evolutionary loop with progress tracking."""
+        
+        print(f"      🔄 Starting evolutionary loop with tracking ({num_generations} generations)")
+        print(f"         📊 Initial population shape: {population['latents'].shape}")
+        print(f"         📊 Population size: {population_size}")
+        print(f"         📊 Mutation std: {mutation_std}")
         
         def evolution_step_with_tracking(decoder, carry, generation_idx):
             population, key, best_so_far = carry
@@ -1034,6 +1195,7 @@ class LPN(nn.Module):
             return (new_population, key, best_so_far), (generation_best, best_so_far)
         
         # Run evolution with tracking
+        print(f"         🔄 Running {num_generations} evolution steps with nn.scan...")
         (final_population, _, best_so_far), (generation_bests, cumulative_bests) = nn.scan(
             evolution_step_with_tracking,
             variable_broadcast="params",
@@ -1046,6 +1208,11 @@ class LPN(nn.Module):
             "best_accuracy_progression": cumulative_bests,
             "final_best_accuracy": best_so_far
         }
+        
+        print(f"         ✅ Evolutionary loop with tracking completed")
+        print(f"         📊 Final population shape: {final_population['latents'].shape}")
+        print(f"         📊 Best fitness achieved: {best_so_far:.4f}")
+        print(f"         📊 Trajectory data keys: {list(trajectory_data.keys())}")
         
         return final_population, trajectory_data
 
@@ -1060,14 +1227,20 @@ class LPN(nn.Module):
         key: Optional[chex.PRNGKey] = None,
     ) -> chex.Array:
         """Selects the latents from which to start the search."""
+        print(f"         📊 Preparing latents: input shape={latents.shape}")
+        print(f"         📊 Include mean: {include_mean_latent}, Include all: {include_all_latents}")
+        
         if include_mean_latent:
             mean_latent = latents.mean(axis=-2, keepdims=True)
+            print(f"         📊 Mean latent shape: {mean_latent.shape}")
             if include_all_latents:
                 # Include the mean latent in the latents from which to start the search.
                 prep_latents = jnp.concatenate([mean_latent, latents], axis=-2)
+                print(f"         📊 Combined mean + all latents: {prep_latents.shape}")
             else:
                 # Only start the search from the mean latent.
                 prep_latents = mean_latent
+                print(f"         📊 Using only mean latent: {prep_latents.shape}")
         else:
             # Start the search from all the pair latents.
             if not include_all_latents:
@@ -1075,15 +1248,32 @@ class LPN(nn.Module):
                     "At least one of 'include_mean_latent' or 'include_all_latents' should be True."
                 )
             prep_latents = latents
+            print(f"         📊 Using all pair latents: {prep_latents.shape}")
         if random_perturbation is not None:
             assert key is not None, "'key' argument required for random perturbation."
             for arg in ["num_samples", "scale"]:
                 assert arg in random_perturbation, f"'{arg}' argument required for random perturbation."
             num_samples = random_perturbation["num_samples"]
             scale = random_perturbation["scale"]
-            random_vectors = jax.random.normal(key, (*latents.shape[:-2], num_samples, latents.shape[-1]))
-            random_latents = latents.mean(axis=-2, keepdims=True) + scale * random_vectors
+            
+            # Handle different latent dimensions properly
+            if latents.ndim == 2:
+                # (population, features) -> (1, features)
+                mean_latent = latents.mean(axis=0, keepdims=True)
+                random_vectors = jax.random.normal(key, (num_samples, latents.shape[-1]))
+                random_latents = mean_latent + scale * random_vectors
+            else:
+                # (batch, population, features) -> (batch, 1, features)
+                mean_latent = latents.mean(axis=-2, keepdims=True)
+                random_vectors = jax.random.normal(key, (*latents.shape[:-2], num_samples, latents.shape[-1]))
+                random_latents = mean_latent + scale * random_vectors
+            
             prep_latents = jnp.concatenate([prep_latents, random_latents], axis=-2)
+        
+        # Ensure the output has the expected shape
+        if prep_latents.ndim < 2:
+            raise ValueError(f"prep_latents must have at least 2 dimensions, got {prep_latents.ndim}")
+        
         return prep_latents
 
     @classmethod
