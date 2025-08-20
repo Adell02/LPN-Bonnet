@@ -859,7 +859,7 @@ class LPN(nn.Module):
     ) -> dict:
         """Main evolutionary loop without progress tracking."""
         
-        def evolution_step(carry, generation_idx):
+        def evolution_step(decoder, carry, generation_idx):
             population, key = carry
             
             # Evaluate current population
@@ -961,8 +961,16 @@ class LPN(nn.Module):
         self, latents: chex.Array, fitness: chex.Array, num_survivors: int
     ) -> chex.Array:
         """Select top candidates based on fitness."""
-        top_indices = jnp.argsort(fitness, axis=-1, descending=True)[:num_survivors]
-        return jnp.take_along_axis(latents, top_indices[..., None], axis=-2)
+        # Flatten fitness to get global ranking
+        fitness_flat = fitness.reshape(-1)
+        latents_flat = latents.reshape(-1, latents.shape[-1])
+        
+        # Get top indices from flattened fitness
+        top_indices = jnp.argsort(fitness_flat, descending=True)[:num_survivors]
+        
+        # Select top latents and reshape back to original structure
+        top_latents = latents_flat[top_indices]
+        return top_latents.reshape(*latents.shape[:-2], num_survivors, latents.shape[-1])
 
     def _mutate_population(
         self, survivors: chex.Array, target_size: int, 
@@ -998,7 +1006,7 @@ class LPN(nn.Module):
     ) -> tuple[dict, dict]:
         """Evolutionary loop with progress tracking."""
         
-        def evolution_step_with_tracking(carry, generation_idx):
+        def evolution_step_with_tracking(decoder, carry, generation_idx):
             population, key, best_so_far = carry
             
             # Evaluate current population
