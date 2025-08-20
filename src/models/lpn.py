@@ -24,7 +24,7 @@ class LPN(nn.Module):
         pairs: chex.Array,
         grid_shapes: chex.Array,
         dropout_eval: bool,
-        mode: Literal["mean", "all", "random_search", "gradient_ascent"],
+        mode: Literal["mean", "all", "random_search", "gradient_ascent", "evolutionary_search"],
         prior_kl_coeff: Optional[float] = None,
         pairwise_kl_coeff: Optional[float] = None,
         **mode_kwargs,
@@ -42,13 +42,15 @@ class LPN(nn.Module):
                 represents (rows, columns) of two channels, e.g. [[R_input, R_output], [C_input, C_output]].
                 Expects grid shapes values to be in [1, max_rows] and [1, max_cols].
             dropout_eval: if false dropout is applied otherwise it is not.
-            mode: mode of the forward pass. Can be "mean" or "all".
+            mode: mode of the forward pass. Can be "mean", "all", "random_search", "gradient_ascent", or "evolutionary_search".
                 - "mean": decodes the output using the mean latent of all the other pairs.
                 - "all": decodes the output N-1 times, each time using a different latent from the other
                     pairs.
                 - "random_search": randomly search for a latent that best explains the (input, output) pairs
                     and then decodes the output using that latent.
                 - "gradient_ascent": uses gradient ascent to find the latent that best explains the
+                    (input, output) pairs and then decodes the output using that latent
+                - "evolutionary_search": uses evolutionary search to find the latent that best explains the
                     (input, output) pairs and then decodes the output using that latent
             prior_kl_coeff: KL divergence coefficient for the variational inference. Required when using
                 variational inference.
@@ -314,7 +316,7 @@ class LPN(nn.Module):
         input_grid_shape: chex.Array,
         key: Optional[chex.PRNGKey],
         dropout_eval: bool,
-        mode: Literal["mean", "first", "random_search", "gradient_ascent"],
+        mode: Literal["mean", "first", "random_search", "gradient_ascent", "evolutionary_search"],
         return_two_best: bool = False,
         **mode_kwargs,
     ) -> tuple[chex.Array, chex.Array, dict] | tuple[chex.Array, chex.Array, chex.Array, chex.Array, dict]:
