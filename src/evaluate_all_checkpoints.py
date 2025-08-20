@@ -44,6 +44,14 @@ USAGE EXAMPLES:
      --dataset_folder pattern2d_eval \
      --dataset_length 100 \
      --max_checkpoints 5
+
+6. METHOD SELECTION (only evaluate and plot specific methods):
+   python3 src/evaluate_all_checkpoints.py \
+     --run_name "winter-fire-132" \
+     --plot_methods gradient_ascent evolutionary_search \
+     --json_challenges json/arc-agi_evaluation_challenges.json \
+     --json_solutions json/arc-agi_evaluation_solutions.json \
+     --only_n_tasks 5
 """
 
 import os
@@ -130,7 +138,7 @@ def run_evaluation(
     dataset_batch_size: Optional[int] = None,
     dataset_use_hf: bool = True,
     dataset_seed: int = 0,
-) -> Tuple[bool, Optional[float], Dict[str, Optional[float]], str]:
+) -> Tuple[bool, Optional[float], Dict[str, Optional[float]], str, float]:
     """Invoke evaluate_checkpoint.py for a specific method and checkpoint."""
     cmd = [sys.executable, "src/evaluate_checkpoint.py", "-w", artifact_path, "-i", method]
 
@@ -169,22 +177,33 @@ def run_evaluation(
                 str(method_kwargs.get("lr_schedule_exponent", 0.5)),
             ]
         )
-    elif method == "random_search":
-        cmd.extend(
-            [
-                "--num-samples",
-                str(method_kwargs.get("num_samples", 100)),
-                "--scale",
-                str(method_kwargs.get("scale", 1.0)),
-                "--scan-batch-size",
-                str(method_kwargs.get("scan_batch_size", 10)),
-                "--random-search-seed",
-                str(method_kwargs.get("random_search_seed", 0)),
-            ]
-        )
-    else:
-        print(f"❌ Unknown method: {method}")
-        return False, None, {}, ""
+            elif method == "random_search":
+            cmd.extend(
+                [
+                    "--num-samples",
+                    str(method_kwargs.get("num_samples", 100)),
+                    "--scale",
+                    str(method_kwargs.get("scale", 1.0)),
+                    "--scan-batch-size",
+                    str(method_kwargs.get("scan_batch_size", 10)),
+                    "--random-search-seed",
+                    str(method_kwargs.get("random_search_seed", 0)),
+                ]
+            )
+        elif method == "evolutionary_search":
+            cmd.extend(
+                [
+                    "--population-size",
+                    str(method_kwargs.get("population_size", 32)),
+                    "--num-generations",
+                    str(method_kwargs.get("num_generations", 25)),
+                    "--mutation-std",
+                    str(method_kwargs.get("mutation_std", 0.2)),
+                ]
+            )
+        else:
+            print(f"❌ Unknown method: {method}")
+            return False, None, {}, ""
 
     # Avoid creating a W&B run inside evaluate_checkpoint
     cmd.extend(["--no-wandb-run", "true"])
@@ -192,7 +211,12 @@ def run_evaluation(
     print(f"\nRunning: {' '.join(cmd)}")
 
     try:
+        import time
+        start_time = time.time()
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd())
+        end_time = time.time()
+        execution_time = end_time - start_time
+        
         stdout = result.stdout or ""
         stderr = result.stderr or ""
 
@@ -241,8 +265,9 @@ def run_evaluation(
                 + (f" | pixel_acc={metrics.get('top_1_pixel_correctness', 'N/A')}" if metrics.get('top_1_pixel_correctness') is not None else "")
                 + (f" | correct_shapes={metrics.get('correct_shapes')}" if metrics.get('correct_shapes') is not None else "")
                 + (f" | pixel_correctness={metrics.get('pixel_correctness')}" if metrics.get('pixel_correctness') is not None else "")
+                + f" | time={execution_time:.2f}s"
             )
-            return True, acc, metrics, stdout
+            return True, acc, metrics, stdout, execution_time
         else:
             # Retry random_search with smaller scan_batch_size if certain errors show up
             should_retry = (
@@ -297,28 +322,28 @@ def run_evaluation(
                             + (f" | correct_shapes={retry_metrics.get('correct_shapes')}" if retry_metrics.get('correct_shapes') is not None else "")
                             + (f" | pixel_correctness={retry_metrics.get('pixel_correctness')}" if retry_metrics.get('pixel_correctness') is not None else "")
                         )
-                        return True, retry_acc, retry_metrics, retry_stdout
+                        return True, retry_acc, retry_metrics, retry_stdout, execution_time
                     else:
                         print(f"❌ {method} evaluation failed with return code {result.returncode}")
                         if stderr.strip():
                             print(f"Error output:\n{stderr}")
                         if retry_stderr.strip():
                             print(f"Retry error output:\n{retry_stderr}")
-                        return False, acc, metrics, stdout
+                        return False, acc, metrics, stdout, execution_time
                 except Exception:
                     print(f"❌ {method} evaluation failed with return code {result.returncode}")
                     if stderr.strip():
                         print(f"Error output:\n{stderr}")
-                    return False, acc, metrics, stdout
+                    return False, acc, metrics, stdout, execution_time
             else:
                 print(f"❌ {method} evaluation failed with return code {result.returncode}")
                 if stderr.strip():
                     print(f"Error output:\n{stderr}")
-                return False, acc, metrics, stdout
+                return False, acc, metrics, stdout, execution_time
             
     except Exception as e:
         print(f"❌ Error running {method} evaluation: {e}")
-        return False, None, {}, ""
+        return False, None, {}, "", 0.0
 
 
 def main():
@@ -357,6 +382,12 @@ def main():
                        choices=["even", "first", "last", "random"],
                        help="Strategy for selecting checkpoints: 'even'=evenly spaced, 'first'=first N, 'last'=last N, 'random'=random N (default: even)")
     
+    # Method selection for plotting
+    parser.add_argument("--plot_methods", type=str, nargs="+", 
+                       choices=["gradient_ascent", "random_search", "evolutionary_search"],
+                       default=["gradient_ascent", "random_search"],
+                       help="Methods to include in plots (default: gradient_ascent, random_search)")
+    
     # Budget configuration options
     parser.add_argument("--budget_start", type=int, default=1, 
                        help="Starting budget value (default: 1)")
@@ -390,9 +421,10 @@ def main():
     # Generate shared budgets
     shared_budgets = generate_budgets(BUDGET_CONFIG)
     
-    # Use the same budgets for both methods
+    # Use the same budgets for all methods
     ga_steps = shared_budgets      # Gradient ascent uses num_steps
     rs_samples = shared_budgets    # Random search uses num_samples
+    es_generations = shared_budgets # Evolutionary search uses num_generations
     
     print(f"📊 Using shared budgets: {shared_budgets}")
     print(f"   - Start: {BUDGET_CONFIG['start']}")
@@ -487,7 +519,7 @@ def main():
     # Base method configs
     base_methods = {
         "gradient_ascent": {
-            "lr": 0.1,
+            "lr": 0.5,
             "optimizer": "adam",
             "lr_schedule": False,
             "lr_schedule_exponent": 0.5,
@@ -496,6 +528,11 @@ def main():
             "scale": 1.0,
             "scan_batch_size": 10,
             "random_search_seed": 0,
+        },
+        "evolutionary_search": {
+            "population_size": 32,
+            "num_generations": 25,
+            "mutation_std": 0.5,
         },
     }
 
@@ -507,6 +544,7 @@ def main():
         "method_results": {
             "gradient_ascent": {"success": 0, "failed": 0},
             "random_search": {"success": 0, "failed": 0},
+            "evolutionary_search": {"success": 0, "failed": 0},
         },
     }
 
@@ -564,7 +602,7 @@ def main():
                 method_kwargs = dict(base_methods["gradient_ascent"])
                 method_kwargs["num_steps"] = num_steps
 
-                ok, acc, metrics, _ = run_evaluation(
+                ok, acc, metrics, _, execution_time = run_evaluation(
                     artifact_path=artifact_path,
                     method="gradient_ascent",
                     method_kwargs=method_kwargs,
@@ -592,6 +630,7 @@ def main():
                             f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
                             f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
                             f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
+                            f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/execution_time": execution_time,
                         })
                     except Exception as e:
                         print(f"⚠️  Failed to log to W&B: {e}")
@@ -612,7 +651,7 @@ def main():
                 method_kwargs = dict(base_methods["random_search"])
                 method_kwargs["num_samples"] = num_samples
 
-                ok, acc, metrics, _ = run_evaluation(
+                ok, acc, metrics, _, execution_time = run_evaluation(
                     artifact_path=artifact_path,
                     method="random_search",
                     method_kwargs=method_kwargs,
@@ -640,6 +679,7 @@ def main():
                             f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
                             f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
                             f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
+                            f"checkpoint_{step}/random_search/num_samples_{num_samples}/execution_time": execution_time,
                         })
                     except Exception as e:
                         print(f"⚠️  Failed to log to W&B: {e}")
@@ -653,19 +693,68 @@ def main():
                      metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
                      metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
                 )
+
+            # Evolutionary Search sweeps
+            print("\n🔧 Testing evolutionary_search across budgets...")
+            for num_generations in rs_samples:  # Use same budget range
+                method_kwargs = dict(base_methods["evolutionary_search"])
+                method_kwargs["num_generations"] = num_generations
+
+                ok, acc, metrics, _, execution_time = run_evaluation(
+                    artifact_path=artifact_path,
+                    method="evolutionary_search",
+                    method_kwargs=method_kwargs,
+                    json_challenges=args.json_challenges,
+                    json_solutions=args.json_solutions,
+                    only_n_tasks=args.only_n_tasks,
+                    dataset_folder=args.dataset_folder,
+                    dataset_length=args.dataset_length,
+                    dataset_batch_size=args.dataset_batch_size,
+                    dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
+                    dataset_seed=args.dataset_seed,
+                )
+
+                if ok:
+                    results["method_results"]["evolutionary_search"]["success"] += 1
+                    results["successful_evals"] += 1
+                    
+                    # Log to W&B immediately
+                    try:
+                        wandb.log({
+                            f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/overall_accuracy": acc or 0.0,
+                            f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
+                            f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
+                            f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
+                            f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
+                            f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
+                            f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
+                            f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/execution_time": execution_time,
+                        })
+                    except Exception as e:
+                        print(f"⚠️  Failed to log to W&B: {e}")
+                else:
+                    results["method_results"]["evolutionary_search"]["failed"] += 1
+                    results["failed_evals"] += 1
+
+                writer.writerow(
+                    [args.run_name, checkpoint["name"], training_progress, "evolutionary_search", "num_generations", num_generations, 
+                     acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
+                     metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
+                     metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
+                )
             
             # Progress update after each checkpoint
             total_evals = results["successful_evals"] + results["failed_evals"]
-            total_expected = len(ga_steps) + len(rs_samples)
+            total_expected = len(ga_steps) + len(rs_samples) + len(es_generations)
             print(f"\n📊 Checkpoint {i}/{len(checkpoints)} complete. Total evaluations: {total_evals}/{total_expected * i}")
+            print(f"   ⏱️  Timing info available in W&B logs for each method and budget")
             
             # Generate and upload comparison plot for this step
             try:
-                # Accumulate data from CSV
-                method_to_step_to_budget: Dict[str, Dict[int, Dict[int, float]]] = {
-                    "gradient_ascent": {},
-                    "random_search": {}
-                }
+                # Accumulate data from CSV for selected methods only
+                method_to_step_to_budget: Dict[str, Dict[int, Dict[int, float]]] = {}
+                for method in args.plot_methods:
+                    method_to_step_to_budget[method] = {}
                 
                 if out_csv.exists():
                     with out_csv.open("r") as f:
@@ -688,28 +777,51 @@ def main():
                             except Exception:
                                 continue
                 
-                if method_to_step_to_budget["gradient_ascent"] or method_to_step_to_budget["random_search"]:
-                    all_steps = sorted(set(list(method_to_step_to_budget["gradient_ascent"].keys()) +
-                                           list(method_to_step_to_budget["random_search"].keys())))
+                # Check if we have data for any selected methods
+                has_data = any(len(method_data) > 0 for method_data in method_to_step_to_budget.values())
+                
+                if has_data:
+                    # Collect all steps and budgets from selected methods
+                    all_steps = set()
+                    for method_data in method_to_step_to_budget.values():
+                        all_steps.update(method_data.keys())
+                    all_steps = sorted(all_steps)
                     all_budgets = sorted(shared_budgets)
                     
                     if all_steps and all_budgets:
-                        A = np.full((len(all_budgets), len(all_steps)), np.nan)
-                        B = np.full((len(all_budgets), len(all_steps)), np.nan)
+                        # Create data arrays for selected methods
+                        method_arrays = {}
+                        for method in args.plot_methods:
+                            method_arrays[method] = np.full((len(all_budgets), len(all_steps)), np.nan)
                         
+                        # Fill data arrays
                         for j, s in enumerate(all_steps):
                             for k, b in enumerate(all_budgets):
-                                A[k, j] = method_to_step_to_budget["gradient_ascent"].get(s, {}).get(b, np.nan)
-                                B[k, j] = method_to_step_to_budget["random_search"].get(s, {}).get(b, np.nan)
+                                for method in args.plot_methods:
+                                    if method in method_to_step_to_budget:
+                                        method_arrays[method][k, j] = method_to_step_to_budget[method].get(s, {}).get(b, np.nan)
                         
-                        fig = visualize_optimization_comparison(
-                            steps=np.array(all_steps),
-                            budgets=np.array(all_budgets),
-                            acc_A=A,
-                            acc_B=B,
-                            method_A_name="Gradient Ascent",
-                            method_B_name="Random Search",
-                        )
+                        # Create plot with selected methods
+                        if len(args.plot_methods) == 2:
+                            # Two-method comparison
+                            fig = visualize_optimization_comparison(
+                                steps=np.array(all_steps),
+                                budgets=np.array(all_budgets),
+                                acc_A=method_arrays[args.plot_methods[0]],
+                                acc_B=method_arrays[args.plot_methods[1]],
+                                method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                                method_B_name=args.plot_methods[1].replace("_", " ").title(),
+                            )
+                        else:
+                            # Single method or more than 2 methods - create simple heatmap for first method
+                            fig = visualize_optimization_comparison(
+                                steps=np.array(all_steps),
+                                budgets=np.array(all_budgets),
+                                acc_A=method_arrays[args.plot_methods[0]],
+                                acc_B=np.full_like(method_arrays[args.plot_methods[0]], np.nan),
+                                method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                                method_B_name="",
+                            )
                         
                         fig.suptitle(
                             f"Optimization Comparison - Accumulated Data\n"
@@ -790,8 +902,10 @@ def main():
     # Build final optimization comparison plot from CSV (overall summary)
     try:
         steps_list: List[int] = []
-        ga_map: Dict[int, Dict[int, float]] = {}
-        rs_map: Dict[int, Dict[int, float]] = {}
+        method_maps: Dict[str, Dict[int, Dict[int, float]]] = {}
+        for method in args.plot_methods:
+            method_maps[method] = {}
+            
         with out_csv.open("r") as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -813,29 +927,43 @@ def main():
                     acc_val = np.nan
                 if budget is None:
                     continue
-                if method == "gradient_ascent":
-                    ga_map.setdefault(step, {})[budget] = acc_val
-                elif method == "random_search":
-                    rs_map.setdefault(step, {})[budget] = acc_val
+                if method in args.plot_methods:
+                    method_maps[method].setdefault(step, {})[budget] = acc_val
 
         steps_sorted = sorted(set(steps_list))
         actual_budgets = shared_budgets
         
-        A = np.full((len(actual_budgets), len(steps_sorted)), np.nan)
-        B = np.full((len(actual_budgets), len(steps_sorted)), np.nan)
+        # Create data arrays for selected methods
+        method_arrays = {}
+        for method in args.plot_methods:
+            method_arrays[method] = np.full((len(actual_budgets), len(steps_sorted)), np.nan)
+            
         for j, s in enumerate(steps_sorted):
             for k, b in enumerate(actual_budgets):
-                A[k, j] = ga_map.get(s, {}).get(b, np.nan)
-                B[k, j] = rs_map.get(s, {}).get(b, np.nan)
+                for method in args.plot_methods:
+                    method_arrays[method][k, j] = method_maps[method].get(s, {}).get(b, np.nan)
 
-        fig = visualize_optimization_comparison(
-            steps=np.array(steps_sorted),
-            budgets=np.array(actual_budgets),
-            acc_A=A,
-            acc_B=B,
-            method_A_name="Gradient Ascent",
-            method_B_name="Random Search",
-        )
+        # Create plot with selected methods
+        if len(args.plot_methods) == 2:
+            # Two-method comparison
+            fig = visualize_optimization_comparison(
+                steps=np.array(steps_sorted),
+                budgets=np.array(actual_budgets),
+                acc_A=method_arrays[args.plot_methods[0]],
+                acc_B=method_arrays[args.plot_methods[1]],
+                method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                method_B_name=args.plot_methods[1].replace("_", " ").title(),
+            )
+        else:
+            # Single method or more than 2 methods - create simple heatmap for first method
+            fig = visualize_optimization_comparison(
+                steps=np.array(steps_sorted),
+                budgets=np.array(actual_budgets),
+                acc_A=method_arrays[args.plot_methods[0]],
+                acc_B=np.full_like(method_arrays[args.plot_methods[0]], np.nan),
+                method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                method_B_name="",
+            )
         
         max_progress = max(steps_sorted) if steps_sorted else 0
         denom_final = max(len(checkpoints) - 1, 1)
@@ -865,6 +993,7 @@ def main():
         run.log_artifact(plot_art)
         
         print(f"📊 Generated and uploaded final comparison plot with {len(steps_sorted)} training progress steps (0% → {progress_percentage}%) and {len(actual_budgets)} budgets")
+        print(f"   📈 Methods: {', '.join(args.plot_methods).replace('_', ' ').title()}")
             
     except Exception as e:
         print(f"⚠️  Failed to generate or upload final comparison plot: {e}")
@@ -891,6 +1020,12 @@ def main():
     print("   - top_2_shape_accuracy")
     print("   - top_2_accuracy")
     print("   - top_2_pixel_correctness")
+    print(f"\n🔬 Methods evaluated:")
+    for method in ["gradient_ascent", "random_search", "evolutionary_search"]:
+        if method in args.plot_methods:
+            print(f"   - {method} ({'num_steps' if method == 'gradient_ascent' else 'num_samples' if method == 'random_search' else 'num_generations'})")
+        else:
+            print(f"   - {method} (skipped - not in plot_methods)")
 
     try:
         run.finish()

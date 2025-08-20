@@ -124,6 +124,20 @@ class LPN(nn.Module):
                 context = first_context
             # Compute the loss for each pair using the context from the gradient ascent. Shape (*B, N).
             loss, metrics = self._loss_from_pair_and_context(context, pairs, grid_shapes, dropout_eval)
+        elif mode == "evolutionary_search":
+            for arg in ["population_size", "num_generations", "mutation_std"]:
+                assert arg in mode_kwargs, f"'{arg}' argument required for 'evolutionary_search' mode."
+            
+            key = self.make_rng("evolutionary_search")
+            leave_one_out_pairs = make_leave_one_out(pairs, axis=-4)
+            leave_one_out_grid_shapes = make_leave_one_out(grid_shapes, axis=-3)
+            
+            context, _ = self._get_evolutionary_search_context(
+                leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes, 
+                key, **mode_kwargs
+            )
+            
+            loss, metrics = self._loss_from_pair_and_context(context, pairs, grid_shapes, dropout_eval)
         else:
             raise ValueError(f"Unsupported mode: {mode}")
         leave_one_out_contexts = make_leave_one_out(context, axis=-2)
@@ -375,6 +389,15 @@ class LPN(nn.Module):
                     latents, pairs, grid_shapes, key, **mode_kwargs
                 )
                 info = {"context": first_context}
+        elif mode == "evolutionary_search":
+            assert key is not None, "'key' argument required for 'evolutionary_search' inference mode."
+            for arg in ["population_size", "num_generations", "mutation_std"]:
+                assert arg in mode_kwargs, f"'{arg}' argument required for 'evolutionary_search' inference mode."
+            
+            first_context, second_context = self._get_evolutionary_search_context(
+                latents, pairs, grid_shapes, key, **mode_kwargs
+            )
+            info = {"context": first_context}
         else:
             raise ValueError(f"Unsupported mode: {mode}")
 
@@ -744,6 +767,275 @@ class LPN(nn.Module):
         best_context, second_best_context = self._select_best_and_second_best_latents(log_probs, latents)
 
         return best_context, second_best_context
+
+
+    def _get_evolutionary_search_context(
+        self,
+        latents: chex.Array,
+        pairs: chex.Array,
+        grid_shapes: chex.Array,
+        key: chex.PRNGKey,
+        population_size: int,
+        num_generations: int,
+        mutation_std: float,
+        scan_batch_size: Optional[int] = None,
+        include_mean_latent: bool = True,
+        include_all_latents: bool = False,
+        track_progress: bool = False,
+        **kwargs,
+    ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:
+        """Evolutionary search for optimal latent context."""
+        
+        # 1. Prepare initial population using existing helper
+        base_latents = self._prepare_latents_before_search(
+            include_mean_latent, include_all_latents, latents
+        )
+        
+        # 2. Initialize population with Gaussian perturbations
+        key, pop_key = jax.random.split(key)
+        population = self._initialize_evolutionary_population(
+            base_latents, population_size, mutation_std, pop_key
+        )
+        
+        # 3. Evolutionary loop
+        if track_progress:
+            population, trajectory_data = self._evolutionary_loop_with_tracking(
+                population, pairs, grid_shapes, key, num_generations, 
+                population_size, mutation_std, scan_batch_size
+            )
+        else:
+            population = self._evolutionary_loop(
+                population, pairs, grid_shapes, key, num_generations,
+                population_size, mutation_std, scan_batch_size
+            )
+        
+        # 4. Select best contexts
+        best_context, second_best_context = self._select_best_and_second_best_latents(
+            population["fitness"], population["latents"]
+        )
+        
+        if track_progress:
+            return best_context, second_best_context, trajectory_data
+        return best_context, second_best_context
+
+    def _initialize_evolutionary_population(
+        self, base_latents: chex.Array, population_size: int, 
+        mutation_std: float, key: chex.PRNGKey
+    ) -> dict:
+        """Initialize population with base latents + Gaussian perturbations."""
+        
+        # Start with base latents (elite)
+        elite_size = base_latents.shape[-2]
+        
+        # Generate perturbations for remaining slots
+        remaining_size = population_size - elite_size
+        if remaining_size > 0:
+            key, noise_key = jax.random.split(key)
+            noise = jax.random.normal(
+                noise_key, 
+                (*base_latents.shape[:-2], remaining_size, base_latents.shape[-1])
+            )
+            perturbations = base_latents.mean(axis=-2, keepdims=True) + mutation_std * noise
+            
+            # Combine elite + perturbations
+            population_latents = jnp.concatenate([base_latents, perturbations], axis=-2)
+        else:
+            population_latents = base_latents
+        
+        return {
+            "latents": population_latents,
+            "fitness": jnp.full(population_size, -jnp.inf),  # Initialize fitness
+            "generation": 0
+        }
+
+    def _evolutionary_loop(
+        self, population: dict, pairs: chex.Array, grid_shapes: chex.Array,
+        key: chex.PRNGKey, num_generations: int, population_size: int,
+        mutation_std: float, scan_batch_size: Optional[int]
+    ) -> dict:
+        """Main evolutionary loop without progress tracking."""
+        
+        def evolution_step(carry, generation_idx):
+            population, key = carry
+            
+            # Evaluate current population
+            fitness = self._evaluate_population(
+                population["latents"], pairs, grid_shapes, scan_batch_size
+            )
+            
+            # Selection: keep top half
+            survivors = self._select_survivors(population["latents"], fitness, population_size // 2)
+            
+            # Mutation: generate offspring
+            key, mut_key = jax.random.split(key)
+            offspring = self._mutate_population(
+                survivors, population_size, mutation_std, mut_key
+            )
+            
+            new_population = {
+                "latents": offspring,
+                "fitness": jnp.full(population_size, -jnp.inf),
+                "generation": generation_idx + 1
+            }
+            
+            return (new_population, key), None
+        
+        # Run evolution
+        (final_population, _), _ = nn.scan(
+            evolution_step,
+            variable_broadcast="params",
+            split_rngs={"params": False},
+            length=num_generations
+        )(self.decoder, (population, key), jnp.arange(num_generations))
+        
+        return final_population
+
+    def _evaluate_population(
+        self, population_latents: chex.Array, pairs: chex.Array, 
+        grid_shapes: chex.Array, scan_batch_size: Optional[int]
+    ) -> chex.Array:
+        """Evaluate population using existing scoring pipeline."""
+        
+        # Reuse exact same evaluation logic as random search
+        input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
+        
+        # Replicate latents over pairs (identical to random search)
+        latents = population_latents[..., None, :, :].repeat(output_seq.shape[-2], axis=-3)
+        
+        # Batch decode (identical to random search)
+        batch_size = scan_batch_size or latents.shape[-2]
+        num_batches = latents.shape[-2] // batch_size
+        
+        if num_batches > 0:
+            batched_latents = jnp.reshape(
+                latents[..., : num_batches * batch_size, :],
+                (*latents.shape[:-2], num_batches, batch_size, latents.shape[-1]),
+            )
+            dropout_eval = True  # no dropout during decoder inference
+            _, (row_logits, col_logits, grid_logits) = nn.scan(
+                lambda decoder, _, latents: (
+                    None,
+                    jax.vmap(decoder, in_axes=(None, None, -2, None), out_axes=-2)(
+                        input_seq, output_seq, latents, dropout_eval
+                    ),
+                ),
+                variable_broadcast="params",
+                split_rngs={"params": False},
+                in_axes=-3,
+                out_axes=-3,
+            )(self.decoder, None, batched_latents)
+            row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
+                lambda x: x.reshape(*x.shape[:-3], -1, x.shape[-1]), (row_logits, col_logits, grid_logits)
+            )
+            
+            if num_batches * batch_size < latents.shape[-2]:
+                remaining_latents = latents[..., num_batches * batch_size :, :]
+                row_logits_remainder, col_logits_remainder, grid_logits_remainder = jax.vmap(
+                    self.decoder, in_axes=(None, None, -2, None), out_axes=-2
+                )(input_seq, output_seq, remaining_latents, dropout_eval)
+                row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
+                    lambda x, y: jnp.concatenate([x, y], axis=-2),
+                    (row_logits, col_logits, grid_logits),
+                    (row_logits_remainder, col_logits_remainder, grid_logits_remainder),
+                )
+        else:
+            # Single batch case
+            row_logits, col_logits, grid_logits = jax.vmap(
+                self.decoder, in_axes=(None, None, -2, None), out_axes=-2
+            )(input_seq, output_seq, latents, dropout_eval=True)
+        
+        # Compute fitness (identical to random search)
+        log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
+            row_logits, col_logits, grid_logits, output_seq
+        )
+        
+        # Reduce to scalar per candidate
+        fitness = jnp.mean(log_probs, axis=tuple(range(log_probs.ndim - 1)))
+        return fitness
+
+    def _select_survivors(
+        self, latents: chex.Array, fitness: chex.Array, num_survivors: int
+    ) -> chex.Array:
+        """Select top candidates based on fitness."""
+        top_indices = jnp.argsort(fitness, axis=-1, descending=True)[:num_survivors]
+        return jnp.take_along_axis(latents, top_indices[..., None], axis=-2)
+
+    def _mutate_population(
+        self, survivors: chex.Array, target_size: int, 
+        mutation_std: float, key: chex.PRNGKey
+    ) -> chex.Array:
+        """Generate offspring through Gaussian mutation."""
+        
+        num_survivors = survivors.shape[-2]
+        num_offspring = target_size - num_survivors
+        
+        if num_offspring <= 0:
+            return survivors
+        
+        # Sample parents for offspring
+        key, parent_key = jax.random.split(key)
+        parent_indices = jax.random.randint(
+            parent_key, (num_offspring,), 0, num_survivors
+        )
+        parents = jnp.take_along_axis(survivors, parent_indices[..., None], axis=-2)
+        
+        # Add Gaussian noise
+        key, noise_key = jax.random.split(key)
+        noise = jax.random.normal(noise_key, parents.shape)
+        offspring = parents + mutation_std * noise
+        
+        # Combine survivors + offspring
+        return jnp.concatenate([survivors, offspring], axis=-2)
+
+    def _evolutionary_loop_with_tracking(
+        self, population: dict, pairs: chex.Array, grid_shapes: chex.Array,
+        key: chex.PRNGKey, num_generations: int, population_size: int,
+        mutation_std: float, scan_batch_size: Optional[int]
+    ) -> tuple[dict, dict]:
+        """Evolutionary loop with progress tracking."""
+        
+        def evolution_step_with_tracking(carry, generation_idx):
+            population, key, best_so_far = carry
+            
+            # Evaluate current population
+            fitness = self._evaluate_population(
+                population["latents"], pairs, grid_shapes, scan_batch_size
+            )
+            
+            # Track progress
+            generation_best = jnp.max(fitness)
+            best_so_far = jnp.maximum(best_so_far, generation_best)
+            
+            # Selection and mutation (same as non-tracking version)
+            survivors = self._select_survivors(population["latents"], fitness, population_size // 2)
+            key, mut_key = jax.random.split(key)
+            offspring = self._mutate_population(
+                survivors, population_size, mutation_std, mut_key
+            )
+            
+            new_population = {
+                "latents": offspring,
+                "fitness": fitness,  # Keep fitness for tracking
+                "generation": generation_idx + 1
+            }
+            
+            return (new_population, key, best_so_far), (generation_best, best_so_far)
+        
+        # Run evolution with tracking
+        (final_population, _, best_so_far), (generation_bests, cumulative_bests) = nn.scan(
+            evolution_step_with_tracking,
+            variable_broadcast="params",
+            split_rngs={"params": False},
+            length=num_generations
+        )(self.decoder, (population, key, -jnp.inf), jnp.arange(num_generations))
+        
+        trajectory_data = {
+            "generation_accuracies": generation_bests,
+            "best_accuracy_progression": cumulative_bests,
+            "final_best_accuracy": best_so_far
+        }
+        
+        return final_population, trajectory_data
 
 
     @classmethod

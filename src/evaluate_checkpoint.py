@@ -717,6 +717,28 @@ if __name__ == "__main__":
         default=False,
         help="If True, do not create a W&B run; download artifact via API instead.",
     )
+    # Evolutionary search parameters
+    parser.add_argument(
+        "--population-size",
+        type=int,
+        required=False,
+        default=None,
+        help="Population size for evolutionary search mode.",
+    )
+    parser.add_argument(
+        "--num-generations", 
+        type=int,
+        required=False,
+        default=None,
+        help="Number of generations for evolutionary search mode.",
+    )
+    parser.add_argument(
+        "--mutation-std",
+        type=float,
+        required=False,
+        default=None,
+        help="Mutation standard deviation for evolutionary search mode.",
+    )
     args = parser.parse_args()
     if (
         args.json_challenges_file is None
@@ -743,11 +765,18 @@ if __name__ == "__main__":
             parser.error("The 'gradient_ascent' inference mode requires the --num-steps argument.")
         if args.lr is None:
             parser.error("The 'gradient_ascent' inference mode requires the --lr argument.")
+    if args.inference_mode == "evolutionary_search":
+        for arg in ["population_size", "num_generations", "mutation_std"]:
+            if getattr(args, arg) is None:
+                parser.error(f"The 'evolutionary_search' inference mode requires the --{arg} argument.")
     inference_mode_kwargs = {
         "num_samples": args.num_samples,
         "scale": args.scale,
         "num_steps": args.num_steps,
         "lr": args.lr,
+        "population_size": args.population_size,
+        "num_generations": args.num_generations,
+        "mutation_std": args.mutation_std,
     }
     for arg in [
         "scan_batch_size",
