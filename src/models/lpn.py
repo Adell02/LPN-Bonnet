@@ -917,126 +917,94 @@ class LPN(nn.Module):
         print(f"      ✅ Population dict created with keys: {list(result.keys())}")
         return result
 
-    def _evolutionary_loop(
+        def _evolutionary_loop(
         self, population: dict, pairs: chex.Array, grid_shapes: chex.Array,
         key: chex.PRNGKey, num_generations: int, population_size: int,
         mutation_std: float, scan_batch_size: Optional[int]
     ) -> dict:
-        """Main evolutionary loop without progress tracking."""
-        
-        print(f"      🔄 Starting evolutionary loop with {num_generations} generations")
-        print(f"         📊 Initial population shape: {population['latents'].shape}")
-        print(f"         📊 Population size: {population_size}")
-        print(f"         📊 Mutation std: {mutation_std}")
-        
-        def evolution_step(decoder, carry, generation_idx):
+        """Main evolutionary loop without progress tracking (outer loop is pure JAX)."""
+
+        def evolution_step(carry, _):
             population, key = carry
-            
-            # Evaluate current population
-            fitness = self._evaluate_population(
-                population["latents"], pairs, grid_shapes, scan_batch_size
-            )
-            
-            # Selection: keep top half
+            # Calls decoder via _evaluate_population, which uses nn.scan (single lift)
+            fitness = self._evaluate_population(population["latents"], pairs, grid_shapes, scan_batch_size)
+
+            # Select per-batch survivors and mutate back to target size
             survivors = self._select_survivors(population["latents"], fitness, population_size // 2)
-            
-            # Mutation: generate offspring
             key, mut_key = jax.random.split(key)
-            offspring = self._mutate_population(
-                survivors, population_size, mutation_std, mut_key
-            )
-            
+            offspring = self._mutate_population(survivors, population_size, mutation_std, mut_key)
+
             new_population = {
                 "latents": offspring,
-                "fitness": jnp.full(population_size, -jnp.inf),
-                "generation": generation_idx + 1
+                "fitness": fitness,                # keep last fitness if you want
+                "generation": population["generation"] + 1,
             }
-            
             return (new_population, key), None
-        
-        # Run evolution
-        print(f"         🔄 Running {num_generations} evolution steps with nn.scan...")
-        (final_population, _), _ = nn.scan(
-            evolution_step,
-            variable_broadcast="params",
-            split_rngs={"params": False},
-            length=num_generations
-        )(self.decoder, (population, key), jnp.arange(num_generations))
-        
-        print(f"         ✅ Evolutionary loop completed")
-        print(f"         📊 Final population shape: {final_population['latents'].shape}")
+
+        (final_population, _), _ = jax.lax.scan(
+            evolution_step, (population, key), None, length=num_generations
+        )
         return final_population
 
     def _evaluate_population(
-        self, population_latents: chex.Array, pairs: chex.Array, 
+        self, population_latents: chex.Array, pairs: chex.Array,
         grid_shapes: chex.Array, scan_batch_size: Optional[int]
     ) -> chex.Array:
-        """Evaluate population using the same pipeline as random search."""
+        # Seqs: (B, P, T)
+        input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
 
-        # 1) Flatten to decoder sequences (B, P, T)
-        input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)  # (B,P,902)
-
-        # 2) Replicate latents across pairs (B, P, C, H) – C=candidates/population
+        # Latents: (B, C, H)  -> (B, P, C, H)
+        if population_latents.ndim == 2:   # (C,H) -> (1,C,H)
+            population_latents = population_latents[None, ...]
         latents = population_latents[..., None, :, :].repeat(output_seq.shape[-2], axis=-3)
 
-        # 3) Batch over the candidates axis (like random search)
-        batch_size = scan_batch_size or latents.shape[-2]          # over C
+        # Batch candidates with nn.scan (Flax lift that shares decoder params)
+        batch_size = scan_batch_size or latents.shape[-2]  # candidates axis
         num_batches = latents.shape[-2] // batch_size
+        batched_latents = jnp.reshape(
+            latents[..., : num_batches * batch_size, :],
+            (*latents.shape[:-2], num_batches, batch_size, latents.shape[-1]),
+        )
         dropout_eval = True
 
-        def run_batches(latents_):
-            # latents_: (B, P, C, H)
-            batched = jnp.reshape(
-                latents_[..., : num_batches * batch_size, :],
-                (*latents_.shape[:-2], num_batches, batch_size, latents_.shape[-1]),
-            )  # (B, P, NB, BS, H)
+        # One lifted scan over the decoder; inside, vmap the decoder over the batch
+        _, (row_logits, col_logits, grid_logits) = nn.scan(
+            lambda decoder, _, lat_batch: (
+                None,
+                jax.vmap(decoder, in_axes=(None, None, -2, None), out_axes=-2)(
+                    input_seq, output_seq, lat_batch, dropout_eval
+                ),
+            ),
+            variable_broadcast="params",
+            split_rngs={"params": False},
+            in_axes=-3,
+            out_axes=-3,
+        )(self.decoder, None, batched_latents)
 
-            # Use jax.lax.scan instead of nn.scan to avoid nested scan issues
-            def batch_step(carry, batch_latents):
-                # batch_latents: (B, P, BS, H)
-                logits = jax.vmap(self.decoder, in_axes=(None, None, -2, None), out_axes=-2)(
-                    input_seq, output_seq, batch_latents, dropout_eval
-                )
-                return carry, logits
-            
-            _, (row_logits, col_logits, grid_logits) = jax.lax.scan(
-                batch_step,
-                init=None,
-                xs=batched,
-                length=num_batches
-            )
+        # Collapse (num_batches, batch_size) -> candidates
+        row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
+            lambda x: x.reshape(*x.shape[:-3], -1, x.shape[-1]),
+            (row_logits, col_logits, grid_logits),
+        )
 
-            # collapse NB×BS back to C
+        # Remainder candidates (if any)
+        if num_batches * batch_size < latents.shape[-2]:
+            remaining = latents[..., num_batches * batch_size :, :]
+            r_row, r_col, r_grid = jax.vmap(
+                self.decoder, in_axes=(None, None, -2, None), out_axes=-2
+            )(input_seq, output_seq, remaining, dropout_eval)
             row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
-                lambda x: x.reshape(*x.shape[:-3], -1, x.shape[-1]),
+                lambda x, y: jnp.concatenate([x, y], axis=-2),
                 (row_logits, col_logits, grid_logits),
+                (r_row, r_col, r_grid),
             )
 
-            # remainder
-            if num_batches * batch_size < latents_.shape[-2]:
-                remaining = latents_[..., num_batches * batch_size :, :]  # (B,P, C_rem, H)
-                r_row, r_col, r_grid = jax.vmap(
-                    self.decoder, in_axes=(None, None, -2, None), out_axes=-2
-                )(input_seq, output_seq, remaining, dropout_eval)
-                row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
-                    lambda x, y: jnp.concatenate([x, y], axis=-2),
-                    (row_logits, col_logits, grid_logits),
-                    (r_row, r_col, r_grid),
-                )
-            return row_logits, col_logits, grid_logits
-
-        if latents.shape[-2] > 0:
-            row_logits, col_logits, grid_logits = run_batches(latents)
-        else:
-            # degenerate case: no candidates
-            raise ValueError("No candidates in population.")
-
-        # 4) Score candidates: log_probs shape (B, P, C)
+        # Score candidates: (B, P, C)
         log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
             row_logits, col_logits, grid_logits, output_seq
         )
 
-        # 5) Reduce over pairs → fitness per candidate: (B, C)
+        # Fitness per candidate (average over pairs): (B, C)
         fitness = jnp.mean(log_probs, axis=-2)
         return fitness
 
@@ -1125,61 +1093,35 @@ class LPN(nn.Module):
         key: chex.PRNGKey, num_generations: int, population_size: int,
         mutation_std: float, scan_batch_size: Optional[int]
     ) -> tuple[dict, dict]:
-        """Evolutionary loop with progress tracking."""
-        
-        print(f"      🔄 Starting evolutionary loop with tracking ({num_generations} generations)")
-        print(f"         📊 Initial population shape: {population['latents'].shape}")
-        print(f"         📊 Population size: {population_size}")
-        print(f"         📊 Mutation std: {mutation_std}")
-        
-        def evolution_step_with_tracking(decoder, carry, generation_idx):
+        """Same as above but returns per-generation metrics."""
+
+        def step(carry, _):
             population, key, best_so_far = carry
-            
-            # Evaluate current population
-            fitness = self._evaluate_population(
-                population["latents"], pairs, grid_shapes, scan_batch_size
-            )
-            
-            # Track progress
-            generation_best = jnp.max(fitness)
-            best_so_far = jnp.maximum(best_so_far, generation_best)
-            
-            # Selection and mutation (same as non-tracking version)
+            fitness = self._evaluate_population(population["latents"], pairs, grid_shapes, scan_batch_size)
+            gen_best = jnp.max(fitness)
+            best_so_far = jnp.maximum(best_so_far, gen_best)
+
             survivors = self._select_survivors(population["latents"], fitness, population_size // 2)
             key, mut_key = jax.random.split(key)
-            offspring = self._mutate_population(
-                survivors, population_size, mutation_std, mut_key
-            )
-            
+            offspring = self._mutate_population(survivors, population_size, mutation_std, mut_key)
+
             new_population = {
                 "latents": offspring,
-                "fitness": fitness,  # Keep fitness for tracking
-                "generation": generation_idx + 1
+                "fitness": fitness,
+                "generation": population["generation"] + 1,
             }
-            
-            return (new_population, key, best_so_far), (generation_best, best_so_far)
-        
-        # Run evolution with tracking
-        print(f"         🔄 Running {num_generations} evolution steps with nn.scan...")
-        (final_population, _, best_so_far), (generation_bests, cumulative_bests) = nn.scan(
-            evolution_step_with_tracking,
-            variable_broadcast="params",
-            split_rngs={"params": False},
-            length=num_generations
-        )(self.decoder, (population, key, -jnp.inf), jnp.arange(num_generations))
-        
-        trajectory_data = {
-            "generation_accuracies": generation_bests,
-            "best_accuracy_progression": cumulative_bests,
-            "final_best_accuracy": best_so_far
+            return (new_population, key, best_so_far), (gen_best, best_so_far)
+
+        (final_pop, _, best_so_far), (gen_bests, cum_bests) = jax.lax.scan(
+            step, (population, key, -jnp.inf), None, length=num_generations
+        )
+
+        trajectory = {
+            "generation_accuracies": gen_bests,
+            "best_accuracy_progression": cum_bests,
+            "final_best_accuracy": best_so_far,
         }
-        
-        print(f"         ✅ Evolutionary loop with tracking completed")
-        print(f"         📊 Final population shape: {final_population['latents'].shape}")
-        print(f"         📊 Best fitness achieved: {best_so_far:.4f}")
-        print(f"         📊 Trajectory data keys: {list(trajectory_data.keys())}")
-        
-        return final_population, trajectory_data
+        return final_pop, trajectory
 
 
     @classmethod
