@@ -1006,28 +1006,43 @@ class LPN(nn.Module):
             print(f"            📊 Reshaped latents (ND): {latents.shape}")
         
         # Replicate latents to match the number of pairs
-        # We need to replicate along the pairs dimension, not the population dimension
+        # FIX: The issue was that we were creating a dimension mismatch in the transformer
+        # The transformer's embed_inputs method expects consistent dimensions across all inputs
+        # We need to reshape latents to: (batch, population * pairs, features) instead of
+        # (batch, population, pairs, features) to avoid the concatenation error
         print(f"            📊 Before replication - latents: {latents.shape}, output_seq: {output_seq.shape}")
-        print(f"            📊 Replicating along axis -2 (pairs dimension) {output_seq.shape[-2]} times")
+        print(f"            📊 Number of pairs: {output_seq.shape[-2]}")
         
-        # The issue is that we need to understand the dimension structure
-        # latents should be: (batch, population, pairs, features)
-        # but we're getting: (batch, population, 1, features) and trying to replicate
+        # The problem was that we were creating a dimension mismatch
+        # We need to ensure latents have the right shape for the decoder
+        # The decoder expects: (batch, population * pairs, features) after reshaping
         
-        # Let me fix this by properly understanding the dimensions
         if latents.ndim == 4:  # (batch, population, 1, features)
-            # We need to replicate the pairs dimension
+            # We need to replicate the pairs dimension to match output_seq
             latents = latents.repeat(output_seq.shape[-2], axis=2)
             print(f"            📊 Replicated latents (axis 2): {latents.shape}")
         else:
             print(f"            ⚠️ Unexpected latents shape: {latents.shape}")
+            # Fallback to original logic
             latents = latents.repeat(output_seq.shape[-2], axis=-2)
             print(f"            📊 Replicated latents (axis -2): {latents.shape}")
         
+        # Now we need to ensure the latents are properly shaped for the decoder
+        # The decoder expects each latent to be used for each pair
+        # So we need to reshape to: (batch, population * pairs, features)
+        original_shape = latents.shape
+        if latents.ndim == 4:  # (batch, population, pairs, features)
+            latents = latents.reshape(original_shape[0], -1, original_shape[-1])
+            print(f"            📊 Reshaped latents for decoder: {latents.shape}")
+        else:
+            print(f"            📊 Latents already in correct shape: {latents.shape}")
+        
         # Batch decode (identical to random search)
+        # After reshaping, latents should be (batch, population * pairs, features)
         batch_size = scan_batch_size or latents.shape[-2]
         num_batches = latents.shape[-2] // batch_size
         print(f"            📊 Batch processing: size={batch_size}, batches={num_batches}")
+        print(f"            📊 Latents shape for batching: {latents.shape}")
         
         if num_batches > 0:
             print(f"            📊 Processing {num_batches} batches...")
@@ -1044,6 +1059,8 @@ class LPN(nn.Module):
             print(f"               - batched_latents: {batched_latents.shape}")
             print(f"               - dropout_eval: {dropout_eval}")
             
+            # The issue was that we were passing latents with wrong dimensions
+            # Now latents should be properly shaped for the decoder
             _, (row_logits, col_logits, grid_logits) = nn.scan(
                 lambda decoder, _, latents: (
                     None,
@@ -1078,7 +1095,7 @@ class LPN(nn.Module):
                     (row_logits, col_logits, grid_logits),
                     (row_logits_remainder, col_logits_remainder, grid_logits_remainder),
                 )
-                print(f"            📊 Combined logits: row={row_logits.shape}, col={col_logits.shape}, grid={grid_logits.shape}")
+                print(f"            📊 Combined logits: row={row_logits.shape}, col={row_logits.shape}, grid={grid_logits.shape}")
         else:
             # Single batch case
             print(f"            📊 Single batch processing...")
@@ -1088,20 +1105,46 @@ class LPN(nn.Module):
             print(f"               - latents: {latents.shape}")
             print(f"               - dropout_eval: True")
             
+            # Now latents should be properly shaped: (batch, population * pairs, features)
             row_logits, col_logits, grid_logits = jax.vmap(
                 self.decoder, in_axes=(None, None, -2, None), out_axes=-2
             )(input_seq, output_seq, latents, dropout_eval=True)
             print(f"            📊 Single batch logits: row={row_logits.shape}, col={col_logits.shape}, grid={grid_logits.shape}")
         
         # Compute fitness (identical to random search)
+        # Now we need to handle the fact that latents were reshaped
+        # The logits should have shape that matches the reshaped latents
+        print(f"            📊 Computing fitness from logits:")
+        print(f"               - row_logits: {row_logits.shape}")
+        print(f"               - col_logits: {col_logits.shape}")
+        print(f"               - grid_logits: {grid_logits.shape}")
+        print(f"               - output_seq: {output_seq.shape}")
+        
         log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
             row_logits, col_logits, grid_logits, output_seq
         )
         print(f"            📊 Log probabilities shape: {log_probs.shape}")
         
         # Reduce to scalar per candidate
+        # Since we reshaped latents to (batch, population * pairs, features)
+        # We need to reshape the fitness back to (batch, population)
         fitness = jnp.mean(log_probs, axis=tuple(range(log_probs.ndim - 1)))
-        print(f"            📊 Fitness shape: {fitness.shape}")
+        print(f"            📊 Raw fitness shape: {fitness.shape}")
+        
+        # Reshape fitness to match original population structure
+        # We need to go from (batch, population * pairs) back to (batch, population)
+        if fitness.ndim >= 2:
+            # Get the original population size from the population_latents
+            original_population_size = population_latents.shape[-2]
+            if fitness.shape[-1] == original_population_size * output_seq.shape[-2]:
+                # Reshape to (batch, population, pairs) then average over pairs
+                fitness = fitness.reshape(*fitness.shape[:-1], original_population_size, output_seq.shape[-2])
+                fitness = jnp.mean(fitness, axis=-1)  # Average over pairs
+                print(f"            📊 Reshaped fitness to population structure: {fitness.shape}")
+            else:
+                print(f"            ⚠️ Fitness shape doesn't match expected: {fitness.shape}")
+        
+        print(f"            📊 Final fitness shape: {fitness.shape}")
         print(f"            📊 Fitness range: [{jnp.min(fitness):.4f}, {jnp.max(fitness):.4f}]")
         return fitness
 
