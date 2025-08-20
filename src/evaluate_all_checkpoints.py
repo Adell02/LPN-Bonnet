@@ -142,11 +142,11 @@ def get_all_checkpoints(
 
             # Fallback to alias pattern: num_steps_XXX
             if step_match is None:
-                for alias in artifact.aliases:
-                    if alias.startswith("num_steps_"):
+                        for alias in artifact.aliases:
+                            if alias.startswith("num_steps_"):
                         try:
-                            step_match = int(alias.split("_")[-1])
-                            break
+                                step_match = int(alias.split("_")[-1])
+                                break
                         except ValueError:
                             pass
 
@@ -161,15 +161,15 @@ def get_all_checkpoints(
 
         # Sort by step if available
         checkpoints.sort(key=lambda x: x["step"] if x["step"] is not None else -1)
-        
-        print(f"Found {len(checkpoints)} checkpoints:")
-        for cp in checkpoints:
-            print(f"  - {cp['name']} (Step: {cp['step']})")
-        return checkpoints
-        
-    except Exception as e:
-        print(f"Error accessing run: {e}")
-        return []
+            
+            print(f"Found {len(checkpoints)} checkpoints:")
+            for cp in checkpoints:
+                print(f"  - {cp['name']} (Step: {cp['step']})")
+            return checkpoints
+            
+        except Exception as e:
+            print(f"Error accessing run: {e}")
+            return []
     
 
 def run_evaluation(
@@ -272,6 +272,9 @@ def run_evaluation(
             "top_2_shape_accuracy": r"top_2_shape_accuracy:\s*([0-9]*\.?[0-9]+)",
             "top_2_accuracy": r"top_2_accuracy:\s*([0-9]*\.?[0-9]+)",
             "top_2_pixel_correctness": r"top_2_pixel_correctness:\s*([0-9]*\.?[0-9]+)",
+            # Dataset evaluation metrics
+            "correct_shapes": r"correct_shapes:\s*([0-9]*\.?[0-9]+)",
+            "pixel_correctness": r"pixel_correctness:\s*([0-9]*\.?[0-9]+)",
         }
         
         for metric_name, pattern in metric_patterns.items():
@@ -290,6 +293,8 @@ def run_evaluation(
                 + (f" | accuracy={acc}" if acc is not None else "")
                 + (f" | shape_acc={metrics.get('top_1_shape_accuracy', 'N/A')}" if metrics.get('top_1_shape_accuracy') is not None else "")
                 + (f" | pixel_acc={metrics.get('top_1_pixel_correctness', 'N/A')}" if metrics.get('top_1_pixel_correctness') is not None else "")
+                + (f" | correct_shapes={metrics.get('correct_shapes')}" if metrics.get('correct_shapes') is not None else "")
+                + (f" | pixel_correctness={metrics.get('pixel_correctness')}" if metrics.get('pixel_correctness') is not None else "")
             )
             return True, acc, metrics, stdout
         else:
@@ -344,6 +349,8 @@ def run_evaluation(
                             + (f" | accuracy={retry_acc}" if retry_acc is not None else "")
                             + (f" | shape_acc={retry_metrics.get('top_1_shape_accuracy', 'N/A')}" if retry_metrics.get('top_1_shape_accuracy') is not None else "")
                             + (f" | pixel_acc={retry_metrics.get('top_1_pixel_correctness', 'N/A')}" if retry_metrics.get('top_1_pixel_correctness') is not None else "")
+                            + (f" | correct_shapes={retry_metrics.get('correct_shapes')}" if retry_metrics.get('correct_shapes') is not None else "")
+                            + (f" | pixel_correctness={retry_metrics.get('pixel_correctness')}" if retry_metrics.get('pixel_correctness') is not None else "")
                         )
                         return True, retry_acc, retry_metrics, retry_stdout
                     else:
@@ -364,7 +371,7 @@ def run_evaluation(
                     print(f"Error output:\n{stderr}")
                 return False, acc, metrics, stdout
             
-    except Exception as e:
+        except Exception as e:
         print(f"❌ Error running {method} evaluation: {e}")
         return False, None, {}, ""
 
@@ -490,9 +497,9 @@ def main():
 
     # Fetch checkpoints
     checkpoints = get_all_checkpoints(args.run_name, args.project, args.entity)
-    if not checkpoints:
+        if not checkpoints:
         print("❌ No checkpoints found. Exiting.")
-        return
+            return
         
     # Budgets
     # Use the same budgets for both methods
@@ -889,8 +896,8 @@ def main():
         run.log_artifact(plot_art)
         
         print(f"📊 Generated and uploaded final comparison plot with {len(steps_sorted)} training progress steps (0% → {progress_percentage}%) and {len(actual_budgets)} budgets")
-        
-    except Exception as e:
+            
+        except Exception as e:
         print(f"⚠️  Failed to generate or upload final comparison plot: {e}")
 
     # Summary
