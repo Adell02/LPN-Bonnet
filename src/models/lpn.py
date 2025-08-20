@@ -922,29 +922,23 @@ class LPN(nn.Module):
         key: chex.PRNGKey, num_generations: int, population_size: int,
         mutation_std: float, scan_batch_size: Optional[int]
     ) -> dict:
-        """Main evolutionary loop without progress tracking (outer loop is pure JAX)."""
-
-        def evolution_step(carry, _):
-            population, key = carry
+        """Main evolutionary loop; plain Python loop to avoid transform nesting."""
+        pop = population
+        k = key
+        for _ in range(num_generations):
             # Calls decoder via _evaluate_population, which uses nn.scan (single lift)
-            fitness = self._evaluate_population(population["latents"], pairs, grid_shapes, scan_batch_size)
+            fitness = self._evaluate_population(pop["latents"], pairs, grid_shapes, scan_batch_size)
 
-            # Select per-batch survivors and mutate back to target size
-            survivors = self._select_survivors(population["latents"], fitness, population_size // 2)
-            key, mut_key = jax.random.split(key)
-            offspring = self._mutate_population(survivors, population_size, mutation_std, mut_key)
+            survivors = self._select_survivors(pop["latents"], fitness, population_size // 2)
+            k, mut_k = jax.random.split(k)
+            offspring = self._mutate_population(survivors, population_size, mutation_std, mut_k)
 
-            new_population = {
+            pop = {
                 "latents": offspring,
-                "fitness": fitness,                # keep last fitness if you want
-                "generation": population["generation"] + 1,
+                "fitness": fitness,
+                "generation": pop["generation"] + 1,
             }
-            return (new_population, key), None
-
-        (final_population, _), _ = jax.lax.scan(
-            evolution_step, (population, key), None, length=num_generations
-        )
-        return final_population
+        return pop
 
     def _evaluate_population(
         self, population_latents: chex.Array, pairs: chex.Array,
@@ -1093,35 +1087,33 @@ class LPN(nn.Module):
         key: chex.PRNGKey, num_generations: int, population_size: int,
         mutation_std: float, scan_batch_size: Optional[int]
     ) -> tuple[dict, dict]:
-        """Same as above but returns per-generation metrics."""
-
-        def step(carry, _):
-            population, key, best_so_far = carry
-            fitness = self._evaluate_population(population["latents"], pairs, grid_shapes, scan_batch_size)
+        """Same, but records per-generation metrics."""
+        pop = population
+        k = key
+        gen_bests = []
+        best_so_far = -jnp.inf
+        for _ in range(num_generations):
+            fitness = self._evaluate_population(pop["latents"], pairs, grid_shapes, scan_batch_size)
             gen_best = jnp.max(fitness)
             best_so_far = jnp.maximum(best_so_far, gen_best)
+            gen_bests.append(gen_best)
 
-            survivors = self._select_survivors(population["latents"], fitness, population_size // 2)
-            key, mut_key = jax.random.split(key)
-            offspring = self._mutate_population(survivors, population_size, mutation_std, mut_key)
+            survivors = self._select_survivors(pop["latents"], fitness, population_size // 2)
+            k, mut_k = jax.random.split(k)
+            offspring = self._mutate_population(survivors, population_size, mutation_std, mut_k)
 
-            new_population = {
+            pop = {
                 "latents": offspring,
                 "fitness": fitness,
-                "generation": population["generation"] + 1,
+                "generation": pop["generation"] + 1,
             }
-            return (new_population, key, best_so_far), (gen_best, best_so_far)
-
-        (final_pop, _, best_so_far), (gen_bests, cum_bests) = jax.lax.scan(
-            step, (population, key, -jnp.inf), None, length=num_generations
-        )
 
         trajectory = {
-            "generation_accuracies": gen_bests,
-            "best_accuracy_progression": cum_bests,
+            "generation_accuracies": jnp.stack(gen_bests),
+            "best_accuracy_progression": jnp.maximum.accumulate(jnp.stack(gen_bests)),
             "final_best_accuracy": best_so_far,
         }
-        return final_pop, trajectory
+        return pop, trajectory
 
 
     @classmethod
