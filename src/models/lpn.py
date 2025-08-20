@@ -941,41 +941,64 @@ class LPN(nn.Module):
         return pop
 
     def _evaluate_population(
-        self, population_latents: chex.Array, pairs: chex.Array,
+        self, population_latents: chex.Array, pairs: chex.Array, 
         grid_shapes: chex.Array, scan_batch_size: Optional[int]
     ) -> chex.Array:
-        # Seqs: (B, P, T)
+        # 1) Sequences: (B, P, T)
         input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
 
-        # Latents: (B, C, H)  -> (B, P, C, H)
-        if population_latents.ndim == 2:   # (C,H) -> (1,C,H)
+        # 2) Ensure batch dim and replicate latents across pairs → (B, P, C, H)
+        if population_latents.ndim == 2:  # (C, H) -> (1, C, H)
             population_latents = population_latents[None, ...]
-        
-        print(f"            📊 Population latents shape: {population_latents.shape}")
-        print(f"            📊 Output seq pairs: {output_seq.shape[-2]}")
-        
-        # Replicate latents across pairs: (B, C, H) -> (B, P, C, H)
-        # population_latents: (B, C, H), output_seq.shape[-2]: P (number of pairs)
-        # We need: (B, P, C, H) where P=pairs, C=candidates
-        latents = population_latents[..., None, :, :].repeat(output_seq.shape[-2], axis=-3)
-        print(f"            📊 After replication: {latents.shape}")
-        
-        # Now latents has shape (B, C, P, H), but we need (B, P, C, H)
-        # So we need to transpose the pairs and candidates dimensions
-        latents = latents.transpose(0, 2, 1, 3)  # (B, C, P, H) -> (B, P, C, H)
-        print(f"            📊 After transpose: {latents.shape}")
+        # population_latents: (B, C, H)
+        latents = population_latents[..., None, :, :].repeat(output_seq.shape[-2], axis=-3)  # (B, P, C, H)
 
-        # Batch candidates with nn.scan (Flax lift that shares decoder params)
-        batch_size = scan_batch_size or latents.shape[-2]  # candidates axis
-        num_batches = latents.shape[-2] // batch_size
-        print(f"            📊 Batching: batch_size={batch_size}, num_batches={num_batches}")
-        
+        # Sanity checks (helpful during dev)
+        B, P, C, H = latents.shape
+        assert input_seq.shape[:2] == (B, P)
+        assert output_seq.shape[:2] == (B, P)
+        print(f"            📊 Latents shape: {latents.shape} (B={B}, P={P}, C={C}, H={H})")
+
+        # 3) Batch over the candidates axis (-2) exactly like random search.
+        batch_size = scan_batch_size or C
+        num_batches = C // batch_size
         dropout_eval = True
-        
-        # Handle single batch case properly to avoid 5D tensors
-        if num_batches == 1:
+        print(f"            📊 Batching: batch_size={batch_size}, num_batches={num_batches}")
+
+        # Split candidates into (NB, BS), keep (B, P, NB, BS, H)
+        if num_batches > 0:
+            batched_latents = jnp.reshape(
+                latents[..., : num_batches * batch_size, :],
+                (B, P, num_batches, batch_size, H),
+            )
+            print(f"            📊 Batched latents shape: {batched_latents.shape}")
+
+            # One lifted scan over decoder; inside we vmap over the batch_size (axis -2).
+            # NOTE: input_seq/output_seq are broadcast (None), latents mapped over -2.
+            _, (row_logits, col_logits, grid_logits) = nn.scan(
+                lambda decoder, _, lat_batch: (
+                    None,
+                    jax.vmap(decoder, in_axes=(None, None, -2, None), out_axes=-2)(
+                        input_seq, output_seq, lat_batch, dropout_eval
+                    ),
+                ),
+                variable_broadcast="params",
+                split_rngs={"params": False},
+                in_axes=-3,
+                out_axes=-3,
+            )(self.decoder, None, batched_latents)
+
+            # Collapse (NB, BS) → C
+            row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
+                lambda x: x.reshape(B, P, -1, x.shape[-1]), (row_logits, col_logits, grid_logits)
+            )
+            print(f"            🔍 DEBUG: After reshape collapse:")
+            print(f"               - row_logits shape: {row_logits.shape}")
+            print(f"               - col_logits shape: {col_logits.shape}")
+            print(f"               - grid_logits shape: {grid_logits.shape}")
+        else:
+            # If C < batch_size: just vmap once over all candidates
             print(f"            🔧 Single batch case - processing directly")
-            # Process all latents at once without batching
             row_logits, col_logits, grid_logits = jax.vmap(
                 self.decoder, in_axes=(None, None, -2, None), out_axes=-2
             )(input_seq, output_seq, latents, dropout_eval)
@@ -983,87 +1006,45 @@ class LPN(nn.Module):
             print(f"               - row_logits shape: {row_logits.shape}")
             print(f"               - col_logits shape: {col_logits.shape}")
             print(f"               - grid_logits shape: {grid_logits.shape}")
-        else:
-            print(f"            🔧 Multiple batches - using nn.scan")
-            batched_latents = jnp.reshape(
-                latents[..., : num_batches * batch_size, :],
-                (*latents.shape[:-2], num_batches, batch_size, latents.shape[-1]),
-            )
-            print(f"            📊 Batched latents shape: {batched_latents.shape}")
-            
-            # Continue with nn.scan for multiple batches...
 
-            # One lifted scan over the decoder; inside, vmap the decoder over the batch
-            print(f"            🔍 DEBUG: About to call nn.scan with:")
+        # Remainder candidates (if C not divisible by batch_size)
+        if num_batches * batch_size < C:
+            remaining = latents[..., num_batches * batch_size :, :]  # (B, P, C_rem, H)
+            print(f"            🔍 DEBUG: Processing remainder:")
+            print(f"               - remaining shape: {remaining.shape}")
             print(f"               - input_seq shape: {input_seq.shape}")
             print(f"               - output_seq shape: {output_seq.shape}")
-            print(f"               - batched_latents shape: {batched_latents.shape}")
-            print(f"               - batched_latents ndim: {batched_latents.ndim}")
             
-            # Add lambda debugging to see what's actually being passed to the decoder
-            def debug_lambda(decoder, _, lat_batch):
-                print(f"            🔍 DEBUG: Inside lambda, lat_batch shape: {lat_batch.shape}")
-                print(f"            🔍 DEBUG: About to call vmap with lat_batch")
-                result = jax.vmap(decoder, in_axes=(None, None, -2, None), out_axes=-2)(
-                    input_seq, output_seq, lat_batch, dropout_eval
-                )
-                print(f"            🔍 DEBUG: vmap result shapes: {[x.shape for x in result]}")
-                return None, result
+            r_row, r_col, r_grid = jax.vmap(
+                self.decoder, in_axes=(None, None, -2, None), out_axes=-2
+            )(input_seq, output_seq, remaining, dropout_eval)
             
-            _, (row_logits, col_logits, grid_logits) = nn.scan(
-                debug_lambda,
-                variable_broadcast="params",
-                split_rngs={"params": False},
-                in_axes=-3,
-                out_axes=-3,
-            )(self.decoder, None, batched_latents)
-
-            # Collapse (num_batches, batch_size) -> candidates
-            print(f"            🔍 DEBUG: Before reshape collapse:")
-            print(f"               - row_logits shape: {row_logits.shape}")
-            print(f"               - col_logits shape: {col_logits.shape}")
-            print(f"               - grid_logits shape: {grid_logits.shape}")
+            print(f"            🔍 DEBUG: Remainder results:")
+            print(f"               - r_row shape: {r_row.shape}")
+            print(f"               - r_col shape: {r_col.shape}")
+            print(f"               - r_grid shape: {r_grid.shape}")
             
             row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
-                lambda x: x.reshape(*x.shape[:-3], -1, x.shape[-1]),
+                lambda x, y: jnp.concatenate([x, y], axis=-2),
                 (row_logits, col_logits, grid_logits),
+                (r_row, r_col, r_grid),
             )
-            
-            print(f"            🔍 DEBUG: After reshape collapse:")
-            print(f"               - row_logits shape: {row_logits.shape}")
-            print(f"               - col_logits shape: {col_logits.shape}")
-            print(f"               - grid_logits shape: {grid_logits.shape}")
 
-            # Remainder candidates (if any)
-            if num_batches * batch_size < latents.shape[-2]:
-                remaining = latents[..., num_batches * batch_size :, :]
-                print(f"            🔍 DEBUG: Processing remainder:")
-                print(f"               - remaining shape: {remaining.shape}")
-                print(f"               - input_seq shape: {input_seq.shape}")
-                print(f"               - output_seq shape: {output_seq.shape}")
-                
-                r_row, r_col, r_grid = jax.vmap(
-                    self.decoder, in_axes=(None, None, -2, None), out_axes=-2
-                )(input_seq, output_seq, remaining, dropout_eval)
-                
-                print(f"            🔍 DEBUG: Remainder results:")
-                print(f"               - r_row shape: {r_row.shape}")
-                print(f"               - r_col shape: {r_col.shape}")
-                print(f"               - r_grid shape: {r_grid.shape}")
-                
-                row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
-                    lambda x, y: jnp.concatenate([x, y], axis=-2),
-                    (row_logits, col_logits, grid_logits),
-                    (r_row, r_col, r_grid),
-                )
-
-        # Score candidates: (B, P, C)
+        # 4) Score candidates: log_probs (B, P, C)
+        print(f"            🔍 DEBUG: Computing log probs with:")
+        print(f"               - row_logits shape: {row_logits.shape}")
+        print(f"               - col_logits shape: {col_logits.shape}")
+        print(f"               - grid_logits shape: {grid_logits.shape}")
+        print(f"               - output_seq shape: {output_seq.shape}")
+        
         log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
             row_logits, col_logits, grid_logits, output_seq
         )
+        print(f"            🔍 DEBUG: Log probs shape: {log_probs.shape}")
 
-        # Fitness per candidate (average over pairs): (B, C)
+        # 5) Fitness per candidate (average over pairs): (B, C)
         fitness = jnp.mean(log_probs, axis=-2)
+        print(f"            🔍 DEBUG: Final fitness shape: {fitness.shape}")
         return fitness
 
     def _select_survivors(
