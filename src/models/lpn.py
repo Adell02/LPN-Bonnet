@@ -988,6 +988,10 @@ class LPN(nn.Module):
         input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
         print(f"            📊 Flattened sequences: input={input_seq.shape}, output={output_seq.shape}")
         
+        # FIX: The issue is that input_seq and output_seq have shape (batch, pairs, seq_len)
+        # but when we vmap the decoder, we need to ensure all inputs have consistent dimensions
+        # We need to broadcast input_seq and output_seq to match the latent dimensions
+        
         # Replicate latents over pairs (identical to random search)
         # The issue is that we need to replicate latents to match the number of pairs
         # but we need to be careful about the dimensions
@@ -1036,6 +1040,31 @@ class LPN(nn.Module):
             print(f"            📊 Reshaped latents for decoder: {latents.shape}")
         else:
             print(f"            📊 Latents already in correct shape: {latents.shape}")
+        
+        # FIX: Now we need to ensure input_seq and output_seq are properly broadcasted
+        # When we reshape latents to (batch, population * pairs, features), we need to
+        # ensure that input_seq and output_seq can be used with each latent
+        # The issue is that input_seq has shape (batch, pairs, seq_len) but we need
+        # it to work with (batch, population * pairs, features)
+        
+        # We need to repeat input_seq and output_seq for each population member
+        # input_seq: (batch, pairs, seq_len) -> (batch, population, pairs, seq_len)
+        # Then reshape to: (batch, population * pairs, seq_len)
+        if input_seq.ndim == 3:  # (batch, pairs, seq_len)
+            # Calculate how many times to repeat based on the population size
+            # latents.shape[1] = population * pairs, output_seq.shape[1] = pairs
+            # So we need to repeat population times
+            population_size = latents.shape[1] // output_seq.shape[1]
+            print(f"            📊 Population size from latents: {population_size}")
+            
+            # Repeat for each population member
+            input_seq = input_seq[:, None, :, :].repeat(population_size, axis=1)
+            input_seq = input_seq.reshape(input_seq.shape[0], -1, input_seq.shape[-1])
+            print(f"            📊 Broadcasted input_seq: {input_seq.shape}")
+            
+            output_seq = output_seq[:, None, :, :].repeat(population_size, axis=1)
+            output_seq = output_seq.reshape(output_seq.shape[0], -1, output_seq.shape[-1])
+            print(f"            📊 Broadcasted output_seq: {output_seq.shape}")
         
         # Batch decode (identical to random search)
         # After reshaping, latents should be (batch, population * pairs, features)
