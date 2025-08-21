@@ -515,11 +515,6 @@ def main():
     ga_steps = shared_budgets
     rs_samples = shared_budgets
     
-    # Calculate evolutionary search generations to match compute budget
-    pop = base_methods["evolutionary_search"]["population_size"]
-    es_generations = sorted({max(1, int(np.ceil(b / pop))) for b in shared_budgets})
-    print(f"🧬 Evolutionary budgets (generations @ pop={pop}): {es_generations}")
-    
     # Base method configs
     base_methods = {
         "gradient_ascent": {
@@ -539,6 +534,11 @@ def main():
             "mutation_std": 0.5,
         },
     }
+    
+    # Calculate evolutionary search generations to match compute budget
+    pop = base_methods["evolutionary_search"]["population_size"]
+    es_generations = sorted({max(1, int(np.ceil(b / pop))) for b in shared_budgets})
+    print(f"🧬 Evolutionary budgets (generations @ pop={pop}): {es_generations}")
 
     # Result counters
     results = {
