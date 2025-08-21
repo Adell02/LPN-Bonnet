@@ -788,81 +788,66 @@ class LPN(nn.Module):
             track_progress: bool = False,
             **kwargs,
         ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:
-        """Evolutionary search for optimal latent context."""
+        """Evolutionary search for optimal latent context (random-search-compatible pipeline)."""
 
-        # ----- helper: evaluate candidates EXACTLY like random search -----
+        # Compute once per task (same as random search)
+        input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
+        dropout_eval = True
+
+        # --- helper: evaluate candidates EXACTLY like random search, but micro-batched and returning log_probs ---
         def _eval_candidates(cand_latents: chex.Array) -> chex.Array:
-            """
-            Args:
-            cand_latents: (*B, C, H) — candidate contexts per task/batch
-            Returns:
-            log_probs:    (*B, P, C) — per-pair log-prob for each candidate
-            """
-            # Flatten input/output for decoding likelihood (identical to random search)
-            input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
+            # cand_latents: (*B, C, H)
+            lat_for_decode = cand_latents[..., None, :, :].repeat(output_seq.shape[-2], axis=-3)  # -> (*B, P, C, H)
 
-            # Use the same latent for all pairs of the same task (identical to random search).
-            # cand_latents: (*B, C, H) -> (*B, P, C, H)
-            lat_for_decode = cand_latents[..., None, :, :].repeat(output_seq.shape[-2], axis=-3)
+            B, P, C, H = lat_for_decode.shape
+            # Default micro-batch for T4. You can still override via CLI/kwargs.
+            bs = int(scan_batch_size or max(1, min(8, C)))
+            num_full = C // bs
+            rem = C - num_full * bs
 
-            # Decode the output sequence in batches (identical to random search).
-            batch_size = scan_batch_size or lat_for_decode.shape[-2]  # batch over candidates axis
-            num_batches = lat_for_decode.shape[-2] // batch_size
-            batched = jnp.reshape(
-                lat_for_decode[..., : num_batches * batch_size, :],
-                (*lat_for_decode.shape[:-2], num_batches, batch_size, lat_for_decode.shape[-1]),
-            )
-            dropout_eval = True  # no dropout during decoder inference
-
-            # One lifted scan over decoder; inside we vmap over the batch of candidates (identical to random).
-            _, (row_logits, col_logits, grid_logits) = nn.scan(
-                lambda decoder, _, lat_batch: (
-                    None,
-                    jax.vmap(decoder, in_axes=(None, None, -2, None), out_axes=-2)(
-                        input_seq, output_seq, lat_batch, dropout_eval
-                    ),
-                ),
-                variable_broadcast="params",
-                split_rngs={"params": False},
-                in_axes=-3,
-                out_axes=-3,
-            )(self.decoder, None, batched)
-
-            # Collapse (num_batches, batch_size) -> candidates (identical to random).
-            row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
-                lambda x: x.reshape(*x.shape[:-3], -1, x.shape[-1]),
-                (row_logits, col_logits, grid_logits),
-            )
-
-            # Remainder candidates (identical to random).
-            if num_batches * batch_size < lat_for_decode.shape[-2]:
-                remaining = lat_for_decode[..., num_batches * batch_size :, :]
-                r_row, r_col, r_grid = jax.vmap(
-                    self.decoder, in_axes=(None, None, -2, None), out_axes=-2
-                )(input_seq, output_seq, remaining, dropout_eval)
-                row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
-                    lambda x, y: jnp.concatenate([x, y], axis=-2),
-                    (row_logits, col_logits, grid_logits),
-                    (r_row, r_col, r_grid),
+            # Decode + score full batches, concatenating *log_probs* to keep memory low
+            def decode_batch(lat_batch):
+                # lat_batch: (*B, P, bs, H)
+                r, c, g = jax.vmap(self.decoder, in_axes=(None, None, -2, None), out_axes=-2)(
+                    input_seq, output_seq, lat_batch, dropout_eval
                 )
+                # Map compute_log_probs over candidate axis (-2) -> (*B, P, bs)
+                lp = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(r, c, g, output_seq)
+                return lp
 
-            # Compute output sequence log probabilities (identical to random).
-            # Note: in_axes = (-2, -2, -2, None) matches the candidate axis at -2 for all three.
-            log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
-                row_logits, col_logits, grid_logits, output_seq
-            )  # shape: (*B, P, C)
+            # Full batches
+            if num_full > 0:
+                lat_full = lat_for_decode[..., : num_full * bs, :].reshape(B, P, num_full, bs, H)
+                # nn.scan to share params across batches; output is stacked along batch-index axis
+                _, (lp_full,) = nn.scan(
+                    lambda dec, _, lat_b: (None, decode_batch(lat_b)),
+                    variable_broadcast="params",
+                    split_rngs={"params": False},
+                    in_axes=-3,   # scan over the "num_full" axis
+                    out_axes=-3,
+                )(self.decoder, None, lat_full)
+                # collapse to (*B, P, num_full*bs)
+                lp_full = lp_full.reshape(B, P, num_full * bs)
+            else:
+                lp_full = jnp.zeros((B, P, 0), dtype=jnp.float32)
+
+            # Remainder
+            if rem > 0:
+                lat_rem = lat_for_decode[..., num_full * bs :, :]  # (*B, P, rem, H)
+                lp_rem = decode_batch(lat_rem)                      # (*B, P, rem)
+                log_probs = jnp.concatenate([lp_full, lp_rem], axis=-1)  # (*B, P, C)
+            else:
+                log_probs = lp_full  # (*B, P, C)
 
             return log_probs
 
         # ----- initialize population around prepared latents -----
         base = self._prepare_latents_before_search(include_mean_latent, include_all_latents, latents)
-        # Cap or fill to population_size
         C0 = base.shape[-2]
         if C0 >= population_size:
-            population = base[..., :population_size, :]                       # (*B, C, H)
+            population = base[..., :population_size, :]  # (*B, C, H)
         else:
-            # center noise at mean of base latents
-            mean_latent = base.mean(axis=-2, keepdims=True)                   # (*B, 1, H)
+            mean_latent = base.mean(axis=-2, keepdims=True)         # (*B, 1, H)
             need = population_size - C0
             key, nk = jax.random.split(key)
             noise = jax.random.normal(nk, (*base.shape[:-2], need, base.shape[-1]))
@@ -873,371 +858,46 @@ class LPN(nn.Module):
             gen_bests = []
             best_so_far = -jnp.inf
 
-        # ----- main evolutionary loop (plain Python, no extra JAX transform) -----
+        # ----- main evolutionary loop -----
         for _ in range(num_generations):
-            # Score current population exactly like random search
-            log_probs = _eval_candidates(population)                  # (*B, P, C) or (*B, C) if P=1 folded inside impl
-            # Reduce over pairs to get a fitness per candidate (keep batch dims)
-            fitness = log_probs.mean(axis=-2) if log_probs.ndim >= 3 else log_probs  # (*B, C)
+            # Score current population
+            lp = _eval_candidates(population)          # (*B, P, C)
+            fitness = lp.mean(axis=-2)                 # (*B, C)
 
-            # Track
             if track_progress:
-                gen_best = fitness.max(axis=-1)                       # (*B,)
-                best_so_far = jnp.maximum(best_so_far, gen_best.max())
-                gen_bests.append(gen_best)
+                gbest = fitness.max(axis=-1)           # (*B,)
+                best_so_far = jnp.maximum(best_so_far, gbest.max())
+                gen_bests.append(gbest)
 
             # Select top half per batch
             num_survivors = population_size // 2
-            idx = jnp.argsort(fitness, axis=-1, descending=True)[..., :num_survivors]   # (*B, S)
-            gather_idx = jnp.expand_dims(idx, -1).repeat(population.shape[-1], axis=-1) # (*B, S, H)
-            survivors = jnp.take_along_axis(population, gather_idx, axis=-2)            # (*B, S, H)
+            idx = jnp.argsort(fitness, axis=-1, descending=True)[..., :num_survivors]         # (*B, S)
+            gather_idx = jnp.expand_dims(idx, -1).repeat(population.shape[-1], axis=-1)       # (*B, S, H)
+            survivors = jnp.take_along_axis(population, gather_idx, axis=-2)                  # (*B, S, H)
 
-            # Refill to pop size: repeat survivors and add Gaussian noise
+            # Refill to pop size with Gaussian mutation
             need = population_size - num_survivors
-            reps = (need + num_survivors - 1) // num_survivors  # ceil(need / S)
-            parents = jnp.repeat(survivors, reps, axis=-2)[..., :need, :]               # (*B, need, H)
+            reps = (need + num_survivors - 1) // num_survivors
+            parents = jnp.repeat(survivors, reps, axis=-2)[..., :need, :]
             key, nk = jax.random.split(key)
-            offspring = parents + mutation_std * jax.random.normal(nk, parents.shape)   # same shape
+            offspring = parents + mutation_std * jax.random.normal(nk, parents.shape)
 
-            population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, C, H)
+            population = jnp.concatenate([survivors, offspring], axis=-2)                     # (*B, C, H)
 
-        # ----- final selection like random search -----
-        final_log_probs = _eval_candidates(population)           # (*B, P, C)
-        # Remove the duplication of latents over pairs for selection (identical to random)
-        latents_for_pick = population                             # (*B, C, H)
-
-        best_context, second_best_context = self._select_best_and_second_best_latents(
-            final_log_probs, latents_for_pick
-        )
+        # ----- final pick like random search -----
+        final_lp = _eval_candidates(population)    # (*B, P, C)
+        best_context, second_best_context = self._select_best_and_second_best_latents(final_lp, population)
 
         if track_progress:
             traj = {
-                "generation_accuracies": jnp.stack(gen_bests),                 # shape: (G, *B) or (*B, G) if you prefer
+                "generation_accuracies": jnp.stack(gen_bests),
                 "final_best_accuracy": best_so_far,
             }
             return best_context, second_best_context, traj
 
         return best_context, second_best_context
 
-
-    def _initialize_evolutionary_population(
-        self, base_latents: chex.Array, population_size: int, 
-        mutation_std: float, key: chex.PRNGKey
-    ) -> dict:
-        """Initialize population with base latents + Gaussian perturbations."""
-        
-        # Validate inputs
-        if base_latents.ndim < 2:
-            raise ValueError(f"base_latents must have at least 2 dimensions, got {base_latents.ndim}")
-        if population_size <= 0:
-            raise ValueError(f"population_size must be positive, got {population_size}")
-        if mutation_std <= 0:
-            raise ValueError(f"mutation_std must be positive, got {mutation_std}")
-        
-        # Start with base latents (elite)
-        elite_size = base_latents.shape[-2]
-        print(f"      📊 Elite size: {elite_size}")
-        
-        # Ensure population size is reasonable
-        if elite_size > population_size:
-            raise ValueError(f"elite_size ({elite_size}) cannot be larger than population_size ({population_size})")
-        
-        # Generate perturbations for remaining slots
-        remaining_size = population_size - elite_size
-        print(f"      📊 Remaining slots for perturbations: {remaining_size}")
-        
-        if remaining_size > 0:
-            key, noise_key = jax.random.split(key)
-            
-            # Get mean latent for perturbations
-            if base_latents.ndim == 2:
-                # (population, features) -> (1, features)
-                mean_latent = base_latents.mean(axis=0, keepdims=True)
-                print(f"      📊 Mean latent shape (2D): {mean_latent.shape}")
-            else:
-                # (batch, population, features) -> (batch, 1, features)
-                mean_latent = base_latents.mean(axis=-2, keepdims=True)
-                print(f"      📊 Mean latent shape (ND): {mean_latent.shape}")
-            
-            # Generate noise with correct shape
-            if base_latents.ndim == 2:
-                noise = jax.random.normal(noise_key, (remaining_size, base_latents.shape[-1]))
-                perturbations = mean_latent + mutation_std * noise
-                print(f"      📊 Perturbations shape (2D): {perturbations.shape}")
-            else:
-                noise = jax.random.normal(
-                    noise_key, 
-                    (*base_latents.shape[:-2], remaining_size, base_latents.shape[-1])
-                )
-                perturbations = mean_latent + mutation_std * noise
-                print(f"      📊 Perturbations shape (ND): {perturbations.shape}")
-            
-            # Combine elite + perturbations
-            population_latents = jnp.concatenate([base_latents, perturbations], axis=-2)
-            print(f"      📊 Combined population shape: {population_latents.shape}")
-        else:
-            population_latents = base_latents
-            print(f"      📊 No perturbations needed, using base latents: {population_latents.shape}")
-        
-        result = {
-            "latents": population_latents,
-            "fitness": jnp.full(population_size, -jnp.inf),  # Initialize fitness
-            "generation": 0
-        }
-        print(f"      ✅ Population dict created with keys: {list(result.keys())}")
-        return result
-
-    def _evolutionary_loop(
-        self, population: dict, pairs: chex.Array, grid_shapes: chex.Array,
-        key: chex.PRNGKey, num_generations: int, population_size: int,
-        mutation_std: float, scan_batch_size: Optional[int]
-    ) -> dict:
-        """Main evolutionary loop; plain Python loop to avoid transform nesting."""
-        pop = population
-        k = key
-        for _ in range(num_generations):
-            # Calls decoder via _evaluate_population, which uses nn.scan (single lift)
-            fitness = self._evaluate_population(pop["latents"], pairs, grid_shapes, scan_batch_size)
-
-            survivors = self._select_survivors(pop["latents"], fitness, population_size // 2)
-            k, mut_k = jax.random.split(k)
-            offspring = self._mutate_population(survivors, population_size, mutation_std, mut_k)
-
-            pop = {
-                "latents": offspring,
-                "fitness": fitness,
-                "generation": pop["generation"] + 1,
-            }
-        return pop
-
-    def _evaluate_population(
-        self, population_latents: chex.Array, pairs: chex.Array, 
-        grid_shapes: chex.Array, scan_batch_size: Optional[int]
-    ) -> chex.Array:
-        # 1) Sequences: (B, P, T)
-        input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
-
-        # 2) Ensure batch dim and replicate latents across pairs → (B, P, C, H)
-        if population_latents.ndim == 2:  # (C, H) -> (1, C, H)
-            population_latents = population_latents[None, ...]
-        # population_latents: (B, C, H)
-        latents = population_latents[..., None, :, :].repeat(output_seq.shape[-2], axis=-3)  # (B, P, C, H)
-
-        # Sanity checks (helpful during dev)
-        B, P, C, H = latents.shape
-        assert input_seq.shape[:2] == (B, P)
-        assert output_seq.shape[:2] == (B, P)
-        print(f"            📊 Latents shape: {latents.shape} (B={B}, P={P}, C={C}, H={H})")
-
-        # 3) Batch over the candidates axis (-2) exactly like random search.
-        batch_size = scan_batch_size or C
-        num_batches = C // batch_size
-        dropout_eval = True
-        print(f"            📊 Batching: batch_size={batch_size}, num_batches={num_batches}")
-
-        # Split candidates into (NB, BS), keep (B, P, NB, BS, H)
-        if num_batches > 0:
-            batched_latents = jnp.reshape(
-                latents[..., : num_batches * batch_size, :],
-                (B, P, num_batches, batch_size, H),
-            )
-            print(f"            📊 Batched latents shape: {batched_latents.shape}")
-
-            # One lifted scan over decoder; inside we vmap over the batch_size (axis -2).
-            # NOTE: input_seq/output_seq are broadcast (None), latents mapped over -2.
-            _, (row_logits, col_logits, grid_logits) = nn.scan(
-                lambda decoder, _, lat_batch: (
-                    None,
-                    jax.vmap(decoder, in_axes=(None, None, -2, None), out_axes=-2)(
-                        input_seq, output_seq, lat_batch, dropout_eval
-                    ),
-                ),
-                variable_broadcast="params",
-                split_rngs={"params": False},
-                in_axes=-3,
-                out_axes=-3,
-            )(self.decoder, None, batched_latents)
-
-            # Collapse (NB, BS) → C, but preserve the grid token axis S
-            NB, BS = row_logits.shape[2], row_logits.shape[3]
-            C_from_batches = NB * BS
-            row_logits = row_logits.reshape(B, P, C_from_batches, row_logits.shape[-1])
-            col_logits = col_logits.reshape(B, P, C_from_batches, col_logits.shape[-1])
-
-            assert grid_logits.ndim == 6, f"expected 6D grid logits, got {grid_logits.shape}"
-            S, K = grid_logits.shape[-2], grid_logits.shape[-1]
-            grid_logits = grid_logits.reshape(B, P, C_from_batches, S, K)
-
-            print(f"            🔍 DEBUG: After reshape collapse (preserve S):")
-            print(f"               - row_logits shape: {row_logits.shape}")
-            print(f"               - col_logits shape: {col_logits.shape}")
-            print(f"               - grid_logits shape: {grid_logits.shape}")
-        else:
-            # If C < batch_size: just vmap once over all candidates
-            print(f"            🔧 Single batch case - processing directly")
-            row_logits, col_logits, grid_logits = jax.vmap(
-                self.decoder, in_axes=(None, None, -2, None), out_axes=-2
-            )(input_seq, output_seq, latents, dropout_eval)
-            print(f"            🔍 DEBUG: Direct vmap results:")
-            print(f"               - row_logits shape: {row_logits.shape}")
-            print(f"               - col_logits shape: {col_logits.shape}")
-            print(f"               - grid_logits shape: {grid_logits.shape}")
-
-        # Remainder candidates (if C not divisible by batch_size)
-        if num_batches * batch_size < C:
-            remaining = latents[..., num_batches * batch_size :, :]  # (B, P, C_rem, H)
-            print(f"            🔍 DEBUG: Processing remainder:")
-            print(f"               - remaining shape: {remaining.shape}")
-            print(f"               - input_seq shape: {input_seq.shape}")
-            print(f"               - output_seq shape: {output_seq.shape}")
-            
-            r_row, r_col, r_grid = jax.vmap(
-                self.decoder, in_axes=(None, None, -2, None), out_axes=-2
-            )(input_seq, output_seq, remaining, dropout_eval)
-            
-            print(f"            🔍 DEBUG: Remainder results:")
-            print(f"               - r_row shape: {r_row.shape}")
-            print(f"               - r_col shape: {r_col.shape}")
-            print(f"               - r_grid shape: {r_grid.shape}")
-            
-            row_logits = jnp.concatenate([row_logits, r_row], axis=-2)
-            col_logits = jnp.concatenate([col_logits, r_col], axis=-2)
-            # For grid logits, candidate axis is -3 because shape is (B, P, C, S, K)
-            grid_logits = jnp.concatenate([grid_logits, r_grid], axis=-3)
-
-        # 4) Score candidates: log_probs (B, P, C)
-        print(f"            🔍 DEBUG: Computing log probs with:")
-        print(f"               - row_logits shape: {row_logits.shape}")
-        print(f"               - col_logits shape: {col_logits.shape}")
-        print(f"               - grid_logits shape: {grid_logits.shape}")
-        print(f"               - output_seq shape: {output_seq.shape}")
-        
-        # Consistency checks before scoring
-        assert row_logits.shape[:2] == col_logits.shape[:2] == grid_logits.shape[:2] == output_seq.shape[:2]
-        assert row_logits.shape[-2] == col_logits.shape[-2] == grid_logits.shape[-3]
-
-        log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -3, None), out_axes=-1)(
-            row_logits, col_logits, grid_logits, output_seq
-        )
-        print(f"            🔍 DEBUG: Log probs shape: {log_probs.shape}")
-
-        # 5) Fitness per candidate (average over pairs): (B, C)
-        fitness = jnp.mean(log_probs, axis=-2)
-        print(f"            🔍 DEBUG: Final fitness shape: {fitness.shape}")
-        return fitness
-
-    def _select_survivors(
-        self, latents: chex.Array, fitness: chex.Array, num_survivors: int
-    ) -> chex.Array:
-        """Select top candidates based on fitness."""
-        # Ensure we have valid inputs
-        if latents.ndim < 2:
-            raise ValueError(f"latents must have at least 2 dimensions, got {latents.ndim}")
-        if fitness.size < num_survivors:
-            raise ValueError(f"fitness array size {fitness.size} is smaller than requested survivors {num_survivors}")
-        if num_survivors <= 0:
-            raise ValueError(f"num_survivors must be positive, got {num_survivors}")
-        
-        # latents: (B, C, H) or (C, H) if B==1; fitness: (B, C) or (C,)
-        if fitness.ndim == 1:
-            idx = jnp.argsort(fitness, descending=True)[:num_survivors]
-            return latents[idx, ...]
-        else:
-            idx = jnp.argsort(fitness, axis=-1, descending=True)[..., :num_survivors]  # (B,S)
-            # gather per batch
-            b = latents.shape[0]
-            gather_idx = jnp.expand_dims(idx, -1).repeat(latents.shape[-1], axis=-1)   # (B,S,H)
-            return jnp.take_along_axis(latents, gather_idx, axis=-2)                   # (B,S,H)
-
-    def _mutate_population(
-        self, survivors: chex.Array, target_size: int, 
-        mutation_std: float, key: chex.PRNGKey
-    ) -> chex.Array:
-        """Generate offspring through Gaussian mutation."""
-        
-        # Validate inputs
-        if survivors.ndim < 2:
-            raise ValueError(f"survivors must have at least 2 dimensions, got {survivors.ndim}")
-        if target_size <= 0:
-            raise ValueError(f"target_size must be positive, got {target_size}")
-        if mutation_std <= 0:
-            raise ValueError(f"mutation_std must be positive, got {mutation_std}")
-        
-        num_survivors = survivors.shape[-2]
-        num_offspring = target_size - num_survivors
-        
-        # Validate target size
-        if target_size < num_survivors:
-            raise ValueError(f"target_size ({target_size}) cannot be smaller than num_survivors ({num_survivors})")
-        
-        if num_offspring <= 0:
-            print(f"            📊 No offspring needed, returning survivors: {survivors.shape}")
-            return survivors
-        
-        print(f"            📊 Generating {num_offspring} offspring from {num_survivors} survivors")
-        
-        # Sample parents for offspring
-        key, parent_key = jax.random.split(key)
-        parent_indices = jax.random.randint(
-            parent_key, (num_offspring,), 0, num_survivors
-        )
-        print(f"            📊 Parent indices: {parent_indices}")
-        
-        # Handle multi-dimensional survivors properly
-        if survivors.ndim > 2:
-            # Reshape survivors to 2D for indexing, then reshape back
-            survivors_2d = survivors.reshape(-1, survivors.shape[-1])
-            parents_2d = survivors_2d[parent_indices]
-            parents = parents_2d.reshape(num_offspring, *survivors.shape[1:-1], survivors.shape[-1])
-            print(f"            📊 Parents (ND): {parents.shape}")
-        else:
-            # Simple 2D case
-            parents = survivors[parent_indices]
-            print(f"            📊 Parents (2D): {parents.shape}")
-        
-        # Add Gaussian noise
-        key, noise_key = jax.random.split(key)
-        noise = jax.random.normal(noise_key, parents.shape)
-        offspring = parents + mutation_std * noise
-        print(f"            📊 Offspring: {offspring.shape}")
-        
-        # Combine survivors + offspring
-        result = jnp.concatenate([survivors, offspring], axis=-2)
-        print(f"            📊 Combined population: {result.shape}")
-        return result
-
-    def _evolutionary_loop_with_tracking(
-        self, population: dict, pairs: chex.Array, grid_shapes: chex.Array,
-        key: chex.PRNGKey, num_generations: int, population_size: int,
-        mutation_std: float, scan_batch_size: Optional[int]
-    ) -> tuple[dict, dict]:
-        """Same, but records per-generation metrics."""
-        pop = population
-        k = key
-        gen_bests = []
-        best_so_far = -jnp.inf
-        for _ in range(num_generations):
-            fitness = self._evaluate_population(pop["latents"], pairs, grid_shapes, scan_batch_size)
-            gen_best = jnp.max(fitness)
-            best_so_far = jnp.maximum(best_so_far, gen_best)
-            gen_bests.append(gen_best)
-
-            survivors = self._select_survivors(pop["latents"], fitness, population_size // 2)
-            k, mut_k = jax.random.split(k)
-            offspring = self._mutate_population(survivors, population_size, mutation_std, mut_k)
-
-            pop = {
-                "latents": offspring,
-                "fitness": fitness,
-                "generation": pop["generation"] + 1,
-            }
-
-        trajectory = {
-            "generation_accuracies": jnp.stack(gen_bests),
-            "best_accuracy_progression": jnp.maximum.accumulate(jnp.stack(gen_bests)),
-            "final_best_accuracy": best_so_far,
-        }
-        return pop, trajectory
+    
 
 
     @classmethod
@@ -1250,20 +910,15 @@ class LPN(nn.Module):
         key: Optional[chex.PRNGKey] = None,
     ) -> chex.Array:
         """Selects the latents from which to start the search."""
-        print(f"         📊 Preparing latents: input shape={latents.shape}")
-        print(f"         📊 Include mean: {include_mean_latent}, Include all: {include_all_latents}")
         
         if include_mean_latent:
             mean_latent = latents.mean(axis=-2, keepdims=True)
-            print(f"         📊 Mean latent shape: {mean_latent.shape}")
             if include_all_latents:
                 # Include the mean latent in the latents from which to start the search.
                 prep_latents = jnp.concatenate([mean_latent, latents], axis=-2)
-                print(f"         📊 Combined mean + all latents: {prep_latents.shape}")
             else:
                 # Only start the search from the mean latent.
                 prep_latents = mean_latent
-                print(f"         📊 Using only mean latent: {prep_latents.shape}")
         else:
             # Start the search from all the pair latents.
             if not include_all_latents:
@@ -1271,14 +926,12 @@ class LPN(nn.Module):
                     "At least one of 'include_mean_latent' or 'include_all_latents' should be True."
                 )
             prep_latents = latents
-            print(f"         📊 Using all pair latents: {prep_latents.shape}")
         if random_perturbation is not None:
             assert key is not None, "'key' argument required for random perturbation."
             for arg in ["num_samples", "scale"]:
                 assert arg in random_perturbation, f"'{arg}' argument required for random perturbation."
             num_samples = random_perturbation["num_samples"]
             scale = random_perturbation["scale"]
-            print(f"         📊 Adding random perturbations: {num_samples} samples, scale={scale}")
             
             # Handle different latent dimensions properly
             if latents.ndim == 2:
@@ -1286,16 +939,13 @@ class LPN(nn.Module):
                 mean_latent = latents.mean(axis=0, keepdims=True)
                 random_vectors = jax.random.normal(key, (num_samples, latents.shape[-1]))
                 random_latents = mean_latent + scale * random_vectors
-                print(f"         📊 Random perturbations (2D): {random_latents.shape}")
             else:
                 # (batch, population, features) -> (batch, 1, features)
                 mean_latent = latents.mean(axis=-2, keepdims=True)
                 random_vectors = jax.random.normal(key, (*latents.shape[:-2], num_samples, latents.shape[-1]))
                 random_latents = mean_latent + scale * random_vectors
-                print(f"         📊 Random perturbations (ND): {random_latents.shape}")
             
             prep_latents = jnp.concatenate([prep_latents, random_latents], axis=-2)
-            print(f"         📊 Final latents with perturbations: {prep_latents.shape}")
         
         # Ensure the output has the expected shape
         if prep_latents.ndim < 2:
@@ -1308,14 +958,11 @@ class LPN(nn.Module):
     def _flatten_input_output_for_decoding(
         cls, pairs: chex.Array, grid_shapes: chex.Array
     ) -> tuple[chex.Array, chex.Array]:
-        print(f"            📊 Flattening pairs: {pairs.shape} -> {(*pairs.shape[:-3], -1, 2)}")
         flattened_pairs = jnp.reshape(pairs, (*pairs.shape[:-3], -1, 2))
         
         input_seq = jnp.concatenate([grid_shapes[..., 0], flattened_pairs[..., 0]], axis=-1)
         output_seq = jnp.concatenate([grid_shapes[..., 1], flattened_pairs[..., 1]], axis=-1)
         
-        print(f"            📊 Input sequence: {input_seq.shape}")
-        print(f"            📊 Output sequence: {output_seq.shape}")
         
         return input_seq, output_seq
 
@@ -1324,25 +971,20 @@ class LPN(nn.Module):
         cls, log_probs: chex.Array, latents: chex.Array
     ) -> tuple[chex.Array, chex.Array]:
         print(f"         📊 Selecting best contexts from {latents.shape} latents")
-        print(f"         📊 Log probs shape: {log_probs.shape}")
         
         sorted_log_probs_indices = jnp.argsort(log_probs, axis=-1, descending=True)
-        print(f"         📊 Sorted indices shape: {sorted_log_probs_indices.shape}")
         
         best_context = jnp.take_along_axis(
             latents, sorted_log_probs_indices[..., 0:1, None], axis=-2
         ).squeeze(axis=-2)
-        print(f"         📊 Best context shape: {best_context.shape}")
         
         try:
             second_best_context = jnp.take_along_axis(
                 latents, sorted_log_probs_indices[..., 1:2, None], axis=-2
             ).squeeze(axis=-2)
-            print(f"         📊 Second best context shape: {second_best_context.shape}")
         except ValueError:
             # If there is only one latent, the second best context is the same as the best context.
             second_best_context = best_context
-            print(f"         📊 Only one latent available, using same for second best")
         
         print(f"         ✅ Context selection completed")
         return best_context, second_best_context
