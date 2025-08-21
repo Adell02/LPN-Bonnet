@@ -6,6 +6,16 @@ Usage:
     python3 src/plot_from_csv.py --csv results/eval_908l681z.csv
     python3 src/plot_from_csv.py --csv results/eval_908l681z.csv --output_dir plots
     python3 src/plot_from_csv.py --csv results/eval_908l681z.csv --methods gradient_ascent,random_search
+
+commnads HPC
+ml tools/prod                 
+ml SciPy-bundle/2024.05-gfbf-2024a 
+
+source ~/venv/bin/activate
+cd lpn
+python src/plot_from_csv.py --csv csv_results/eval_z7x1d982.csv --output_dir plots
+
+
 """
 
 import argparse
@@ -22,7 +32,7 @@ def visualize_optimization_comparison_simple(
     steps: np.ndarray,
     budgets: np.ndarray,
     acc_A: np.ndarray,
-    acc_B: np.ndarray,
+    acc_B: Optional[np.ndarray] = None,
     method_A_name: str = "Method A",
     method_B_name: str = "Method B"
 ) -> plt.Figure:
@@ -48,32 +58,40 @@ def visualize_optimization_comparison_simple(
     acc_A = np.asarray(acc_A, dtype=float)
     acc_B = np.asarray(acc_B, dtype=float)
 
-    # diff heatmap data [B,S]
-    diff = acc_A - acc_B
-    diff_masked = np.ma.masked_invalid(diff)
-    vmax = float(np.nanmax(np.abs(diff_masked))) if diff_masked.count() > 0 else 1.0
+    # Choose data to display: if acc_B is provided, show difference; else show acc_A
+    if acc_B is not None:
+        data = acc_A - acc_B
+        colorbar_title = f"Accuracy diff\n({method_A_name} − {method_B_name})"
+    else:
+        data = acc_A
+        colorbar_title = f"Accuracy\n({method_A_name})"
+
+    data_masked = np.ma.masked_invalid(data)
+    vmax = float(np.nanmax(np.abs(data_masked))) if data_masked.count() > 0 else 1.0
 
     fig, ax = plt.subplots(figsize=(12, 8))
 
     # Plot in index space so cells align with ticks and labels
     im = ax.imshow(
-        diff_masked,
+        data_masked,
         origin='lower',
         aspect='auto',
         cmap='viridis',
-        vmin=-vmax,
+        vmin=(-vmax if acc_B is not None else 0.0),
         vmax=+vmax,
     )
 
     # Zero contour (also in index space)
-    B, S = diff.shape
+    B, S = data.shape
     X, Y = np.meshgrid(np.arange(S), np.arange(B))
-    try:
-        cs = ax.contour(X, Y, diff, levels=[0.0], colors='black', linewidths=2.0, alpha=0.9)
-        if cs.collections:
-            cs.collections[0].set_label('Equal accuracy (A = B)')
-    except (ValueError, RuntimeError, TypeError):
-        cs = None
+    cs = None
+    if acc_B is not None:
+        try:
+            cs = ax.contour(X, Y, data, levels=[0.0], colors='black', linewidths=2.0, alpha=0.9)
+            if cs.collections:
+                cs.collections[0].set_label('Equal accuracy (A = B)')
+        except (ValueError, RuntimeError, TypeError):
+            cs = None
 
     # Axis labels/title
     ax.set_xlabel("Training step", fontsize=12)
@@ -96,13 +114,7 @@ def visualize_optimization_comparison_simple(
     # Colorbar axis
     cax = divider.append_axes("right", size="4%", pad=0.6)
     cbar = fig.colorbar(im, cax=cax)
-    cbar.ax.set_title(
-        f"Accuracy diff\n({method_A_name} − {method_B_name})",
-        fontsize=11,
-        pad=10,
-        rotation=0,
-        loc='center',
-    )
+    cbar.ax.set_title(colorbar_title, fontsize=11, pad=10, rotation=0, loc='center')
     cbar.ax.tick_params(length=3, pad=3)
 
     # Right-side explanatory labels
@@ -120,7 +132,7 @@ def visualize_optimization_comparison_simple(
     return fig
 
 
-def load_csv_data(csv_path: str) -> Tuple[Dict, List[int], List[int]]:
+def load_csv_data(csv_path: str) -> Tuple[Dict, List[int], List[int], List[str]]:
     """
     Load data from CSV and organize it for plotting.
     
@@ -139,9 +151,7 @@ def load_csv_data(csv_path: str) -> Tuple[Dict, List[int], List[int]]:
         "top_2_accuracy",
         "top_2_pixel_correctness",
     ]
-    data_by_metric: Dict[str, Dict[str, Dict[int, Dict[int, float]]]] = {
-        m: {"gradient_ascent": {}, "random_search": {}} for m in metric_names
-    }
+    data_by_metric: Dict[str, Dict[str, Dict[int, Dict[int, float]]]] = {m: {} for m in metric_names}
     
     steps_set = set()
     budgets_set = set()
@@ -150,6 +160,7 @@ def load_csv_data(csv_path: str) -> Tuple[Dict, List[int], List[int]]:
     skipped_rows = 0
     valid_rows = 0
     
+    methods_found: set = set()
     with open(csv_path, 'r') as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -159,9 +170,10 @@ def load_csv_data(csv_path: str) -> Tuple[Dict, List[int], List[int]]:
                 method = row["method"]
                 budget = int(row["budget"]) if row["budget"] else None
                 checkpoint_name = row["checkpoint_name"]
-                if step is None or budget is None or method not in ("gradient_ascent", "random_search"):
+                if step is None or budget is None:
                     skipped_rows += 1
                     continue
+                methods_found.add(method)
                 
                 # Map version to training progress (vN -> N)
                 version_match = 0
@@ -203,19 +215,30 @@ def load_csv_data(csv_path: str) -> Tuple[Dict, List[int], List[int]]:
     print(f"   Unique training steps: {len(steps)}")
     print(f"   Unique budgets: {len(budgets)}")
     
-    return data_by_metric, steps, budgets
+    return data_by_metric, steps, budgets, sorted(list(methods_found))
 
 
 def create_plot_matrices_for_metric(data_by_metric: Dict, steps: List[int], budgets: List[int], 
-                                   metric: str, method_a: str, method_b: str) -> Tuple[np.ndarray, np.ndarray]:
-    acc_A = np.full((len(budgets), len(steps)), np.nan)
-    acc_B = np.full((len(budgets), len(steps)), np.nan)
+                                   metric: str, method_a: str, method_b: Optional[str]) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    # If two methods, use intersection of budgets they both have to avoid NaN-only rows
     data_A = data_by_metric.get(metric, {}).get(method_a, {})
-    data_B = data_by_metric.get(metric, {}).get(method_b, {})
+    data_B = data_by_metric.get(metric, {}).get(method_b, {}) if method_b is not None else {}
+    if method_b is not None:
+        budgets_a = set(b for step_map in data_A.values() for b in step_map.keys())
+        budgets_b = set(b for step_map in data_B.values() for b in step_map.keys())
+        intersect = sorted(list(budgets_a & budgets_b))
+        use_budgets = intersect if intersect else budgets
+    else:
+        use_budgets = budgets
+
+    acc_A = np.full((len(use_budgets), len(steps)), np.nan)
+    acc_B = np.full((len(use_budgets), len(steps)), np.nan) if method_b is not None else None
     for j, step in enumerate(steps):
-        for i, budget in enumerate(budgets):
+        for i, budget in enumerate(use_budgets):
             acc_A[i, j] = data_A.get(step, {}).get(budget, np.nan)
-            acc_B[i, j] = data_B.get(step, {}).get(budget, np.nan)
+            if method_b is not None and acc_B is not None:
+                acc_B[i, j] = data_B.get(step, {}).get(budget, np.nan)
+    # Overwrite budgets with the ones actually used
     return acc_A, acc_B
 
 
@@ -241,8 +264,8 @@ def create_readable_step_labels(steps: List[int], max_overall_step: Optional[int
 
 
 def plot_optimization_comparison(csv_path: str, output_dir: str = "plots", 
-                                method_a: str = "gradient_ascent", 
-                                method_b: str = "random_search",
+                                method_a: Optional[str] = None, 
+                                method_b: Optional[str] = None,
                                 save_plots: bool = True,
                                 show_plots: bool = False,
                                 zdim: Optional[int] = None) -> None:
@@ -252,7 +275,7 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
     print(f"📊 Loading data from: {csv_path}")
     
     # Load data for all metrics
-    data_by_metric, steps, budgets = load_csv_data(csv_path)
+    data_by_metric, steps, budgets, methods_in_csv = load_csv_data(csv_path)
     
     if not steps or not budgets:
         print("❌ No valid data found in CSV")
@@ -274,6 +297,18 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
         print(f"   {i+1:2d}. {label} (ID: {step})")
     print(f"💰 Found {len(budgets)} budget values: {budgets}")
     
+    # Auto-select methods if not provided: prefer two, else one
+    detected_methods = [m for m in methods_in_csv if m]
+    if method_a is None and method_b is None:
+        if len(detected_methods) >= 2:
+            method_a, method_b = detected_methods[:2]
+        elif len(detected_methods) == 1:
+            method_a, method_b = detected_methods[0], None
+        else:
+            print("❌ No methods found in CSV")
+            return
+    elif method_a is None and method_b is not None:
+        method_a, method_b = method_b, None
     # Create output directory
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -291,7 +326,17 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
     # Iterate metrics and generate a plot per metric
     for metric in metric_names:
         print(f"\n🎨 Generating optimization comparison plot for metric: {metric}...")
-        acc_A, acc_B = create_plot_matrices_for_metric(data_by_metric, steps, budgets, metric, method_a, method_b)
+        if method_b is not None:
+            acc_A, acc_B = create_plot_matrices_for_metric(data_by_metric, steps, budgets, metric, method_a, method_b)
+            # Recompute budgets to intersection for labels if necessary
+            if acc_B is not None:
+                # Determine budgets used from non-NaN rows
+                rows_with_data = np.where(~np.all(np.isnan(acc_A), axis=1) | ~np.all(np.isnan(acc_B), axis=1))[0]
+                if len(rows_with_data) > 0 and len(rows_with_data) != len(budgets):
+                    budgets = [budgets[i] for i in rows_with_data]
+        else:
+            acc_A, _ = create_plot_matrices_for_metric(data_by_metric, steps, budgets, metric, method_a, None)
+            acc_B = None
 
         print(f"🔍 Data coverage for {metric}:")
         print(f"   {method_a}: {np.sum(~np.isnan(acc_A))} data points")
@@ -303,7 +348,7 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
             acc_A=acc_A,
             acc_B=acc_B,
             method_A_name=method_a.replace('_', ' ').title(),
-            method_B_name=method_b.replace('_', ' ').title(),
+            method_B_name=(method_b.replace('_', ' ').title() if method_b is not None else ""),
         )
 
         # Title using --zdim if provided
@@ -324,7 +369,10 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
         # Save plot
         if save_plots:
             csv_name = Path(csv_path).stem
-            plot_filename = f"optim_comparison_{csv_name}_{metric}_{method_a}_vs_{method_b}.png"
+            if method_b is not None:
+                plot_filename = f"optim_comparison_{csv_name}_{metric}_{method_a}_vs_{method_b}.png"
+            else:
+                plot_filename = f"optim_comparison_{csv_name}_{metric}_{method_a}.png"
             plot_path = output_path / plot_filename
             fig.savefig(plot_path, dpi=200, bbox_inches='tight')
             print(f"💾 Plot saved to: {plot_path}")
@@ -410,8 +458,8 @@ def main():
     parser = argparse.ArgumentParser(description="Plot optimization comparison from CSV data")
     parser.add_argument("--csv", type=str, required=True, help="Path to CSV file")
     parser.add_argument("--output_dir", type=str, default="plots", help="Output directory for plots")
-    parser.add_argument("--method_a", type=str, default="gradient_ascent", help="First method name")
-    parser.add_argument("--method_b", type=str, default="random_search", help="Second method name")
+    parser.add_argument("--method_a", type=str, default=None, help="First method name (auto-detect if omitted)")
+    parser.add_argument("--method_b", type=str, default=None, help="Second method name (auto-detect if omitted)")
     parser.add_argument("--no_save", action="store_true", help="Don't save plots to files")
     parser.add_argument("--show", action="store_true", help="Show plots interactively")
     parser.add_argument("--zdim", type=int, default=None, help="Latent dimension to show in title")

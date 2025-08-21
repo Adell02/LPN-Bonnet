@@ -535,10 +535,20 @@ def main():
         },
     }
     
-    # Calculate evolutionary search generations to match compute budget
-    pop = base_methods["evolutionary_search"]["population_size"]
-    es_generations = sorted({max(1, int(np.ceil(b / pop))) for b in shared_budgets})
-    print(f"🧬 Evolutionary budgets (generations @ pop={pop}): {es_generations}")
+    # Evolutionary search budget: balance population and generations first.
+    # Choose population ≈ sqrt(budget), enforce at least 3 and cap at 32, then set generations = ceil(budget / population)
+    es_configs = []  # list of {budget, population_size, num_generations}
+    max_pop = base_methods["evolutionary_search"]["population_size"]
+    for b in shared_budgets:
+        proposed_pop = int(round(np.sqrt(b)))
+        proposed_pop = max(3, min(max_pop, proposed_pop))
+        gens = int(max(1, int(np.ceil(b / proposed_pop))))
+        es_configs.append({"budget": int(b), "population_size": int(proposed_pop), "num_generations": int(gens)})
+    try:
+        cfg_summary = ", ".join([f"{c['budget']}->{c['population_size']}x{c['num_generations']}" for c in es_configs])
+        print(f"🧬 Evolutionary configs (budget -> pop x gens): [{cfg_summary}]")
+    except Exception:
+        pass
 
     # Result counters
     results = {
@@ -700,9 +710,10 @@ def main():
                         )
                 elif method == "evolutionary_search":
                     print("\n🔧 Testing evolutionary_search across budgets...")
-                    for num_generations in es_generations:
+                    for es_cfg in es_configs:
                         method_kwargs = dict(base_methods["evolutionary_search"])
-                        method_kwargs["num_generations"] = num_generations
+                        method_kwargs["population_size"] = es_cfg["population_size"]
+                        method_kwargs["num_generations"] = es_cfg["num_generations"]
 
                         ok, acc, metrics, _, execution_time = run_evaluation(
                             artifact_path=artifact_path,
@@ -725,14 +736,16 @@ def main():
                             # Log to W&B immediately
                             try:
                                 wandb.log({
-                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/overall_accuracy": acc or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/execution_time": execution_time,
+                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/overall_accuracy": acc or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/execution_time": execution_time,
+                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/population_size": es_cfg["population_size"],
+                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/num_generations": es_cfg["num_generations"],
                                 })
                             except Exception as e:
                                 print(f"⚠️  Failed to log to W&B: {e}")
@@ -741,7 +754,7 @@ def main():
                             results["failed_evals"] += 1
 
                         writer.writerow(
-                            [args.run_name, checkpoint["name"], training_progress, "evolutionary_search", "num_generations", num_generations, 
+                            [args.run_name, checkpoint["name"], training_progress, "evolutionary_search", "budget", es_cfg["budget"], 
                              acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
                              metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
                              metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
