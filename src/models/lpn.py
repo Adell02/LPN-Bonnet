@@ -788,67 +788,81 @@ class LPN(nn.Module):
             track_progress: bool = False,
             **kwargs,
         ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:
-        """Evolutionary search for optimal latent context (random-search-compatible pipeline)."""
+        """Evolutionary search for optimal latent context."""
 
-        # Compute once per task (same as random search)
-        input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
-        dropout_eval = True
-
-        # --- helper: evaluate candidates EXACTLY like random search, but micro-batched and returning log_probs ---
+        # ----- helper: evaluate candidates EXACTLY like random search -----
         def _eval_candidates(cand_latents: chex.Array) -> chex.Array:
-            # cand_latents: (*B, C, H)
-            lat_for_decode = cand_latents[..., None, :, :].repeat(output_seq.shape[-2], axis=-3)  # -> (*B, P, C, H)
+            """
+            Args:
+            cand_latents: (*B, C, H) — candidate contexts per task/batch
+            Returns:
+            log_probs:    (*B, P, C) — per-pair log-prob for each candidate
+            """
+            # Flatten input/output for decoding likelihood (identical to random search)
+            input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
 
-            B, P, C, H = lat_for_decode.shape
-            # Default micro-batch for T4. You can still override via CLI/kwargs.
-            bs = int(scan_batch_size or max(1, min(8, C)))
-            num_full = C // bs
-            rem = C - num_full * bs
+            # Use the same latent for all pairs of the same task (identical to random search).
+            # cand_latents: (*B, C, H) -> (*B, P, C, H)
+            lat_for_decode = cand_latents[..., None, :, :].repeat(output_seq.shape[-2], axis=-3)
 
-            # Decode + score full batches, concatenating *log_probs* to keep memory low
-            def decode_batch(dec, lat_batch):
-                r, c, g = jax.vmap(dec, in_axes=(None, None, -2, None), out_axes=-2)(
-                    input_seq, output_seq, lat_batch, dropout_eval
+            # Decode the output sequence in batches (identical to random search).
+            batch_size = scan_batch_size or lat_for_decode.shape[-2]  # batch over candidates axis
+            num_batches = lat_for_decode.shape[-2] // batch_size
+            batched = jnp.reshape(
+                lat_for_decode[..., : num_batches * batch_size, :],
+                (*lat_for_decode.shape[:-2], num_batches, batch_size, lat_for_decode.shape[-1]),
+            )
+            dropout_eval = True  # no dropout during decoder inference
+
+            # One lifted scan over decoder; inside we vmap over the batch of candidates (identical to random).
+            _, (row_logits, col_logits, grid_logits) = nn.scan(
+                lambda decoder, _, lat_batch: (
+                    None,
+                    jax.vmap(decoder, in_axes=(None, None, -2, None), out_axes=-2)(
+                        input_seq, output_seq, lat_batch, dropout_eval
+                    ),
+                ),
+                variable_broadcast="params",
+                split_rngs={"params": False},
+                in_axes=-3,
+                out_axes=-3,
+            )(self.decoder, None, batched)
+
+            # Collapse (num_batches, batch_size) -> candidates (identical to random).
+            row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
+                lambda x: x.reshape(*x.shape[:-3], -1, x.shape[-1]),
+                (row_logits, col_logits, grid_logits),
+            )
+
+            # Remainder candidates (identical to random).
+            if num_batches * batch_size < lat_for_decode.shape[-2]:
+                remaining = lat_for_decode[..., num_batches * batch_size :, :]
+                r_row, r_col, r_grid = jax.vmap(
+                    self.decoder, in_axes=(None, None, -2, None), out_axes=-2
+                )(input_seq, output_seq, remaining, dropout_eval)
+                row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
+                    lambda x, y: jnp.concatenate([x, y], axis=-2),
+                    (row_logits, col_logits, grid_logits),
+                    (r_row, r_col, r_grid),
                 )
-                lp = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(r, c, g, output_seq)
-                return lp
 
-
-            # Full batches
-            if num_full > 0:
-                lat_full = lat_for_decode[..., : num_full * bs, :].reshape(B, P, num_full, bs, H)
-                # nn.scan to share params across batches; output is stacked along batch-index axis
-                _, (lp_full,) = nn.scan(
-                    lambda dec, _, lat_b: (None, decode_batch(dec, lat_b)),
-                    variable_broadcast="params",
-                    split_rngs={"params": False},
-                    in_axes=-3,
-                    out_axes=-3,
-                )(self.decoder, None, lat_full)
-
-                # collapse to (*B, P, num_full*bs)
-                lp_full = lp_full.reshape(B, P, num_full * bs)
-            else:
-                lp_full = jnp.zeros((B, P, 0), dtype=jnp.float32)
-
-            # Remainder
-            if rem > 0:
-                lat_rem = lat_for_decode[..., num_full * bs :, :]
-                lp_rem = decode_batch(self.decoder, lat_rem)
-                   # (*B, P, rem)
-                log_probs = jnp.concatenate([lp_full, lp_rem], axis=-1)  # (*B, P, C)
-            else:
-                log_probs = lp_full  # (*B, P, C)
+            # Compute output sequence log probabilities (identical to random).
+            # Note: in_axes = (-2, -2, -2, None) matches the candidate axis at -2 for all three.
+            log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
+                row_logits, col_logits, grid_logits, output_seq
+            )  # shape: (*B, P, C)
 
             return log_probs
 
         # ----- initialize population around prepared latents -----
         base = self._prepare_latents_before_search(include_mean_latent, include_all_latents, latents)
+        # Cap or fill to population_size
         C0 = base.shape[-2]
         if C0 >= population_size:
-            population = base[..., :population_size, :]  # (*B, C, H)
+            population = base[..., :population_size, :]                       # (*B, C, H)
         else:
-            mean_latent = base.mean(axis=-2, keepdims=True)         # (*B, 1, H)
+            # center noise at mean of base latents
+            mean_latent = base.mean(axis=-2, keepdims=True)                   # (*B, 1, H)
             need = population_size - C0
             key, nk = jax.random.split(key)
             noise = jax.random.normal(nk, (*base.shape[:-2], need, base.shape[-1]))
@@ -859,45 +873,51 @@ class LPN(nn.Module):
             gen_bests = []
             best_so_far = -jnp.inf
 
-        # ----- main evolutionary loop -----
+        # ----- main evolutionary loop (plain Python, no extra JAX transform) -----
         for _ in range(num_generations):
-            # Score current population
-            lp = _eval_candidates(population)          # (*B, P, C)
-            fitness = lp.mean(axis=-2)                 # (*B, C)
+            # Score current population exactly like random search
+            log_probs = _eval_candidates(population)                  # (*B, P, C) or (*B, C) if P=1 folded inside impl
+            # Reduce over pairs to get a fitness per candidate (keep batch dims)
+            fitness = log_probs.mean(axis=-2) if log_probs.ndim >= 3 else log_probs  # (*B, C)
 
+            # Track
             if track_progress:
-                gbest = fitness.max(axis=-1)           # (*B,)
-                best_so_far = jnp.maximum(best_so_far, gbest.max())
-                gen_bests.append(gbest)
+                gen_best = fitness.max(axis=-1)                       # (*B,)
+                best_so_far = jnp.maximum(best_so_far, gen_best.max())
+                gen_bests.append(gen_best)
 
             # Select top half per batch
             num_survivors = population_size // 2
-            idx = jnp.argsort(fitness, axis=-1, descending=True)[..., :num_survivors]         # (*B, S)
-            gather_idx = jnp.expand_dims(idx, -1).repeat(population.shape[-1], axis=-1)       # (*B, S, H)
-            survivors = jnp.take_along_axis(population, gather_idx, axis=-2)                  # (*B, S, H)
+            idx = jnp.argsort(fitness, axis=-1, descending=True)[..., :num_survivors]   # (*B, S)
+            gather_idx = jnp.expand_dims(idx, -1).repeat(population.shape[-1], axis=-1) # (*B, S, H)
+            survivors = jnp.take_along_axis(population, gather_idx, axis=-2)            # (*B, S, H)
 
-            # Refill to pop size with Gaussian mutation
+            # Refill to pop size: repeat survivors and add Gaussian noise
             need = population_size - num_survivors
-            reps = (need + num_survivors - 1) // num_survivors
-            parents = jnp.repeat(survivors, reps, axis=-2)[..., :need, :]
+            reps = (need + num_survivors - 1) // num_survivors  # ceil(need / S)
+            parents = jnp.repeat(survivors, reps, axis=-2)[..., :need, :]               # (*B, need, H)
             key, nk = jax.random.split(key)
-            offspring = parents + mutation_std * jax.random.normal(nk, parents.shape)
+            offspring = parents + mutation_std * jax.random.normal(nk, parents.shape)   # same shape
 
-            population = jnp.concatenate([survivors, offspring], axis=-2)                     # (*B, C, H)
+            population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, C, H)
 
-        # ----- final pick like random search -----
-        final_lp = _eval_candidates(population)    # (*B, P, C)
-        best_context, second_best_context = self._select_best_and_second_best_latents(final_lp, population)
+        # ----- final selection like random search -----
+        final_log_probs = _eval_candidates(population)           # (*B, P, C)
+        # Remove the duplication of latents over pairs for selection (identical to random)
+        latents_for_pick = population                             # (*B, C, H)
+
+        best_context, second_best_context = self._select_best_and_second_best_latents(
+            final_log_probs, latents_for_pick
+        )
 
         if track_progress:
             traj = {
-                "generation_accuracies": jnp.stack(gen_bests),
+                "generation_accuracies": jnp.stack(gen_bests),                 # shape: (G, *B) or (*B, G) if you prefer
                 "final_best_accuracy": best_so_far,
             }
             return best_context, second_best_context, traj
 
         return best_context, second_best_context
-
     
 
 
