@@ -421,8 +421,8 @@ def main():
     # Generate shared budgets
     shared_budgets = generate_budgets(BUDGET_CONFIG)
     
-    # Use the same budgets for all methods
-    ga_steps = shared_budgets      # Gradient ascent uses num_steps
+    # Use the same target compute budgets for all methods
+    ga_budgets = shared_budgets    # GA compute budget = 2 * num_steps
     rs_samples = shared_budgets    # Random search uses num_samples
     
     print(f"📊 Using shared budgets: {shared_budgets}")
@@ -512,7 +512,7 @@ def main():
             print(f"📊 Using all {len(checkpoints)} checkpoints (no max_checkpoints specified)")
         
     # Budgets (already built)
-    ga_steps = shared_budgets
+    ga_budgets = shared_budgets
     rs_samples = shared_budgets
     
     # Base method configs
@@ -614,7 +614,9 @@ def main():
             for method in args.plot_methods:
                 if method == "gradient_ascent":
                     print("\n🔧 Testing gradient_ascent across budgets...")
-                    for num_steps in ga_steps:
+                    for compute_budget in ga_budgets:
+                        # Budget = 2x steps => num_steps = ceil(budget / 2)
+                        num_steps = int(np.ceil(compute_budget / 2))
                         method_kwargs = dict(base_methods["gradient_ascent"])
                         method_kwargs["num_steps"] = num_steps
 
@@ -655,7 +657,7 @@ def main():
                             results["failed_evals"] += 1
 
                         writer.writerow(
-                            [args.run_name, checkpoint["name"], training_progress, "gradient_ascent", "num_steps", num_steps, 
+                            [args.run_name, checkpoint["name"], training_progress, "gradient_ascent", "budget", compute_budget, 
                              acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
                              metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
                              metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
@@ -763,7 +765,7 @@ def main():
             # Progress update after each checkpoint
             total_evals = results["successful_evals"] + results["failed_evals"]
             selected_counts = []
-            if "gradient_ascent" in args.plot_methods: selected_counts.append(len(ga_steps))
+            if "gradient_ascent" in args.plot_methods: selected_counts.append(len(ga_budgets))
             if "random_search" in args.plot_methods: selected_counts.append(len(rs_samples))
             if "evolutionary_search" in args.plot_methods: selected_counts.append(len(es_configs))
             total_expected = sum(selected_counts)
