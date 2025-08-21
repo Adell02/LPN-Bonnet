@@ -219,27 +219,47 @@ def load_csv_data(csv_path: str) -> Tuple[Dict, List[int], List[int], List[str]]
 
 
 def create_plot_matrices_for_metric(data_by_metric: Dict, steps: List[int], budgets: List[int], 
-                                   metric: str, method_a: str, method_b: Optional[str]) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    # If two methods, use intersection of budgets they both have to avoid NaN-only rows
+                                   metric: str, method_a: str, method_b: Optional[str]) -> Tuple[np.ndarray, Optional[np.ndarray], List]:
+    """
+    Build matrices for plotting. If two methods are provided, align budgets by rank:
+    i-th smallest budget of method_a pairs with i-th smallest budget of method_b.
+    Returns (acc_A, acc_B, budgets_labels) where budgets_labels are display labels per row.
+    """
     data_A = data_by_metric.get(metric, {}).get(method_a, {})
     data_B = data_by_metric.get(metric, {}).get(method_b, {}) if method_b is not None else {}
-    if method_b is not None:
-        budgets_a = set(b for step_map in data_A.values() for b in step_map.keys())
-        budgets_b = set(b for step_map in data_B.values() for b in step_map.keys())
-        intersect = sorted(list(budgets_a & budgets_b))
-        use_budgets = intersect if intersect else budgets
-    else:
-        use_budgets = budgets
 
-    acc_A = np.full((len(use_budgets), len(steps)), np.nan)
-    acc_B = np.full((len(use_budgets), len(steps)), np.nan) if method_b is not None else None
-    for j, step in enumerate(steps):
-        for i, budget in enumerate(use_budgets):
-            acc_A[i, j] = data_A.get(step, {}).get(budget, np.nan)
-            if method_b is not None and acc_B is not None:
-                acc_B[i, j] = data_B.get(step, {}).get(budget, np.nan)
-    # Overwrite budgets with the ones actually used
-    return acc_A, acc_B
+    # Collect sorted unique budgets per method
+    budgets_a_sorted = sorted({b for step_map in data_A.values() for b in step_map.keys()})
+    budgets_b_sorted = sorted({b for step_map in data_B.values() for b in step_map.keys()}) if method_b is not None else []
+
+    if method_b is not None and budgets_b_sorted:
+        pair_count = min(len(budgets_a_sorted), len(budgets_b_sorted))
+        if pair_count == 0:
+            # Fallback to single-method plot
+            acc_A = np.full((len(budgets_a_sorted), len(steps)), np.nan)
+            for j, step in enumerate(steps):
+                for i, b in enumerate(budgets_a_sorted):
+                    acc_A[i, j] = data_A.get(step, {}).get(b, np.nan)
+            return acc_A, None, budgets_a_sorted
+
+        used_a = budgets_a_sorted[:pair_count]
+        used_b = budgets_b_sorted[:pair_count]
+        budgets_labels = [f"{a}\u2192{b}" for a, b in zip(used_a, used_b)]  # e.g., "1→26"
+
+        acc_A = np.full((pair_count, len(steps)), np.nan)
+        acc_B = np.full((pair_count, len(steps)), np.nan)
+        for j, step in enumerate(steps):
+            for i in range(pair_count):
+                acc_A[i, j] = data_A.get(step, {}).get(used_a[i], np.nan)
+                acc_B[i, j] = data_B.get(step, {}).get(used_b[i], np.nan)
+        return acc_A, acc_B, budgets_labels
+    else:
+        # Single-method case
+        acc_A = np.full((len(budgets_a_sorted), len(steps)), np.nan)
+        for j, step in enumerate(steps):
+            for i, b in enumerate(budgets_a_sorted):
+                acc_A[i, j] = data_A.get(step, {}).get(b, np.nan)
+        return acc_A, None, budgets_a_sorted
 
 
 def create_readable_step_labels(steps: List[int], max_overall_step: Optional[int] = None) -> List[str]:
@@ -327,16 +347,15 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
     for metric in metric_names:
         print(f"\n🎨 Generating optimization comparison plot for metric: {metric}...")
         if method_b is not None:
-            acc_A, acc_B = create_plot_matrices_for_metric(data_by_metric, steps, budgets, metric, method_a, method_b)
-            # Recompute budgets to intersection for labels if necessary
-            if acc_B is not None:
-                # Determine budgets used from non-NaN rows
-                rows_with_data = np.where(~np.all(np.isnan(acc_A), axis=1) | ~np.all(np.isnan(acc_B), axis=1))[0]
-                if len(rows_with_data) > 0 and len(rows_with_data) != len(budgets):
-                    budgets = [budgets[i] for i in rows_with_data]
+            acc_A, acc_B, budgets_aligned = create_plot_matrices_for_metric(
+                data_by_metric, steps, budgets, metric, method_a, method_b
+            )
+            budgets = budgets_aligned
         else:
-            acc_A, _ = create_plot_matrices_for_metric(data_by_metric, steps, budgets, metric, method_a, None)
-            acc_B = None
+            acc_A, acc_B, budgets_aligned = create_plot_matrices_for_metric(
+                data_by_metric, steps, budgets, metric, method_a, None
+            )
+            budgets = budgets_aligned
 
         print(f"🔍 Data coverage for {metric}:")
         print(f"   {method_a}: {np.sum(~np.isnan(acc_A))} data points")

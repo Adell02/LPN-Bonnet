@@ -765,7 +765,7 @@ def main():
             selected_counts = []
             if "gradient_ascent" in args.plot_methods: selected_counts.append(len(ga_steps))
             if "random_search" in args.plot_methods: selected_counts.append(len(rs_samples))
-            if "evolutionary_search" in args.plot_methods: selected_counts.append(len(es_generations))
+            if "evolutionary_search" in args.plot_methods: selected_counts.append(len(es_configs))
             total_expected = sum(selected_counts)
             print(f"\n📊 Checkpoint {i}/{len(checkpoints)} complete. Total evaluations: {total_evals}/{total_expected * i}")
             print(f"   ⏱️  Timing info available in W&B logs for each method and budget")
