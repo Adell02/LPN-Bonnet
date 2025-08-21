@@ -361,14 +361,27 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
         print(f"   {method_a}: {np.sum(~np.isnan(acc_A))} data points")
         print(f"   {method_b}: {np.sum(~np.isnan(acc_B))} data points")
 
-        fig = visualize_optimization_comparison_simple(
-            steps=np.array(steps),
-            budgets=np.array(budgets),
-            acc_A=acc_A,
-            acc_B=acc_B,
-            method_A_name=method_a.replace('_', ' ').title(),
-            method_B_name=(method_b.replace('_', ' ').title() if method_b is not None else ""),
-        )
+        # Handle single vs two method plotting
+        if method_b is not None:
+            # Two method comparison
+            fig = visualize_optimization_comparison_simple(
+                steps=np.array(steps),
+                budgets=np.array(budgets),
+                acc_A=acc_A,
+                acc_B=acc_B,
+                method_A_name=method_a.replace('_', ' ').title(),
+                method_B_name=method_b.replace('_', ' ').title(),
+            )
+        else:
+            # Single method - create dummy array for comparison
+            fig = visualize_optimization_comparison_simple(
+                steps=np.array(steps),
+                budgets=np.array(budgets),
+                acc_A=acc_A,
+                acc_B=np.full_like(acc_A, np.nan),  # No comparison data
+                method_A_name=method_a.replace('_', ' ').title(),
+                method_B_name="",  # Empty for single method
+            )
 
         # Title using --zdim if provided
         title_metric = metric.replace('_', ' ')

@@ -497,9 +497,10 @@ def visualize_optimization_comparison(
     handles = []
     labels  = []
     if cs and cs.collections:
+        from matplotlib.lines import Line2D
         handles.append(Line2D([0], [0], color='black', lw=2))
         labels.append('Equal accuracy')
-    # If you want a legend entry for “A−B heatmap”, add a proxy
+    # If you want a legend entry for "A−B heatmap", add a proxy
     # handles.append(Line2D([0],[0], color='none')) ; labels.append('A−B heatmap')
     if handles:
         ax.legend(handles, labels, loc='upper left', frameon=True)
