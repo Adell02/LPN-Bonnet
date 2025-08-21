@@ -988,11 +988,17 @@ class LPN(nn.Module):
                 out_axes=-3,
             )(self.decoder, None, batched_latents)
 
-            # Collapse (NB, BS) → C
-            row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
-                lambda x: x.reshape(B, P, -1, x.shape[-1]), (row_logits, col_logits, grid_logits)
-            )
-            print(f"            🔍 DEBUG: After reshape collapse:")
+            # Collapse (NB, BS) → C, but preserve the grid token axis S
+            NB, BS = row_logits.shape[2], row_logits.shape[3]
+            C_from_batches = NB * BS
+            row_logits = row_logits.reshape(B, P, C_from_batches, row_logits.shape[-1])
+            col_logits = col_logits.reshape(B, P, C_from_batches, col_logits.shape[-1])
+
+            assert grid_logits.ndim == 6, f"expected 6D grid logits, got {grid_logits.shape}"
+            S, K = grid_logits.shape[-2], grid_logits.shape[-1]
+            grid_logits = grid_logits.reshape(B, P, C_from_batches, S, K)
+
+            print(f"            🔍 DEBUG: After reshape collapse (preserve S):")
             print(f"               - row_logits shape: {row_logits.shape}")
             print(f"               - col_logits shape: {col_logits.shape}")
             print(f"               - grid_logits shape: {grid_logits.shape}")
@@ -1024,11 +1030,10 @@ class LPN(nn.Module):
             print(f"               - r_col shape: {r_col.shape}")
             print(f"               - r_grid shape: {r_grid.shape}")
             
-            row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
-                lambda x, y: jnp.concatenate([x, y], axis=-2),
-                (row_logits, col_logits, grid_logits),
-                (r_row, r_col, r_grid),
-            )
+            row_logits = jnp.concatenate([row_logits, r_row], axis=-2)
+            col_logits = jnp.concatenate([col_logits, r_col], axis=-2)
+            # For grid logits, candidate axis is -3 because shape is (B, P, C, S, K)
+            grid_logits = jnp.concatenate([grid_logits, r_grid], axis=-3)
 
         # 4) Score candidates: log_probs (B, P, C)
         print(f"            🔍 DEBUG: Computing log probs with:")
@@ -1037,7 +1042,11 @@ class LPN(nn.Module):
         print(f"               - grid_logits shape: {grid_logits.shape}")
         print(f"               - output_seq shape: {output_seq.shape}")
         
-        log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
+        # Consistency checks before scoring
+        assert row_logits.shape[:2] == col_logits.shape[:2] == grid_logits.shape[:2] == output_seq.shape[:2]
+        assert row_logits.shape[-2] == col_logits.shape[-2] == grid_logits.shape[-3]
+
+        log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -3, None), out_axes=-1)(
             row_logits, col_logits, grid_logits, output_seq
         )
         print(f"            🔍 DEBUG: Log probs shape: {log_probs.shape}")
