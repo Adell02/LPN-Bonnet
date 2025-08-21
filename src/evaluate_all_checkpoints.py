@@ -515,6 +515,11 @@ def main():
     ga_steps = shared_budgets
     rs_samples = shared_budgets
     
+    # Calculate evolutionary search generations to match compute budget
+    pop = base_methods["evolutionary_search"]["population_size"]
+    es_generations = sorted({max(1, int(np.ceil(b / pop))) for b in shared_budgets})
+    print(f"🧬 Evolutionary budgets (generations @ pop={pop}): {es_generations}")
+    
     # Base method configs
     base_methods = {
         "gradient_ascent": {
@@ -595,155 +600,152 @@ def main():
             # Build artifact path for evaluate_checkpoint.py
             artifact_path = f"{args.entity}/{args.project}/{checkpoint['name']}"
 
-            # Gradient Ascent sweeps
-            if "gradient_ascent" in args.plot_methods:
-                print("\n🔧 Testing gradient_ascent across budgets...")
-                for num_steps in ga_steps:
-                    method_kwargs = dict(base_methods["gradient_ascent"])
-                    method_kwargs["num_steps"] = num_steps
+            # Run selected methods in the order provided by --plot_methods
+            for method in args.plot_methods:
+                if method == "gradient_ascent":
+                    print("\n🔧 Testing gradient_ascent across budgets...")
+                    for num_steps in ga_steps:
+                        method_kwargs = dict(base_methods["gradient_ascent"])
+                        method_kwargs["num_steps"] = num_steps
 
-                    ok, acc, metrics, _, execution_time = run_evaluation(
-                        artifact_path=artifact_path,
-                        method="gradient_ascent",
-                        method_kwargs=method_kwargs,
-                        json_challenges=args.json_challenges,
-                        json_solutions=args.json_solutions,
-                        only_n_tasks=args.only_n_tasks,
-                        dataset_folder=args.dataset_folder,
-                        dataset_length=args.dataset_length,
-                        dataset_batch_size=args.dataset_batch_size,
-                        dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
-                        dataset_seed=args.dataset_seed,
-                    )
+                        ok, acc, metrics, _, execution_time = run_evaluation(
+                            artifact_path=artifact_path,
+                            method="gradient_ascent",
+                            method_kwargs=method_kwargs,
+                            json_challenges=args.json_challenges,
+                            json_solutions=args.json_solutions,
+                            only_n_tasks=args.only_n_tasks,
+                            dataset_folder=args.dataset_folder,
+                            dataset_length=args.dataset_length,
+                            dataset_batch_size=args.dataset_batch_size,
+                            dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
+                            dataset_seed=args.dataset_seed,
+                        )
 
-                    if ok:
-                        results["method_results"]["gradient_ascent"]["success"] += 1
-                        results["successful_evals"] += 1
-                        
-                        # Log to W&B immediately
-                        try:
-                            wandb.log({
-                                f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/overall_accuracy": acc or 0.0,
-                                f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
-                                f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
-                                f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
-                                f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
-                                f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
-                                f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
-                                f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/execution_time": execution_time,
-                            })
-                        except Exception as e:
-                            print(f"⚠️  Failed to log to W&B: {e}")
-                    else:
-                        results["method_results"]["gradient_ascent"]["failed"] += 1
-                        results["failed_evals"] += 1
+                        if ok:
+                            results["method_results"]["gradient_ascent"]["success"] += 1
+                            results["successful_evals"] += 1
+                            
+                            # Log to W&B immediately
+                            try:
+                                wandb.log({
+                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/overall_accuracy": acc or 0.0,
+                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
+                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
+                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/execution_time": execution_time,
+                                })
+                            except Exception as e:
+                                print(f"⚠️  Failed to log to W&B: {e}")
+                        else:
+                            results["method_results"]["gradient_ascent"]["failed"] += 1
+                            results["failed_evals"] += 1
 
-                    writer.writerow(
-                        [args.run_name, checkpoint["name"], training_progress, "gradient_ascent", "num_steps", num_steps, 
-                         acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
-                         metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
-                         metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
-                    )
+                        writer.writerow(
+                            [args.run_name, checkpoint["name"], training_progress, "gradient_ascent", "num_steps", num_steps, 
+                             acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
+                             metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
+                             metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
+                        )
+                elif method == "random_search":
+                    print("\n🔧 Testing random_search across budgets...")
+                    for num_samples in rs_samples:
+                        method_kwargs = dict(base_methods["random_search"])
+                        method_kwargs["num_samples"] = num_samples
 
-            # Random Search sweeps
-            if "random_search" in args.plot_methods:
-                print("\n🔧 Testing random_search across budgets...")
-                for num_samples in rs_samples:
-                    method_kwargs = dict(base_methods["random_search"])
-                    method_kwargs["num_samples"] = num_samples
+                        ok, acc, metrics, _, execution_time = run_evaluation(
+                            artifact_path=artifact_path,
+                            method="random_search",
+                            method_kwargs=method_kwargs,
+                            json_challenges=args.json_challenges,
+                            json_solutions=args.json_solutions,
+                            only_n_tasks=args.only_n_tasks,
+                            dataset_folder=args.dataset_folder,
+                            dataset_length=args.dataset_length,
+                            dataset_batch_size=args.dataset_batch_size,
+                            dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
+                            dataset_seed=args.dataset_seed,
+                        )
 
-                    ok, acc, metrics, _, execution_time = run_evaluation(
-                        artifact_path=artifact_path,
-                        method="random_search",
-                        method_kwargs=method_kwargs,
-                        json_challenges=args.json_challenges,
-                        json_solutions=args.json_solutions,
-                        only_n_tasks=args.only_n_tasks,
-                        dataset_folder=args.dataset_folder,
-                        dataset_length=args.dataset_length,
-                        dataset_batch_size=args.dataset_batch_size,
-                        dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
-                        dataset_seed=args.dataset_seed,
-                    )
+                        if ok:
+                            results["method_results"]["random_search"]["success"] += 1
+                            results["successful_evals"] += 1
+                            
+                            # Log to W&B immediately
+                            try:
+                                wandb.log({
+                                    f"checkpoint_{step}/random_search/num_samples_{num_samples}/overall_accuracy": acc or 0.0,
+                                    f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
+                                    f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
+                                    f"checkpoint_{step}/random_search/num_samples_{num_samples}/execution_time": execution_time,
+                                })
+                            except Exception as e:
+                                print(f"⚠️  Failed to log to W&B: {e}")
+                        else:
+                            results["method_results"]["random_search"]["failed"] += 1
+                            results["failed_evals"] += 1
 
-                    if ok:
-                        results["method_results"]["random_search"]["success"] += 1
-                        results["successful_evals"] += 1
-                        
-                        # Log to W&B immediately
-                        try:
-                            wandb.log({
-                                f"checkpoint_{step}/random_search/num_samples_{num_samples}/overall_accuracy": acc or 0.0,
-                                f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
-                                f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
-                                f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
-                                f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
-                                f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
-                                f"checkpoint_{step}/random_search/num_samples_{num_samples}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
-                                f"checkpoint_{step}/random_search/num_samples_{num_samples}/execution_time": execution_time,
-                            })
-                        except Exception as e:
-                            print(f"⚠️  Failed to log to W&B: {e}")
-                    else:
-                        results["method_results"]["random_search"]["failed"] += 1
-                        results["failed_evals"] += 1
+                        writer.writerow(
+                            [args.run_name, checkpoint["name"], training_progress, "random_search", "num_samples", num_samples, 
+                             acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
+                             metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
+                             metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
+                        )
+                elif method == "evolutionary_search":
+                    print("\n🔧 Testing evolutionary_search across budgets...")
+                    for num_generations in es_generations:
+                        method_kwargs = dict(base_methods["evolutionary_search"])
+                        method_kwargs["num_generations"] = num_generations
 
-                    writer.writerow(
-                        [args.run_name, checkpoint["name"], training_progress, "random_search", "num_samples", num_samples, 
-                         acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
-                         metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
-                         metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
-                    )
+                        ok, acc, metrics, _, execution_time = run_evaluation(
+                            artifact_path=artifact_path,
+                            method="evolutionary_search",
+                            method_kwargs=method_kwargs,
+                            json_challenges=args.json_challenges,
+                            json_solutions=args.json_solutions,
+                            only_n_tasks=args.only_n_tasks,
+                            dataset_folder=args.dataset_folder,
+                            dataset_length=args.dataset_length,
+                            dataset_batch_size=args.dataset_batch_size,
+                            dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
+                            dataset_seed=args.dataset_seed,
+                        )
 
-            # Evolutionary Search sweeps
-            if "evolutionary_search" in args.plot_methods:
-                print("\n🔧 Testing evolutionary_search across budgets...")
-                for num_generations in es_generations:
-                    method_kwargs = dict(base_methods["evolutionary_search"])
-                    method_kwargs["num_generations"] = num_generations
+                        if ok:
+                            results["method_results"]["evolutionary_search"]["success"] += 1
+                            results["successful_evals"] += 1
+                            
+                            # Log to W&B immediately
+                            try:
+                                wandb.log({
+                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/overall_accuracy": acc or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
+                                    f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/execution_time": execution_time,
+                                })
+                            except Exception as e:
+                                print(f"⚠️  Failed to log to W&B: {e}")
+                        else:
+                            results["method_results"]["evolutionary_search"]["failed"] += 1
+                            results["failed_evals"] += 1
 
-                    ok, acc, metrics, _, execution_time = run_evaluation(
-                        artifact_path=artifact_path,
-                        method="evolutionary_search",
-                        method_kwargs=method_kwargs,
-                        json_challenges=args.json_challenges,
-                        json_solutions=args.json_solutions,
-                        only_n_tasks=args.only_n_tasks,
-                        dataset_folder=args.dataset_folder,
-                        dataset_length=args.dataset_length,
-                        dataset_batch_size=args.dataset_batch_size,
-                        dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
-                        dataset_seed=args.dataset_seed,
-                    )
-
-                    if ok:
-                        results["method_results"]["evolutionary_search"]["success"] += 1
-                        results["successful_evals"] += 1
-                        
-                        # Log to W&B immediately
-                        try:
-                            wandb.log({
-                                f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/overall_accuracy": acc or 0.0,
-                                f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
-                                f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
-                                f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
-                                f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
-                                f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
-                                f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
-                                f"checkpoint_{step}/evolutionary_search/num_generations_{num_generations}/execution_time": execution_time,
-                            })
-                        except Exception as e:
-                            print(f"⚠️  Failed to log to W&B: {e}")
-                    else:
-                        results["method_results"]["evolutionary_search"]["failed"] += 1
-                        results["failed_evals"] += 1
-
-                    writer.writerow(
-                        [args.run_name, checkpoint["name"], training_progress, "evolutionary_search", "num_generations", num_generations, 
-                         acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
-                         metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
-                         metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
-                    )
+                        writer.writerow(
+                            [args.run_name, checkpoint["name"], training_progress, "evolutionary_search", "num_generations", num_generations, 
+                             acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
+                             metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
+                             metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
+                        )
             
             # Progress update after each checkpoint
             total_evals = results["successful_evals"] + results["failed_evals"]
