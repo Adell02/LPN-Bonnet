@@ -374,6 +374,11 @@ def main():
                    help="Batch size for evaluation (larger = faster but more memory)")
     parser.add_argument("--parallel_tasks", type=int, default=1, 
                    help="Number of tasks to process in parallel")
+    # Method hyperparameter overrides
+    parser.add_argument("--ga_lr", type=float, default=None,
+                   help="Override learning rate (step size) for gradient_ascent")
+    parser.add_argument("--es_mutation_std", type=float, default=None,
+                   help="Override mutation standard deviation for evolutionary_search")
     
     # Checkpoint selection options
     parser.add_argument("--max_checkpoints", type=int, default=None,
@@ -534,6 +539,20 @@ def main():
             "mutation_std": 0.5,
         },
     }
+
+    # Apply CLI overrides if provided
+    if args.ga_lr is not None:
+        try:
+            base_methods["gradient_ascent"]["lr"] = float(args.ga_lr)
+            print(f"⚙️  Overriding gradient_ascent lr -> {base_methods['gradient_ascent']['lr']}")
+        except Exception:
+            pass
+    if args.es_mutation_std is not None:
+        try:
+            base_methods["evolutionary_search"]["mutation_std"] = float(args.es_mutation_std)
+            print(f"⚙️  Overriding evolutionary_search mutation_std -> {base_methods['evolutionary_search']['mutation_std']}")
+        except Exception:
+            pass
     
     # Evolutionary search budget: balance population and generations first.
     # Choose population ≈ sqrt(budget), enforce at least 3 and cap at 32, then set generations = ceil(budget / population)
