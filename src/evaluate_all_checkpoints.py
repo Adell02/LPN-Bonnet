@@ -68,6 +68,22 @@ import subprocess
 import wandb
 from visualization import visualize_optimization_comparison
 
+# In-process evaluation imports
+import jax
+from jax.tree_util import tree_map
+import omegaconf
+import hydra
+from evaluator import Evaluator
+from data_utils import make_leave_one_out
+from train import load_datasets
+from evaluate_checkpoint import (
+    instantiate_model,
+    instantiate_train_state,
+    load_model_weights,
+    build_generate_output_batch_to_be_pmapped,
+    evaluate_json as ec_evaluate_json,
+)
+
 
 def get_all_checkpoints(
     run_name: str,
@@ -364,6 +380,8 @@ def main():
     parser.add_argument("--dataset_batch_size", type=int, default=None, help="Batch size for dataset eval")
     parser.add_argument("--dataset_use_hf", type=str, default="true", help="Use HF hub (true/false)")
     parser.add_argument("--dataset_seed", type=int, default=0, help="Seed for dataset subsampling")
+    parser.add_argument("--inprocess", action="store_true",
+                       help="Run dataset evaluations in-process to reuse a single dataset load (faster)")
     parser.add_argument("--project", type=str, default="LPN-ARC", help="W&B project name")
     parser.add_argument("--entity", type=str, default="ga624-imperial-college-london", help="W&B entity")
     parser.add_argument("--use_all_gpus", action="store_true", 
@@ -589,6 +607,66 @@ def main():
     out_csv = out_dir / f"eval_{args.run_name}.csv"
     write_header = not out_csv.exists()
 
+    # Preload dataset once if requested (dataset mode only)
+    preloaded = None
+    precomputed_splits = None
+    if using_dataset and args.inprocess:
+        try:
+            # Load data once
+            grids, shapes, _ = load_datasets([args.dataset_folder], use_hf=(str(args.dataset_use_hf).lower() == "true"))[0]
+            if args.dataset_length is not None:
+                key = jax.random.PRNGKey(args.dataset_seed)
+                indices = jax.random.permutation(key, len(grids))[: args.dataset_length]
+                grids, shapes = grids[indices], shapes[indices]
+
+            # Determine batch size; default to full length if not provided
+            dataset_batch_size = args.dataset_batch_size if args.dataset_batch_size is not None else int(grids.shape[0])
+            num_devices = max(1, jax.local_device_count())
+
+            # Make batch size divisible by number of devices
+            if dataset_batch_size % num_devices != 0:
+                # Round down to nearest multiple of num_devices, minimum num_devices
+                dataset_batch_size = max(num_devices, (dataset_batch_size // num_devices) * num_devices)
+
+            # Drop last incomplete batch
+            num_batches_total = grids.shape[0] // dataset_batch_size
+            grids = grids[: num_batches_total * dataset_batch_size]
+            shapes = shapes[: num_batches_total * dataset_batch_size]
+
+            # Precompute leave-one-out once
+            leave_one_out_grids = make_leave_one_out(grids, axis=-4)
+            leave_one_out_shapes = make_leave_one_out(shapes, axis=-3)
+
+            # Split across devices
+            def split_devices(x):
+                return x.reshape((num_devices, x.shape[0] // num_devices, *x.shape[1:]))
+
+            leave_one_out_grids, leave_one_out_shapes, grids, shapes = tree_map(
+                split_devices, (leave_one_out_grids, leave_one_out_shapes, grids, shapes)
+            )
+
+            # Split into batches per device
+            batch_size_per_device = dataset_batch_size // num_devices
+            def split_batches(x):
+                return x.reshape((x.shape[0], x.shape[1] // batch_size_per_device, batch_size_per_device, *x.shape[2:]))
+
+            leave_one_out_grids, leave_one_out_shapes, grids, shapes = tree_map(
+                split_batches, (leave_one_out_grids, leave_one_out_shapes, grids, shapes)
+            )
+
+            preloaded = {
+                "leave_one_out_grids": leave_one_out_grids,
+                "leave_one_out_shapes": leave_one_out_shapes,
+                "grids": grids,
+                "shapes": shapes,
+                "num_devices": num_devices,
+                "num_batches": grids.shape[1],
+            }
+            print(f"⚡ In-process dataset loaded once: {grids.shape} examples across {num_devices} devices, {preloaded['num_batches']} batches")
+        except Exception as e:
+            print(f"⚠️  In-process dataset preload failed, falling back to subprocess mode: {e}")
+            args.inprocess = False
+
     with out_csv.open("a", newline="") as f_csv:
         writer = csv.writer(f_csv)
         if write_header:
@@ -639,19 +717,145 @@ def main():
                         method_kwargs = dict(base_methods["gradient_ascent"])
                         method_kwargs["num_steps"] = num_steps
 
-                        ok, acc, metrics, _, execution_time = run_evaluation(
-                            artifact_path=artifact_path,
-                            method="gradient_ascent",
-                            method_kwargs=method_kwargs,
-                            json_challenges=args.json_challenges,
-                            json_solutions=args.json_solutions,
-                            only_n_tasks=args.only_n_tasks,
-                            dataset_folder=args.dataset_folder,
-                            dataset_length=args.dataset_length,
-                            dataset_batch_size=args.dataset_batch_size,
-                            dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
-                            dataset_seed=args.dataset_seed,
-                        )
+                        if using_dataset and args.inprocess and preloaded is not None:
+                            # In-process dataset evaluation path
+                            try:
+                                # Download artifact config and weights
+                                api = wandb.Api()
+                                artifact = api.artifact(artifact_path, type="model")
+                                cfg = omegaconf.OmegaConf.create(artifact.metadata)
+                                artifact_dir = artifact.download()
+
+                                # Instantiate model and state
+                                lpn = instantiate_model(cfg, mixed_precision=True)
+                                train_state = instantiate_train_state(lpn)
+
+                                evaluator = Evaluator(
+                                    lpn,
+                                    inference_mode="gradient_ascent",
+                                    inference_mode_kwargs={**method_kwargs},
+                                    devices=None,
+                                )
+
+                                # Load weights and replicate
+                                train_state = load_model_weights(train_state, artifact_dir)
+                                train_state = jax.device_put_replicated(train_state, evaluator.devices)
+
+                                # Build pmapped generator for this method
+                                pmap_fn = jax.pmap(
+                                    build_generate_output_batch_to_be_pmapped(
+                                        model=evaluator.model,
+                                        eval_inference_mode=evaluator.inference_mode,
+                                        eval_inference_mode_kwargs=evaluator.inference_mode_kwargs,
+                                    ),
+                                    axis_name="num_devices",
+                                )
+
+                                # Deterministic keys per run
+                                keys = jax.random.split(jax.random.PRNGKey(0), (preloaded["num_devices"], preloaded["num_batches"]))
+
+                                import time
+                                t0 = time.time()
+                                metrics_list = [
+                                    pmap_fn(
+                                        train_state.params,
+                                        preloaded["leave_one_out_grids"][:, bi],
+                                        preloaded["leave_one_out_shapes"][:, bi],
+                                        preloaded["grids"][:, bi],
+                                        preloaded["shapes"][:, bi],
+                                        keys[:, bi],
+                                    )
+                                    for bi in range(preloaded["num_batches"])
+                                ]
+                                execution_time = time.time() - t0
+                                metrics = {k: jax.numpy.stack([m[k] for m in metrics_list]).mean() for k in metrics_list[0].keys()}
+                                # Extract scalar
+                                def to_float(x):
+                                    try:
+                                        return float(x)
+                                    except Exception:
+                                        try:
+                                            return float(x.item())
+                                        except Exception:
+                                            return None
+                                acc = to_float(metrics.get("accuracy"))
+                                # Map dataset metrics to CSV fields
+                                ds_metrics = {
+                                    "overall_accuracy": acc,
+                                    "top_1_shape_accuracy": None,
+                                    "top_1_accuracy": None,
+                                    "top_1_pixel_correctness": None,
+                                    "top_2_shape_accuracy": None,
+                                    "top_2_accuracy": None,
+                                    "top_2_pixel_correctness": None,
+                                    "correct_shapes": to_float(metrics.get("correct_shapes")),
+                                    "pixel_correctness": to_float(metrics.get("pixel_correctness")),
+                                }
+                                ok = True
+                            except Exception as e:
+                                print(f"❌ In-process gradient_ascent evaluation failed: {e}")
+                                ok, acc, ds_metrics, execution_time = False, None, {}, 0.0
+                            metrics = ds_metrics
+                        else:
+                            ok, acc, metrics, _, execution_time = run_evaluation(
+                                artifact_path=artifact_path,
+                                method="gradient_ascent",
+                                method_kwargs=method_kwargs,
+                                json_challenges=args.json_challenges,
+                                json_solutions=args.json_solutions,
+                                only_n_tasks=args.only_n_tasks,
+                                dataset_folder=args.dataset_folder,
+                                dataset_length=args.dataset_length,
+                                dataset_batch_size=args.dataset_batch_size,
+                                dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
+                                dataset_seed=args.dataset_seed,
+                            )
+                        
+                        # JSON in-process path: reuse evaluate_checkpoint.evaluate_json directly
+                        if using_json and args.inprocess:
+                            try:
+                                api = wandb.Api()
+                                artifact = api.artifact(artifact_path, type="model")
+                                cfg = omegaconf.OmegaConf.create(artifact.metadata)
+                                artifact_dir = artifact.download()
+
+                                lpn = instantiate_model(cfg, mixed_precision=True)
+                                train_state = instantiate_train_state(lpn)
+                                evaluator = Evaluator(
+                                    lpn,
+                                    inference_mode="gradient_ascent",
+                                    inference_mode_kwargs={**method_kwargs},
+                                    devices=None,
+                                )
+                                train_state = load_model_weights(train_state, artifact_dir)
+                                train_state = jax.device_put_replicated(train_state, evaluator.devices)
+
+                                import time
+                                t0 = time.time()
+                                jmetrics = ec_evaluate_json(
+                                    train_state,
+                                    evaluator,
+                                    args.json_challenges,
+                                    args.json_solutions,
+                                    args.only_n_tasks,
+                                    0,
+                                )
+                                execution_time = time.time() - t0
+                                # Map printed metrics to CSV fields if present
+                                acc = jmetrics.get("top_1_accuracy") or jmetrics.get("accuracy")
+                                metrics = {
+                                    "overall_accuracy": float(acc) if acc is not None else None,
+                                    "top_1_shape_accuracy": float(jmetrics.get("top_1_shape_accuracy")) if jmetrics.get("top_1_shape_accuracy") is not None else None,
+                                    "top_1_accuracy": float(jmetrics.get("top_1_accuracy")) if jmetrics.get("top_1_accuracy") is not None else None,
+                                    "top_1_pixel_correctness": float(jmetrics.get("top_1_pixel_correctness")) if jmetrics.get("top_1_pixel_correctness") is not None else None,
+                                    "top_2_shape_accuracy": float(jmetrics.get("top_2_shape_accuracy")) if jmetrics.get("top_2_shape_accuracy") is not None else None,
+                                    "top_2_accuracy": float(jmetrics.get("top_2_accuracy")) if jmetrics.get("top_2_accuracy") is not None else None,
+                                    "top_2_pixel_correctness": float(jmetrics.get("top_2_pixel_correctness")) if jmetrics.get("top_2_pixel_correctness") is not None else None,
+                                }
+                                ok = True
+                            except Exception as e:
+                                print(f"❌ JSON in-process gradient_ascent evaluation failed: {e}")
+                                ok, acc, metrics = False, None, {}
 
                         if ok:
                             results["method_results"]["gradient_ascent"]["success"] += 1
@@ -687,19 +891,133 @@ def main():
                         method_kwargs = dict(base_methods["random_search"])
                         method_kwargs["num_samples"] = num_samples
 
-                        ok, acc, metrics, _, execution_time = run_evaluation(
-                            artifact_path=artifact_path,
-                            method="random_search",
-                            method_kwargs=method_kwargs,
-                            json_challenges=args.json_challenges,
-                            json_solutions=args.json_solutions,
-                            only_n_tasks=args.only_n_tasks,
-                            dataset_folder=args.dataset_folder,
-                            dataset_length=args.dataset_length,
-                            dataset_batch_size=args.dataset_batch_size,
-                            dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
-                            dataset_seed=args.dataset_seed,
-                        )
+                        if using_dataset and args.inprocess and preloaded is not None:
+                            try:
+                                api = wandb.Api()
+                                artifact = api.artifact(artifact_path, type="model")
+                                cfg = omegaconf.OmegaConf.create(artifact.metadata)
+                                artifact_dir = artifact.download()
+
+                                lpn = instantiate_model(cfg, mixed_precision=True)
+                                train_state = instantiate_train_state(lpn)
+                                evaluator = Evaluator(
+                                    lpn,
+                                    inference_mode="random_search",
+                                    inference_mode_kwargs={**method_kwargs},
+                                    devices=None,
+                                )
+                                train_state = load_model_weights(train_state, artifact_dir)
+                                train_state = jax.device_put_replicated(train_state, evaluator.devices)
+
+                                pmap_fn = jax.pmap(
+                                    build_generate_output_batch_to_be_pmapped(
+                                        model=evaluator.model,
+                                        eval_inference_mode=evaluator.inference_mode,
+                                        eval_inference_mode_kwargs=evaluator.inference_mode_kwargs,
+                                    ),
+                                    axis_name="num_devices",
+                                )
+
+                                keys = jax.random.split(jax.random.PRNGKey(method_kwargs.get("random_search_seed", 0)), (preloaded["num_devices"], preloaded["num_batches"]))
+
+                                import time
+                                t0 = time.time()
+                                metrics_list = [
+                                    pmap_fn(
+                                        train_state.params,
+                                        preloaded["leave_one_out_grids"][:, bi],
+                                        preloaded["leave_one_out_shapes"][:, bi],
+                                        preloaded["grids"][:, bi],
+                                        preloaded["shapes"][:, bi],
+                                        keys[:, bi],
+                                    )
+                                    for bi in range(preloaded["num_batches"])
+                                ]
+                                execution_time = time.time() - t0
+                                metrics = {k: jax.numpy.stack([m[k] for m in metrics_list]).mean() for k in metrics_list[0].keys()}
+                                def to_float(x):
+                                    try:
+                                        return float(x)
+                                    except Exception:
+                                        try:
+                                            return float(x.item())
+                                        except Exception:
+                                            return None
+                                acc = to_float(metrics.get("accuracy"))
+                                ds_metrics = {
+                                    "overall_accuracy": acc,
+                                    "top_1_shape_accuracy": None,
+                                    "top_1_accuracy": None,
+                                    "top_1_pixel_correctness": None,
+                                    "top_2_shape_accuracy": None,
+                                    "top_2_accuracy": None,
+                                    "top_2_pixel_correctness": None,
+                                    "correct_shapes": to_float(metrics.get("correct_shapes")),
+                                    "pixel_correctness": to_float(metrics.get("pixel_correctness")),
+                                }
+                                ok = True
+                            except Exception as e:
+                                print(f"❌ In-process random_search evaluation failed: {e}")
+                                ok, acc, ds_metrics, execution_time = False, None, {}, 0.0
+                            metrics = ds_metrics
+                        else:
+                            ok, acc, metrics, _, execution_time = run_evaluation(
+                                artifact_path=artifact_path,
+                                method="random_search",
+                                method_kwargs=method_kwargs,
+                                json_challenges=args.json_challenges,
+                                json_solutions=args.json_solutions,
+                                only_n_tasks=args.only_n_tasks,
+                                dataset_folder=args.dataset_folder,
+                                dataset_length=args.dataset_length,
+                                dataset_batch_size=args.dataset_batch_size,
+                                dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
+                                dataset_seed=args.dataset_seed,
+                            )
+                        
+                        if using_json and args.inprocess:
+                            try:
+                                api = wandb.Api()
+                                artifact = api.artifact(artifact_path, type="model")
+                                cfg = omegaconf.OmegaConf.create(artifact.metadata)
+                                artifact_dir = artifact.download()
+
+                                lpn = instantiate_model(cfg, mixed_precision=True)
+                                train_state = instantiate_train_state(lpn)
+                                evaluator = Evaluator(
+                                    lpn,
+                                    inference_mode="random_search",
+                                    inference_mode_kwargs={**method_kwargs},
+                                    devices=None,
+                                )
+                                train_state = load_model_weights(train_state, artifact_dir)
+                                train_state = jax.device_put_replicated(train_state, evaluator.devices)
+
+                                import time
+                                t0 = time.time()
+                                jmetrics = ec_evaluate_json(
+                                    train_state,
+                                    evaluator,
+                                    args.json_challenges,
+                                    args.json_solutions,
+                                    args.only_n_tasks,
+                                    method_kwargs.get("random_search_seed", 0),
+                                )
+                                execution_time = time.time() - t0
+                                acc = jmetrics.get("top_1_accuracy") or jmetrics.get("accuracy")
+                                metrics = {
+                                    "overall_accuracy": float(acc) if acc is not None else None,
+                                    "top_1_shape_accuracy": float(jmetrics.get("top_1_shape_accuracy")) if jmetrics.get("top_1_shape_accuracy") is not None else None,
+                                    "top_1_accuracy": float(jmetrics.get("top_1_accuracy")) if jmetrics.get("top_1_accuracy") is not None else None,
+                                    "top_1_pixel_correctness": float(jmetrics.get("top_1_pixel_correctness")) if jmetrics.get("top_1_pixel_correctness") is not None else None,
+                                    "top_2_shape_accuracy": float(jmetrics.get("top_2_shape_accuracy")) if jmetrics.get("top_2_shape_accuracy") is not None else None,
+                                    "top_2_accuracy": float(jmetrics.get("top_2_accuracy")) if jmetrics.get("top_2_accuracy") is not None else None,
+                                    "top_2_pixel_correctness": float(jmetrics.get("top_2_pixel_correctness")) if jmetrics.get("top_2_pixel_correctness") is not None else None,
+                                }
+                                ok = True
+                            except Exception as e:
+                                print(f"❌ JSON in-process random_search evaluation failed: {e}")
+                                ok, acc, metrics = False, None, {}
 
                         if ok:
                             results["method_results"]["random_search"]["success"] += 1
@@ -736,19 +1054,133 @@ def main():
                         method_kwargs["population_size"] = es_cfg["population_size"]
                         method_kwargs["num_generations"] = es_cfg["num_generations"]
 
-                        ok, acc, metrics, _, execution_time = run_evaluation(
-                            artifact_path=artifact_path,
-                            method="evolutionary_search",
-                            method_kwargs=method_kwargs,
-                            json_challenges=args.json_challenges,
-                            json_solutions=args.json_solutions,
-                            only_n_tasks=args.only_n_tasks,
-                            dataset_folder=args.dataset_folder,
-                            dataset_length=args.dataset_length,
-                            dataset_batch_size=args.dataset_batch_size,
-                            dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
-                            dataset_seed=args.dataset_seed,
-                        )
+                        if using_dataset and args.inprocess and preloaded is not None:
+                            try:
+                                api = wandb.Api()
+                                artifact = api.artifact(artifact_path, type="model")
+                                cfg = omegaconf.OmegaConf.create(artifact.metadata)
+                                artifact_dir = artifact.download()
+
+                                lpn = instantiate_model(cfg, mixed_precision=True)
+                                train_state = instantiate_train_state(lpn)
+                                evaluator = Evaluator(
+                                    lpn,
+                                    inference_mode="evolutionary_search",
+                                    inference_mode_kwargs={**method_kwargs},
+                                    devices=None,
+                                )
+                                train_state = load_model_weights(train_state, artifact_dir)
+                                train_state = jax.device_put_replicated(train_state, evaluator.devices)
+
+                                pmap_fn = jax.pmap(
+                                    build_generate_output_batch_to_be_pmapped(
+                                        model=evaluator.model,
+                                        eval_inference_mode=evaluator.inference_mode,
+                                        eval_inference_mode_kwargs=evaluator.inference_mode_kwargs,
+                                    ),
+                                    axis_name="num_devices",
+                                )
+
+                                keys = jax.random.split(jax.random.PRNGKey(0), (preloaded["num_devices"], preloaded["num_batches"]))
+
+                                import time
+                                t0 = time.time()
+                                metrics_list = [
+                                    pmap_fn(
+                                        train_state.params,
+                                        preloaded["leave_one_out_grids"][:, bi],
+                                        preloaded["leave_one_out_shapes"][:, bi],
+                                        preloaded["grids"][:, bi],
+                                        preloaded["shapes"][:, bi],
+                                        keys[:, bi],
+                                    )
+                                    for bi in range(preloaded["num_batches"])
+                                ]
+                                execution_time = time.time() - t0
+                                metrics = {k: jax.numpy.stack([m[k] for m in metrics_list]).mean() for k in metrics_list[0].keys()}
+                                def to_float(x):
+                                    try:
+                                        return float(x)
+                                    except Exception:
+                                        try:
+                                            return float(x.item())
+                                        except Exception:
+                                            return None
+                                acc = to_float(metrics.get("accuracy"))
+                                ds_metrics = {
+                                    "overall_accuracy": acc,
+                                    "top_1_shape_accuracy": None,
+                                    "top_1_accuracy": None,
+                                    "top_1_pixel_correctness": None,
+                                    "top_2_shape_accuracy": None,
+                                    "top_2_accuracy": None,
+                                    "top_2_pixel_correctness": None,
+                                    "correct_shapes": to_float(metrics.get("correct_shapes")),
+                                    "pixel_correctness": to_float(metrics.get("pixel_correctness")),
+                                }
+                                ok = True
+                            except Exception as e:
+                                print(f"❌ In-process evolutionary_search evaluation failed: {e}")
+                                ok, acc, ds_metrics, execution_time = False, None, {}, 0.0
+                            metrics = ds_metrics
+                        else:
+                            ok, acc, metrics, _, execution_time = run_evaluation(
+                                artifact_path=artifact_path,
+                                method="evolutionary_search",
+                                method_kwargs=method_kwargs,
+                                json_challenges=args.json_challenges,
+                                json_solutions=args.json_solutions,
+                                only_n_tasks=args.only_n_tasks,
+                                dataset_folder=args.dataset_folder,
+                                dataset_length=args.dataset_length,
+                                dataset_batch_size=args.dataset_batch_size,
+                                dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
+                                dataset_seed=args.dataset_seed,
+                            )
+                        
+                        if using_json and args.inprocess:
+                            try:
+                                api = wandb.Api()
+                                artifact = api.artifact(artifact_path, type="model")
+                                cfg = omegaconf.OmegaConf.create(artifact.metadata)
+                                artifact_dir = artifact.download()
+
+                                lpn = instantiate_model(cfg, mixed_precision=True)
+                                train_state = instantiate_train_state(lpn)
+                                evaluator = Evaluator(
+                                    lpn,
+                                    inference_mode="evolutionary_search",
+                                    inference_mode_kwargs={**method_kwargs},
+                                    devices=None,
+                                )
+                                train_state = load_model_weights(train_state, artifact_dir)
+                                train_state = jax.device_put_replicated(train_state, evaluator.devices)
+
+                                import time
+                                t0 = time.time()
+                                jmetrics = ec_evaluate_json(
+                                    train_state,
+                                    evaluator,
+                                    args.json_challenges,
+                                    args.json_solutions,
+                                    args.only_n_tasks,
+                                    0,
+                                )
+                                execution_time = time.time() - t0
+                                acc = jmetrics.get("top_1_accuracy") or jmetrics.get("accuracy")
+                                metrics = {
+                                    "overall_accuracy": float(acc) if acc is not None else None,
+                                    "top_1_shape_accuracy": float(jmetrics.get("top_1_shape_accuracy")) if jmetrics.get("top_1_shape_accuracy") is not None else None,
+                                    "top_1_accuracy": float(jmetrics.get("top_1_accuracy")) if jmetrics.get("top_1_accuracy") is not None else None,
+                                    "top_1_pixel_correctness": float(jmetrics.get("top_1_pixel_correctness")) if jmetrics.get("top_1_pixel_correctness") is not None else None,
+                                    "top_2_shape_accuracy": float(jmetrics.get("top_2_shape_accuracy")) if jmetrics.get("top_2_shape_accuracy") is not None else None,
+                                    "top_2_accuracy": float(jmetrics.get("top_2_accuracy")) if jmetrics.get("top_2_accuracy") is not None else None,
+                                    "top_2_pixel_correctness": float(jmetrics.get("top_2_pixel_correctness")) if jmetrics.get("top_2_pixel_correctness") is not None else None,
+                                }
+                                ok = True
+                            except Exception as e:
+                                print(f"❌ JSON in-process evolutionary_search evaluation failed: {e}")
+                                ok, acc, metrics = False, None, {}
 
                         if ok:
                             results["method_results"]["evolutionary_search"]["success"] += 1
