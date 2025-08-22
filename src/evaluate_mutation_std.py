@@ -526,7 +526,8 @@ def main():
     # CSV logging
     out_dir = Path("results")
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_csv = out_dir / f"mutation_std_sweep_{args.run_name}.csv"
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    out_csv = out_dir / f"mutation_std_sweep_{args.run_name}_{timestamp}.csv"
     write_header = not out_csv.exists()
 
     # Preload dataset once if requested (dataset mode only)
@@ -725,6 +726,7 @@ def main():
         print(f"Fixed parameters used")
 
     print(f"\n📊 CSV saved to: {out_csv}")
+    print(f"📅 Timestamp: {timestamp}")
     print("📈 Available metrics in CSV:")
     print("   - overall_accuracy")
     print("   - top_1_shape_accuracy") 

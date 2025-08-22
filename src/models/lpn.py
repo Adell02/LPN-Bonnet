@@ -14,6 +14,39 @@ from models.transformer import EncoderTransformer, DecoderTransformer
 from models.utils import EncoderTransformerConfig, DecoderTransformerConfig
 from data_utils import make_leave_one_out
 
+"""
+LPN Model with Enhanced Evolutionary Search
+
+The evolutionary search now supports subspace mutation for better performance in high-dimensional latent spaces:
+
+1. **Subspace Mutation**: Instead of mutating in all 1024 dimensions, we build a low-dimensional 
+   basis (typically 16-64D) and mutate within that subspace. This dramatically improves 
+   exploration efficiency.
+
+2. **Automatic Sigma Scaling**: The mutation standard deviation is automatically scaled to match 
+   the expected step length of gradient ascent, ensuring fair comparison between methods.
+
+3. **Antithetic Sampling**: For every random direction ε, we also test -ε, reducing variance 
+   and improving selection signal.
+
+4. **Trust Region**: Optional constraint to keep offspring within a ball around the mean latent.
+
+Usage:
+    # Enable subspace mutation (default)
+    mode_kwargs = {
+        "population_size": 16,
+        "num_generations": 2,
+        "mutation_std": 0.1,  # Will be overridden by ga_step_length
+        "use_subspace_mutation": True,
+        "subspace_dim": 32,
+        "ga_step_length": 0.5,  # Target GA step size
+        "trust_region_radius": 2.0,  # Optional
+    }
+    
+    # Disable for standard ES
+    mode_kwargs["use_subspace_mutation"] = False
+"""
+
 
 class LPN(nn.Module):
     encoder: EncoderTransformer
@@ -136,9 +169,20 @@ class LPN(nn.Module):
             leave_one_out_pairs = make_leave_one_out(pairs, axis=-4)
             leave_one_out_grid_shapes = make_leave_one_out(grid_shapes, axis=-3)
             
+            # Extract subspace mutation parameters with defaults
+            use_subspace = mode_kwargs.get("use_subspace_mutation", True)
+            subspace_dim = mode_kwargs.get("subspace_dim", 32)
+            ga_step_length = mode_kwargs.get("ga_step_length", 0.5)
+            trust_radius = mode_kwargs.get("trust_region_radius", None)
+            
             context, _ = self._get_evolutionary_search_context(
-                leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes, 
-                key, **mode_kwargs
+                leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes,
+                key, 
+                use_subspace_mutation=use_subspace,
+                subspace_dim=subspace_dim,
+                ga_step_length=ga_step_length,
+                trust_region_radius=trust_radius,
+                **mode_kwargs
             )
             
             loss, metrics = self._loss_from_pair_and_context(context, pairs, grid_shapes, dropout_eval)
@@ -398,8 +442,19 @@ class LPN(nn.Module):
             for arg in ["population_size", "num_generations", "mutation_std"]:
                 assert arg in mode_kwargs, f"'{arg}' argument required for 'evolutionary_search' inference mode."
             
+            # Extract subspace mutation parameters with defaults
+            use_subspace = mode_kwargs.get("use_subspace_mutation", True)
+            subspace_dim = mode_kwargs.get("subspace_dim", 32)
+            ga_step_length = mode_kwargs.get("ga_step_length", 0.5)
+            trust_radius = mode_kwargs.get("trust_region_radius", None)
+            
             first_context, second_context = self._get_evolutionary_search_context(
-                latents, pairs, grid_shapes, key, **mode_kwargs
+                latents, pairs, grid_shapes, key,
+                use_subspace_mutation=use_subspace,
+                subspace_dim=subspace_dim,
+                ga_step_length=ga_step_length,
+                trust_region_radius=trust_radius,
+                **mode_kwargs
             )
             info = {"context": first_context}
         else:
@@ -786,9 +841,13 @@ class LPN(nn.Module):
             include_mean_latent: bool = True,
             include_all_latents: bool = False,
             track_progress: bool = False,
+            use_subspace_mutation: bool = True,
+            subspace_dim: int = 32,
+            ga_step_length: float = 0.5,
+            trust_region_radius: Optional[float] = None,
             **kwargs,
         ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:
-        """Evolutionary search for optimal latent context."""
+        """Evolutionary search for optimal latent context with optional subspace mutation."""
 
         # ----- helper: evaluate candidates EXACTLY like random search -----
         def _eval_candidates(cand_latents: chex.Array) -> chex.Array:
@@ -856,6 +915,19 @@ class LPN(nn.Module):
 
         # ----- initialize population around prepared latents -----
         base = self._prepare_latents_before_search(include_mean_latent, include_all_latents, latents)
+        
+        # Build subspace basis and compute sigma if using subspace mutation
+        if use_subspace_mutation:
+            key, basis_key = jax.random.split(key)
+            U = self._make_subspace_basis(base, subspace_dim, basis_key)
+            # Compute sigma to match GA step length
+            sigma = self._sigma_for_ga_step(ga_step_length, subspace_dim)
+            print(f"         🔬 Subspace ES: m={subspace_dim}, σ={sigma:.4f} (targeting GA step {ga_step_length})")
+        else:
+            U = None
+            sigma = mutation_std
+            print(f"         🔬 Standard ES: σ={sigma:.4f}")
+        
         # Cap or fill to population_size
         C0 = base.shape[-2]
         if C0 >= population_size:
@@ -865,8 +937,15 @@ class LPN(nn.Module):
             mean_latent = base.mean(axis=-2, keepdims=True)                   # (*B, 1, H)
             need = population_size - C0
             key, nk = jax.random.split(key)
-            noise = jax.random.normal(nk, (*base.shape[:-2], need, base.shape[-1]))
-            population = jnp.concatenate([base, mean_latent + mutation_std * noise], axis=-2)
+            if use_subspace_mutation and U is not None:
+                # Use subspace mutation for initial population expansion
+                noise = jax.random.normal(nk, (*base.shape[:-2], need, subspace_dim))
+                step = jnp.einsum('...nm,...hm->...nh', noise, jnp.swapaxes(U, -2, -1))
+                population = jnp.concatenate([base, mean_latent + sigma * step], axis=-2)
+            else:
+                # Standard isotropic noise
+                noise = jax.random.normal(nk, (*base.shape[:-2], need, base.shape[-1]))
+                population = jnp.concatenate([base, mean_latent + sigma * noise], axis=-2)
 
         # Optional tracking
         if track_progress:
@@ -892,12 +971,26 @@ class LPN(nn.Module):
             gather_idx = jnp.expand_dims(idx, -1).repeat(population.shape[-1], axis=-1) # (*B, S, H)
             survivors = jnp.take_along_axis(population, gather_idx, axis=-2)            # (*B, S, H)
 
-            # Refill to pop size: repeat survivors and add Gaussian noise
+            # Refill to pop size: repeat survivors and add mutation
             need = population_size - num_survivors
             reps = (need + num_survivors - 1) // num_survivors  # ceil(need / S)
             parents = jnp.repeat(survivors, reps, axis=-2)[..., :need, :]               # (*B, need, H)
             key, nk = jax.random.split(key)
-            offspring = parents + mutation_std * jax.random.normal(nk, parents.shape)   # same shape
+            
+            if use_subspace_mutation and U is not None:
+                # Use subspace mutation with antithetic sampling
+                offspring = self._mutate_in_subspace(parents, U, sigma, nk, need)
+                
+                # Optional trust region around base mean
+                if trust_region_radius is not None:
+                    mean0 = base.mean(axis=-2, keepdims=True)
+                    delta = offspring - mean0
+                    R = trust_region_radius
+                    scale = jnp.minimum(1.0, R / (jnp.linalg.norm(delta, axis=-1, keepdims=True) + 1e-8))
+                    offspring = mean0 + scale * delta
+            else:
+                # Standard isotropic mutation
+                offspring = parents + sigma * jax.random.normal(nk, parents.shape)
 
             population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, C, H)
 
@@ -920,6 +1013,83 @@ class LPN(nn.Module):
         return best_context, second_best_context
     
 
+
+    @classmethod
+    def _make_subspace_basis(cls, latents: chex.Array, m: int, key: chex.PRNGKey) -> chex.Array:
+        """
+        Build a subspace basis for low-dimensional mutation.
+        
+        Args:
+            latents: (*B, C0, H) or (*B, N, H) - use whatever you seeded ES with
+            m: dimension of the subspace (typically 16-64)
+            key: random key for generating random directions
+            
+        Returns:
+            U: (*B, H, m) with orthonormal columns spanning the mutation subspace
+        """
+        H = latents.shape[-1]
+        
+        # Center available latents around their mean
+        L = latents - latents.mean(axis=-2, keepdims=True)  # (*B, C0, H)
+        
+        # Start with random directions
+        key, kr = jax.random.split(key)
+        R = jax.random.normal(kr, (*latents.shape[:-2], H, m))
+        
+        # Inject data span directions (if any) by concatenating random + L^T
+        # Make a skinny matrix [R | L^T] then QR
+        M = jnp.concatenate([R, L.swapaxes(-2, -1)], axis=-1)  # (*B, H, m + C0)
+        
+        # Batched QR gives orthonormal columns
+        Q, _ = jnp.linalg.qr(M, mode='reduced')                # (*B, H, min(H, m+C0))
+        
+        # Take first m columns
+        U = Q[..., :m]                                         # (*B, H, m)
+        return U
+
+    @classmethod
+    def _mutate_in_subspace(cls, centers: chex.Array, U: chex.Array, sigma: float,
+                            key: chex.PRNGKey, num_needed: int) -> chex.Array:
+        """
+        Mutate in the low-dimensional subspace with antithetic sampling.
+        
+        Args:
+            centers: (*B, S, H) - survivor latents to mutate from
+            U: (*B, H, m) - subspace basis
+            sigma: mutation standard deviation in the subspace
+            key: random key
+            num_needed: number of offspring to generate
+            
+        Returns:
+            offspring: (*B, num_needed, H) - mutated latents
+        """
+        *B, S, H = centers.shape
+        m = U.shape[-1]
+        half = (num_needed + 1) // 2
+        
+        key, k_eps = jax.random.split(key)
+        eps = jax.random.normal(k_eps, (*B, half, m))
+        
+        # Project to H: step = eps @ U^T
+        step = jnp.einsum('...sm,...hm->...sh', eps, jnp.swapaxes(U, -2, -1))
+        
+        # Generate antithetic pairs: +eps and -eps
+        pos = centers[..., :half, :] + sigma * step
+        neg = centers[..., :half, :] - sigma * step
+        
+        # Concatenate and take exactly num_needed
+        offs = jnp.concatenate([pos, neg], axis=-2)[..., :num_needed, :]
+        return offs
+
+    @classmethod
+    def _sigma_for_ga_step(cls, ga_step_len: float, m: int) -> float:
+        """
+        Compute sigma to match expected ES step length with GA step length.
+        
+        Expected ES step length in subspace: E[||Δz||₂] ≈ σ√m
+        To match GA step length: σ = ga_step_len / √m
+        """
+        return ga_step_len / math.sqrt(m)
 
     @classmethod
     def _prepare_latents_before_search(

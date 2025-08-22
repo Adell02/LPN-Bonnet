@@ -6,6 +6,7 @@ Usage:
     python3 src/plot_from_csv.py --csv results/eval_908l681z.csv
     python3 src/plot_from_csv.py --csv results/eval_908l681z.csv --output_dir plots
     python3 src/plot_from_csv.py --csv results/eval_908l681z.csv --methods gradient_ascent,random_search
+    python3 src/plot_from_csv.py --csv results/eval_908l681z.csv --detailed_analysis
 
 """
 
@@ -358,7 +359,8 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
                                 method_b: Optional[str] = None,
                                 save_plots: bool = True,
                                 show_plots: bool = False,
-                                zdim: Optional[int] = None) -> None:
+                                zdim: Optional[int] = None,
+                                detailed_analysis: bool = False) -> None:
     """
     Main function to create and save optimization comparison plots.
     """
@@ -500,6 +502,33 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
             plt.show()
         plt.close(fig)
 
+    # Generate detailed analysis plots if requested
+    if args.detailed_analysis:
+        print("\n" + "="*60)
+        print("📊 GENERATING DETAILED ANALYSIS PLOTS")
+        print("="*60)
+        
+        # Determine which methods to analyze
+        methods_to_analyze = []
+        if method_a:
+            methods_to_analyze.append(method_a)
+        if method_b:
+            methods_to_analyze.append(method_b)
+        
+        if not methods_to_analyze:
+            # Use all methods found in the data
+            methods_to_analyze = methods_in_csv
+        
+        create_detailed_analysis_plots(
+            data_by_metric=data_by_metric,
+            steps=steps,
+            budgets=budgets,
+            methods=methods_to_analyze,
+            output_path=output_path,
+            csv_name=csv_name,
+            step_labels=step_labels
+        )
+
     print("✅ Plotting complete!")
 
 
@@ -573,6 +602,176 @@ def create_analysis_plots(data: Dict, steps: List[int], budgets: List[int],
                 print(f"  Total data points: {len(all_accuracies)}")
 
 
+def create_detailed_analysis_plots(data_by_metric: Dict, steps: List[int], budgets: List[int], 
+                                  methods: List[str], output_path: Path, csv_name: str, step_labels: List[str]) -> None:
+    """
+    Create detailed analysis plots showing accuracies vs budget and vs training step separately,
+    as well as averaged versions.
+    """
+    print("📊 Creating detailed analysis plots...")
+    
+    metric_names = [
+        "overall_accuracy",
+        "top_1_shape_accuracy", 
+        "top_1_pixel_correctness"
+    ]
+    
+    for metric in metric_names:
+        print(f"\n🎨 Creating detailed plots for {metric}...")
+        
+        # 1. Accuracy vs Budget (separate lines for each training step)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # Left plot: Individual training steps
+        colors = plt.cm.viridis(np.linspace(0, 1, len(steps)))
+        for i, step in enumerate(steps):
+            for method in methods:
+                if method in data_by_metric.get(metric, {}) and step in data_by_metric[metric][method]:
+                    step_data = data_by_metric[metric][method][step]
+                    step_budgets = sorted(step_data.keys())
+                    step_accuracies = [step_data[b] for b in step_budgets]
+                    # Filter out NaN values
+                    valid_indices = [j for j, acc in enumerate(step_accuracies) if not np.isnan(acc)]
+                    if valid_indices:
+                        valid_budgets = [step_budgets[j] for j in valid_indices]
+                        valid_accuracies = [step_accuracies[j] for j in valid_indices]
+                        ax1.plot(valid_budgets, valid_accuracies, 'o-', 
+                                color=colors[i], alpha=0.7, linewidth=2, markersize=6,
+                                label=f'{method.replace("_", " ").title()} - {step_labels[i]}')
+        
+        ax1.set_xlabel('Search Budget', fontsize=12)
+        ax1.set_ylabel(f'{metric.replace("_", " ").title()}', fontsize=12)
+        ax1.set_title(f'{metric.replace("_", " ").title()} vs Budget\n(Individual Training Steps)', fontsize=14)
+        ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+        ax1.grid(True, alpha=0.3)
+        ax1.set_ylim(0, 1)
+        
+        # Right plot: Averaged across training steps
+        for method in methods:
+            if method in data_by_metric.get(metric, {}):
+                method_data = data_by_metric[metric][method]
+                budget_avg = {}
+                budget_std = {}
+                
+                for budget in budgets:
+                    accuracies = []
+                    for step in steps:
+                        if step in method_data and budget in method_data[step]:
+                            acc = method_data[step][budget]
+                            if not np.isnan(acc):
+                                accuracies.append(acc)
+                    
+                    if accuracies:
+                        budget_avg[budget] = np.mean(accuracies)
+                        budget_std[budget] = np.std(accuracies)
+                
+                if budget_avg:
+                    budget_values = sorted(budget_avg.keys())
+                    avg_accuracies = [budget_avg[b] for b in budget_values]
+                    std_accuracies = [budget_std[b] for b in budget_values]
+                    
+                    ax2.errorbar(budget_values, avg_accuracies, yerr=std_accuracies, 
+                               marker='o', linewidth=2, markersize=8, capsize=5,
+                               label=f'{method.replace("_", " ").title()} (avg ± std)')
+        
+        ax2.set_xlabel('Search Budget', fontsize=12)
+        ax2.set_ylabel(f'{metric.replace("_", " ").title()}', fontsize=12)
+        ax2.set_title(f'{metric.replace("_", " ").title()} vs Budget\n(Averaged Across Training Steps)', fontsize=14)
+        ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+        ax2.grid(True, alpha=0.3)
+        ax2.set_ylim(0, 1)
+        
+        plt.tight_layout()
+        
+        # Save budget analysis plot
+        budget_filename = f"budget_analysis_{csv_name}_{metric}.png"
+        budget_path = output_path / budget_filename
+        fig.savefig(budget_path, dpi=200, bbox_inches='tight')
+        print(f"💾 Budget analysis plot saved to: {budget_path}")
+        plt.close(fig)
+        
+        # 2. Accuracy vs Training Step (separate lines for each budget)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # Left plot: Individual budgets
+        colors = plt.cm.plasma(np.linspace(0, 1, len(budgets)))
+        for i, budget in enumerate(budgets):
+            for method in methods:
+                if method in data_by_metric.get(metric, {}):
+                    method_data = data_by_metric[metric][method]
+                    step_accuracies = []
+                    valid_steps = []
+                    
+                    for step in steps:
+                        if step in method_data and budget in method_data[step]:
+                            acc = method_data[step][budget]
+                            if not np.isnan(acc):
+                                step_accuracies.append(acc)
+                                valid_steps.append(step)
+                    
+                    if step_accuracies:
+                        ax1.plot(valid_steps, step_accuracies, 's-', 
+                                color=colors[i], alpha=0.7, linewidth=2, markersize=6,
+                                label=f'{method.replace("_", " ").title()} - Budget {budget}')
+        
+        ax1.set_xlabel('Training Progress', fontsize=12)
+        ax1.set_ylabel(f'{metric.replace("_", " ").title()}', fontsize=12)
+        ax1.set_title(f'{metric.replace("_", " ").title()} vs Training Step\n(Individual Budgets)', fontsize=14)
+        ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+        ax1.grid(True, alpha=0.3)
+        ax1.set_ylim(0, 1)
+        ax1.set_xticks(steps)
+        ax1.set_xticklabels(step_labels, rotation=45, ha='right')
+        
+        # Right plot: Averaged across budgets
+        for method in methods:
+            if method in data_by_metric.get(metric, {}):
+                method_data = data_by_metric[metric][method]
+                step_avg = {}
+                step_std = {}
+                
+                for step in steps:
+                    accuracies = []
+                    for budget in budgets:
+                        if step in method_data and budget in method_data[step]:
+                            acc = method_data[step][budget]
+                            if not np.isnan(acc):
+                                accuracies.append(acc)
+                    
+                    if accuracies:
+                        step_avg[step] = np.mean(accuracies)
+                        step_std[step] = np.std(accuracies)
+                
+                if step_avg:
+                    step_values = sorted(step_avg.keys())
+                    avg_accuracies = [step_avg[s] for s in step_values]
+                    std_accuracies = [step_std[s] for s in step_values]
+                    
+                    ax2.errorbar(step_values, avg_accuracies, yerr=std_accuracies, 
+                               marker='s', linewidth=2, markersize=8, capsize=5,
+                               label=f'{method.replace("_", " ").title()} (avg ± std)')
+        
+        ax2.set_xlabel('Training Progress', fontsize=12)
+        ax2.set_ylabel(f'{metric.replace("_", " ").title()}', fontsize=12)
+        ax2.set_title(f'{metric.replace("_", " ").title()} vs Training Step\n(Averaged Across Budgets)', fontsize=14)
+        ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+        ax2.grid(True, alpha=0.3)
+        ax2.set_ylim(0, 1)
+        ax2.set_xticks(steps)
+        ax2.set_xticklabels(step_labels, rotation=45, ha='right')
+        
+        plt.tight_layout()
+        
+        # Save training step analysis plot
+        step_filename = f"training_step_analysis_{csv_name}_{metric}.png"
+        step_path = output_path / step_filename
+        fig.savefig(step_path, dpi=200, bbox_inches='tight')
+        print(f"💾 Training step analysis plot saved to: {step_path}")
+        plt.close(fig)
+    
+    print("✅ Detailed analysis plots complete!")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plot optimization comparison from CSV data")
     parser.add_argument("--csv", type=str, required=True, help="Path to CSV file")
@@ -582,6 +781,7 @@ def main():
     parser.add_argument("--no_save", action="store_true", help="Don't save plots to files")
     parser.add_argument("--show", action="store_true", help="Show plots interactively")
     parser.add_argument("--zdim", type=int, default=None, help="Latent dimension to show in title")
+    parser.add_argument("--detailed_analysis", action="store_true", help="Generate detailed analysis plots (accuracy vs budget and vs training step)")
     
     args = parser.parse_args()
     
@@ -599,6 +799,7 @@ def main():
         save_plots=not args.no_save,
         show_plots=args.show,
         zdim=args.zdim,
+        detailed_analysis=args.detailed_analysis,
     )
 
 
