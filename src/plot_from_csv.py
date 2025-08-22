@@ -7,15 +7,6 @@ Usage:
     python3 src/plot_from_csv.py --csv results/eval_908l681z.csv --output_dir plots
     python3 src/plot_from_csv.py --csv results/eval_908l681z.csv --methods gradient_ascent,random_search
 
-commnads HPC
-ml tools/prod                 
-ml SciPy-bundle/2024.05-gfbf-2024a 
-
-source ~/venv/bin/activate
-cd lpn
-python src/plot_from_csv.py --csv csv_results/eval_z7x1d982.csv --output_dir plots
-
-
 """
 
 import argparse
