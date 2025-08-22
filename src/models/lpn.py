@@ -1,4 +1,9 @@
-from typing import Literal, Optional
+from typing import Optional
+try:
+    from typing import Literal
+except ImportError:
+    # For Python < 3.8, use str as fallback
+    Literal = str
 import math
 from functools import partial
 
@@ -183,10 +188,6 @@ class LPN(nn.Module):
             context, _ = self._get_evolutionary_search_context(
                 leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes,
                 key, 
-                use_subspace_mutation=use_subspace,
-                subspace_dim=subspace_dim,
-                ga_step_length=ga_step_length,
-                trust_region_radius=trust_radius,
                 **mode_kwargs
             )
             
@@ -455,10 +456,6 @@ class LPN(nn.Module):
             
             first_context, second_context = self._get_evolutionary_search_context(
                 latents, pairs, grid_shapes, key,
-                use_subspace_mutation=use_subspace,
-                subspace_dim=subspace_dim,
-                ga_step_length=ga_step_length,
-                trust_region_radius=trust_radius,
                 **mode_kwargs
             )
             info = {"context": first_context}
