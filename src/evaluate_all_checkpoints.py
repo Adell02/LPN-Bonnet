@@ -70,6 +70,12 @@ import subprocess
 import wandb
 from visualization import visualize_optimization_comparison
 
+# Dataset functionality imports
+import jax
+from jax.tree_util import tree_map
+from data_utils import make_leave_one_out
+from train import load_datasets
+
 
 def log_evaluation_start(method: str, budget_info: Dict[str, Any], method_kwargs: Dict[str, Any], 
                         checkpoint_name: str, checkpoint_step: int) -> None:
@@ -169,6 +175,58 @@ def log_evaluation_summary(checkpoint_name: str, checkpoint_step: int,
           f"Status: {summary['status']} | Time: {execution_time:.2f}s")
     
     return summary
+
+
+def generate_checkpoint_figure(checkpoint_name: str, checkpoint_step: int, training_progress: int, 
+                              total_checkpoints: int, results_data: List[Dict[str, Any]], 
+                              shared_budgets: List[int], plot_methods: List[str]) -> str:
+    """Generate a figure for the current checkpoint and return the file path."""
+    try:
+        # Create a simple progress visualization
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # Plot 1: Training Progress
+        progress_pct = (training_progress / max(total_checkpoints - 1, 1)) * 100
+        ax1.bar(['Training Progress'], [progress_pct], color='skyblue', alpha=0.7)
+        ax1.set_ylim(0, 100)
+        ax1.set_ylabel('Progress (%)')
+        ax1.set_title(f'Checkpoint Progress: {training_progress}/{total_checkpoints-1}')
+        ax1.text(0, progress_pct + 2, f'{progress_pct:.1f}%', ha='center', va='bottom', fontweight='bold')
+        
+        # Plot 2: Method Performance (if we have data)
+        if results_data:
+            methods = list(set([r['method'] for r in results_data]))
+            method_colors = ['#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+            
+            for i, method in enumerate(methods):
+                method_data = [r for r in results_data if r['method'] == method]
+                if method_data:
+                    accuracies = [r.get('overall_accuracy', 0) for r in method_data if r.get('overall_accuracy') is not None]
+                    if accuracies:
+                        ax2.scatter([method] * len(accuracies), accuracies, 
+                                   c=method_colors[i % len(method_colors)], alpha=0.7, s=50)
+                        ax2.scatter([method], [np.mean(accuracies)], 
+                                   c=method_colors[i % len(method_colors)], s=200, marker='*', 
+                                   edgecolors='black', linewidth=1)
+        
+        ax2.set_ylabel('Accuracy')
+        ax2.set_title('Method Performance (Current Checkpoint)')
+        ax2.set_ylim(0, 1)
+        
+        # Overall title
+        fig.suptitle(f'Checkpoint {checkpoint_name} - Step {checkpoint_step}', fontsize=16, y=0.95)
+        
+        # Save figure
+        out_dir = Path("results")
+        fig_path = out_dir / f"checkpoint_{checkpoint_step}_progress_{training_progress}.png"
+        fig.savefig(fig_path, dpi=200, bbox_inches='tight')
+        plt.close(fig)
+        
+        return str(fig_path)
+        
+    except Exception as e:
+        print(f"⚠️  Failed to generate checkpoint figure: {e}")
+        return None
 
 
 def get_all_checkpoints(
@@ -764,7 +822,7 @@ def main():
         writer = csv.writer(f_csv)
         if write_header:
             writer.writerow(
-                ["run_name", "checkpoint_name", "checkpoint_step", "method", "budget_type", "budget", 
+                ["timestamp", "run_name", "checkpoint_name", "checkpoint_step", "method", "budget_type", "budget", 
                  "overall_accuracy", "top_1_shape_accuracy", "top_1_accuracy", "top_1_pixel_correctness",
                  "top_2_shape_accuracy", "top_2_accuracy", "top_2_pixel_correctness"]
             )
@@ -855,7 +913,7 @@ def main():
                             results["failed_evals"] += 1
 
                         writer.writerow(
-                            [args.run_name, checkpoint["name"], training_progress, "gradient_ascent", "budget", compute_budget, 
+                            [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], training_progress, "gradient_ascent", "budget", compute_budget, 
                              acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
                              metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
                              metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
@@ -911,7 +969,7 @@ def main():
                             results["failed_evals"] += 1
 
                         writer.writerow(
-                            [args.run_name, checkpoint["name"], training_progress, "random_search", "num_samples", num_samples, 
+                            [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], training_progress, "random_search", "num_samples", num_samples, 
                              acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
                              metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
                              metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
@@ -975,7 +1033,7 @@ def main():
                             results["failed_evals"] += 1
 
                         writer.writerow(
-                            [args.run_name, checkpoint["name"], training_progress, "evolutionary_search", "budget", es_cfg["budget"], 
+                            [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], training_progress, "evolutionary_search", "budget", es_cfg["budget"], 
                              acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
                              metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
                              metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
@@ -990,6 +1048,63 @@ def main():
             total_expected = sum(selected_counts)
             print(f"\n📊 Checkpoint {i}/{len(checkpoints)} complete. Total evaluations: {total_evals}/{total_expected * i}")
             print(f"   ⏱️  Timing info available in W&B logs for each method and budget")
+            
+            # Generate and upload checkpoint figure
+            try:
+                # Collect results data for this checkpoint
+                checkpoint_results = []
+                for method in args.plot_methods:
+                    if method == "gradient_ascent":
+                        for compute_budget in ga_budgets:
+                            checkpoint_results.append({
+                                "method": method,
+                                "budget": compute_budget,
+                                "budget_type": "budget"
+                            })
+                    elif method == "random_search":
+                        for num_samples in rs_samples:
+                            checkpoint_results.append({
+                                "method": method,
+                                "budget": num_samples,
+                                "budget_type": "num_samples"
+                            })
+                    elif method == "evolutionary_search":
+                        for es_cfg in es_configs:
+                            checkpoint_results.append({
+                                "method": method,
+                                "budget": es_cfg["budget"],
+                                "budget_type": "budget"
+                            })
+                
+                # Generate checkpoint figure
+                fig_path = generate_checkpoint_figure(
+                    checkpoint_name=checkpoint["name"],
+                    checkpoint_step=step,
+                    training_progress=training_progress,
+                    total_checkpoints=len(checkpoints),
+                    results_data=checkpoint_results,
+                    shared_budgets=shared_budgets,
+                    plot_methods=args.plot_methods
+                )
+                
+                if fig_path:
+                    # Upload to wandb under plots/ panel
+                    try:
+                        wandb.log({
+                            f"plots/checkpoint_{training_progress}_progress": wandb.Image(fig_path),
+                            f"plots/checkpoint_{training_progress}_step": step,
+                            f"plots/checkpoint_{training_progress}_training_progress": training_progress,
+                            f"plots/checkpoint_{training_progress}_total_checkpoints": len(checkpoints),
+                            f"plots/checkpoint_{training_progress}_evaluations_completed": total_evals,
+                        })
+                        print(f"📊 Generated and uploaded checkpoint figure: {fig_path}")
+                    except Exception as e:
+                        print(f"⚠️  Failed to upload checkpoint figure to W&B: {e}")
+                else:
+                    print(f"⚠️  Failed to generate checkpoint figure")
+                    
+            except Exception as e:
+                print(f"⚠️  Failed to generate or upload checkpoint figure: {e}")
             
             # Generate and upload comparison plot for this step
             try:
