@@ -67,7 +67,7 @@ def log_evaluation_start(mutation_std: float, population_size: int, num_generati
     print(f"{'='*80}")
     print(f"📊 Method: evolutionary_search")
     print(f"📁 Checkpoint: {checkpoint_name} (Step: {checkpoint_step})")
-        print(f"⚙️  Settings:")
+    print(f"⚙️  Settings:")
     print(f"   • Population Size: {population_size}")
     print(f"   • Num Generations: {num_generations}")
     print(f"   • Mutation Std: {mutation_std}")
