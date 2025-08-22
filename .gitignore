@@ -3,7 +3,7 @@ multirun/*
 outputs/*
 state.msgpack
 artifacts/*
-hpc_run_command.txt
+hpc_command.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
