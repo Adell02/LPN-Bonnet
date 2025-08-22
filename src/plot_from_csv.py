@@ -125,36 +125,36 @@ def visualize_optimization_comparison_simple(
 
 def visualize_single_method_heatmap(
     steps: np.ndarray,
-    accuracies: np.ndarray,
+    budgets: np.ndarray,
+    accuracies_matrix: np.ndarray,
     method_name: str,
     metric_name: str
 ) -> plt.Figure:
     """
-    Create a heatmap for a single method showing training progression vs accuracy.
+    Create a heatmap for a single method showing training progression vs budget.
     
     Args:
         steps: 1D array of training steps [S]
-        accuracies: 1D array of accuracies [S] 
+        budgets: 1D array of budget values [B]
+        accuracies_matrix: 2D array of accuracies [B, S] (budgets × steps)
         method_name: Name of the method
         metric_name: Name of the metric being plotted
         
     Returns:
-        Figure showing heatmap of accuracy progression
+        Figure showing heatmap of accuracy vs budget and training progression
     """
     from mpl_toolkits.axes_grid1 import make_axes_locatable
 
     # Ensure numpy arrays
     steps = np.asarray(steps)
-    accuracies = np.asarray(accuracies, dtype=float)
-    
-    # Create 2D data for heatmap (repeat accuracy values across a single row)
-    data_2d = accuracies.reshape(1, -1)  # Shape: (1, S)
+    budgets = np.asarray(budgets)
+    accuracies_matrix = np.asarray(accuracies_matrix, dtype=float)
     
     # Mask invalid values
-    data_masked = np.ma.masked_invalid(data_2d)
+    data_masked = np.ma.masked_invalid(accuracies_matrix)
     
-    # Create figure
-    fig, ax = plt.subplots(figsize=(12, 4))
+    # Create figure with proper aspect ratio for budget vs steps
+    fig, ax = plt.subplots(figsize=(10, 8))
     
     # Plot heatmap
     im = ax.imshow(
@@ -168,14 +168,14 @@ def visualize_single_method_heatmap(
     
     # Set axis labels and title
     ax.set_xlabel("Training Progress", fontsize=12)
-    ax.set_ylabel("Accuracy", fontsize=10)
+    ax.set_ylabel("Search Budget", fontsize=12)
     ax.set_title(f"{method_name.replace('_', ' ').title()} - {metric_name.replace('_', ' ').title()}", fontsize=14)
     
     # Set ticks
     ax.set_xticks(np.arange(len(steps)))
     ax.set_xticklabels(steps)
-    ax.set_yticks([0])
-    ax.set_yticklabels([""])  # Hide y-axis labels since we only have one row
+    ax.set_yticks(np.arange(len(budgets)))
+    ax.set_yticklabels(budgets)
     
     # Rotate x-axis labels if there are many steps
     if len(steps) > 8:
@@ -183,18 +183,20 @@ def visualize_single_method_heatmap(
             t.set_rotation(45)
             t.set_ha('right')
     
+    # Add accuracy values as text on the heatmap
+    for i, budget in enumerate(budgets):
+        for j, step in enumerate(steps):
+            acc = accuracies_matrix[i, j]
+            if not np.isnan(acc):
+                ax.text(j, i, f'{acc:.3f}', ha='center', va='center', 
+                       color='white' if acc > 0.5 else 'black', fontweight='bold', fontsize=9)
+    
     # Add colorbar
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="4%", pad=0.6)
     cbar = fig.colorbar(im, cax=cax)
     cbar.ax.set_title("Accuracy", fontsize=11, pad=10, rotation=0, loc='center')
     cbar.ax.tick_params(length=3, pad=3)
-    
-    # Add accuracy values as text on the heatmap
-    for i, (step, acc) in enumerate(zip(steps, accuracies)):
-        if not np.isnan(acc):
-            ax.text(i, 0, f'{acc:.3f}', ha='center', va='center', 
-                   color='white' if acc > 0.5 else 'black', fontweight='bold', fontsize=10)
     
     fig.tight_layout()
     return fig
@@ -452,38 +454,27 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
             ax.set_ylabel("Search Budget", fontsize=12)
             
         else:
-            # Single method - create individual heatmap
+            # Single method - create proper 2D heatmap (budgets × training steps)
             print(f"📊 Single method detected: {method_a}")
             
             # Extract accuracy data for this method and metric
             method_data = data_by_metric.get(metric, {}).get(method_a, {})
             
-            # Create accuracy array for each step
-            accuracies = []
-            for step in steps:
-                # For single method, we'll average across all budgets for this step
-                step_accuracies = []
-                for budget in budgets:
+            # Create 2D matrix: [budgets, steps]
+            accuracies_matrix = np.full((len(budgets), len(steps)), np.nan)
+            
+            for i, budget in enumerate(budgets):
+                for j, step in enumerate(steps):
                     if step in method_data and budget in method_data[step]:
-                        val = method_data[step][budget]
-                        if not np.isnan(val):
-                            step_accuracies.append(val)
-                
-                if step_accuracies:
-                    # Average across budgets for this step
-                    avg_acc = np.mean(step_accuracies)
-                    accuracies.append(avg_acc)
-                else:
-                    accuracies.append(np.nan)
+                        accuracies_matrix[i, j] = method_data[step][budget]
             
-            accuracies = np.array(accuracies)
+            print(f"🔍 Data coverage for {metric}: {np.sum(~np.isnan(accuracies_matrix))} valid data points")
             
-            print(f"🔍 Data coverage for {metric}: {np.sum(~np.isnan(accuracies))} valid steps")
-            
-            # Create single method heatmap
+            # Create single method heatmap with proper 2D data
             fig = visualize_single_method_heatmap(
                 steps=np.array(steps),
-                accuracies=accuracies,
+                budgets=np.array(budgets),
+                accuracies_matrix=accuracies_matrix,
                 method_name=method_a,
                 metric_name=metric
             )
@@ -493,7 +484,7 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
             ax.set_xticks(range(len(steps)))
             ax.set_xticklabels(step_labels, rotation=45, ha='right')
             ax.set_xlabel("Training Progress", fontsize=12)
-
+            ax.set_ylabel("Search Budget", fontsize=12)
         # Save plot
         if save_plots:
             csv_name = Path(csv_path).stem
