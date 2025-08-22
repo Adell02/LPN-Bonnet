@@ -739,6 +739,35 @@ if __name__ == "__main__":
         default=None,
         help="Mutation standard deviation for evolutionary search mode.",
     )
+    
+    # Subspace evolutionary search parameters
+    parser.add_argument(
+        "--use-subspace-mutation",
+        action="store_true",
+        required=False,
+        help="Enable subspace mutation for evolutionary search (mutate in low-dimensional subspace).",
+    )
+    parser.add_argument(
+        "--subspace-dim",
+        type=int,
+        required=False,
+        default=32,
+        help="Subspace dimension for evolutionary search (default: 32).",
+    )
+    parser.add_argument(
+        "--ga-step-length",
+        type=float,
+        required=False,
+        default=0.5,
+        help="Target GA step length for automatic sigma scaling (default: 0.5).",
+    )
+    parser.add_argument(
+        "--trust-region-radius",
+        type=float,
+        required=False,
+        default=None,
+        help="Trust region radius for evolutionary search (default: None).",
+    )
     args = parser.parse_args()
     if (
         args.json_challenges_file is None
@@ -777,6 +806,10 @@ if __name__ == "__main__":
         "population_size": args.population_size,
         "num_generations": args.num_generations,
         "mutation_std": args.mutation_std,
+        "use_subspace_mutation": args.use_subspace_mutation,
+        "subspace_dim": args.subspace_dim,
+        "ga_step_length": args.ga_step_length,
+        "trust_region_radius": args.trust_region_radius,
     }
     for arg in [
         "scan_batch_size",
