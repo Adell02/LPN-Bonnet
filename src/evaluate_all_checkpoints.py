@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Evaluate all checkpoints from a specific Weights & Biases run using src/evaluate_checkpoint.py.
-Runs both gradient_ascent and random_search for each checkpoint and logs results to CSV.
+Runs gradient_ascent, random_search, and evolutionary_search for each checkpoint and logs results to CSV.
+Supports subspace evolutionary search with localized mutation in low-dimensional subspaces.
 
 USAGE EXAMPLES:
 ==============
@@ -52,6 +53,18 @@ USAGE EXAMPLES:
      --json_challenges json/arc-agi_evaluation_challenges.json \
      --json_solutions json/arc-agi_evaluation_solutions.json \
      --only_n_tasks 5
+
+7. SUBSPACE EVOLUTIONARY SEARCH (enable localized mutation in low-dimensional subspace):
+   python3 src/evaluate_all_checkpoints.py \
+     --run_name "winter-fire-132" \
+     --plot_methods evolutionary_search \
+     --json_challenges json/arc-agi_evaluation_challenges.json \
+     --json_solutions json/arc-agi_evaluation_solutions.json \
+     --es_use_subspace_mutation \
+     --es_subspace_dim 32 \
+     --es_ga_step_length 0.5 \
+     --es_trust_region_radius 2.0 \
+     --only_n_tasks 20
 """
 
 import os
@@ -120,6 +133,13 @@ def log_evaluation_start(method: str, budget_info: Dict[str, Any], method_kwargs
         print(f"   • Include All Latents: {method_kwargs.get('include_all_latents', 'N/A')}")
         if method_kwargs.get('random_perturbation'):
             print(f"   • Random Perturbation: {method_kwargs.get('random_perturbation')}")
+        # Add subspace parameters if available
+        if hasattr(args, 'es_use_subspace_mutation') and args.es_use_subspace_mutation:
+            print(f"   • Subspace Mutation: Enabled (dim={args.es_subspace_dim}, ga_step={args.es_ga_step_length})")
+            if args.es_trust_region_radius is not None:
+                print(f"   • Trust Region Radius: {args.es_trust_region_radius}")
+        else:
+            print(f"   • Subspace Mutation: Disabled (standard isotropic mutation)")
     
     print(f"💰 Budget Info: {budget_info}")
     if "scaled_budget" in budget_info and budget_info["scaled_budget"] != budget_info.get("value", budget_info["scaled_budget"]):
@@ -363,6 +383,14 @@ def run_evaluation(
                 str(method_kwargs.get("mutation_std", 0.2)),
             ]
         )
+        
+        # Add subspace parameters if enabled
+        if args.es_use_subspace_mutation:
+            cmd.extend(["--use-subspace-mutation"])
+            cmd.extend(["--subspace-dim", str(args.es_subspace_dim)])
+            cmd.extend(["--ga-step-length", str(args.es_ga_step_length)])
+            if args.es_trust_region_radius is not None:
+                cmd.extend(["--trust-region-radius", str(args.es_trust_region_radius)])
     else:
         print(f"❌ Unknown method: {method}")
         return False, None, {}, ""
@@ -544,6 +572,16 @@ def main():
     parser.add_argument("--es_mutation_std", type=float, default=None,
                    help="Override mutation standard deviation for evolutionary_search")
     
+    # Subspace evolutionary search parameters
+    parser.add_argument("--es_use_subspace_mutation", action="store_true",
+                   help="Enable subspace mutation for evolutionary search")
+    parser.add_argument("--es_subspace_dim", type=int, default=32,
+                   help="Subspace dimension for evolutionary search (default: 32)")
+    parser.add_argument("--es_ga_step_length", type=float, default=0.5,
+                   help="Target GA step length for automatic sigma scaling (default: 0.5)")
+    parser.add_argument("--es_trust_region_radius", type=float, default=None,
+                   help="Trust region radius for evolutionary search (default: None)")
+    
     # Budget multiplier flags
     parser.add_argument("--ga_budget_multiplier", type=float, default=1.0,
                    help="Multiply gradient_ascent num_steps by this factor (keeps raw budget 0-100)")
@@ -653,6 +691,10 @@ def main():
             "run_name": args.run_name,
             "using_json": using_json,
             "dataset_folder": args.dataset_folder,
+            "es_use_subspace_mutation": args.es_use_subspace_mutation,
+            "es_subspace_dim": args.es_subspace_dim,
+            "es_ga_step_length": args.es_ga_step_length,
+            "es_trust_region_radius": args.es_trust_region_radius,
         },
     )
 
@@ -844,11 +886,15 @@ def main():
     with out_csv.open("a", newline="") as f_csv:
         writer = csv.writer(f_csv)
         if write_header:
-            writer.writerow(
-                ["timestamp", "run_name", "checkpoint_name", "checkpoint_step", "method", "budget_type", "budget", 
-                 "overall_accuracy", "top_1_shape_accuracy", "top_1_accuracy", "top_1_pixel_correctness",
-                 "top_2_shape_accuracy", "top_2_accuracy", "top_2_pixel_correctness"]
-            )
+            # Add subspace parameters to CSV header if using subspace mutation
+            csv_headers = ["timestamp", "run_name", "checkpoint_name", "checkpoint_step", "method", "budget_type", "budget", 
+                          "overall_accuracy", "top_1_shape_accuracy", "top_1_accuracy", "top_1_pixel_correctness",
+                          "top_2_shape_accuracy", "top_2_accuracy", "top_2_pixel_correctness"]
+            
+            if args.es_use_subspace_mutation:
+                csv_headers.extend(["subspace_enabled", "subspace_dim", "ga_step_length", "trust_region_radius"])
+            
+            writer.writerow(csv_headers)
 
         # Iterate checkpoints
         for i, checkpoint in enumerate(checkpoints, 1):
@@ -937,12 +983,16 @@ def main():
                             results["method_results"]["gradient_ascent"]["failed"] += 1
                             results["failed_evals"] += 1
 
-                        writer.writerow(
-                            [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], training_progress, "gradient_ascent", "budget", compute_budget, 
-                             acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
-                             metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
-                             metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
-                        )
+                        # Prepare CSV row with subspace parameters if enabled
+                        csv_row = [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], training_progress, "gradient_ascent", "budget", compute_budget, 
+                                  acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
+                                  metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
+                                  metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
+                        
+                        if args.es_use_subspace_mutation:
+                            csv_row.extend([False, "", "", ""])  # Not applicable for gradient ascent
+                        
+                        writer.writerow(csv_row)
                 elif method == "random_search":
                     print("\n🔧 Testing random_search across budgets...")
                     for num_samples in rs_samples:
@@ -993,12 +1043,16 @@ def main():
                             results["method_results"]["random_search"]["failed"] += 1
                             results["failed_evals"] += 1
 
-                        writer.writerow(
-                            [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], training_progress, "random_search", "num_samples", num_samples, 
-                             acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
-                             metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
-                             metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
-                        )
+                        # Prepare CSV row with subspace parameters if enabled
+                        csv_row = [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], training_progress, "random_search", "num_samples", num_samples, 
+                                  acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
+                                  metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
+                                  metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
+                        
+                        if args.es_use_subspace_mutation:
+                            csv_row.extend([False, "", "", ""])  # Not applicable for random search
+                        
+                        writer.writerow(csv_row)
                 elif method == "evolutionary_search":
                     print("\n🔧 Testing evolutionary_search across budgets...")
                     for es_cfg in es_configs:
@@ -1040,6 +1094,21 @@ def main():
                             
                             # Log to W&B immediately
                             try:
+                                # Prepare subspace parameters for logging
+                                subspace_log = {}
+                                if args.es_use_subspace_mutation:
+                                    subspace_log = {
+                                        f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/subspace_enabled": True,
+                                        f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/subspace_dim": args.es_subspace_dim,
+                                        f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/ga_step_length": args.es_ga_step_length,
+                                    }
+                                    if args.es_trust_region_radius is not None:
+                                        subspace_log[f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/trust_region_radius"] = args.es_trust_region_radius
+                                else:
+                                    subspace_log = {
+                                        f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/subspace_enabled": False,
+                                    }
+                                
                                 wandb.log({
                                     f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/overall_accuracy": acc or 0.0,
                                     f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
@@ -1051,6 +1120,7 @@ def main():
                                     f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/execution_time": execution_time,
                                     f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/population_size": es_cfg["population_size"],
                                     f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/num_generations": es_cfg["num_generations"],
+                                    **subspace_log,
                                 })
                             except Exception as e:
                                 print(f"⚠️  Failed to log to W&B: {e}")
@@ -1058,12 +1128,16 @@ def main():
                             results["method_results"]["evolutionary_search"]["failed"] += 1
                             results["failed_evals"] += 1
 
-                        writer.writerow(
-                            [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], training_progress, "evolutionary_search", "budget", es_cfg["budget"], 
-                             acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
-                             metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
-                             metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
-                        )
+                        # Prepare CSV row with subspace parameters if enabled
+                        csv_row = [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], training_progress, "evolutionary_search", "budget", es_cfg["budget"], 
+                                  acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
+                                  metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
+                                  metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", "")]
+                        
+                        if args.es_use_subspace_mutation:
+                            csv_row.extend([True, args.es_subspace_dim, args.es_ga_step_length, args.es_trust_region_radius or ""])
+                        
+                        writer.writerow(csv_row)
             
             # Progress update after each checkpoint
             total_evals = results["successful_evals"] + results["failed_evals"]
@@ -1404,6 +1478,11 @@ def main():
     print("   - top_2_shape_accuracy")
     print("   - top_2_accuracy")
     print("   - top_2_pixel_correctness")
+    if args.es_use_subspace_mutation:
+        print("   - subspace_enabled")
+        print("   - subspace_dim")
+        print("   - ga_step_length")
+        print("   - trust_region_radius")
     print(f"\n🔬 Methods evaluated:")
     for method in ["gradient_ascent", "random_search", "evolutionary_search"]:
         if method in args.plot_methods:
@@ -1435,6 +1514,12 @@ def main():
             print(f"   • {method}: scale={base_methods[method].get('scale')}, scan_batch_size={base_methods[method].get('scan_batch_size')}")
         elif method == "evolutionary_search":
             print(f"   • {method}: mutation_std={base_methods[method].get('mutation_std')}")
+            if args.es_use_subspace_mutation:
+                print(f"     - Subspace mutation: enabled (dim={args.es_subspace_dim}, ga_step={args.es_ga_step_length})")
+                if args.es_trust_region_radius is not None:
+                    print(f"     - Trust region radius: {args.es_trust_region_radius}")
+            else:
+                print(f"     - Subspace mutation: disabled (standard isotropic mutation)")
     
     print(f"\n💰 Budget configuration:")
     print(f"   • Start: {args.budget_start}")
