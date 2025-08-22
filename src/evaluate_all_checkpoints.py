@@ -91,7 +91,7 @@ from train import load_datasets
 
 
 def log_evaluation_start(method: str, budget_info: Dict[str, Any], method_kwargs: Dict[str, Any], 
-                        checkpoint_name: str, checkpoint_step: int) -> None:
+                        checkpoint_name: str, checkpoint_step: int, args: Optional[Any] = None) -> None:
     """Log the start of an evaluation with all settings."""
     print(f"\n{'='*80}")
     print(f"🚀 STARTING EVALUATION")
@@ -134,7 +134,7 @@ def log_evaluation_start(method: str, budget_info: Dict[str, Any], method_kwargs
         if method_kwargs.get('random_perturbation'):
             print(f"   • Random Perturbation: {method_kwargs.get('random_perturbation')}")
         # Add subspace parameters if available
-        if hasattr(args, 'es_use_subspace_mutation') and args.es_use_subspace_mutation:
+        if args is not None and hasattr(args, 'es_use_subspace_mutation') and args.es_use_subspace_mutation:
             print(f"   • Subspace Mutation: Enabled (dim={args.es_subspace_dim}, ga_step={args.es_ga_step_length})")
             if args.es_trust_region_radius is not None:
                 print(f"   • Trust Region Radius: {args.es_trust_region_radius}")
@@ -941,7 +941,7 @@ def main():
 
                         # Log evaluation start
                         budget_info = {"type": "budget", "value": compute_budget, "num_steps": num_steps, "scaled_budget": scaled_budget}
-                        log_evaluation_start(method, budget_info, method_kwargs, checkpoint["name"], step)
+                        log_evaluation_start(method, budget_info, method_kwargs, checkpoint["name"], step, args)
 
                         ok, acc, metrics, _, execution_time = run_evaluation(
                             artifact_path=artifact_path,
@@ -1001,7 +1001,7 @@ def main():
 
                         # Log evaluation start
                         budget_info = {"type": "num_samples", "value": num_samples}
-                        log_evaluation_start(method, budget_info, method_kwargs, checkpoint["name"], step)
+                        log_evaluation_start(method, budget_info, method_kwargs, checkpoint["name"], step, args)
 
                         ok, acc, metrics, _, execution_time = run_evaluation(
                             artifact_path=artifact_path,
@@ -1068,7 +1068,7 @@ def main():
                             "population_size": es_cfg["population_size"],
                             "num_generations": es_cfg["num_generations"]
                         }
-                        log_evaluation_start(method, budget_info, method_kwargs, checkpoint["name"], step)
+                        log_evaluation_start(method, budget_info, method_kwargs, checkpoint["name"], step, args)
 
                         ok, acc, metrics, _, execution_time = run_evaluation(
                             artifact_path=artifact_path,
