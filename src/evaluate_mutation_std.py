@@ -67,7 +67,7 @@ def log_evaluation_start(mutation_std: float, population_size: int, num_generati
     print(f"{'='*80}")
     print(f"📊 Method: evolutionary_search")
     print(f"📁 Checkpoint: {checkpoint_name} (Step: {checkpoint_step})")
-    print(f"⚙️  Settings:")
+        print(f"⚙️  Settings:")
     print(f"   • Population Size: {population_size}")
     print(f"   • Num Generations: {num_generations}")
     print(f"   • Mutation Std: {mutation_std}")
@@ -248,7 +248,7 @@ def get_checkpoint(
     except Exception as e:
         print(f"Error accessing run: {e}")
         return None
-
+    
 
 def run_evaluation(
     artifact_path: str,
@@ -356,9 +356,9 @@ def run_evaluation(
             return True, acc, metrics, stdout, execution_time
         else:
             print(f"❌ evolutionary_search evaluation failed with return code {result.returncode}")
-            if stderr.strip():
-                print(f"Error output:\n{stderr}")
-            return False, acc, metrics, stdout, execution_time
+                if stderr.strip():
+                    print(f"Error output:\n{stderr}")
+                return False, acc, metrics, stdout, execution_time
             
     except Exception as e:
         print(f"❌ Error running evolutionary_search evaluation: {e}")
@@ -387,6 +387,14 @@ def main():
                        help="Run dataset evaluations in-process to reuse a single dataset load (faster)")
     parser.add_argument("--project", type=str, default="LPN-ARC", help="W&B project name")
     parser.add_argument("--entity", type=str, default="ga624-imperial-college-london", help="W&B entity")
+    parser.add_argument("--use_all_gpus", action="store_true", 
+                   help="Use all available GPUs instead of just one")
+    parser.add_argument("--gpu_ids", type=str, default=None,
+                   help="Comma-separated list of GPU IDs to use (e.g., '0,1,2')")
+    parser.add_argument("--batch_size", type=int, default=1, 
+                   help="Batch size for evaluation (larger = faster but more memory)")
+    parser.add_argument("--parallel_tasks", type=int, default=1, 
+                   help="Number of tasks to process in parallel")
     
     # Checkpoint selection
     parser.add_argument("--checkpoint_strategy", type=str, default="last", 
@@ -407,6 +415,12 @@ def main():
     parser.add_argument("--fixed_generations", type=int, default=10,
                        help="Fixed number of generations for all evaluations (default: 10)")
     
+    # Dynamic population/generations calculation (like evaluate_all_checkpoints.py)
+    parser.add_argument("--use_dynamic_population", action="store_true",
+                       help="Calculate population and generations dynamically based on budget (like evaluate_all_checkpoints.py)")
+    parser.add_argument("--budget_for_dynamic", type=int, default=50,
+                       help="Budget value to use when calculating dynamic population/generations (default: 50)")
+    
     args = parser.parse_args()
     
     # Generate mutation_std values (logarithmically spaced)
@@ -414,14 +428,29 @@ def main():
                                np.log10(args.mutation_std_end), 
                                args.mutation_std_steps)
     
+    # Calculate population and generations (either fixed or dynamic)
+    if args.use_dynamic_population:
+        # Use the same logic as evaluate_all_checkpoints.py
+        budget = args.budget_for_dynamic
+        proposed_pop = int(round(np.sqrt(budget)))
+        proposed_pop = max(3, min(32, proposed_pop))  # Cap at 32 like the original
+        gens = int(max(1, int(np.ceil(budget / proposed_pop))))
+        population_size = proposed_pop
+        num_generations = gens
+        print(f"🧬 Dynamic population calculation (budget {budget}): population={population_size}, generations={num_generations}")
+    else:
+        population_size = args.fixed_population
+        num_generations = args.fixed_generations
+        print(f"🧬 Fixed parameters: population={population_size}, generations={num_generations}")
+    
     print(f"🔬 Mutation Standard Deviation Sweep Configuration:")
     print(f"   - Start: {args.mutation_std_start}")
     print(f"   - End: {args.mutation_std_end}")
     print(f"   - Steps: {args.mutation_std_steps}")
     print(f"   - Values: {mutation_stds}")
-    print(f"🧬 Fixed Evolutionary Search Parameters:")
-    print(f"   - Population Size: {args.fixed_population}")
-    print(f"   - Num Generations: {args.fixed_generations}")
+    print(f"🧬 Evolutionary Search Parameters:")
+    print(f"   - Population Size: {population_size}")
+    print(f"   - Num Generations: {num_generations}")
 
     print(f"🔍 Checking checkpoints for run: {args.run_name}")
     print(f"📁 Project: {args.project}")
@@ -580,28 +609,28 @@ def main():
         # Run evolutionary search for each mutation_std value
         for i, mutation_std in enumerate(mutation_stds, 1):
             print(f"\n🔬 Testing mutation_std = {mutation_std:.6f} ({i}/{len(mutation_stds)})")
-            
-            # Log evaluation start
-            log_evaluation_start(mutation_std, args.fixed_population, args.fixed_generations, 
+
+                        # Log evaluation start
+            log_evaluation_start(mutation_std, population_size, num_generations, 
                                checkpoint["name"], step)
 
             # Run evaluation
-            ok, acc, metrics, _, execution_time = run_evaluation(
-                artifact_path=artifact_path,
+                        ok, acc, metrics, _, execution_time = run_evaluation(
+                            artifact_path=artifact_path,
                 mutation_std=mutation_std,
-                population_size=args.fixed_population,
-                num_generations=args.fixed_generations,
-                json_challenges=args.json_challenges,
-                json_solutions=args.json_solutions,
-                only_n_tasks=args.only_n_tasks,
-                dataset_folder=args.dataset_folder,
-                dataset_length=args.dataset_length,
-                dataset_batch_size=args.dataset_batch_size,
-                dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
-                dataset_seed=args.dataset_seed,
-            )
+                population_size=population_size,
+                num_generations=num_generations,
+                            json_challenges=args.json_challenges,
+                            json_solutions=args.json_solutions,
+                            only_n_tasks=args.only_n_tasks,
+                            dataset_folder=args.dataset_folder,
+                            dataset_length=args.dataset_length,
+                            dataset_batch_size=args.dataset_batch_size,
+                            dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
+                            dataset_seed=args.dataset_seed,
+                        )
 
-            # Log evaluation results and summary
+                        # Log evaluation results and summary
             log_evaluation_results(mutation_std, metrics, execution_time, ok)
             summary = log_evaluation_summary(checkpoint["name"], step, mutation_std, ok, execution_time)
 
@@ -614,12 +643,12 @@ def main():
             }
             results_data.append(result_entry)
 
-            if ok:
+                        if ok:
                 successful_evals += 1
-                
-                # Log to W&B immediately
-                try:
-                    wandb.log({
+                            
+                            # Log to W&B immediately
+                            try:
+                                wandb.log({
                         f"mutation_std_{mutation_std:.6f}/overall_accuracy": acc or 0.0,
                         f"mutation_std_{mutation_std:.6f}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
                         f"mutation_std_{mutation_std:.6f}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
@@ -628,20 +657,20 @@ def main():
                         f"mutation_std_{mutation_std:.6f}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
                         f"mutation_std_{mutation_std:.6f}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
                         f"mutation_std_{mutation_std:.6f}/execution_time": execution_time,
-                        f"mutation_std_{mutation_std:.6f}/population_size": args.fixed_population,
-                        f"mutation_std_{mutation_std:.6f}/num_generations": args.fixed_generations,
-                    })
-                except Exception as e:
-                    print(f"⚠️  Failed to log to W&B: {e}")
-            else:
+                        f"mutation_std_{mutation_std:.6f}/population_size": population_size,
+                        f"mutation_std_{mutation_std:.6f}/num_generations": num_generations,
+                                })
+                            except Exception as e:
+                                print(f"⚠️  Failed to log to W&B: {e}")
+                        else:
                 failed_evals += 1
 
             # Write to CSV
-            writer.writerow(
+                        writer.writerow(
                 [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], step, 
-                 mutation_std, args.fixed_population, args.fixed_generations,
-                 acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
-                 metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
+                 mutation_std, population_size, num_generations,
+                             acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
+                             metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
                  metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", ""),
                  execution_time]
             )
@@ -650,11 +679,11 @@ def main():
     try:
         fig_path = generate_mutation_std_plot(mutation_stds, results_data, 
                                             checkpoint["name"], step)
-        
-        if fig_path:
+                
+                if fig_path:
             # Upload to wandb
-            try:
-                wandb.log({
+                    try:
+                        wandb.log({
                     "plots/mutation_std_sweep": wandb.Image(fig_path),
                     "plots/checkpoint_name": checkpoint["name"],
                     "plots/checkpoint_step": step,
@@ -663,12 +692,12 @@ def main():
                     "plots/failed_evaluations": failed_evals,
                 })
                 print(f"📊 Generated and uploaded mutation_std sweep plot: {fig_path}")
-            except Exception as e:
+                    except Exception as e:
                 print(f"⚠️  Failed to upload plot to W&B: {e}")
-        else:
+                else:
             print(f"⚠️  Failed to generate mutation_std sweep plot")
-            
-    except Exception as e:
+                    
+            except Exception as e:
         print(f"⚠️  Failed to generate or upload mutation_std sweep plot: {e}")
 
     # Upload CSV artifact
@@ -688,8 +717,12 @@ def main():
     print(f"Failed evaluations: {failed_evals}")
     print(f"Total mutation_std values tested: {len(mutation_stds)}")
     print(f"Mutation_std range: {args.mutation_std_start} to {args.mutation_std_end}")
-    print(f"Fixed population size: {args.fixed_population}")
-    print(f"Fixed number of generations: {args.fixed_generations}")
+    print(f"Population size: {population_size}")
+    print(f"Number of generations: {num_generations}")
+    if args.use_dynamic_population:
+        print(f"Dynamic calculation used (budget: {args.budget_for_dynamic})")
+    else:
+        print(f"Fixed parameters used")
 
     print(f"\n📊 CSV saved to: {out_csv}")
     print("📈 Available metrics in CSV:")
@@ -718,11 +751,15 @@ def main():
         print(f"   • Batch size: {args.dataset_batch_size}")
     
     print(f"\n🧬 Evolutionary Search Configuration:")
-    print(f"   • Population Size: {args.fixed_population}")
-    print(f"   • Num Generations: {args.fixed_generations}")
+    print(f"   • Population Size: {population_size}")
+    print(f"   • Num Generations: {num_generations}")
     print(f"   • Mutation Std Range: {args.mutation_std_start} to {args.mutation_std_end}")
     print(f"   • Mutation Std Steps: {args.mutation_std_steps}")
     print(f"   • Values Tested: {mutation_stds}")
+    if args.use_dynamic_population:
+        print(f"   • Dynamic Calculation: Yes (budget: {args.budget_for_dynamic})")
+    else:
+        print(f"   • Dynamic Calculation: No (fixed parameters)")
     
     print(f"\n📊 Checkpoint evaluated:")
     print(f"   • {checkpoint['name']} (Step: {checkpoint['step']})")
