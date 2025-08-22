@@ -122,6 +122,8 @@ def log_evaluation_start(method: str, budget_info: Dict[str, Any], method_kwargs
             print(f"   • Random Perturbation: {method_kwargs.get('random_perturbation')}")
     
     print(f"💰 Budget Info: {budget_info}")
+    if "scaled_budget" in budget_info and budget_info["scaled_budget"] != budget_info.get("value", budget_info["scaled_budget"]):
+        print(f"   📊 Scaled Budget: {budget_info['scaled_budget']:.1f} (raw: {budget_info['value']})")
     print(f"{'='*80}")
 
 
@@ -542,6 +544,12 @@ def main():
     parser.add_argument("--es_mutation_std", type=float, default=None,
                    help="Override mutation standard deviation for evolutionary_search")
     
+    # Budget multiplier flags
+    parser.add_argument("--ga_budget_multiplier", type=float, default=1.0,
+                   help="Multiply gradient_ascent num_steps by this factor (keeps raw budget 0-100)")
+    parser.add_argument("--es_budget_multiplier", type=float, default=1.0,
+                   help="Multiply evolutionary_search population_size and num_generations by this factor (keeps raw budget 0-100)")
+    
     # Checkpoint selection options
     parser.add_argument("--max_checkpoints", type=int, default=None,
                        help="Maximum number of checkpoints to evaluate (default: all)")
@@ -597,6 +605,12 @@ def main():
     print(f"   - End: {BUDGET_CONFIG['end']}")
     print(f"   - Period: {BUDGET_CONFIG['period']}")
     print(f"   - Total budget points: {len(shared_budgets)}")
+    
+    # Apply budget multipliers
+    if args.ga_budget_multiplier != 1.0:
+        print(f"⚙️  GA Budget Multiplier: {args.ga_budget_multiplier}x (num_steps will be scaled)")
+    if args.es_budget_multiplier != 1.0:
+        print(f"⚙️  ES Budget Multiplier: {args.es_budget_multiplier}x (population_size and num_generations will be scaled)")
 
     print(f"🔍 Checking checkpoints for run: {args.run_name}")
     print(f"📁 Project: {args.project}")
@@ -725,15 +739,23 @@ def main():
     
     # Evolutionary search budget: balance population and generations first.
     # Choose population ≈ sqrt(budget), enforce at least 3 and cap at 32, then set generations = ceil(budget / population)
+    # Apply budget multiplier to scale both population and generations
     es_configs = []  # list of {budget, population_size, num_generations}
     max_pop = base_methods["evolutionary_search"]["population_size"]
     for b in shared_budgets:
-        proposed_pop = int(round(np.sqrt(b)))
+        # Apply budget multiplier
+        scaled_budget = b * args.es_budget_multiplier
+        proposed_pop = int(round(np.sqrt(scaled_budget)))
         proposed_pop = max(3, min(max_pop, proposed_pop))
-        gens = int(max(1, int(np.ceil(b / proposed_pop))))
-        es_configs.append({"budget": int(b), "population_size": int(proposed_pop), "num_generations": int(gens)})
+        gens = int(max(1, int(np.ceil(scaled_budget / proposed_pop))))
+        es_configs.append({
+            "budget": int(b), 
+            "scaled_budget": scaled_budget,
+            "population_size": int(proposed_pop), 
+            "num_generations": int(gens)
+        })
     try:
-        cfg_summary = ", ".join([f"{c['budget']}->{c['population_size']}x{c['num_generations']}" for c in es_configs])
+        cfg_summary = ", ".join([f"{c['budget']}->{c['population_size']}x{c['num_generations']} (scaled:{c['scaled_budget']:.1f})" for c in es_configs])
         print(f"🧬 Evolutionary configs (budget -> pop x gens): [{cfg_summary}]")
     except Exception:
         pass
@@ -864,12 +886,14 @@ def main():
                     print("\n🔧 Testing gradient_ascent across budgets...")
                     for compute_budget in ga_budgets:
                         # Budget = 2x steps => num_steps = ceil(budget / 2)
-                        num_steps = int(np.ceil(compute_budget / 2))
+                        # Apply budget multiplier
+                        scaled_budget = compute_budget * args.ga_budget_multiplier
+                        num_steps = int(np.ceil(scaled_budget / 2))
                         method_kwargs = dict(base_methods["gradient_ascent"])
                         method_kwargs["num_steps"] = num_steps
 
                         # Log evaluation start
-                        budget_info = {"type": "budget", "value": compute_budget, "num_steps": num_steps}
+                        budget_info = {"type": "budget", "value": compute_budget, "num_steps": num_steps, "scaled_budget": scaled_budget}
                         log_evaluation_start(method, budget_info, method_kwargs, checkpoint["name"], step)
 
                         ok, acc, metrics, _, execution_time = run_evaluation(
@@ -985,6 +1009,7 @@ def main():
                         budget_info = {
                             "type": "budget", 
                             "value": es_cfg["budget"], 
+                            "scaled_budget": es_cfg["scaled_budget"],
                             "population_size": es_cfg["population_size"],
                             "num_generations": es_cfg["num_generations"]
                         }
@@ -1414,7 +1439,13 @@ def main():
     print(f"   • End: {args.budget_end}")
     print(f"   • Period: {args.budget_period}")
     print(f"   • Budgets: {shared_budgets}")
-    
+    if args.ga_budget_multiplier != 1.0 or args.es_budget_multiplier != 1.0:
+        print(f"   • Budget Multipliers:")
+        if args.ga_budget_multiplier != 1.0:
+            print(f"     - Gradient Ascent: {args.ga_budget_multiplier}x")
+        if args.es_budget_multiplier != 1.0:
+            print(f"     - Evolutionary Search: {args.es_budget_multiplier}x")
+
     print(f"\n📊 Checkpoints evaluated:")
     for cp in checkpoints:
         print(f"   • {cp['name']} (Step: {cp['step']})")
