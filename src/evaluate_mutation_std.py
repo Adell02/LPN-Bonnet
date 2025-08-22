@@ -356,9 +356,9 @@ def run_evaluation(
             return True, acc, metrics, stdout, execution_time
         else:
             print(f"❌ evolutionary_search evaluation failed with return code {result.returncode}")
-                if stderr.strip():
-                    print(f"Error output:\n{stderr}")
-                return False, acc, metrics, stdout, execution_time
+            if stderr.strip():
+                print(f"Error output:\n{stderr}")
+            return False, acc, metrics, stdout, execution_time
             
     except Exception as e:
         print(f"❌ Error running evolutionary_search evaluation: {e}")
