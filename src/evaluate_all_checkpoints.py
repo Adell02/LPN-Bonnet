@@ -478,6 +478,13 @@ def main():
         print("❌ Provide either both JSON files or a dataset folder (but not both).")
         return
 
+    # Announce in-process mode selection
+    if args.inprocess:
+        if using_dataset:
+            print("⚡ In-process mode: dataset path selected; dataset will be loaded once and reused.")
+        if using_json:
+            print("⚡ In-process mode: JSON path selected; no subprocess will be launched for evaluations.")
+
     # Start a single W&B run for this sweep
     run = wandb.init(
         entity=args.entity,
@@ -717,8 +724,55 @@ def main():
                         method_kwargs = dict(base_methods["gradient_ascent"])
                         method_kwargs["num_steps"] = num_steps
 
-                        if using_dataset and args.inprocess and preloaded is not None:
+                        if using_json and args.inprocess:
+                            # JSON in-process path: reuse evaluate_checkpoint.evaluate_json directly
+                            print(f"   ⚡ [inprocess:json] gradient_ascent num_steps={num_steps} | loading model + running evaluate_json...")
+                            try:
+                                api = wandb.Api()
+                                artifact = api.artifact(artifact_path, type="model")
+                                cfg = omegaconf.OmegaConf.create(artifact.metadata)
+                                artifact_dir = artifact.download()
+
+                                lpn = instantiate_model(cfg, mixed_precision=True)
+                                train_state = instantiate_train_state(lpn)
+                                evaluator = Evaluator(
+                                    lpn,
+                                    inference_mode="gradient_ascent",
+                                    inference_mode_kwargs={**method_kwargs},
+                                    devices=None,
+                                )
+                                train_state = load_model_weights(train_state, artifact_dir)
+                                train_state = jax.device_put_replicated(train_state, evaluator.devices)
+
+                                import time
+                                t0 = time.time()
+                                jmetrics = ec_evaluate_json(
+                                    train_state,
+                                    evaluator,
+                                    args.json_challenges,
+                                    args.json_solutions,
+                                    args.only_n_tasks,
+                                    0,
+                                )
+                                execution_time = time.time() - t0
+                                acc = jmetrics.get("top_1_accuracy") or jmetrics.get("accuracy")
+                                metrics = {
+                                    "overall_accuracy": float(acc) if acc is not None else None,
+                                    "top_1_shape_accuracy": float(jmetrics.get("top_1_shape_accuracy")) if jmetrics.get("top_1_shape_accuracy") is not None else None,
+                                    "top_1_accuracy": float(jmetrics.get("top_1_accuracy")) if jmetrics.get("top_1_accuracy") is not None else None,
+                                    "top_1_pixel_correctness": float(jmetrics.get("top_1_pixel_correctness")) if jmetrics.get("top_1_pixel_correctness") is not None else None,
+                                    "top_2_shape_accuracy": float(jmetrics.get("top_2_shape_accuracy")) if jmetrics.get("top_2_shape_accuracy") is not None else None,
+                                    "top_2_accuracy": float(jmetrics.get("top_2_accuracy")) if jmetrics.get("top_2_accuracy") is not None else None,
+                                    "top_2_pixel_correctness": float(jmetrics.get("top_2_pixel_correctness")) if jmetrics.get("top_2_pixel_correctness") is not None else None,
+                                }
+                                ok = True
+                                print("   ✅ [inprocess:json] gradient_ascent completed")
+                            except Exception as e:
+                                print(f"   ❌ [inprocess:json] gradient_ascent failed: {e}")
+                                ok, acc, metrics = False, None, {}
+                        elif using_dataset and args.inprocess and preloaded is not None:
                             # In-process dataset evaluation path
+                            print(f"   ⚡ [inprocess:dataset] gradient_ascent num_steps={num_steps} | reusing preloaded dataset...")
                             try:
                                 # Download artifact config and weights
                                 api = wandb.Api()
@@ -792,11 +846,13 @@ def main():
                                     "pixel_correctness": to_float(metrics.get("pixel_correctness")),
                                 }
                                 ok = True
+                                print("   ✅ [inprocess:dataset] gradient_ascent completed")
                             except Exception as e:
-                                print(f"❌ In-process gradient_ascent evaluation failed: {e}")
+                                print(f"   ❌ [inprocess:dataset] gradient_ascent failed: {e}")
                                 ok, acc, ds_metrics, execution_time = False, None, {}, 0.0
                             metrics = ds_metrics
                         else:
+                            # Subprocess fallback
                             ok, acc, metrics, _, execution_time = run_evaluation(
                                 artifact_path=artifact_path,
                                 method="gradient_ascent",
@@ -810,52 +866,6 @@ def main():
                                 dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
                                 dataset_seed=args.dataset_seed,
                             )
-                        
-                        # JSON in-process path: reuse evaluate_checkpoint.evaluate_json directly
-                        if using_json and args.inprocess:
-                            try:
-                                api = wandb.Api()
-                                artifact = api.artifact(artifact_path, type="model")
-                                cfg = omegaconf.OmegaConf.create(artifact.metadata)
-                                artifact_dir = artifact.download()
-
-                                lpn = instantiate_model(cfg, mixed_precision=True)
-                                train_state = instantiate_train_state(lpn)
-                                evaluator = Evaluator(
-                                    lpn,
-                                    inference_mode="gradient_ascent",
-                                    inference_mode_kwargs={**method_kwargs},
-                                    devices=None,
-                                )
-                                train_state = load_model_weights(train_state, artifact_dir)
-                                train_state = jax.device_put_replicated(train_state, evaluator.devices)
-
-                                import time
-                                t0 = time.time()
-                                jmetrics = ec_evaluate_json(
-                                    train_state,
-                                    evaluator,
-                                    args.json_challenges,
-                                    args.json_solutions,
-                                    args.only_n_tasks,
-                                    0,
-                                )
-                                execution_time = time.time() - t0
-                                # Map printed metrics to CSV fields if present
-                                acc = jmetrics.get("top_1_accuracy") or jmetrics.get("accuracy")
-                                metrics = {
-                                    "overall_accuracy": float(acc) if acc is not None else None,
-                                    "top_1_shape_accuracy": float(jmetrics.get("top_1_shape_accuracy")) if jmetrics.get("top_1_shape_accuracy") is not None else None,
-                                    "top_1_accuracy": float(jmetrics.get("top_1_accuracy")) if jmetrics.get("top_1_accuracy") is not None else None,
-                                    "top_1_pixel_correctness": float(jmetrics.get("top_1_pixel_correctness")) if jmetrics.get("top_1_pixel_correctness") is not None else None,
-                                    "top_2_shape_accuracy": float(jmetrics.get("top_2_shape_accuracy")) if jmetrics.get("top_2_shape_accuracy") is not None else None,
-                                    "top_2_accuracy": float(jmetrics.get("top_2_accuracy")) if jmetrics.get("top_2_accuracy") is not None else None,
-                                    "top_2_pixel_correctness": float(jmetrics.get("top_2_pixel_correctness")) if jmetrics.get("top_2_pixel_correctness") is not None else None,
-                                }
-                                ok = True
-                            except Exception as e:
-                                print(f"❌ JSON in-process gradient_ascent evaluation failed: {e}")
-                                ok, acc, metrics = False, None, {}
 
                         if ok:
                             results["method_results"]["gradient_ascent"]["success"] += 1
@@ -891,8 +901,54 @@ def main():
                         method_kwargs = dict(base_methods["random_search"])
                         method_kwargs["num_samples"] = num_samples
 
-                        if using_dataset and args.inprocess and preloaded is not None:
+                        if using_json and args.inprocess:
+                            print(f"   ⚡ [inprocess:json] random_search num_samples={num_samples} | loading model + running evaluate_json...")
                             try:
+                                api = wandb.Api()
+                                artifact = api.artifact(artifact_path, type="model")
+                                cfg = omegaconf.OmegaConf.create(artifact.metadata)
+                                artifact_dir = artifact.download()
+
+                                lpn = instantiate_model(cfg, mixed_precision=True)
+                                train_state = instantiate_train_state(lpn)
+                                evaluator = Evaluator(
+                                    lpn,
+                                    inference_mode="random_search",
+                                    inference_mode_kwargs={**method_kwargs},
+                                    devices=None,
+                                )
+                                train_state = load_model_weights(train_state, artifact_dir)
+                                train_state = jax.device_put_replicated(train_state, evaluator.devices)
+
+                                import time
+                                t0 = time.time()
+                                jmetrics = ec_evaluate_json(
+                                    train_state,
+                                    evaluator,
+                                    args.json_challenges,
+                                    args.json_solutions,
+                                    args.only_n_tasks,
+                                    method_kwargs.get("random_search_seed", 0),
+                                )
+                                execution_time = time.time() - t0
+                                acc = jmetrics.get("top_1_accuracy") or jmetrics.get("accuracy")
+                                metrics = {
+                                    "overall_accuracy": float(acc) if acc is not None else None,
+                                    "top_1_shape_accuracy": float(jmetrics.get("top_1_shape_accuracy")) if jmetrics.get("top_1_shape_accuracy") is not None else None,
+                                    "top_1_accuracy": float(jmetrics.get("top_1_accuracy")) if jmetrics.get("top_1_accuracy") is not None else None,
+                                    "top_1_pixel_correctness": float(jmetrics.get("top_1_pixel_correctness")) if jmetrics.get("top_1_pixel_correctness") is not None else None,
+                                    "top_2_shape_accuracy": float(jmetrics.get("top_2_shape_accuracy")) if jmetrics.get("top_2_shape_accuracy") is not None else None,
+                                    "top_2_accuracy": float(jmetrics.get("top_2_accuracy")) if jmetrics.get("top_2_accuracy") is not None else None,
+                                    "top_2_pixel_correctness": float(jmetrics.get("top_2_pixel_correctness")) if jmetrics.get("top_2_pixel_correctness") is not None else None,
+                                }
+                                ok = True
+                                print("   ✅ [inprocess:json] random_search completed")
+                            except Exception as e:
+                                print(f"   ❌ [inprocess:json] random_search failed: {e}")
+                                ok, acc, metrics = False, None, {}
+                        elif using_dataset and args.inprocess and preloaded is not None:
+                            try:
+                                print(f"   ⚡ [inprocess:dataset] random_search num_samples={num_samples} | reusing preloaded dataset...")
                                 api = wandb.Api()
                                 artifact = api.artifact(artifact_path, type="model")
                                 cfg = omegaconf.OmegaConf.create(artifact.metadata)
@@ -956,11 +1012,13 @@ def main():
                                     "pixel_correctness": to_float(metrics.get("pixel_correctness")),
                                 }
                                 ok = True
+                                print("   ✅ [inprocess:dataset] random_search completed")
                             except Exception as e:
-                                print(f"❌ In-process random_search evaluation failed: {e}")
+                                print(f"   ❌ [inprocess:dataset] random_search failed: {e}")
                                 ok, acc, ds_metrics, execution_time = False, None, {}, 0.0
                             metrics = ds_metrics
                         else:
+                            # Subprocess fallback
                             ok, acc, metrics, _, execution_time = run_evaluation(
                                 artifact_path=artifact_path,
                                 method="random_search",
@@ -1054,8 +1112,54 @@ def main():
                         method_kwargs["population_size"] = es_cfg["population_size"]
                         method_kwargs["num_generations"] = es_cfg["num_generations"]
 
-                        if using_dataset and args.inprocess and preloaded is not None:
+                        if using_json and args.inprocess:
+                            print(f"   ⚡ [inprocess:json] evolutionary_search budget={es_cfg['budget']} pop={method_kwargs['population_size']} gens={method_kwargs['num_generations']} | loading model + running evaluate_json...")
                             try:
+                                api = wandb.Api()
+                                artifact = api.artifact(artifact_path, type="model")
+                                cfg = omegaconf.OmegaConf.create(artifact.metadata)
+                                artifact_dir = artifact.download()
+
+                                lpn = instantiate_model(cfg, mixed_precision=True)
+                                train_state = instantiate_train_state(lpn)
+                                evaluator = Evaluator(
+                                    lpn,
+                                    inference_mode="evolutionary_search",
+                                    inference_mode_kwargs={**method_kwargs},
+                                    devices=None,
+                                )
+                                train_state = load_model_weights(train_state, artifact_dir)
+                                train_state = jax.device_put_replicated(train_state, evaluator.devices)
+
+                                import time
+                                t0 = time.time()
+                                jmetrics = ec_evaluate_json(
+                                    train_state,
+                                    evaluator,
+                                    args.json_challenges,
+                                    args.json_solutions,
+                                    args.only_n_tasks,
+                                    0,
+                                )
+                                execution_time = time.time() - t0
+                                acc = jmetrics.get("top_1_accuracy") or jmetrics.get("accuracy")
+                                metrics = {
+                                    "overall_accuracy": float(acc) if acc is not None else None,
+                                    "top_1_shape_accuracy": float(jmetrics.get("top_1_shape_accuracy")) if jmetrics.get("top_1_shape_accuracy") is not None else None,
+                                    "top_1_accuracy": float(jmetrics.get("top_1_accuracy")) if jmetrics.get("top_1_accuracy") is not None else None,
+                                    "top_1_pixel_correctness": float(jmetrics.get("top_1_pixel_correctness")) if jmetrics.get("top_1_pixel_correctness") is not None else None,
+                                    "top_2_shape_accuracy": float(jmetrics.get("top_2_shape_accuracy")) if jmetrics.get("top_2_shape_accuracy") is not None else None,
+                                    "top_2_accuracy": float(jmetrics.get("top_2_accuracy")) if jmetrics.get("top_2_accuracy") is not None else None,
+                                    "top_2_pixel_correctness": float(jmetrics.get("top_2_pixel_correctness")) if jmetrics.get("top_2_pixel_correctness") is not None else None,
+                                }
+                                ok = True
+                                print("   ✅ [inprocess:json] evolutionary_search completed")
+                            except Exception as e:
+                                print(f"   ❌ [inprocess:json] evolutionary_search failed: {e}")
+                                ok, acc, metrics = False, None, {}
+                        elif using_dataset and args.inprocess and preloaded is not None:
+                            try:
+                                print(f"   ⚡ [inprocess:dataset] evolutionary_search budget={es_cfg['budget']} pop={method_kwargs['population_size']} gens={method_kwargs['num_generations']} | reusing preloaded dataset...")
                                 api = wandb.Api()
                                 artifact = api.artifact(artifact_path, type="model")
                                 cfg = omegaconf.OmegaConf.create(artifact.metadata)
@@ -1119,11 +1223,13 @@ def main():
                                     "pixel_correctness": to_float(metrics.get("pixel_correctness")),
                                 }
                                 ok = True
+                                print("   ✅ [inprocess:dataset] evolutionary_search completed")
                             except Exception as e:
-                                print(f"❌ In-process evolutionary_search evaluation failed: {e}")
+                                print(f"   ❌ [inprocess:dataset] evolutionary_search failed: {e}")
                                 ok, acc, ds_metrics, execution_time = False, None, {}, 0.0
                             metrics = ds_metrics
                         else:
+                            # Subprocess fallback
                             ok, acc, metrics, _, execution_time = run_evaluation(
                                 artifact_path=artifact_path,
                                 method="evolutionary_search",
