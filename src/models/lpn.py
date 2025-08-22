@@ -843,10 +843,6 @@ class LPN(nn.Module):
             include_mean_latent: bool = True,
             include_all_latents: bool = False,
             track_progress: bool = False,
-            use_subspace_mutation: bool = False,
-            subspace_dim: int = 32,
-            ga_step_length: float = 0.5,
-            trust_region_radius: Optional[float] = None,
             **kwargs,
         ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:
         """Evolutionary search for optimal latent context with optional subspace mutation."""
@@ -919,6 +915,11 @@ class LPN(nn.Module):
         base = self._prepare_latents_before_search(include_mean_latent, include_all_latents, latents)
         
         # Build subspace basis and compute sigma if using subspace mutation
+        use_subspace_mutation = kwargs.get("use_subspace_mutation", False)
+        subspace_dim = kwargs.get("subspace_dim", 32)
+        ga_step_length = kwargs.get("ga_step_length", 0.5)
+        trust_region_radius = kwargs.get("trust_region_radius", None)
+        
         if use_subspace_mutation:
             key, basis_key = jax.random.split(key)
             U = self._make_subspace_basis(base, subspace_dim, basis_key)
