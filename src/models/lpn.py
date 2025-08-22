@@ -32,19 +32,24 @@ The evolutionary search now supports subspace mutation for better performance in
 4. **Trust Region**: Optional constraint to keep offspring within a ball around the mean latent.
 
 Usage:
-    # Enable subspace mutation (default)
+    # Enable subspace mutation (disabled by default)
     mode_kwargs = {
         "population_size": 16,
         "num_generations": 2,
-        "mutation_std": 0.1,  # Will be overridden by ga_step_length
-        "use_subspace_mutation": True,
+        "mutation_std": 0.1,  # Will be overridden by ga_step_length when subspace is enabled
+        "use_subspace_mutation": True,  # Enable subspace mutation
         "subspace_dim": 32,
         "ga_step_length": 0.5,  # Target GA step size
         "trust_region_radius": 2.0,  # Optional
     }
     
-    # Disable for standard ES
-    mode_kwargs["use_subspace_mutation"] = False
+    # Standard ES (default behavior)
+    mode_kwargs = {
+        "population_size": 16,
+        "num_generations": 2,
+        "mutation_std": 0.5,  # Standard isotropic mutation
+        "use_subspace_mutation": False,  # Default: disabled
+    }
 """
 
 
@@ -170,7 +175,7 @@ class LPN(nn.Module):
             leave_one_out_grid_shapes = make_leave_one_out(grid_shapes, axis=-3)
             
             # Extract subspace mutation parameters with defaults
-            use_subspace = mode_kwargs.get("use_subspace_mutation", True)
+            use_subspace = mode_kwargs.get("use_subspace_mutation", False)
             subspace_dim = mode_kwargs.get("subspace_dim", 32)
             ga_step_length = mode_kwargs.get("ga_step_length", 0.5)
             trust_radius = mode_kwargs.get("trust_region_radius", None)
@@ -443,7 +448,7 @@ class LPN(nn.Module):
                 assert arg in mode_kwargs, f"'{arg}' argument required for 'evolutionary_search' inference mode."
             
             # Extract subspace mutation parameters with defaults
-            use_subspace = mode_kwargs.get("use_subspace_mutation", True)
+            use_subspace = mode_kwargs.get("use_subspace_mutation", False)
             subspace_dim = mode_kwargs.get("subspace_dim", 32)
             ga_step_length = mode_kwargs.get("ga_step_length", 0.5)
             trust_radius = mode_kwargs.get("trust_region_radius", None)
@@ -841,7 +846,7 @@ class LPN(nn.Module):
             include_mean_latent: bool = True,
             include_all_latents: bool = False,
             track_progress: bool = False,
-            use_subspace_mutation: bool = True,
+            use_subspace_mutation: bool = False,
             subspace_dim: int = 32,
             ga_step_length: float = 0.5,
             trust_region_radius: Optional[float] = None,
