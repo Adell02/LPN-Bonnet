@@ -320,6 +320,7 @@ def run_evaluation(
     dataset_batch_size: Optional[int] = None,
     dataset_use_hf: bool = True,
     dataset_seed: int = 0,
+    args: Optional[Any] = None,
 ) -> Tuple[bool, Optional[float], Dict[str, Optional[float]], str, float]:
     """Invoke evaluate_checkpoint.py for a specific method and checkpoint."""
     cmd = [sys.executable, "src/evaluate_checkpoint.py", "-w", artifact_path, "-i", method]
@@ -385,7 +386,7 @@ def run_evaluation(
         )
         
         # Add subspace parameters if enabled
-        if args.es_use_subspace_mutation:
+        if args is not None and args.es_use_subspace_mutation:
             cmd.extend(["--use-subspace-mutation"])
             cmd.extend(["--subspace-dim", str(args.es_subspace_dim)])
             cmd.extend(["--ga-step-length", str(args.es_ga_step_length)])
@@ -955,6 +956,7 @@ def main():
                             dataset_batch_size=args.dataset_batch_size,
                             dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
                             dataset_seed=args.dataset_seed,
+                            args=args,
                         )
 
                         # Log evaluation results and summary
@@ -1015,6 +1017,7 @@ def main():
                             dataset_batch_size=args.dataset_batch_size,
                             dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
                             dataset_seed=args.dataset_seed,
+                            args=args,
                         )
 
                         # Log evaluation results and summary
@@ -1082,6 +1085,7 @@ def main():
                             dataset_batch_size=args.dataset_batch_size,
                             dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
                             dataset_seed=args.dataset_seed,
+                            args=args,
                         )
 
                         # Log evaluation results and summary
