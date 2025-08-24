@@ -978,14 +978,30 @@ class LPN(nn.Module):
             print(f"         🔍 Debug shapes: fitness={fitness.shape}, population={population.shape}, idx={idx.shape}")
             
             # Create proper gather index that matches population dimensions
-            # population shape is (*B, C, H), so we need to gather along axis -2 (C)
-            gather_idx = jnp.expand_dims(idx, -1).repeat(population.shape[-1], axis=-1) # (*B, S, H)
-            survivors = jnp.take_along_axis(population, gather_idx, axis=-2)            # (*B, S, H)
+            # population shape is (*B, P, C, H) where P=pairs, C=candidates, H=latent_dim
+            # We need to gather along the candidates axis (-2), but population has 4 dims
+            if population.ndim == 4:
+                # Population has pairs dimension: (*B, P, C, H)
+                # Create gather index that works with 4D: (*B, P, S, H)
+                gather_idx = jnp.expand_dims(idx, -1).repeat(population.shape[-1], axis=-1)  # (*B, S, H)
+                gather_idx = jnp.expand_dims(gather_idx, -2).repeat(population.shape[-3], axis=-2)  # (*B, P, S, H)
+            else:
+                # Population has standard shape: (*B, C, H)
+                gather_idx = jnp.expand_dims(idx, -1).repeat(population.shape[-1], axis=-1)  # (*B, S, H)
+            
+            survivors = jnp.take_along_axis(population, gather_idx, axis=-2)            # (*B, P, S, H) or (*B, S, H)
 
             # Refill to pop size: repeat survivors and add mutation
             need = population_size - num_survivors
             reps = (need + num_survivors - 1) // num_survivors  # ceil(need / S)
-            parents = jnp.repeat(survivors, reps, axis=-2)[..., :need, :]               # (*B, need, H)
+            
+            # Handle both 3D and 4D cases for survivors
+            if survivors.ndim == 4:
+                # survivors: (*B, P, S, H) -> parents: (*B, P, need, H)
+                parents = jnp.repeat(survivors, reps, axis=-2)[..., :need, :]
+            else:
+                # survivors: (*B, S, H) -> parents: (*B, need, H)
+                parents = jnp.repeat(survivors, reps, axis=-2)[..., :need, :]
             key, nk = jax.random.split(key)
             
             if use_subspace_mutation and U is not None:
@@ -1003,7 +1019,17 @@ class LPN(nn.Module):
                 # Standard isotropic mutation
                 offspring = parents + sigma * jax.random.normal(nk, parents.shape)
 
-            population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, C, H)
+            # Concatenate survivors and offspring, handling dimension mismatch
+            if survivors.ndim == 4 and offspring.ndim == 3:
+                # survivors: (*B, P, S, H), offspring: (*B, need, H)
+                # Expand offspring to match survivors: (*B, P, need, H)
+                offspring = jnp.expand_dims(offspring, -3).repeat(survivors.shape[-3], axis=-3)
+            elif survivors.ndim == 3 and offspring.ndim == 4:
+                # survivors: (*B, S, H), offspring: (*B, P, need, H)
+                # Expand survivors to match offspring: (*B, P, S, H)
+                survivors = jnp.expand_dims(survivors, -3).repeat(offspring.shape[-3], axis=-3)
+            
+            population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, P, C, H) or (*B, C, H)
 
         # ----- final selection like random search -----
         final_log_probs = _eval_candidates(population)           # (*B, P, C)
