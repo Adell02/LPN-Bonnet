@@ -973,6 +973,12 @@ class LPN(nn.Module):
             # Select top half per batch
             num_survivors = population_size // 2
             idx = jnp.argsort(fitness, axis=-1, descending=True)[..., :num_survivors]   # (*B, S)
+            
+            # Debug: print shapes to understand the dimension mismatch
+            print(f"         🔍 Debug shapes: fitness={fitness.shape}, population={population.shape}, idx={idx.shape}")
+            
+            # Create proper gather index that matches population dimensions
+            # population shape is (*B, C, H), so we need to gather along axis -2 (C)
             gather_idx = jnp.expand_dims(idx, -1).repeat(population.shape[-1], axis=-1) # (*B, S, H)
             survivors = jnp.take_along_axis(population, gather_idx, axis=-2)            # (*B, S, H)
 
