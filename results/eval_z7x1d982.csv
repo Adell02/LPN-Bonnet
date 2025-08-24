@@ -1,1 +1,0 @@
-run_name,checkpoint_name,checkpoint_step,method,budget_type,budget,overall_accuracy,top_1_shape_accuracy,top_1_accuracy,top_1_pixel_correctness,top_2_shape_accuracy,top_2_accuracy,top_2_pixel_correctness

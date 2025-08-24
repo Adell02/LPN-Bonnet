@@ -7,6 +7,7 @@ Usage:
     python3 src/plot_from_csv.py --csv results/eval_908l681z.csv --output_dir plots
     python3 src/plot_from_csv.py --csv results/eval_908l681z.csv --methods gradient_ascent,random_search
     python3 src/plot_from_csv.py --csv results/eval_908l681z.csv --detailed_analysis
+    python3 src/plot_from_csv.py --csv results/eval_908l681z.csv --checkpoint_subplots
 
 """
 
@@ -360,7 +361,8 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
                                 save_plots: bool = True,
                                 show_plots: bool = False,
                                 zdim: Optional[int] = None,
-                                detailed_analysis: bool = False) -> None:
+                                detailed_analysis: bool = False,
+                                checkpoint_subplots: bool = False) -> None:
     """
     Main function to create and save optimization comparison plots.
     """
@@ -372,6 +374,9 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
     if not steps or not budgets:
         print("❌ No valid data found in CSV")
         return
+    
+    # Store original budgets before they get modified
+    original_budgets = list(budgets)
     
     # Remove the first training step (v0 → 0%), which is empty by design
     original_steps = list(steps)
@@ -503,7 +508,7 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
         plt.close(fig)
 
     # Generate detailed analysis plots if requested
-    if args.detailed_analysis:
+    if detailed_analysis:
         print("\n" + "="*60)
         print("📊 GENERATING DETAILED ANALYSIS PLOTS")
         print("="*60)
@@ -527,6 +532,34 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
             output_path=output_path,
             csv_name=csv_name,
             step_labels=step_labels
+        )
+    
+    # Generate checkpoint subplots if requested (independent of detailed_analysis)
+    if checkpoint_subplots:
+        print("\n" + "="*60)
+        print("📊 GENERATING CHECKPOINT SUBPLOTS")
+        print("="*60)
+        
+        # Determine which methods to analyze
+        methods_to_analyze = []
+        if method_a:
+            methods_to_analyze.append(method_a)
+        if method_b:
+            methods_to_analyze.append(method_b)
+        
+        if not methods_to_analyze:
+            # Use all methods found in the data
+            methods_to_analyze = methods_in_csv
+        
+        create_checkpoint_subplots(
+            data_by_metric=data_by_metric,
+            steps=steps,
+            budgets=budgets,
+            methods=methods_to_analyze,
+            output_path=output_path,
+            csv_name=csv_name,
+            step_labels=step_labels,
+            original_budgets=original_budgets
         )
 
     print("✅ Plotting complete!")
@@ -772,6 +805,118 @@ def create_detailed_analysis_plots(data_by_metric: Dict, steps: List[int], budge
     print("✅ Detailed analysis plots complete!")
 
 
+def create_checkpoint_subplots(data_by_metric: Dict, steps: List[int], budgets: List[int], 
+                              methods: List[str], output_path: Path, csv_name: str, step_labels: List[str], 
+                              original_budgets: List[int] = None) -> None:
+    """
+    Create subplots showing accuracy vs budget for each training checkpoint.
+    Each subplot represents one training checkpoint and shows all three metrics for both methods.
+    Uses solid lines for evolutionary search and dotted lines for gradient ascent.
+    """
+    print("📊 Creating checkpoint subplots...")
+    print(f"   Methods to plot: {methods}")
+    print(f"   Training steps: {steps}")
+    print(f"   Budgets: {budgets}")
+    
+    # Use original budgets if provided, otherwise use the processed budgets
+    plot_budgets = original_budgets if original_budgets is not None else budgets
+    print(f"   Using budgets for plotting: {plot_budgets}")
+    
+    # Define the three metrics to plot
+    metrics_to_plot = [
+        "overall_accuracy",
+        "top_1_pixel_correctness", 
+        "top_1_shape_accuracy"
+    ]
+    
+    # Create a single figure with subplots stacked vertically (one column)
+    # Each subplot represents one training checkpoint
+    fig, axes = plt.subplots(len(steps), 1, figsize=(12, 4 * len(steps)))
+    
+    # Handle case where there's only one step (axes won't be an array)
+    if len(steps) == 1:
+        axes = [axes]
+    
+    for step_idx, step in enumerate(steps):
+        ax = axes[step_idx]
+        step_label = step_labels[step_idx]
+        
+        # Plot each method for this step
+        for method in methods:
+            if method in data_by_metric.get("overall_accuracy", {}) and step in data_by_metric["overall_accuracy"][method]:
+                # Plot all three metrics for this method and step
+                for metric_idx, metric in enumerate(metrics_to_plot):
+                    if method in data_by_metric.get(metric, {}) and step in data_by_metric[metric][method]:
+                        step_data = data_by_metric[metric][method][step]
+                        
+                        # Get valid budget-accuracy pairs
+                        step_budgets = []
+                        step_accuracies = []
+                        
+                        for budget in plot_budgets:
+                            if budget in step_data:
+                                acc = step_data[budget]
+                                if not np.isnan(acc):
+                                    step_budgets.append(budget)
+                                    step_accuracies.append(acc)
+                        
+                        if step_budgets and step_accuracies:
+                            # Sort by budget for proper line plotting
+                            sorted_pairs = sorted(zip(step_budgets, step_accuracies))
+                            step_budgets = [p[0] for p in sorted_pairs]
+                            step_accuracies = [p[1] for p in sorted_pairs]
+                            
+                            # Choose line style based on method
+                            if 'evolutionary' in method.lower():
+                                linestyle = '-'
+                                linewidth = 2
+                                alpha = 0.8
+                            elif 'gradient' in method.lower():
+                                linestyle = ':'
+                                linewidth = 2
+                                alpha = 0.8
+                            else:
+                                # Default for other methods
+                                linestyle = '--'
+                                linewidth = 1.5
+                                alpha = 0.6
+                            
+                            # Choose color based on metric
+                            metric_colors = ['blue', 'red', 'green']
+                            color = metric_colors[metric_idx]
+                            
+                            # Plot with different colors for each metric
+                            ax.plot(step_budgets, step_accuracies, 
+                                   linestyle=linestyle, linewidth=linewidth, alpha=alpha,
+                                   color=color, marker='o', markersize=4,
+                                   label=f'{metric.replace("_", " ").title()} ({method.replace("_", " ").title()})')
+                            
+                            print(f"      Plotted {method} {metric} for {step_label}: {len(step_budgets)} points")
+        
+        # Customize subplot
+        ax.set_xlabel('Search Budget', fontsize=10)
+        ax.set_ylabel('Accuracy', fontsize=10)
+        ax.set_title(f'Training Checkpoint: {step_label}', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim(0, 1)
+        
+        # Add legend with smaller font to fit
+        ax.legend(loc='upper right', fontsize=8)
+        
+        # Rotate x-axis labels if needed
+        if len(plot_budgets) > 8:
+            ax.tick_params(axis='x', labelrotation=45)
+    
+    plt.tight_layout()
+    
+    # Save checkpoint subplot
+    checkpoint_filename = f"checkpoint_subplots_{csv_name}.png"
+    checkpoint_path = output_path / checkpoint_filename
+    fig.savefig(checkpoint_path, dpi=200, bbox_inches='tight')
+    print(f"💾 Checkpoint subplots saved to: {checkpoint_path}")
+    plt.close(fig)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plot optimization comparison from CSV data")
     parser.add_argument("--csv", type=str, required=True, help="Path to CSV file")
@@ -782,6 +927,7 @@ def main():
     parser.add_argument("--show", action="store_true", help="Show plots interactively")
     parser.add_argument("--zdim", type=int, default=None, help="Latent dimension to show in title")
     parser.add_argument("--detailed_analysis", action="store_true", help="Generate detailed analysis plots (accuracy vs budget and vs training step)")
+    parser.add_argument("--checkpoint_subplots", action="store_true", help="Generate checkpoint subplots showing accuracy vs budget for each training checkpoint")
     
     args = parser.parse_args()
     
@@ -800,6 +946,7 @@ def main():
         show_plots=args.show,
         zdim=args.zdim,
         detailed_analysis=args.detailed_analysis,
+        checkpoint_subplots=args.checkpoint_subplots,
     )
 
 

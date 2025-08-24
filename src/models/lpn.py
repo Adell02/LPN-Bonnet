@@ -923,9 +923,10 @@ class LPN(nn.Module):
         if use_subspace_mutation:
             key, basis_key = jax.random.split(key)
             U = self._make_subspace_basis(base, subspace_dim, basis_key)
-            # Compute sigma to match GA step length
-            sigma = self._sigma_for_ga_step(ga_step_length, subspace_dim)
-            print(f"         🔬 Subspace ES: m={subspace_dim}, σ={sigma:.4f} (targeting GA step {ga_step_length})")
+            # Compute sigma to match GA step length using actual subspace dimension
+            actual_subspace_dim = U.shape[-1]
+            sigma = self._sigma_for_ga_step(ga_step_length, actual_subspace_dim)
+            print(f"         🔬 Subspace ES: m={actual_subspace_dim}, σ={sigma:.4f} (targeting GA step {ga_step_length})")
         else:
             U = None
             sigma = mutation_std
@@ -1032,22 +1033,27 @@ class LPN(nn.Module):
         """
         H = latents.shape[-1]
         
+        # Ensure subspace dimension doesn't exceed latent space dimension
+        actual_m = min(m, H)
+        if actual_m < m:
+            print(f"         ⚠️  Subspace dimension reduced from {m} to {actual_m} (latent dim: {H})")
+        
         # Center available latents around their mean
         L = latents - latents.mean(axis=-2, keepdims=True)  # (*B, C0, H)
         
         # Start with random directions
         key, kr = jax.random.split(key)
-        R = jax.random.normal(kr, (*latents.shape[:-2], H, m))
+        R = jax.random.normal(kr, (*latents.shape[:-2], H, actual_m))
         
         # Inject data span directions (if any) by concatenating random + L^T
         # Make a skinny matrix [R | L^T] then QR
-        M = jnp.concatenate([R, L.swapaxes(-2, -1)], axis=-1)  # (*B, H, m + C0)
+        M = jnp.concatenate([R, L.swapaxes(-2, -1)], axis=-1)  # (*B, H, actual_m + C0)
         
         # Batched QR gives orthonormal columns
-        Q, _ = jnp.linalg.qr(M, mode='reduced')                # (*B, H, min(H, m+C0))
+        Q, _ = jnp.linalg.qr(M, mode='reduced')                # (*B, H, min(H, actual_m+C0))
         
-        # Take first m columns
-        U = Q[..., :m]                                         # (*B, H, m)
+        # Take first actual_m columns
+        U = Q[..., :actual_m]                                  # (*B, H, actual_m)
         return U
 
     @classmethod

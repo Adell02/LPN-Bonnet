@@ -887,13 +887,11 @@ def main():
     with out_csv.open("a", newline="") as f_csv:
         writer = csv.writer(f_csv)
         if write_header:
-            # Add subspace parameters to CSV header if using subspace mutation
+            # Always include all possible columns for consistent CSV structure
             csv_headers = ["timestamp", "run_name", "checkpoint_name", "checkpoint_step", "method", "budget_type", "budget", 
                           "overall_accuracy", "top_1_shape_accuracy", "top_1_accuracy", "top_1_pixel_correctness",
-                          "top_2_shape_accuracy", "top_2_accuracy", "top_2_pixel_correctness"]
-            
-            if args.es_use_subspace_mutation:
-                csv_headers.extend(["subspace_enabled", "subspace_dim", "ga_step_length", "trust_region_radius"])
+                          "top_2_shape_accuracy", "top_2_accuracy", "top_2_pixel_correctness",
+                          "subspace_enabled", "subspace_dim", "ga_step_length", "trust_region_radius"]
             
             writer.writerow(csv_headers)
 

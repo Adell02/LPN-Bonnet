@@ -61,7 +61,7 @@ encoder_transformer:
     mlp_dim_factor: 1.0
     dropout_rate: 0.0
     attention_dropout_rate: 0.0
-  latent_dim: 64
+  latent_dim: 8
   variational: True
   latent_projection_bias: False
 

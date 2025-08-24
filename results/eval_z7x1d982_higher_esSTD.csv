@@ -1,5 +1,4 @@
-
-run_name,checkpoint_name,checkpoint_step,method,budget_type,budget,overall_accuracy,top_1_shape_accuracy,top_1_accuracy,top_1_pixel_correctness,top_2_shape_accuracy,top_2_accuracy,top_2_pixel_correctness
+timestamp,run_name,checkpoint_name,checkpoint_step,method,budget_type,budget,overall_accuracy,top_1_shape_accuracy,top_1_accuracy,top_1_pixel_correctness,top_2_shape_accuracy,top_2_accuracy,top_2_pixel_correctness
 2025-08-22 13:08:21,z7x1d982,smooth-resonance-159--checkpoint:v0,0,evolutionary_search,budget,0,0.8,0.8,0.0,0.2162,0.8,0.0,0.2202
 2025-08-22 13:12:47,z7x1d982,smooth-resonance-159--checkpoint:v0,0,evolutionary_search,budget,25,0.8,0.8,0.0,0.3754,0.8,0.0,0.3897
 2025-08-22 13:17:51,z7x1d982,smooth-resonance-159--checkpoint:v0,0,evolutionary_search,budget,50,0.8,0.8,0.0,0.2162,0.8,0.0,0.2162

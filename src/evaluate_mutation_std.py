@@ -67,7 +67,7 @@ def log_evaluation_start(mutation_std: float, population_size: int, num_generati
     print(f"{'='*80}")
     print(f"📊 Method: evolutionary_search")
     print(f"📁 Checkpoint: {checkpoint_name} (Step: {checkpoint_step})")
-    print(f"⚙️  Settings:")
+        print(f"⚙️  Settings:")
     print(f"   • Population Size: {population_size}")
     print(f"   • Num Generations: {num_generations}")
     print(f"   • Mutation Std: {mutation_std}")
@@ -356,9 +356,9 @@ def run_evaluation(
             return True, acc, metrics, stdout, execution_time
         else:
             print(f"❌ evolutionary_search evaluation failed with return code {result.returncode}")
-            if stderr.strip():
-                print(f"Error output:\n{stderr}")
-            return False, acc, metrics, stdout, execution_time
+                if stderr.strip():
+                    print(f"Error output:\n{stderr}")
+                return False, acc, metrics, stdout, execution_time
             
     except Exception as e:
         print(f"❌ Error running evolutionary_search evaluation: {e}")
@@ -611,27 +611,27 @@ def main():
         for i, mutation_std in enumerate(mutation_stds, 1):
             print(f"\n🔬 Testing mutation_std = {mutation_std:.6f} ({i}/{len(mutation_stds)})")
 
-            # Log evaluation start
+                        # Log evaluation start
             log_evaluation_start(mutation_std, population_size, num_generations, 
                                checkpoint["name"], step)
 
             # Run evaluation
-            ok, acc, metrics, _, execution_time = run_evaluation(
-                artifact_path=artifact_path,
+                        ok, acc, metrics, _, execution_time = run_evaluation(
+                            artifact_path=artifact_path,
                 mutation_std=mutation_std,
                 population_size=population_size,
                 num_generations=num_generations,
-                json_challenges=args.json_challenges,
-                json_solutions=args.json_solutions,
-                only_n_tasks=args.only_n_tasks,
-                dataset_folder=args.dataset_folder,
-                dataset_length=args.dataset_length,
-                dataset_batch_size=args.dataset_batch_size,
-                dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
-                dataset_seed=args.dataset_seed,
-            )
+                            json_challenges=args.json_challenges,
+                            json_solutions=args.json_solutions,
+                            only_n_tasks=args.only_n_tasks,
+                            dataset_folder=args.dataset_folder,
+                            dataset_length=args.dataset_length,
+                            dataset_batch_size=args.dataset_batch_size,
+                            dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
+                            dataset_seed=args.dataset_seed,
+                        )
 
-            # Log evaluation results and summary
+                        # Log evaluation results and summary
             log_evaluation_results(mutation_std, metrics, execution_time, ok)
             summary = log_evaluation_summary(checkpoint["name"], step, mutation_std, ok, execution_time)
 
@@ -644,12 +644,12 @@ def main():
             }
             results_data.append(result_entry)
 
-            if ok:
+                        if ok:
                 successful_evals += 1
-                
-                # Log to W&B immediately
-                try:
-                    wandb.log({
+                            
+                            # Log to W&B immediately
+                            try:
+                                wandb.log({
                         f"mutation_std_{mutation_std:.6f}/overall_accuracy": acc or 0.0,
                         f"mutation_std_{mutation_std:.6f}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
                         f"mutation_std_{mutation_std:.6f}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
@@ -660,18 +660,18 @@ def main():
                         f"mutation_std_{mutation_std:.6f}/execution_time": execution_time,
                         f"mutation_std_{mutation_std:.6f}/population_size": population_size,
                         f"mutation_std_{mutation_std:.6f}/num_generations": num_generations,
-                    })
-                except Exception as e:
-                    print(f"⚠️  Failed to log to W&B: {e}")
-            else:
+                                })
+                            except Exception as e:
+                                print(f"⚠️  Failed to log to W&B: {e}")
+                        else:
                 failed_evals += 1
 
             # Write to CSV
-            writer.writerow(
+                        writer.writerow(
                 [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], step, 
                  mutation_std, population_size, num_generations,
-                 acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
-                 metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
+                             acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
+                             metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
                  metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", ""),
                  execution_time]
             )
@@ -680,11 +680,11 @@ def main():
     try:
         fig_path = generate_mutation_std_plot(mutation_stds, results_data, 
                                             checkpoint["name"], step)
-        
-        if fig_path:
+                
+                if fig_path:
             # Upload to wandb
-            try:
-                wandb.log({
+                    try:
+                        wandb.log({
                     "plots/mutation_std_sweep": wandb.Image(fig_path),
                     "plots/checkpoint_name": checkpoint["name"],
                     "plots/checkpoint_step": step,
@@ -693,12 +693,12 @@ def main():
                     "plots/failed_evaluations": failed_evals,
                 })
                 print(f"📊 Generated and uploaded mutation_std sweep plot: {fig_path}")
-            except Exception as e:
+                    except Exception as e:
                 print(f"⚠️  Failed to upload plot to W&B: {e}")
-        else:
+                else:
             print(f"⚠️  Failed to generate mutation_std sweep plot")
-            
-    except Exception as e:
+                    
+            except Exception as e:
         print(f"⚠️  Failed to generate or upload mutation_std sweep plot: {e}")
 
     # Upload CSV artifact
