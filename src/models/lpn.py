@@ -943,7 +943,8 @@ class LPN(nn.Module):
             key, nk = jax.random.split(key)
             if use_subspace_mutation and U is not None:
                 # Use subspace mutation for initial population expansion
-                noise = jax.random.normal(nk, (*base.shape[:-2], need, subspace_dim))
+                actual_subspace_dim = U.shape[-1]  # Get actual subspace dimension from U
+                noise = jax.random.normal(nk, (*base.shape[:-2], need, actual_subspace_dim))
                 step = jnp.einsum('...nm,...hm->...nh', noise, jnp.swapaxes(U, -2, -1))
                 population = jnp.concatenate([base, mean_latent + sigma * step], axis=-2)
             else:
