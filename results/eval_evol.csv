@@ -1,7 +1,0 @@
-timestamp,run_name,checkpoint_name,checkpoint_step,method,budget_type,budget,overall_accuracy,top_1_shape_accuracy,top_1_accuracy,top_1_pixel_correctness,top_2_shape_accuracy,top_2_accuracy,top_2_pixel_correctness
-2025-08-22 12:45:08,h3i1zzme,rich-mountain-159--checkpoint:v8,8,evolutionary_search,budget,0,0.6,0.6,0.0,0.2805,0.6,0.0,0.2805
-2025-08-22 12:45:08,h3i1zzme,rich-mountain-159--checkpoint:v8,8,evolutionary_search,budget,50,0.8,0.8,0.0,0.2879,0.8,0.0,0.2966
-2025-08-22 12:45:08,h3i1zzme,rich-mountain-159--checkpoint:v8,8,evolutionary_search,budget,100,0.8,0.8,0.0,0.4226,0.8,0.0,0.4267
-2025-08-22 12:45:08,h3i1zzme,rich-mountain-159--checkpoint:v9,9,evolutionary_search,budget,0,0.6,0.6,0.0,0.2971,0.6,0.0,0.2971
-2025-08-22 12:45-08,h3i1zzme,rich-mountain-159--checkpoint:v9,9,evolutionary_search,budget,50,0.8,0.8,0.0,0.2993,0.8,0.0,0.3148
-2025-08-22 12:45:08,h3i1zzme,rich-mountain-159--checkpoint:v9,9,evolutionary_search,budget,100,0.8,0.8,0.0,0.2848,0.8,0.0,0.3093
