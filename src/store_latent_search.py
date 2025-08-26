@@ -52,17 +52,17 @@ def main():
     # Shared source validation: prefer JSON if both provided
     src_args = []
     if args.json_challenges and args.json_solutions:
-        src_args = ["-jc", args.json_challenges, "-js", args.json_solutions]
+        src_args += ["-jc", args.json_challenges, "-js", args.json_solutions]
     elif args.dataset_folder:
-        src_args = [
-            "-d", args.dataset_folder,
-            "--dataset-length", str(args.dataset_length) if args.dataset_length is not None else "0",
-            "--dataset-batch-size", str(args.dataset_batch_size) if args.dataset_batch_size is not None else "0",
-            "--dataset-use-hf", args.dataset_use_hf,
-            "--dataset-seed", str(args.dataset_seed),
-        ]
-        # remove zeros if not set
-        src_args = [x for x in src_args if x not in ("0",)]
+        src_args += ["-d", args.dataset_folder]
+        if args.dataset_length is not None:
+            src_args += ["--dataset-length", str(args.dataset_length)]
+        if args.dataset_batch_size is not None:
+            src_args += ["--dataset-batch-size", str(args.dataset_batch_size)]
+        # dataset_use_hf is a required boolean-like flag; always pass it
+        src_args += ["--dataset-use-hf", args.dataset_use_hf]
+        # dataset_seed has a valid default (0); always pass it
+        src_args += ["--dataset-seed", str(args.dataset_seed)]
 
     # 1) Gradient Ascent: num_steps ≈ ceil(budget/2)
     ga_steps = int(math.ceil(args.budget / 2))
