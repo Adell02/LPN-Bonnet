@@ -3,6 +3,40 @@
 Run gradient_ascent and evolutionary_search once on a single W&B model artifact and
 store latent search trajectories to NPZ. Then plot both trajectories (2D latents) and
 upload NPZs and plot to W&B.
+
+Example usage:
+
+# Basic usage with automatic budget-based calculations:
+python src/store_latent_search.py --wandb_artifact_path "entity/project/artifact:v0" --budget 100
+
+# Custom GA and ES parameters:
+python src/store_latent_search.py \
+    --wandb_artifact_path "entity/project/artifact:v0" \
+    --budget 100 \
+    --ga_steps 50 \
+    --ga_lr 0.1 \
+    --es_population 20 \
+    --es_generations 5 \
+    --es_mutation_std 0.3
+
+# With subspace mutation and progress tracking:
+python src/store_latent_search.py \
+    --wandb_artifact_path "entity/project/artifact:v0" \
+    --budget 100 \
+    --use_subspace_mutation \
+    --subspace_dim 16 \
+    --ga_step_length 0.5 \
+    --track_progress
+
+# For small-scale searches with smooth background:
+python src/store_latent_search.py \
+    --wandb_artifact_path "entity/project/artifact:v0" \
+    --budget 100 \
+    --background_resolution 800 \
+    --background_smoothing \
+    --ga_steps 100 \
+    --es_population 50 \
+    --es_generations 2
 """
 
 import argparse
@@ -130,8 +164,24 @@ def _nice_bounds(xy: np.ndarray, pad: float = 0.08) -> tuple[tuple[float, float]
     return (xmin - px, xmax + px), (ymin - py, ymax + py)
 
 
-def _splat_background(P: np.ndarray, V: np.ndarray, xlim, ylim, n: int = 240) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    # Gaussian splat, sigma picked from median nn distance
+def _splat_background(P: np.ndarray, V: np.ndarray, xlim, ylim, n: int = 240, 
+                      enable_smoothing: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # Adaptive resolution: increase grid density for small-scale searches
+    search_range = max(xlim[1] - xlim[0], ylim[1] - ylim[0])
+    if len(P) > 1:
+        # Calculate typical step size from the data
+        d2 = ((P[None, :, :] - P[:, None, :]) ** 2).sum(-1)
+        nn = np.sqrt(np.partition(d2 + np.eye(len(P))*1e12, 1, axis=1)[:, 1])
+        typical_step = float(np.median(nn) + 1e-9)
+        
+        # Increase resolution for small steps to create smoother gradients
+        if typical_step < search_range * 0.01:  # Very small steps
+            n = max(n, 800)  # High resolution
+        elif typical_step < search_range * 0.05:  # Small steps
+            n = max(n, 500)  # Medium-high resolution
+        elif typical_step < search_range * 0.1:   # Medium steps
+            n = max(n, 400)  # Medium resolution
+    
     xv = np.linspace(xlim[0], xlim[1], n)
     yv = np.linspace(ylim[0], ylim[1], n)
     XX, YY = np.meshgrid(xv, yv)
@@ -139,16 +189,39 @@ def _splat_background(P: np.ndarray, V: np.ndarray, xlim, ylim, n: int = 240) ->
     if len(P) == 1:
         sigma = 0.1 * max(xlim[1]-xlim[0], ylim[1]-ylim[0])
     else:
-        d2 = ((P[None, :, :] - P[:, None, :]) ** 2).sum(-1)
-        nn = np.sqrt(np.partition(d2 + np.eye(len(P))*1e12, 1, axis=1)[:, 1])
-        sigma = float(np.median(nn) + 1e-9)
+        # Adaptive sigma: use smaller sigma for small-scale searches
+        if typical_step < search_range * 0.01:
+            # Very small steps: use sigma proportional to step size
+            sigma = max(typical_step * 2.0, search_range * 0.005)
+        elif typical_step < search_range * 0.05:
+            # Small steps: use sigma proportional to step size
+            sigma = max(typical_step * 1.5, search_range * 0.01)
+        else:
+            # Larger steps: use original nearest neighbor approach
+            sigma = float(np.median(nn) + 1e-9)
 
+    # Create smoother background with multiple passes
+    Z = np.zeros_like(XX)
+    
+    # First pass: Gaussian splatting
     Xg = XX[..., None] - P[None, None, :, 0]
     Yg = YY[..., None] - P[None, None, :, 1]
-    W = np.exp(-0.5 * (Xg*Xg + Yg*Yg) / (sigma * sigma)) + 1e-12   # [n,n,N]
+    W = np.exp(-0.5 * (Xg*Xg + Yg*Yg) / (sigma * sigma)) + 1e-12
     num = (W * V[None, None, :]).sum(axis=-1)
     den = W.sum(axis=-1)
     Z = num / den
+    
+    # Second pass: Apply Gaussian smoothing for very small-scale searches
+    if enable_smoothing and len(P) > 1 and typical_step < search_range * 0.02:
+        from scipy.ndimage import gaussian_filter
+        try:
+            # Smooth the background to create more gradient-like appearance
+            smoothing_sigma = max(1.0, n * typical_step / search_range)
+            Z = gaussian_filter(Z, sigma=smoothing_sigma)
+        except ImportError:
+            # Fallback if scipy not available
+            pass
+    
     return XX, YY, Z
 
 
@@ -163,7 +236,8 @@ def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6
                color=color, zorder=6, alpha=alpha)
 
 
-def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: str = "loss") -> Optional[str]:
+def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: str = "loss", 
+                  background_resolution: int = 240, background_smoothing: bool = False) -> Optional[str]:
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -228,7 +302,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     if have_field:
         P = np.concatenate(bgP, axis=0)
         V = orient(np.concatenate(bgV, axis=0))
-        XX, YY, ZZ = _splat_background(P, V, xlim, ylim, n=240)
+        XX, YY, ZZ = _splat_background(P, V, xlim, ylim, n=background_resolution, enable_smoothing=background_smoothing)
         im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.8)
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label(field_name)
@@ -299,15 +373,24 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Store and plot latent search trajectories (GA & ES)")
+    parser = argparse.ArgumentParser(
+        description="Store and plot latent search trajectories (GA & ES). "
+        "Use --ga_steps, --es_population, --es_generations to override automatic budget-based calculations."
+    )
     parser.add_argument("--wandb_artifact_path", required=True, type=str)
     parser.add_argument("--budget", required=True, type=int)
     parser.add_argument("--ga_lr", type=float, default=0.5)
+    parser.add_argument("--ga_steps", type=int, default=None, help="Number of GA steps (overrides budget/2 calculation)")
     parser.add_argument("--es_mutation_std", type=float, default=0.5)
+    parser.add_argument("--es_population", type=int, default=None, help="ES population size (overrides sqrt(budget) calculation)")
+    parser.add_argument("--es_generations", type=int, default=None, help="ES number of generations (overrides budget/pop calculation)")
     parser.add_argument("--use_subspace_mutation", action="store_true")
     parser.add_argument("--subspace_dim", type=int, default=32)
     parser.add_argument("--ga_step_length", type=float, default=0.5)
     parser.add_argument("--trust_region_radius", type=float, default=None)
+    parser.add_argument("--track_progress", action="store_true", help="Enable progress tracking for both GA and ES")
+    parser.add_argument("--background_resolution", type=int, default=240, help="Base resolution for background heatmap (higher = smoother)")
+    parser.add_argument("--background_smoothing", action="store_true", help="Enable additional Gaussian smoothing for small-scale searches")
     parser.add_argument("--out_dir", type=str, default="results/latent_traces")
     parser.add_argument("--wandb_project", type=str, default="latent-search-analysis")
     parser.add_argument("--wandb_entity", type=str, default=None)
@@ -325,7 +408,8 @@ def main() -> None:
     src_args = build_dataset_args(args)
 
     # Gradient Ascent config
-    ga_steps = int(math.ceil(args.budget / 2))
+    ga_steps = args.ga_steps if args.ga_steps is not None else int(math.ceil(args.budget / 2))
+    print(f"🔧 GA config: {ga_steps} steps (lr={args.ga_lr})")
     ga_out = os.path.join(args.out_dir, "ga_latents.npz")
     ga_cmd = [
         sys.executable, "src/evaluate_checkpoint.py",
@@ -335,14 +419,18 @@ def main() -> None:
         "--lr", str(args.ga_lr),
         "--no-wandb-run", "true",
         "--store-latents", ga_out,
-    ] + src_args
+    ]
+    if args.track_progress:
+        ga_cmd.append("--track-progress")
+    ga_cmd += src_args
     print("Running:", " ".join(ga_cmd))
     ga_rc = subprocess.run(ga_cmd, check=False).returncode
     print(f"GA return code: {ga_rc}")
 
     # Evolutionary Search config
-    pop = max(3, min(32, int(round(math.sqrt(args.budget)))))
-    gens = max(1, int(math.ceil(args.budget / pop)))
+    pop = args.es_population if args.es_population is not None else max(3, min(32, int(round(math.sqrt(args.budget)))))
+    gens = args.es_generations if args.es_generations is not None else max(1, int(math.ceil(args.budget / pop)))
+    print(f"🧬 ES config: population={pop}, generations={gens} (mutation_std={args.es_mutation_std})")
     es_out = os.path.join(args.out_dir, "es_latents.npz")
     es_cmd = [
         sys.executable, "src/evaluate_checkpoint.py",
@@ -353,7 +441,10 @@ def main() -> None:
         "--mutation-std", str(args.es_mutation_std),
         "--no-wandb-run", "true",
         "--store-latents", es_out,
-    ] + src_args
+    ]
+    if args.track_progress:
+        es_cmd.append("--track-progress")
+    es_cmd += src_args
     if args.use_subspace_mutation:
         es_cmd += ["--use-subspace-mutation", "--subspace-dim", str(args.subspace_dim), "--ga-step-length", str(args.ga_step_length)]
         if args.trust_region_radius is not None:
@@ -363,7 +454,9 @@ def main() -> None:
     print(f"ES return code: {es_rc}")
 
     # Plot
-    plot_path = plot_and_save(ga_out, es_out, args.out_dir)
+    plot_path = plot_and_save(ga_out, es_out, args.out_dir, 
+                              background_resolution=args.background_resolution,
+                              background_smoothing=args.background_smoothing)
     if plot_path:
         print(f"Saved plot to {plot_path}")
 
@@ -380,6 +473,9 @@ def main() -> None:
         "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
         "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
         "trust_region_radius": args.trust_region_radius,
+        "track_progress": args.track_progress,
+        "background_resolution": args.background_resolution,
+        "background_smoothing": args.background_smoothing,
         "ga_return_code": ga_rc,
         "es_return_code": es_rc,
     }
