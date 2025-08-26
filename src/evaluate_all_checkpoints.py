@@ -699,6 +699,34 @@ def main():
         },
     )
 
+    # Mirror all subsequent prints to Weights & Biases terminal logs
+    try:
+        import builtins as _builtins
+
+        _original_print = _builtins.print
+
+        def _wandb_print(*args, **kwargs):
+            sep = kwargs.get("sep", " ")
+            end = kwargs.get("end", "\n")
+            # Always print to the real stdout first
+            _original_print(*args, **kwargs)
+            try:
+                msg = sep.join(str(a) for a in args) + end
+                msg = msg.rstrip("\n")
+                if hasattr(wandb, "termlog"):
+                    wandb.termlog(msg)
+                else:
+                    # Fallback: log as a text line in the history
+                    wandb.log({"logs/print": msg})
+            except Exception:
+                # Never fail the run due to logging issues
+                pass
+
+        _builtins.print = _wandb_print
+    except Exception:
+        # If installing the hook fails, continue without W&B print mirroring
+        pass
+
     # Fetch checkpoints
     all_checkpoints = get_all_checkpoints(args.run_name, args.project, args.entity)
     if not all_checkpoints:

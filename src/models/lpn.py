@@ -185,11 +185,18 @@ class LPN(nn.Module):
             ga_step_length = mode_kwargs.get("ga_step_length", 0.5)
             trust_radius = mode_kwargs.get("trust_region_radius", None)
             
-            context, _ = self._get_evolutionary_search_context(
-                leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes,
-                key, 
-                **mode_kwargs
-            )
+            if mode_kwargs.get("track_progress", False):
+                context, _, _ = self._get_evolutionary_search_context(
+                    leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes,
+                    key, 
+                    **mode_kwargs
+                )
+            else:
+                context, _ = self._get_evolutionary_search_context(
+                    leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes,
+                    key, 
+                    **mode_kwargs
+                )
             
             loss, metrics = self._loss_from_pair_and_context(context, pairs, grid_shapes, dropout_eval)
         else:
@@ -454,11 +461,18 @@ class LPN(nn.Module):
             ga_step_length = mode_kwargs.get("ga_step_length", 0.5)
             trust_radius = mode_kwargs.get("trust_region_radius", None)
             
-            first_context, second_context = self._get_evolutionary_search_context(
-                latents, pairs, grid_shapes, key,
-                **mode_kwargs
-            )
-            info = {"context": first_context}
+            if mode_kwargs.get("track_progress", False):
+                first_context, second_context, traj = self._get_evolutionary_search_context(
+                    latents, pairs, grid_shapes, key,
+                    **mode_kwargs
+                )
+                info = {"context": first_context, "evolutionary_trajectory": traj}
+            else:
+                first_context, second_context = self._get_evolutionary_search_context(
+                    latents, pairs, grid_shapes, key,
+                    **mode_kwargs
+                )
+                info = {"context": first_context}
         else:
             raise ValueError(f"Unsupported mode: {mode}")
 
@@ -644,7 +658,7 @@ class LPN(nn.Module):
         random_perturbation: Optional[dict] = None,
         stop_gradient_latent_move: bool = True,
         **kwargs,
-    ) -> tuple[chex.Array, chex.Array]:
+    ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:
         """Returns the best two contexts using a gradient ascent algorithm.
 
         Args:
@@ -827,6 +841,18 @@ class LPN(nn.Module):
 
         best_context, second_best_context = self._select_best_and_second_best_latents(log_probs, latents)
 
+        # When tracking is requested, return a small trajectory payload
+        track_progress = kwargs.get("track_progress", False)
+        if track_progress:
+            try:
+                traj = {
+                    "latents": all_latents,      # (*B, num_steps, C, H)
+                    "log_probs": all_log_probs,  # (*B, num_steps, C)
+                }
+            except Exception:
+                traj = {}
+            return best_context, second_best_context, traj
+
         return best_context, second_best_context
 
 
@@ -979,15 +1005,18 @@ class LPN(nn.Module):
             
             # Create proper gather index that matches population dimensions
             # population shape is (*B, P, C, H) where P=pairs, C=candidates, H=latent_dim
-            # We need to gather along the candidates axis (-2), but population has 4 dims
+            # We need to gather along the candidates axis (-2), and index shape must broadcast to population
             if population.ndim == 4:
-                # Population has pairs dimension: (*B, P, C, H)
-                # Create gather index that works with 4D: (*B, P, S, H)
-                gather_idx = jnp.expand_dims(idx, -1).repeat(population.shape[-1], axis=-1)  # (*B, S, H)
-                gather_idx = jnp.expand_dims(gather_idx, -2).repeat(population.shape[-3], axis=-2)  # (*B, P, S, H)
+                # idx: (*B, S) -> (*B, 1, S, 1) then broadcast to (*B, P, S, H)
+                P = population.shape[-3]
+                Hdim = population.shape[-1]
+                base_idx = idx[..., None, :, None]  # (*B, 1, S, 1)
+                gather_idx = jnp.broadcast_to(base_idx, (*idx.shape[:-1], P, idx.shape[-1], Hdim))  # (*B, P, S, H)
             else:
-                # Population has standard shape: (*B, C, H)
-                gather_idx = jnp.expand_dims(idx, -1).repeat(population.shape[-1], axis=-1)  # (*B, S, H)
+                # population has standard shape: (*B, C, H)
+                # idx: (*B, S) -> (*B, S, H)
+                Hdim = population.shape[-1]
+                gather_idx = jnp.repeat(idx[..., None], Hdim, axis=-1)  # (*B, S, H)
             
             survivors = jnp.take_along_axis(population, gather_idx, axis=-2)            # (*B, P, S, H) or (*B, S, H)
 

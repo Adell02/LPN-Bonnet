@@ -378,12 +378,26 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
     # Store original budgets before they get modified
     original_budgets = list(budgets)
     
-    # Remove the first training step (v0 → 0%), which is empty by design
+    # Determine whether v0 (0%) actually has any valid data; only drop if fully empty
     original_steps = list(steps)
-    steps = [s for s in steps if s != 0]
-    if not steps:
-        print("❌ After removing v0 (0%), no training steps remain to plot")
-        return
+    if 0 in steps:
+        has_valid_data_v0 = False
+        for metric_map in data_by_metric.values():
+            for method_map in metric_map.values():
+                if 0 in method_map:
+                    for val in method_map[0].values():
+                        if not (isinstance(val, float) and np.isnan(val)):
+                            has_valid_data_v0 = True
+                            break
+                if has_valid_data_v0:
+                    break
+            if has_valid_data_v0:
+                break
+        if not has_valid_data_v0:
+            steps = [s for s in steps if s != 0]
+            if not steps:
+                print("❌ After removing v0 (0%), no training steps remain to plot")
+                return
 
     # Create readable step labels
     max_overall_step = max(original_steps) if original_steps else max(steps)
@@ -409,6 +423,7 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
     # Create output directory
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+    csv_name = Path(csv_path).stem
 
     metric_names = [
         "overall_accuracy",
@@ -494,7 +509,6 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
             ax.set_ylabel("Search Budget", fontsize=12)
         # Save plot
         if save_plots:
-            csv_name = Path(csv_path).stem
             if method_b is not None:
                 plot_filename = f"optim_comparison_{csv_name}_{metric}_{method_a}_vs_{method_b}.png"
             else:
@@ -562,7 +576,24 @@ def plot_optimization_comparison(csv_path: str, output_dir: str = "plots",
             original_budgets=original_budgets
         )
 
+    # Always generate overlapping histograms for GA vs ES distributions across all data
+    try:
+        create_accuracy_histograms(
+            data_by_metric=data_by_metric,
+            methods_available=methods_in_csv,
+            output_path=output_path,
+            csv_name=csv_name,
+        )
+    except Exception as e:
+        print(f"⚠️  Failed to create accuracy histograms: {e}")
+
     print("✅ Plotting complete!")
+
+    # Upload CSV to W&B if available
+    try:
+        upload_csv_to_wandb(csv_path, output_path, csv_name)
+    except Exception as e:
+        print(f"⚠️  Failed to upload CSV to W&B: {e}")
 
 
 def create_analysis_plots(data: Dict, steps: List[int], budgets: List[int], 
@@ -915,6 +946,134 @@ def create_checkpoint_subplots(data_by_metric: Dict, steps: List[int], budgets: 
     fig.savefig(checkpoint_path, dpi=200, bbox_inches='tight')
     print(f"💾 Checkpoint subplots saved to: {checkpoint_path}")
     plt.close(fig)
+
+
+def create_accuracy_histograms(
+    data_by_metric: Dict,
+    methods_available: List[str],
+    output_path: Path,
+    csv_name: str,
+    metrics: Optional[List[str]] = None,
+    bins: int = 20,
+    alpha: float = 0.6,
+):
+    """
+    Create overlapping histogram plots for each accuracy metric, comparing
+    gradient_ascent vs evolutionary_search distributions across all steps/budgets.
+    """
+    if metrics is None:
+        metrics = [
+            "overall_accuracy",
+            "top_1_shape_accuracy",
+            "top_1_accuracy",
+            "top_1_pixel_correctness",
+            "top_2_shape_accuracy",
+            "top_2_accuracy",
+            "top_2_pixel_correctness",
+        ]
+
+    # Only proceed if the requested methods are present in the data
+    method_ga = "gradient_ascent"
+    method_es = "evolutionary_search"
+    have_ga = method_ga in methods_available
+    have_es = method_es in methods_available
+
+    if not (have_ga or have_es):
+        print("⚠️  Skipping histogram generation: neither gradient_ascent nor evolutionary_search found in CSV")
+        return
+
+    for metric in metrics:
+        ga_values = []
+        es_values = []
+
+        metric_map = data_by_metric.get(metric, {})
+
+        if have_ga and method_ga in metric_map:
+            for step_map in metric_map[method_ga].values():
+                for v in step_map.values():
+                    if not (isinstance(v, float) and np.isnan(v)):
+                        ga_values.append(float(v))
+
+        if have_es and method_es in metric_map:
+            for step_map in metric_map[method_es].values():
+                for v in step_map.values():
+                    if not (isinstance(v, float) and np.isnan(v)):
+                        es_values.append(float(v))
+
+        if not ga_values and not es_values:
+            print(f"⚠️  No valid data for metric '{metric}' to plot histogram")
+            continue
+
+        plt.figure(figsize=(8, 6))
+
+        # Define common range for 0..1 metrics
+        hist_range = (0.0, 1.0)
+
+        # Plot GA
+        labels_used = []
+        if ga_values:
+            plt.hist(ga_values, bins=bins, range=hist_range, color="#1f77b4", alpha=alpha, label="Gradient Ascent")
+            labels_used.append("Gradient Ascent")
+
+        # Plot ES
+        if es_values:
+            plt.hist(es_values, bins=bins, range=hist_range, color="#d62728", alpha=alpha, label="Evolutionary Search")
+            labels_used.append("Evolutionary Search")
+
+        title_metric = metric.replace("_", " ").title()
+        plt.title(f"Distribution of {title_metric}")
+        plt.xlabel(title_metric)
+        plt.ylabel("Count")
+        if labels_used:
+            plt.legend()
+        plt.xlim(hist_range)
+        plt.grid(True, alpha=0.2)
+
+        out_name = f"histogram_{csv_name}_{metric}"
+        if have_ga and have_es:
+            out_name += "_gradient_ascent_vs_evolutionary_search"
+        elif have_ga:
+            out_name += "_gradient_ascent"
+        elif have_es:
+            out_name += "_evolutionary_search"
+        out_path = output_path / f"{out_name}.png"
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=200, bbox_inches='tight')
+        plt.close()
+        print(f"💾 Histogram saved to: {out_path}")
+
+
+def upload_csv_to_wandb(csv_path: str, output_path: Path, csv_name: str) -> None:
+    """
+    Upload the CSV file to W&B as an artifact containing all evaluation data.
+    """
+    try:
+        import wandb
+        
+        # Check if we're in a W&B run
+        if wandb.run is None:
+            print("⚠️  Not in a W&B run, skipping CSV upload")
+            return
+        
+        # Create artifact
+        artifact = wandb.Artifact(
+            name=f"{csv_name}_evaluation_data",
+            type="evaluation_data",
+            description=f"Complete evaluation results from {csv_name} with all steps and accuracies"
+        )
+        
+        # Add the CSV file
+        artifact.add_file(csv_path)
+        
+        # Log the artifact
+        wandb.log_artifact(artifact)
+        
+        print(f"📤 Uploaded CSV to W&B as artifact: {csv_name}_evaluation_data")
+        
+    except ImportError:
+        print("⚠️  W&B not available, skipping CSV upload")
+    except Exception as e:
+        print(f"⚠️  Failed to upload CSV to W&B: {e}")
 
 
 def main():
