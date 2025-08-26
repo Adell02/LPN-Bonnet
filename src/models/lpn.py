@@ -982,6 +982,8 @@ class LPN(nn.Module):
         if track_progress:
             gen_bests = []
             gen_best_latents = []
+            gen_populations = []
+            gen_fitnesses = []
             best_so_far = -jnp.inf
 
         # ----- main evolutionary loop (plain Python, no extra JAX transform) -----
@@ -1009,6 +1011,9 @@ class LPN(nn.Module):
                     rep, best_idx[..., None, None], axis=-2
                 ).squeeze(axis=-2)                                    # (*B, H)
                 gen_best_latents.append(best_lat)
+                # Store full population and fitness for this generation (representative per batch)
+                gen_populations.append(rep)
+                gen_fitnesses.append(fitness)
 
             # Select top half per batch
             num_survivors = population_size // 2
@@ -1091,6 +1096,12 @@ class LPN(nn.Module):
                 "final_best_accuracy": best_so_far,
                 "best_latents_per_generation": gen_best_latents_arr,
             }
+            if len(gen_populations) > 0:
+                # populations: list of (*B, C, H) -> (*B, G, C, H)
+                traj["populations_per_generation"] = jnp.stack(gen_populations, axis=-3)
+            if len(gen_fitnesses) > 0:
+                # fitnesses: list of (*B, C) -> (*B, G, C)
+                traj["fitness_per_generation"] = jnp.stack(gen_fitnesses, axis=-2)
             return best_context, second_best_context, traj
 
         return best_context, second_best_context

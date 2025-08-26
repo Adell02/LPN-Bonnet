@@ -533,7 +533,7 @@ def evaluate_custom_dataset(
                         except Exception as _pe:
                             print(f"[store_latents] GA path/score derivation failed: {_pe!r}")
 
-            # ES trajectory -> save best_latents_per_generation, and expose best scores per generation
+            # ES trajectory -> save best_latents_per_generation, best scores per generation, and populations
             if isinstance(info0, dict) and "evolutionary_trajectory" in info0 and info0["evolutionary_trajectory"]:
                 traj = info0["evolutionary_trajectory"]
                 try:
@@ -553,6 +553,16 @@ def evaluate_custom_dataset(
                             payload["es_best_scores_per_generation"] = es_gen_acc.reshape(-1)
                         except Exception:
                             pass
+                    # Optional: populations per generation for plotting cloud
+                    if "populations_per_generation" in traj:
+                        pop = np.array(traj["populations_per_generation"])  # (*B, G, C, H)
+                        payload["es_all_latents"] = pop.reshape(-1, pop.shape[-1])
+                        # generation indices for coloring
+                        G = pop.shape[-3]
+                        payload["es_generation_idx"] = np.repeat(np.arange(G), pop.shape[-2])
+                    if "fitness_per_generation" in traj:
+                        fit = np.array(traj["fitness_per_generation"])      # (*B, G, C)
+                        payload["es_all_scores"] = fit.reshape(-1)
                     if "final_best_accuracy" in traj:
                         payload["es_final_best_accuracy"] = np.array(traj["final_best_accuracy"])  # scalar or (*B,)
 

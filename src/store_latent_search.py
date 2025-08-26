@@ -183,9 +183,8 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             if tr.pts is not None and tr.vals is not None:
                 print(f"[plot] {name}: points={len(tr.pts)} values={len(tr.vals)} (need equality to render field)")
 
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5.8), sharex=True, sharey=True)
-    titles = ["GA vs ES on landscape" if have_field else "GA vs ES (no landscape values found)",
-              "Best-of-generation focus (ES)"]
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6.0), sharex=True, sharey=True)
+    titles = ["Gradient Ascent", "Evolutionary Search"]
 
     for ax, ttl in zip(axes, titles):
         ax.set_title(ttl)
@@ -203,8 +202,8 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         V = np.concatenate(background_vals, axis=0)
         Zval = -V if field_name.lower() == "score" else V
         XX, YY, ZZ = _rbf_grid(P, Zval, xlim, ylim, n=240)
-        im = ax0.pcolormesh(XX, YY, ZZ, shading="auto")
-        cbar = fig.colorbar(im, ax=ax0, fraction=0.046, pad=0.04)
+        im0 = ax0.pcolormesh(XX, YY, ZZ, shading="auto", cmap="viridis")
+        cbar = fig.colorbar(im0, ax=ax0, fraction=0.046, pad=0.04)
         cbar.set_label(field_name)
 
     if ga.pts is not None and len(ga.pts) > 1:
@@ -212,20 +211,22 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     if es.pts is not None and len(es.pts) > 1:
         _plot_traj(ax0, es.pts, "ES", color="#ff7f0e")
 
-    if es.pop_pts is not None:
-        if es.gen_idx is not None and len(es.gen_idx) == len(es.pop_pts):
-            ax0.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=8, alpha=0.25, c=es.gen_idx, cmap="viridis", label="ES population")
-        else:
-            ax0.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=8, alpha=0.15, label="ES population")
-
-    ax0.legend(loc="upper right", frameon=True, fontsize=9)
-
+    # Right panel: ES with populations
     ax1 = axes[1]
     if have_field:
-        im2 = ax1.pcolormesh(XX, YY, ZZ, shading="auto")
+        im1 = ax1.pcolormesh(XX, YY, ZZ, shading="auto", cmap="viridis")
         if cbar is None:
-            cbar = fig.colorbar(im2, ax=ax1, fraction=0.046, pad=0.04)
+            cbar = fig.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
             cbar.set_label(field_name)
+
+    # ES populations (alpha=0.5) and chosen path (alpha=1)
+    if es.pop_pts is not None:
+        if es.gen_idx is not None and len(es.gen_idx) == len(es.pop_pts):
+            ax1.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=14, alpha=0.5, c=es.gen_idx, cmap="plasma", label="ES population")
+        else:
+            ax1.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=14, alpha=0.5, color="#999999", label="ES population")
+
+    ax0.legend(loc="upper right", frameon=True, fontsize=9)
 
     if es.best_per_gen is not None and len(es.best_per_gen) > 1:
         _plot_traj(ax1, es.best_per_gen, "ES best per gen", color="#ff7f0e")
