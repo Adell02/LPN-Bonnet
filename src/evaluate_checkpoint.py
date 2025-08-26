@@ -422,62 +422,6 @@ def evaluate_custom_dataset(
     ]
     # Aggregate the metrics over the devices and the batches.
     metrics = {k: jnp.stack([m[k] for m in metrics_list]).mean() for k in metrics_list[0].keys()}
-
-    # Optionally store latents/trajectory for a single representative batch if requested via kwargs
-    try:
-        store_path = evaluator.inference_mode_kwargs.get("store_latents_path", None)
-    except Exception:
-        store_path = None
-    if store_path:
-        try:
-            import numpy as np
-            # Build a variant that returns info
-            pmap_with_info = jax.pmap(
-                build_generate_output_batch_to_be_pmapped(
-                    model=evaluator.model,
-                    eval_inference_mode=evaluator.inference_mode,
-                    eval_inference_mode_kwargs=evaluator.inference_mode_kwargs,
-                    return_info=True,
-                )
-            )
-            # Use the first batch on each device
-            result_with_info = pmap_with_info(
-                train_state.params,
-                leave_one_out_grids[:, 0],
-                leave_one_out_shapes[:, 0],
-                grids[:, 0],
-                shapes[:, 0],
-                keys[:, 0],
-            )
-            # Collect info from first device
-            info0 = result_with_info["info"][0]
-            payload = {}
-            # GA trajectory
-            if isinstance(info0, dict) and "optimization_trajectory" in info0 and info0["optimization_trajectory"]:
-                traj = info0["optimization_trajectory"]
-                if isinstance(traj, dict):
-                    for k, v in traj.items():
-                        try:
-                            payload[f"ga_{k}"] = np.array(v)
-                        except Exception:
-                            pass
-            # ES trajectory
-            if isinstance(info0, dict) and "evolutionary_trajectory" in info0 and info0["evolutionary_trajectory"]:
-                traj = info0["evolutionary_trajectory"]
-                if isinstance(traj, dict):
-                    for k, v in traj.items():
-                        try:
-                            payload[f"es_{k}"] = np.array(v)
-                        except Exception:
-                            pass
-            # Always save something to indicate success
-            if not payload:
-                payload["note"] = np.array(["no_trajectory_available"], dtype=object)
-            os.makedirs(os.path.dirname(store_path) or ".", exist_ok=True)
-            np.savez_compressed(store_path, **payload)
-            print(f"Saved latent search data to {store_path}")
-        except Exception as _e:
-            print(f"Failed to store latents to {store_path}: {_e}")
     return metrics
 
 
@@ -890,12 +834,12 @@ if __name__ == "__main__":
     ]:
         if getattr(args, arg) is not None:
             inference_mode_kwargs[arg] = getattr(args, arg)
+    
     # If storing latents, force track_progress and pass path down for dataset evaluation
     if args.store_latents is not None:
         inference_mode_kwargs["track_progress"] = True
         # We will use this key to signal saving in dataset eval path
         inference_mode_kwargs["store_latents_path"] = args.store_latents
-
     main(
         artifact_path=args.wandb_artifact_path,
         json_challenges_file=args.json_challenges_file,
