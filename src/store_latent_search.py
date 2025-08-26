@@ -204,8 +204,20 @@ def _splat_background(P: np.ndarray, V: np.ndarray, xlim, ylim, n: int = 240,
     Z = np.zeros_like(XX)
     
     # First pass: Gaussian splatting
+    # Ensure P is 2D: (N, 2) where N is number of points
+    if P.ndim > 2:
+        print(f"[splat] Reshaping P from {P.shape} to (-1, 2)")
+        P = P.reshape(-1, 2)
+    
+    # Ensure V is 1D: (N,) where N matches P
+    if V.ndim > 1:
+        print(f"[splat] Reshaping V from {V.shape} to (-1)")
+        V = V.reshape(-1)
+    
+    print(f"[splat] Final shapes: P={P.shape}, V={V.shape}, XX={XX.shape}, YY={YY.shape}")
+    
     Xg = XX[..., None] - P[None, None, :, 0]
-    Yg = YY[..., None] - P[:, None, :, 1]
+    Yg = YY[..., None] - P[None, None, :, 1]
     W = np.exp(-0.5 * (Xg*Xg + Yg*Yg) / (sigma * sigma)) + 1e-12
     num = (W * V[None, None, :]).sum(axis=-1)
     den = W.sum(axis=-1)
@@ -237,7 +249,7 @@ def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6
 
 
 def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: str = "loss", 
-                  background_resolution: int = 240, background_smoothing: bool = False) -> Optional[str]:
+                  background_resolution: int = 240, background_smoothing: bool = False) -> tuple[Optional[str], Optional[str]]:
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -245,14 +257,14 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         from matplotlib import colors
     except Exception as e:
         print(f"Plotting unavailable: {e}")
-        return None
+        return None, None
 
     ga = _load_trace(ga_npz_path, "ga_")
     es = _load_trace(es_npz_path, "es_")
 
     if ga.pts is None and es.pts is None and es.pop_pts is None:
         print("No 2D latent arrays found to plot.")
-        return None
+        return None, None
 
     # unified bounds
     pts_for_bounds = [p for p in [ga.pts, es.pts, es.pop_pts, es.best_per_gen] if p is not None]
@@ -263,9 +275,11 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     bgP, bgV = [], []
     # GA path values
     if ga.pts is not None and ga.vals is not None and len(ga.pts) == len(ga.vals):
+        print(f"[plot] GA data: pts={ga.pts.shape}, vals={ga.vals.shape}")
         bgP.append(ga.pts); bgV.append(np.asarray(ga.vals))
     # ES population values
     if es.pop_pts is not None and es.pop_vals is not None and len(es.pop_pts) == len(es.pop_vals):
+        print(f"[plot] ES data: pts={es.pop_pts.shape}, vals={es.pop_vals.shape}")
         bgP.append(es.pop_pts); bgV.append(np.asarray(es.pop_vals))
     # if nothing, background stays white
     have_field = len(bgP) > 0
@@ -377,10 +391,110 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     fig.savefig(png, dpi=300)
     fig.savefig(svg)
     plt.close(fig)
+    
+    # Generate loss curves plot
+    loss_plot_path = plot_loss_curves(ga, es, out_dir)
+    
+    return png, loss_plot_path
+
+
+def plot_loss_curves(ga: Trace, es: Trace, out_dir: str) -> Optional[str]:
+    """Generate a plot comparing loss curves for GA and ES methods."""
+    try:
+        import matplotlib.pyplot as plt
+    except Exception as e:
+        print(f"Loss curve plotting unavailable: {e}")
+        return None
+    
+    # Check if we have loss data for both methods
+    has_ga_loss = ga.vals is not None and len(ga.vals) > 0
+    has_es_loss = es.vals is not None and len(es.vals) > 0
+    
+    if not has_ga_loss and not has_es_loss:
+        print("No loss data available for plotting loss curves.")
+        return None
+    
+    # Create figure
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    ax.set_title("Loss Curves: Gradient Ascent vs Evolutionary Search")
+    ax.set_xlabel("Step/Generation")
+    ax.set_ylabel("Loss")
+    ax.grid(True, alpha=0.3)
+    
+    # Plot GA loss curve
+    if has_ga_loss:
+        ga_steps = np.arange(len(ga.vals))
+        ax.plot(ga_steps, ga.vals, color="#e91e63", linewidth=2.5, marker='o', 
+                markersize=6, label="Gradient Ascent", zorder=3)
+    
+    # Plot ES loss curve
+    if has_es_loss:
+        es_steps = np.arange(len(es.vals))
+        ax.plot(es_steps, es.vals, color="#ff7f0e", linewidth=2.5, marker='s', 
+                markersize=6, label="Evolutionary Search", zorder=3)
+    
+    # Add ES generation markers if available
+    if es.gen_idx is not None and es.pop_vals is not None:
+        unique_gens = np.unique(es.gen_idx)
+        generation_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                           '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        
+        # Plot population statistics per generation
+        for gen in unique_gens:
+            mask = es.gen_idx == gen
+            gen_vals = es.pop_vals[mask]
+            if len(gen_vals) > 0:
+                color = generation_colors[gen % len(generation_colors)]
+                # Plot mean and std for this generation
+                gen_mean = np.mean(gen_vals)
+                gen_std = np.std(gen_vals)
+                gen_min = np.min(gen_vals)
+                gen_max = np.max(gen_vals)
+                
+                # Add generation statistics as text annotation
+                ax.axhline(y=gen_mean, color=color, alpha=0.3, linestyle='--', linewidth=1)
+                ax.fill_between([0, max(len(ga.vals) if has_ga_loss else 0, len(es.vals) if has_es_loss else 0)], 
+                              gen_mean - gen_std, gen_mean + gen_std, 
+                              color=color, alpha=0.1)
+                
+                # Annotate generation statistics
+                ax.text(0.02, 0.98 - 0.05 * (gen + 1), 
+                       f"Gen {gen}: μ={gen_mean:.3f}, σ={gen_std:.3f}, range=[{gen_min:.3f}, {gen_max:.3f}]",
+                       transform=ax.transAxes, fontsize=8, color=color,
+                       bbox=dict(boxstyle="round,pad=0.3", facecolor=color, alpha=0.1))
+    
+    # Set y-axis to start from a reasonable lower bound
+    if has_ga_loss or has_es_loss:
+        all_vals = []
+        if has_ga_loss:
+            all_vals.extend(ga.vals)
+        if has_es_loss:
+            all_vals.extend(es.vals)
+        
+        y_min = min(all_vals)
+        y_max = max(all_vals)
+        y_range = y_max - y_min
+        ax.set_ylim(y_min - 0.1 * y_range, y_max + 0.1 * y_range)
+    
+    # Add legend
+    ax.legend(loc="upper right", frameon=True, fontsize=10)
+    
+    # Tight layout and save
+    plt.tight_layout()
+    
+    os.makedirs(out_dir, exist_ok=True)
+    png = os.path.join(out_dir, "loss_curves.png")
+    svg = os.path.join(out_dir, "loss_curves.svg")
+    fig.savefig(png, dpi=300)
+    fig.savefig(svg)
+    plt.close(fig)
+    
+    print(f"Saved loss curves plot to {png}")
     return png
 
 
-def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str, es_npz: str, plot_path: Optional[str]) -> None:
+def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str, es_npz: str, 
+                    trajectory_plot: Optional[str], loss_plot: Optional[str]) -> None:
     try:
         import wandb
     except Exception as e:
@@ -395,8 +509,10 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
         es_art = wandb.Artifact(name=f"es_latents_b{cfg.get('budget')}", type="latent_trajectories")
         es_art.add_file(es_npz)
         run.log_artifact(es_art)
-    if plot_path and os.path.exists(plot_path):
-        wandb.log({"trajectory_plot": wandb.Image(plot_path)})
+    if trajectory_plot and os.path.exists(trajectory_plot):
+        wandb.log({"trajectory_plot": wandb.Image(trajectory_plot)})
+    if loss_plot and os.path.exists(loss_plot):
+        wandb.log({"loss_curves_plot": wandb.Image(loss_plot)})
     run.finish()
 
 
@@ -485,11 +601,13 @@ def main() -> None:
     print(f"ES return code: {es_rc}")
 
     # Plot
-    plot_path = plot_and_save(ga_out, es_out, args.out_dir, 
-                              background_resolution=args.background_resolution,
-                              background_smoothing=args.background_smoothing)
-    if plot_path:
-        print(f"Saved plot to {plot_path}")
+    trajectory_plot, loss_plot = plot_and_save(ga_out, es_out, args.out_dir, 
+                                              background_resolution=args.background_resolution,
+                                              background_smoothing=args.background_smoothing)
+    if trajectory_plot:
+        print(f"Saved trajectory plot to {trajectory_plot}")
+    if loss_plot:
+        print(f"Saved loss curves plot to {loss_plot}")
 
     # Upload to W&B
     cfg = {
@@ -511,7 +629,7 @@ def main() -> None:
         "es_return_code": es_rc,
     }
     try:
-        upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, plot_path)
+        upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot)
     except Exception as e:
         print(f"Failed to upload to wandb: {e}")
 
