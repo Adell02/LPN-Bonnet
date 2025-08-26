@@ -34,6 +34,9 @@ python src/store_latent_search.py \
     --budget 100 \
     --background_resolution 800 \
     --background_smoothing \
+    --background_knn 7 \
+    --background_bandwidth_scale 1.5 \
+    --background_global_mix 0.08 \
     --ga_steps 100 \
     --es_population 50 \
     --es_generations 2
@@ -164,76 +167,74 @@ def _nice_bounds(xy: np.ndarray, pad: float = 0.08) -> tuple[tuple[float, float]
     return (xmin - px, xmax + px), (ymin - py, ymax + py)
 
 
-def _splat_background(P: np.ndarray, V: np.ndarray, xlim, ylim, n: int = 240, 
-                      enable_smoothing: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    # Adaptive resolution: increase grid density for small-scale searches
-    search_range = max(xlim[1] - xlim[0], ylim[1] - ylim[0])
-    if len(P) > 1:
-        # Calculate typical step size from the data
-        d2 = ((P[None, :, :] - P[:, None, :]) ** 2).sum(-1)
-        nn = np.sqrt(np.partition(d2 + np.eye(len(P))*1e12, 1, axis=1)[:, 1])
-        typical_step = float(np.median(nn) + 1e-9)
-        
-        # Increase resolution for small steps to create smoother gradients
-        if typical_step < search_range * 0.01:  # Very small steps
-            n = max(n, 800)  # High resolution
-        elif typical_step < search_range * 0.05:  # Small steps
-            n = max(n, 500)  # Medium-high resolution
-        elif typical_step < search_range * 0.1:   # Medium steps
-            n = max(n, 400)  # Medium resolution
-    
+def _splat_background(
+    P: np.ndarray,
+    V: np.ndarray,
+    xlim,
+    ylim,
+    n: int = 400,
+    enable_smoothing: bool = False,
+    knn_k: int = 5,
+    bandwidth_scale: float = 1.25,
+    global_mix: float = 0.05,   # 0 = off, 0.02–0.1 is usually enough
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Adaptive Gaussian splatting with per-point bandwidths + optional global blend.
+    Guarantees a continuous surface even when samples are irregularly spaced.
+    """
+    # grid
     xv = np.linspace(xlim[0], xlim[1], n)
     yv = np.linspace(ylim[0], ylim[1], n)
     XX, YY = np.meshgrid(xv, yv)
+    G = np.stack([XX.ravel(), YY.ravel()], axis=1)  # [M,2], M=n*n
 
-    if len(P) == 1:
-        sigma = 0.1 * max(xlim[1]-xlim[0], ylim[1]-ylim[0])
+    # ensure shapes
+    P = P.reshape(-1, 2)
+    V = V.reshape(-1)
+
+    N = len(P)
+    span = max(xlim[1] - xlim[0], ylim[1] - ylim[0])
+
+    if N == 1:
+        sigma = np.array([0.15 * span], dtype=float)
     else:
-        # Adaptive sigma: use larger radius to cover more space
-        if typical_step < search_range * 0.01:
-            # Very small steps: use larger sigma to cover more area
-            sigma = max(typical_step * 4.0, search_range * 0.02)
-        elif typical_step < search_range * 0.05:
-            # Small steps: use larger sigma to cover more area
-            sigma = max(typical_step * 3.0, search_range * 0.03)
-        else:
-            # Larger steps: use larger sigma for better coverage
-            sigma = max(float(np.median(nn) * 2.0), search_range * 0.05)
+        # pairwise distances to set local bandwidths
+        d2_pp = ((P[:, None, :] - P[None, :, :]) ** 2).sum(-1)
+        np.fill_diagonal(d2_pp, np.inf)
+        k = int(np.clip(knn_k, 1, N - 1))
+        d_knn = np.sqrt(np.partition(d2_pp, k, axis=1)[:, :k])  # [N,k]
+        sigma = bandwidth_scale * np.median(d_knn, axis=1)       # [N]
 
-    # Create smoother background with multiple passes
-    Z = np.zeros_like(XX)
-    
-    # First pass: Gaussian splatting
-    # Ensure P is 2D: (N, 2) where N is number of points
-    if P.ndim > 2:
-        print(f"[splat] Reshaping P from {P.shape} to (-1, 2)")
-        P = P.reshape(-1, 2)
-    
-    # Ensure V is 1D: (N,) where N matches P
-    if V.ndim > 1:
-        print(f"[splat] Reshaping V from {V.shape} to (-1)")
-        V = V.reshape(-1)
-    
-    print(f"[splat] Final shapes: P={P.shape}, V={V.shape}, XX={XX.shape}, YY={YY.shape}")
-    
-    Xg = XX[..., None] - P[None, None, :, 0]
-    Yg = YY[..., None] - P[None, None, :, 1]
-    W = np.exp(-0.5 * (Xg*Xg + Yg*Yg) / (sigma * sigma)) + 1e-12
-    num = (W * V[None, None, :]).sum(axis=-1)
-    den = W.sum(axis=-1)
-    Z = num / den
-    
-    # Second pass: Apply Gaussian smoothing for very small-scale searches
-    if enable_smoothing and len(P) > 1 and typical_step < search_range * 0.02:
-        from scipy.ndimage import gaussian_filter
+        # clamp bandwidths to reasonable range
+        min_sig = 0.02 * span
+        max_sig = 0.30 * span
+        sigma = np.clip(sigma, min_sig, max_sig)
+
+    # weights to grid with per-point sigmas
+    D2 = ((G[:, None, :] - P[None, :, :]) ** 2).sum(-1)          # [M,N]
+    W = np.exp(-0.5 * D2 / (sigma[None, :] ** 2)) + 1e-12        # [M,N]
+
+    num = W @ V                                                  # [M]
+    den = W.sum(axis=1)                                          # [M]
+
+    if global_mix > 0.0:
+        # simple global prior: pulls Z toward the global mean where den is tiny
+        Vmean = float(np.mean(V))
+        lam = float(global_mix)                                  # acts like an extra, very wide kernel
+        Z = (num + lam * Vmean) / (den + lam)
+    else:
+        Z = num / den
+
+    Z = Z.reshape(n, n)
+
+    if enable_smoothing and N > 1:
         try:
-            # Smooth the background to create more gradient-like appearance
-            smoothing_sigma = max(1.0, n * typical_step / search_range)
-            Z = gaussian_filter(Z, sigma=smoothing_sigma)
+            from scipy.ndimage import gaussian_filter
+            # final cosmetic blur, small relative to grid size
+            Z = gaussian_filter(Z, sigma=max(0.6, 0.5 * n / 240))
         except ImportError:
-            # Fallback if scipy not available
             pass
-    
+
     return XX, YY, Z
 
 
@@ -249,7 +250,9 @@ def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6
 
 
 def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: str = "loss", 
-                  background_resolution: int = 240, background_smoothing: bool = False) -> tuple[Optional[str], Optional[str]]:
+                  background_resolution: int = 400, background_smoothing: bool = False,
+                  background_knn: int = 5, background_bandwidth_scale: float = 1.25, 
+                  background_global_mix: float = 0.05) -> tuple[Optional[str], Optional[str]]:
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -316,32 +319,50 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     if have_field:
         P = np.concatenate(bgP, axis=0)
         V = orient(np.concatenate(bgV, axis=0))
-        XX, YY, ZZ = _splat_background(P, V, xlim, ylim, n=background_resolution, enable_smoothing=background_smoothing)
+        XX, YY, ZZ = _splat_background(
+            P, V, xlim, ylim, 
+            n=background_resolution, 
+            enable_smoothing=background_smoothing,
+            knn_k=background_knn,
+            bandwidth_scale=background_bandwidth_scale,
+            global_mix=background_global_mix
+        )
         im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.7)
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label(field_name)
     else:
         ax.set_facecolor("white")
 
-    # ES population: color each generation differently for better visibility
-    if es.pop_pts is not None and es.gen_idx is not None:
-        # Define distinct colors for each generation (avoiding pink/red used by GA)
-        generation_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-                           '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+    # ES population: show all samples in gray + translucent generation circles
+    if es.pop_pts is not None:
+        # First plot ALL ES samples in gray (unused samples)
+        ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=20, alpha=0.4,
+                   color="gray", linewidths=0, zorder=1, label="ES population (all samples)")
         
-        # Plot each generation with a different color
-        unique_gens = np.unique(es.gen_idx)
-        for gen in unique_gens:
-            mask = es.gen_idx == gen
-            gen_pts = es.pop_pts[mask]
-            color = generation_colors[gen % len(generation_colors)]
-            ax.scatter(gen_pts[:, 0], gen_pts[:, 1], s=24, alpha=0.7,
-                       color=color, linewidths=0, zorder=1, 
-                       label=f"ES gen {gen}" if gen < 3 else None)  # Only label first 3 gens to avoid clutter
-    elif es.pop_pts is not None:
-        # Fallback: if no generation info, use single color
-        ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=24, alpha=0.7,
-                   color="#ff7f0e", linewidths=0, zorder=1, label="ES population")
+        # Then add translucent circles to cluster samples from the same generation
+        if es.gen_idx is not None:
+            unique_gens = np.unique(es.gen_idx)
+            generation_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                               '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+            
+            for gen in unique_gens:
+                mask = es.gen_idx == gen
+                gen_pts = es.pop_pts[mask]
+                color = generation_colors[gen % len(generation_colors)]
+                
+                # Calculate generation cluster center and radius
+                gen_center = np.mean(gen_pts, axis=0)
+                gen_radius = np.max(np.linalg.norm(gen_pts - gen_center, axis=1)) * 1.2  # 20% padding
+                
+                # Draw translucent circle for this generation
+                circle = plt.Circle(gen_center, gen_radius, color=color, alpha=0.15, 
+                                  fill=True, linewidth=1, edgecolor=color, alpha_edge=0.3)
+                ax.add_patch(circle)
+                
+                # Add generation label at cluster center
+                ax.text(gen_center[0], gen_center[1], f"Gen {gen}", 
+                       ha='center', va='center', fontsize=8, color=color, weight='bold',
+                       bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8, edgecolor=color))
 
     # ES selected path (best per generation if present, otherwise es.pts)
     es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
@@ -355,22 +376,23 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # Create comprehensive legend with all elements
     legend_elements = []
     
-    # ES population generations (if available)
+    # ES population (all samples in gray)
+    if es.pop_pts is not None:
+        legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', 
+                                       markersize=10, alpha=0.4, label='ES population (all samples)'))
+    
+    # Generation clusters (translucent circles)
     if es.pop_pts is not None and es.gen_idx is not None:
         unique_gens = np.unique(es.gen_idx)
         generation_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
                            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
         for i, gen in enumerate(unique_gens[:3]):  # Show first 3 generations
             color = generation_colors[gen % len(generation_colors)]
-            legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color, 
-                                           markersize=10, alpha=0.7, label=f'ES gen {gen}'))
+            legend_elements.append(plt.Line2D([0], [0], marker='o', color=color, markerfacecolor=color, 
+                                           markersize=12, alpha=0.3, label=f'ES Gen {gen} cluster'))
         if len(unique_gens) > 3:
-            legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#7f7f7f', 
-                                           markersize=10, alpha=0.7, label=f'ES gen {unique_gens[3:]}...'))
-    else:
-        # Fallback: single ES population color
-        legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#ff7f0e', 
-                                       markersize=10, alpha=0.7, label='ES population'))
+            legend_elements.append(plt.Line2D([0], [0], marker='o', color='#7f7f7f', markerfacecolor='#7f7f7f', 
+                                           markersize=12, alpha=0.3, label=f'ES Gen {unique_gens[3:]}... clusters'))
     
     # Trajectory paths
     legend_elements.append(plt.Line2D([0], [0], color='#ff7f0e', linewidth=2, label='ES selected path'))
@@ -416,9 +438,9 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str) -> Optional[str]:
     
     # Create figure
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-    ax.set_title("Loss Curves: Gradient Ascent vs Evolutionary Search")
+    ax.set_title("Optimization Progress: Gradient Ascent vs Evolutionary Search")
     ax.set_xlabel("Step/Generation")
-    ax.set_ylabel("Loss")
+    ax.set_ylabel("Loss (lower is better)")
     ax.grid(True, alpha=0.3)
     
     # Plot GA loss curve
@@ -433,35 +455,27 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str) -> Optional[str]:
         ax.plot(es_steps, es.vals, color="#ff7f0e", linewidth=2.5, marker='s', 
                 markersize=6, label="Evolutionary Search", zorder=3)
     
-    # Add ES generation markers if available
+    # Add ES generation markers if available (simplified, no legend clutter)
     if es.gen_idx is not None and es.pop_vals is not None:
         unique_gens = np.unique(es.gen_idx)
         generation_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
                            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
         
-        # Plot population statistics per generation
+        # Plot population statistics per generation (background only, no text)
         for gen in unique_gens:
             mask = es.gen_idx == gen
             gen_vals = es.pop_vals[mask]
             if len(gen_vals) > 0:
                 color = generation_colors[gen % len(generation_colors)]
-                # Plot mean and std for this generation
+                # Plot mean and std for this generation (subtle background)
                 gen_mean = np.mean(gen_vals)
                 gen_std = np.std(gen_vals)
-                gen_min = np.min(gen_vals)
-                gen_max = np.max(gen_vals)
                 
-                # Add generation statistics as text annotation
-                ax.axhline(y=gen_mean, color=color, alpha=0.3, linestyle='--', linewidth=1)
+                # Add generation statistics as subtle background elements
+                ax.axhline(y=gen_mean, color=color, alpha=0.2, linestyle='--', linewidth=0.8)
                 ax.fill_between([0, max(len(ga.vals) if has_ga_loss else 0, len(es.vals) if has_es_loss else 0)], 
                               gen_mean - gen_std, gen_mean + gen_std, 
-                              color=color, alpha=0.1)
-                
-                # Annotate generation statistics
-                ax.text(0.02, 0.98 - 0.05 * (gen + 1), 
-                       f"Gen {gen}: μ={gen_mean:.3f}, σ={gen_std:.3f}, range=[{gen_min:.3f}, {gen_max:.3f}]",
-                       transform=ax.transAxes, fontsize=8, color=color,
-                       bbox=dict(boxstyle="round,pad=0.3", facecolor=color, alpha=0.1))
+                              color=color, alpha=0.05)
     
     # Set y-axis to start from a reasonable lower bound
     if has_ga_loss or has_es_loss:
@@ -534,8 +548,11 @@ def main() -> None:
     parser.add_argument("--ga_step_length", type=float, default=0.5)
     parser.add_argument("--trust_region_radius", type=float, default=None)
     parser.add_argument("--track_progress", action="store_true", help="Enable progress tracking for both GA and ES")
-    parser.add_argument("--background_resolution", type=int, default=240, help="Base resolution for background heatmap (higher = smoother)")
+    parser.add_argument("--background_resolution", type=int, default=400, help="Base resolution for background heatmap (higher = smoother)")
     parser.add_argument("--background_smoothing", action="store_true", help="Enable additional Gaussian smoothing for small-scale searches")
+    parser.add_argument("--background_knn", type=int, default=5, help="k-NN parameter for adaptive bandwidth (3-7 recommended)")
+    parser.add_argument("--background_bandwidth_scale", type=float, default=1.25, help="Bandwidth scaling factor (bigger = softer, more overlap)")
+    parser.add_argument("--background_global_mix", type=float, default=0.05, help="Global mixing strength (0.02-0.1 recommended, 0 to disable)")
     parser.add_argument("--out_dir", type=str, default="results/latent_traces")
     parser.add_argument("--wandb_project", type=str, default="latent-search-analysis")
     parser.add_argument("--wandb_entity", type=str, default=None)
@@ -603,7 +620,10 @@ def main() -> None:
     # Plot
     trajectory_plot, loss_plot = plot_and_save(ga_out, es_out, args.out_dir, 
                                               background_resolution=args.background_resolution,
-                                              background_smoothing=args.background_smoothing)
+                                              background_smoothing=args.background_smoothing,
+                                              background_knn=args.background_knn,
+                                              background_bandwidth_scale=args.background_bandwidth_scale,
+                                              background_global_mix=args.background_global_mix)
     if trajectory_plot:
         print(f"Saved trajectory plot to {trajectory_plot}")
     if loss_plot:
@@ -625,6 +645,9 @@ def main() -> None:
         "track_progress": args.track_progress,
         "background_resolution": args.background_resolution,
         "background_smoothing": args.background_smoothing,
+        "background_knn": args.background_knn,
+        "background_bandwidth_scale": args.background_bandwidth_scale,
+        "background_global_mix": args.background_global_mix,
         "ga_return_code": ga_rc,
         "es_return_code": es_rc,
     }

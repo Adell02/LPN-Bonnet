@@ -879,7 +879,7 @@ class LPN(nn.Module):
             Args:
             cand_latents: (*B, C, H) — candidate contexts per task/batch
             Returns:
-            log_probs:    (*B, P, C) — per-pair log-prob for each candidate
+            losses:        (*B, P, C) — per-pair loss for each candidate (lower is better)
             """
             # Flatten input/output for decoding likelihood (identical to random search)
             input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
@@ -929,13 +929,16 @@ class LPN(nn.Module):
                     (r_row, r_col, r_grid),
                 )
 
-            # Compute output sequence log probabilities (identical to random).
-            # Note: in_axes = (-2, -2, -2, None) matches the candidate axis at -2 for all three.
+            # Compute output sequence log probabilities (identical to random search)
             log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
                 row_logits, col_logits, grid_logits, output_seq
             )  # shape: (*B, P, C)
 
-            return log_probs
+            # Convert log probabilities to losses (minimizing loss like GA)
+            # -log_prob = loss (lower is better)
+            losses = -log_probs  # shape: (*B, P, C)
+
+            return losses
 
         # ----- initialize population around prepared latents -----
         base = self._prepare_latents_before_search(include_mean_latent, include_all_latents, latents)
@@ -993,9 +996,10 @@ class LPN(nn.Module):
         # ----- main evolutionary loop (plain Python, no extra JAX transform) -----
         for _ in range(num_generations):
             # Score current population exactly like random search
-            log_probs = _eval_candidates(population)                  # (*B, P, C) or (*B, C) if P=1 folded inside impl
+            losses = _eval_candidates(population)                     # (*B, P, C) or (*B, C) if P=1 folded inside impl
             # Reduce over pairs to get a fitness per candidate (keep batch dims)
-            fitness = log_probs.mean(axis=-2) if log_probs.ndim >= 3 else log_probs  # (*B, C)
+            # Note: lower losses are better, so we negate to get fitness (higher is better)
+            fitness = -losses.mean(axis=-2) if losses.ndim >= 3 else -losses  # (*B, C)
 
             # Track
             if track_progress:
@@ -1015,9 +1019,11 @@ class LPN(nn.Module):
                     rep, best_idx[..., None, None], axis=-2
                 ).squeeze(axis=-2)                                    # (*B, H)
                 gen_best_latents.append(best_lat)
-                # Store full population and fitness for this generation (representative per batch)
+                # Store full population and losses for this generation (representative per batch)
                 gen_populations.append(rep)
-                gen_fitnesses.append(fitness)
+                # Store losses (not fitness) for consistency with GA
+                gen_losses = losses.mean(axis=-2) if losses.ndim >= 3 else losses
+                gen_fitnesses.append(gen_losses)
 
             # Select top half per batch
             num_survivors = population_size // 2
@@ -1084,28 +1090,28 @@ class LPN(nn.Module):
             population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, P, C, H) or (*B, C, H)
 
         # ----- final selection like random search -----
-        final_log_probs = _eval_candidates(population)           # (*B, P, C)
+        final_losses = _eval_candidates(population)              # (*B, P, C)
         # Remove the duplication of latents over pairs for selection (identical to random)
         latents_for_pick = population                             # (*B, C, H)
 
         best_context, second_best_context = self._select_best_and_second_best_latents(
-            final_log_probs, latents_for_pick
+            final_losses, latents_for_pick
         )
 
         if track_progress:
-            # Stack as (*B, G, H) for latents and (*G, *B) for accuracies
+            # Stack as (*B, G, H) for latents and (*G, *B) for losses
             gen_best_latents_arr = jnp.stack(gen_best_latents, axis=-2) if len(gen_best_latents) > 0 else None
             traj = {
-                "generation_accuracies": jnp.stack(gen_bests),
-                "final_best_accuracy": best_so_far,
+                "generation_losses": jnp.stack(gen_bests),  # Best fitness per generation
+                "final_best_fitness": best_so_far,
                 "best_latents_per_generation": gen_best_latents_arr,
             }
             if len(gen_populations) > 0:
                 # populations: list of (*B, C, H) -> (*B, G, C, H)
                 traj["populations_per_generation"] = jnp.stack(gen_populations, axis=-3)
             if len(gen_fitnesses) > 0:
-                # fitnesses: list of (*B, C) -> (*B, G, C)
-                traj["fitness_per_generation"] = jnp.stack(gen_fitnesses, axis=-2)
+                # losses: list of (*B, C) -> (*B, G, C) - actual losses (lower is better)
+                traj["losses_per_generation"] = jnp.stack(gen_fitnesses, axis=-2)
             return best_context, second_best_context, traj
 
         return best_context, second_best_context
