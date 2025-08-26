@@ -189,23 +189,23 @@ def _splat_background(P: np.ndarray, V: np.ndarray, xlim, ylim, n: int = 240,
     if len(P) == 1:
         sigma = 0.1 * max(xlim[1]-xlim[0], ylim[1]-ylim[0])
     else:
-        # Adaptive sigma: use smaller sigma for small-scale searches
+        # Adaptive sigma: use larger radius to cover more space
         if typical_step < search_range * 0.01:
-            # Very small steps: use sigma proportional to step size
-            sigma = max(typical_step * 2.0, search_range * 0.005)
+            # Very small steps: use larger sigma to cover more area
+            sigma = max(typical_step * 4.0, search_range * 0.02)
         elif typical_step < search_range * 0.05:
-            # Small steps: use sigma proportional to step size
-            sigma = max(typical_step * 1.5, search_range * 0.01)
+            # Small steps: use larger sigma to cover more area
+            sigma = max(typical_step * 3.0, search_range * 0.03)
         else:
-            # Larger steps: use original nearest neighbor approach
-            sigma = float(np.median(nn) + 1e-9)
+            # Larger steps: use larger sigma for better coverage
+            sigma = max(float(np.median(nn) * 2.0), search_range * 0.05)
 
     # Create smoother background with multiple passes
     Z = np.zeros_like(XX)
     
     # First pass: Gaussian splatting
     Xg = XX[..., None] - P[None, None, :, 0]
-    Yg = YY[..., None] - P[None, None, :, 1]
+    Yg = YY[..., None] - P[:, None, :, 1]
     W = np.exp(-0.5 * (Xg*Xg + Yg*Yg) / (sigma * sigma)) + 1e-12
     num = (W * V[None, None, :]).sum(axis=-1)
     den = W.sum(axis=-1)
@@ -303,15 +303,30 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         P = np.concatenate(bgP, axis=0)
         V = orient(np.concatenate(bgV, axis=0))
         XX, YY, ZZ = _splat_background(P, V, xlim, ylim, n=background_resolution, enable_smoothing=background_smoothing)
-        im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.8)
+        im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.7)
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label(field_name)
     else:
         ax.set_facecolor("white")
 
-    # ES population (alpha 0.7), colored orange to match ES selected path
-    if es.pop_pts is not None:
-        ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=16, alpha=0.7,
+    # ES population: color each generation differently for better visibility
+    if es.pop_pts is not None and es.gen_idx is not None:
+        # Define distinct colors for each generation (avoiding pink/red used by GA)
+        generation_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                           '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        
+        # Plot each generation with a different color
+        unique_gens = np.unique(es.gen_idx)
+        for gen in unique_gens:
+            mask = es.gen_idx == gen
+            gen_pts = es.pop_pts[mask]
+            color = generation_colors[gen % len(generation_colors)]
+            ax.scatter(gen_pts[:, 0], gen_pts[:, 1], s=24, alpha=0.7,
+                       color=color, linewidths=0, zorder=1, 
+                       label=f"ES gen {gen}" if gen < 3 else None)  # Only label first 3 gens to avoid clutter
+    elif es.pop_pts is not None:
+        # Fallback: if no generation info, use single color
+        ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=24, alpha=0.7,
                    color="#ff7f0e", linewidths=0, zorder=1, label="ES population")
 
     # ES selected path (best per generation if present, otherwise es.pts)
@@ -326,9 +341,22 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # Create comprehensive legend with all elements
     legend_elements = []
     
-    # Sample types
-    legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#ff7f0e', 
-                                     markersize=8, alpha=0.7, label='ES population (unused)'))
+    # ES population generations (if available)
+    if es.pop_pts is not None and es.gen_idx is not None:
+        unique_gens = np.unique(es.gen_idx)
+        generation_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                           '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        for i, gen in enumerate(unique_gens[:3]):  # Show first 3 generations
+            color = generation_colors[gen % len(generation_colors)]
+            legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color, 
+                                           markersize=10, alpha=0.7, label=f'ES gen {gen}'))
+        if len(unique_gens) > 3:
+            legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#7f7f7f', 
+                                           markersize=10, alpha=0.7, label=f'ES gen {unique_gens[3:]}...'))
+    else:
+        # Fallback: single ES population color
+        legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#ff7f0e', 
+                                       markersize=10, alpha=0.7, label='ES population'))
     
     # Trajectory paths
     legend_elements.append(plt.Line2D([0], [0], color='#ff7f0e', linewidth=2, label='ES selected path'))
@@ -336,9 +364,9 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     
     # Start/End markers
     legend_elements.append(plt.Line2D([0], [0], marker='o', color='k', markerfacecolor='w', 
-                                     markersize=8, markeredgewidth=1, label='Start point'))
+                                     markersize=10, markeredgewidth=1, label='Start point'))
     legend_elements.append(plt.Line2D([0], [0], marker='s', color='k', markerfacecolor='w', 
-                                     markersize=8, markeredgewidth=1, label='End point'))
+                                     markersize=10, markeredgewidth=1, label='End point'))
     
     ax.legend(handles=legend_elements, loc="upper right", frameon=True, fontsize=9)
     plt.tight_layout()
@@ -375,6 +403,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Store and plot latent search trajectories (GA & ES). "
+        "Both methods start from the same mean latent for fair comparison. "
         "Use --ga_steps, --es_population, --es_generations to override automatic budget-based calculations."
     )
     parser.add_argument("--wandb_artifact_path", required=True, type=str)
@@ -410,6 +439,7 @@ def main() -> None:
     # Gradient Ascent config
     ga_steps = args.ga_steps if args.ga_steps is not None else int(math.ceil(args.budget / 2))
     print(f"🔧 GA config: {ga_steps} steps (lr={args.ga_lr})")
+    print(f"   🎯 GA starts from mean latent")
     ga_out = os.path.join(args.out_dir, "ga_latents.npz")
     ga_cmd = [
         sys.executable, "src/evaluate_checkpoint.py",
@@ -431,6 +461,7 @@ def main() -> None:
     pop = args.es_population if args.es_population is not None else max(3, min(32, int(round(math.sqrt(args.budget)))))
     gens = args.es_generations if args.es_generations is not None else max(1, int(math.ceil(args.budget / pop)))
     print(f"🧬 ES config: population={pop}, generations={gens} (mutation_std={args.es_mutation_std})")
+    print(f"   🎯 ES starts from mean latent (same as GA)")
     es_out = os.path.join(args.out_dir, "es_latents.npz")
     es_cmd = [
         sys.executable, "src/evaluate_checkpoint.py",

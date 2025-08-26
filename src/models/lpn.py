@@ -961,22 +961,26 @@ class LPN(nn.Module):
         # Cap or fill to population_size
         C0 = base.shape[-2]
         if C0 >= population_size:
+            # If we have more than needed, take the first population_size
             population = base[..., :population_size, :]                       # (*B, C, H)
         else:
-            # center noise at mean of base latents
+            # Start from mean latent (same as GA) and expand population around it
             mean_latent = base.mean(axis=-2, keepdims=True)                   # (*B, 1, H)
-            need = population_size - C0
+            print(f"         🎯 ES starting from mean latent (same as GA)")
+            need = population_size - 1  # We only need to add (population_size - 1) since we start from mean
             key, nk = jax.random.split(key)
             if use_subspace_mutation and U is not None:
                 # Use subspace mutation for initial population expansion
                 actual_subspace_dim = U.shape[-1]  # Get actual subspace dimension from U
                 noise = jax.random.normal(nk, (*base.shape[:-2], need, actual_subspace_dim))
                 step = jnp.einsum('...nm,...hm->...nh', noise, jnp.swapaxes(U, -2, -1))
-                population = jnp.concatenate([base, mean_latent + sigma * step], axis=-2)
+                # Start from mean, add noise around it
+                population = jnp.concatenate([mean_latent, mean_latent + sigma * step], axis=-2)
             else:
                 # Standard isotropic noise
                 noise = jax.random.normal(nk, (*base.shape[:-2], need, base.shape[-1]))
-                population = jnp.concatenate([base, mean_latent + sigma * noise], axis=-2)
+                # Start from mean, add noise around it
+                population = jnp.concatenate([mean_latent, mean_latent + sigma * noise], axis=-2)
 
         # Optional tracking
         if track_progress:
