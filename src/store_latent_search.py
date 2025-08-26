@@ -79,16 +79,17 @@ def try_extract_2d_points(npz: np.lib.npyio.NpzFile, prefix: str) -> Optional[np
     for key in preferred:
         if key in npz:
             arr = np.array(npz[key])
-            if arr.ndim >= 2 and arr.shape[-1] == 2:
+            if arr.ndim >= 2:
+                # Accept any dimension - PCA will handle reduction to 2D if needed
                 print(f"[plot] Using key '{key}' for {prefix} points, shape={arr.shape}")
-                return arr.reshape(-1, 2)
-    # Fallback: first array with last-dim=2
+                return arr
+    # Fallback: first array with at least 2 dimensions
     for key in npz.files:
         if not key.startswith(prefix):
             continue
         arr = np.array(npz[key])
-        if arr.ndim >= 2 and arr.shape[-1] == 2:
-            return arr.reshape(-1, 2)
+        if arr.ndim >= 2:
+            return arr
     return None
 
 
@@ -133,8 +134,9 @@ def _extract_best_per_gen(npz, prefix: str) -> Optional[np.ndarray]:
     for k in [f"{prefix}best_latents_per_generation", f"{prefix}elite_latents"]:
         if k in npz:
             arr = np.array(npz[k])
-            if arr.ndim >= 2 and arr.shape[-1] == 2:
-                return arr.reshape(-1, 2)
+            if arr.ndim >= 2:
+                # Accept any dimension - PCA will handle reduction to 2D if needed
+                return arr
     return None
 
 
@@ -142,7 +144,8 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
     # also read ES population scores so we can make the soft heatmap
     pts = gens = vals = None
     if f"{prefix}all_latents" in npz:
-        pts = np.array(npz[f"{prefix}all_latents"]).reshape(-1, 2)
+        pts = np.array(npz[f"{prefix}all_latents"])
+        # Don't reshape here - PCA will handle dimension reduction
     if f"{prefix}generation_idx" in npz:
         gens = np.array(npz[f"{prefix}generation_idx"]).reshape(-1)
     # Look for various possible keys for population values (new ES keys first)
@@ -166,6 +169,66 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
             t.gen_idx = gen_idx
             t.pop_vals = pop_vals
     return t
+
+
+def _apply_pca_if_needed(points: np.ndarray, target_dim: int = 2) -> tuple[np.ndarray, int]:
+    """
+    Apply PCA to reduce points to target dimension if needed.
+    Returns (transformed_points, original_dim).
+    """
+    if points is None or points.size == 0:
+        return points, 0
+    
+    original_dim = points.shape[-1]
+    if original_dim <= target_dim:
+        return points, original_dim
+    
+    print(f"[PCA] Reducing {original_dim}D latents to {target_dim}D using PCA")
+    
+    # Reshape to (N, D) for PCA
+    original_shape = points.shape
+    points_2d = points.reshape(-1, original_dim)
+    
+    # Apply PCA
+    try:
+        from sklearn.decomposition import PCA
+        pca = PCA(n_components=target_dim)
+        points_transformed = pca.fit_transform(points_2d)
+        explained_variance_ratio = pca.explained_variance_ratio_
+        print(f"[PCA] Explained variance ratio: {explained_variance_ratio}")
+        print(f"[PCA] Cumulative explained variance: {np.sum(explained_variance_ratio):.3f}")
+    except ImportError:
+        print("[PCA] sklearn not available, using manual PCA implementation")
+        # Manual PCA implementation
+        # Center the data
+        mean = np.mean(points_2d, axis=0)
+        centered = points_2d - mean
+        
+        # Compute covariance matrix
+        cov_matrix = np.cov(centered.T)
+        
+        # Compute eigenvalues and eigenvectors
+        eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+        
+        # Sort by eigenvalues (descending)
+        sorted_indices = np.argsort(eigenvalues)[::-1]
+        eigenvalues = eigenvalues[sorted_indices]
+        eigenvectors = eigenvectors[:, sorted_indices]
+        
+        # Project data onto top components
+        points_transformed = centered @ eigenvectors[:, :target_dim]
+        
+        # Compute explained variance ratio
+        total_variance = np.sum(eigenvalues)
+        explained_variance_ratio = eigenvalues[:target_dim] / total_variance
+        print(f"[PCA] Explained variance ratio: {explained_variance_ratio}")
+        print(f"[PCA] Cumulative explained variance: {np.sum(explained_variance_ratio):.3f}")
+    
+    # Reshape back to original shape but with target_dim as last dimension
+    new_shape = list(original_shape[:-1]) + [target_dim]
+    points_transformed = points_transformed.reshape(new_shape)
+    
+    return points_transformed, original_dim
 
 
 def _nice_bounds(xy: np.ndarray, pad: float = 0.08) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -287,6 +350,37 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         print("No 2D latent arrays found to plot.")
         return None, None
 
+    # Apply PCA if needed and track original dimensions
+    original_dims = []
+    
+    # Apply PCA to GA points if needed
+    if ga.pts is not None:
+        ga.pts, ga_dim = _apply_pca_if_needed(ga.pts, target_dim=2)
+        if ga_dim > 0:
+            original_dims.append(ga_dim)
+    
+    # Apply PCA to ES points if needed
+    if es.pts is not None:
+        es.pts, es_dim = _apply_pca_if_needed(es.pts, target_dim=2)
+        if es_dim > 0:
+            original_dims.append(es_dim)
+    
+    # Apply PCA to ES population points if needed
+    if es.pop_pts is not None:
+        es.pop_pts, es_pop_dim = _apply_pca_if_needed(es.pop_pts, target_dim=2)
+        if es_pop_dim > 0:
+            original_dims.append(es_pop_dim)
+    
+    # Apply PCA to ES best per generation if needed
+    if es.best_per_gen is not None:
+        es.best_per_gen, es_best_dim = _apply_pca_if_needed(es.best_per_gen, target_dim=2)
+        if es_best_dim > 0:
+            original_dims.append(es_best_dim)
+    
+    # Get the most common original dimension (or max if different)
+    original_dim = max(original_dims) if original_dims else 2
+    print(f"[plot] Original latent dimension: {original_dim}D, projected to 2D using PCA")
+
     # unified bounds
     pts_for_bounds = [p for p in [ga.pts, es.pts, es.pop_pts, es.best_per_gen] if p is not None]
     XY = np.concatenate(pts_for_bounds, axis=0)
@@ -327,7 +421,8 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
 
     # figure
     fig, ax = plt.subplots(1, 1, figsize=(14, 16))
-    ax.set_title("Latent search: GA and ES")
+    title = f"Latent search: GA and ES (Z_dim = {original_dim})"
+    ax.set_title(title)
     ax.set_xlabel("z1"); ax.set_ylabel("z2")
     ax.set_aspect("equal")
     ax.grid(True, alpha=0.25)
@@ -425,12 +520,12 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     plt.close(fig)
     
     # Generate loss curves plot
-    loss_plot_path = plot_loss_curves(ga, es, out_dir)
+    loss_plot_path = plot_loss_curves(ga, es, out_dir, original_dim)
     
     return png, loss_plot_path
 
 
-def plot_loss_curves(ga: Trace, es: Trace, out_dir: str) -> Optional[str]:
+def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2) -> Optional[str]:
     """Generate a plot comparing loss curves for GA and ES methods."""
     try:
         import matplotlib.pyplot as plt
@@ -454,7 +549,8 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str) -> Optional[str]:
     
     # Create figure
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-    ax.set_title("Optimization Progress: Gradient Ascent vs Evolutionary Search")
+    title = f"Optimization Progress: Gradient Ascent vs Evolutionary Search (Z_dim = {original_dim})"
+    ax.set_title(title)
     ax.set_xlabel("Step/Generation")
     ax.set_ylabel("Loss (lower is better)")
     ax.grid(True, alpha=0.3)
@@ -538,6 +634,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Store and plot latent search trajectories (GA & ES). "
         "Both methods start from the same mean latent for fair comparison. "
+        "Automatically applies PCA to reduce latent dimensions > 2 to 2D for visualization. "
         "Use --ga_steps, --es_population, --es_generations to override automatic budget-based calculations."
     )
     parser.add_argument("--wandb_artifact_path", required=True, type=str)
@@ -621,7 +718,7 @@ def main() -> None:
     es_rc = subprocess.run(es_cmd, check=False).returncode
     print(f"ES return code: {es_rc}")
 
-    # Plot
+    # Plot (with automatic PCA if latent dimension > 2)
     trajectory_plot, loss_plot = plot_and_save(ga_out, es_out, args.out_dir, 
                                               background_resolution=args.background_resolution,
                                               background_smoothing=args.background_smoothing,
