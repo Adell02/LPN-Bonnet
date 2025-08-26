@@ -1021,9 +1021,12 @@ class LPN(nn.Module):
                 gen_best_latents.append(best_lat)
                 # Store full population and losses for this generation (representative per batch)
                 gen_populations.append(rep)
-                # Store losses (not fitness) for consistency with GA
-                gen_losses = losses.mean(axis=-2) if losses.ndim >= 3 else losses
-                gen_fitnesses.append(gen_losses)
+                # Store only the best loss per generation (not all population losses)
+                gen_losses = losses.mean(axis=-2) if losses.ndim >= 3 else losses  # (*B, C)
+                best_loss_this_gen = jnp.take_along_axis(
+                    gen_losses, best_idx[..., None], axis=-1
+                ).squeeze(axis=-1)  # (*B,) - only the best loss this generation
+                gen_fitnesses.append(best_loss_this_gen)
 
             # Select top half per batch
             num_survivors = population_size // 2
@@ -1110,8 +1113,8 @@ class LPN(nn.Module):
                 # populations: list of (*B, C, H) -> (*B, G, C, H)
                 traj["populations_per_generation"] = jnp.stack(gen_populations, axis=-3)
             if len(gen_fitnesses) > 0:
-                # losses: list of (*B, C) -> (*B, G, C) - actual losses (lower is better)
-                traj["losses_per_generation"] = jnp.stack(gen_fitnesses, axis=-2)
+                # losses: list of (*B,) -> (*B, G) - best loss per generation (lower is better)
+                traj["losses_per_generation"] = jnp.stack(gen_fitnesses, axis=-1)
             return best_context, second_best_context, traj
 
         return best_context, second_best_context
