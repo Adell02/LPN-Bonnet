@@ -118,6 +118,13 @@ def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
             if arr.ndim == 1 and arr.size > 0:
                 print(f"[plot] Using values key '{k}', length={arr.size}")
                 return arr
+    
+    # Special handling for ES: if we have best_latents_per_generation but no values,
+    # we need to extract the trajectory from the saved data
+    if prefix == "es_" and f"{prefix}best_latents_per_generation" in npz:
+        print(f"[plot] ES trajectory found but no values - this indicates a data saving issue")
+        print(f"[plot] Available keys: {list(npz.keys())}")
+    
     return None
 
 
@@ -435,6 +442,12 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str) -> Optional[str]:
     has_ga_loss = ga.vals is not None and len(ga.vals) > 0
     has_es_loss = es.vals is not None and len(es.vals) > 0
     
+    print(f"[loss] GA loss data: {has_ga_loss}, ES loss data: {has_es_loss}")
+    if has_ga_loss:
+        print(f"[loss] GA vals shape: {ga.vals.shape}, type: {type(ga.vals)}")
+    if has_es_loss:
+        print(f"[loss] ES vals shape: {es.vals.shape}, type: {type(es.vals)}")
+    
     if not has_ga_loss and not has_es_loss:
         print("No loss data available for plotting loss curves.")
         return None
@@ -457,6 +470,16 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str) -> Optional[str]:
         es_steps = np.arange(len(es.vals))
         ax.plot(es_steps, es.vals, color="#ff7f0e", linewidth=2.5, marker='s', 
                 markersize=6, label="Evolutionary Search", zorder=3)
+    else:
+        # Fallback: try to reconstruct ES curve from available data
+        print(f"[loss] ES loss data missing - attempting to reconstruct from available data")
+        if es.best_per_gen is not None:
+            print(f"[loss] ES best_per_gen shape: {es.best_per_gen.shape}")
+            # We have the best latents per generation, but no loss values
+            # This indicates the loss data wasn't saved properly
+            print(f"[loss] Warning: ES trajectory found but loss values are missing!")
+            print(f"[loss] The ES curve cannot be plotted without loss data.")
+            print(f"[loss] This suggests a data saving issue in evaluate_checkpoint.py")
     
     # Add ES generation markers if available (simplified, no legend clutter)
     if es.gen_idx is not None and es.pop_vals is not None:
