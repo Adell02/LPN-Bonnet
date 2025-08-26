@@ -32,16 +32,18 @@ def build_dataset_args(args: argparse.Namespace) -> list[str]:
 
 
 def try_extract_2d_points(npz: np.lib.npyio.NpzFile, prefix: str) -> Optional[np.ndarray]:
-    # Prefer known keys
+    # Prefer actual trajectory/path first, then best-of-gen, then raw sets
     preferred = [
+        f"{prefix}path",
+        f"{prefix}best_latents_per_generation",
         f"{prefix}latents",
         f"{prefix}all_latents",
-        f"{prefix}best_latents_per_generation",
     ]
     for key in preferred:
         if key in npz:
             arr = np.array(npz[key])
             if arr.ndim >= 2 and arr.shape[-1] == 2:
+                print(f"[plot] Using key '{key}' for {prefix} points, shape={arr.shape}")
                 return arr.reshape(-1, 2)
     # Fallback: first array with last-dim=2
     for key in npz.files:
@@ -63,14 +65,18 @@ class Trace:
 
 
 def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
-    for k in [f"{prefix}losses", f"{prefix}scores",
-              f"{prefix}all_losses", f"{prefix}all_scores",
-              f"{prefix}best_scores_per_generation",
-              f"{prefix}best_losses_per_generation",
-              f"{prefix}ga_scores"]:
+    for k in [
+        f"{prefix}losses",
+        f"{prefix}scores",
+        f"{prefix}all_losses",
+        f"{prefix}all_scores",
+        f"{prefix}best_scores_per_generation",
+        f"{prefix}best_losses_per_generation",
+    ]:
         if k in npz:
             arr = np.array(npz[k]).reshape(-1)
             if arr.ndim == 1 and arr.size > 0:
+                print(f"[plot] Using values key '{k}', length={arr.size}")
                 return arr
     return None
 
@@ -171,6 +177,11 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             background_pts.append(tr.pts)
             background_vals.append(tr.vals)
     have_field = len(background_pts) > 0
+    if not have_field:
+        # Help debug mismatches
+        for name, tr in [("ga", ga), ("es", es)]:
+            if tr.pts is not None and tr.vals is not None:
+                print(f"[plot] {name}: points={len(tr.pts)} values={len(tr.vals)} (need equality to render field)")
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5.8), sharex=True, sharey=True)
     titles = ["GA vs ES on landscape" if have_field else "GA vs ES (no landscape values found)",

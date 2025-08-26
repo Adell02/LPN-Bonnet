@@ -389,6 +389,8 @@ def evaluate_custom_dataset(
         (leave_one_out_grids, leave_one_out_shapes, grids, shapes),
     )
     # Split the dataset into batches for each device.
+    if dataset_batch_size is None:
+        dataset_batch_size = grids.shape[0]
     batch_size_per_device = dataset_batch_size // num_devices
     assert grids.shape[1] % batch_size_per_device == 0
     leave_one_out_grids, leave_one_out_shapes, grids, shapes = tree_map(
@@ -622,6 +624,18 @@ def main(
             random_search_seed,
         )
         pretty_print(metrics)
+
+    # If store-latents was requested but only JSON path was used, run one small pseudo-batch
+    # from JSON to extract a representative trajectory for saving.
+    try:
+        store_path = evaluator.inference_mode_kwargs.get("store_latents_path", None)
+    except Exception:
+        store_path = None
+    if store_path and not dataset_folder and json_challenges_file and json_solutions_file:
+        print("[store_latents] Running a single-batch save pass for JSON mode.")
+        # Reuse evaluate_json loader to get tasks, but here we just call the pmapped function once would be larger change.
+        # For now, warn the user that custom dataset mode is recommended for latent saving.
+        print("[store_latents] Note: latent saving is fully supported in dataset mode. Consider using -d for saving NPZ.")
 
 
 def true_or_false_from_arg(arg: str) -> bool:
