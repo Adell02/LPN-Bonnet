@@ -326,7 +326,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     cmap = "viridis"
 
     # figure
-    fig, ax = plt.subplots(1, 1, figsize=(14, 8))
+    fig, ax = plt.subplots(1, 1, figsize=(14, 16))
     ax.set_title("Latent search: GA and ES")
     ax.set_xlabel("z1"); ax.set_ylabel("z2")
     ax.set_aspect("equal")
@@ -480,28 +480,6 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str) -> Optional[str]:
             print(f"[loss] Warning: ES trajectory found but loss values are missing!")
             print(f"[loss] The ES curve cannot be plotted without loss data.")
             print(f"[loss] This suggests a data saving issue in evaluate_checkpoint.py")
-    
-    # Add ES generation markers if available (simplified, no legend clutter)
-    if es.gen_idx is not None and es.pop_vals is not None:
-        unique_gens = np.unique(es.gen_idx)
-        generation_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-                           '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-        
-        # Plot population statistics per generation (background only, no text)
-        for gen in unique_gens:
-            mask = es.gen_idx == gen
-            gen_vals = es.pop_vals[mask]
-            if len(gen_vals) > 0:
-                color = generation_colors[gen % len(generation_colors)]
-                # Plot mean and std for this generation (subtle background)
-                gen_mean = np.mean(gen_vals)
-                gen_std = np.std(gen_vals)
-                
-                # Add generation statistics as subtle background elements
-                ax.axhline(y=gen_mean, color=color, alpha=0.2, linestyle='--', linewidth=0.8)
-                ax.fill_between([0, max(len(ga.vals) if has_ga_loss else 0, len(es.vals) if has_es_loss else 0)], 
-                              gen_mean - gen_std, gen_mean + gen_std, 
-                              color=color, alpha=0.05)
     
     # Set y-axis to start from a reasonable lower bound
     if has_ga_loss or has_es_loss:
