@@ -453,11 +453,20 @@ def evaluate_custom_dataset(
             )
             # Collect info from first device
             info0 = result_with_info["info"][0]
+            # Bring to host (avoid device-backed arrays in payload)
+            try:
+                info0 = jax.device_get(info0)
+            except Exception:
+                pass
             payload = {}
 
             # GA trajectory -> save as ga_latents, ga_log_probs
             if isinstance(info0, dict) and "optimization_trajectory" in info0 and info0["optimization_trajectory"]:
                 traj = info0["optimization_trajectory"]
+                try:
+                    traj = jax.device_get(traj)
+                except Exception:
+                    pass
                 if isinstance(traj, dict):
                     if "latents" in traj:
                         payload["ga_latents"] = np.array(traj["latents"])  # (*B, steps, C, H)
@@ -467,6 +476,10 @@ def evaluate_custom_dataset(
             # ES trajectory -> save best_latents_per_generation under es_best_latents_per_generation
             if isinstance(info0, dict) and "evolutionary_trajectory" in info0 and info0["evolutionary_trajectory"]:
                 traj = info0["evolutionary_trajectory"]
+                try:
+                    traj = jax.device_get(traj)
+                except Exception:
+                    pass
                 if isinstance(traj, dict):
                     if "best_latents_per_generation" in traj and traj["best_latents_per_generation"] is not None:
                         payload["es_best_latents_per_generation"] = np.array(traj["best_latents_per_generation"])  # (*B, G, H)
@@ -482,7 +495,9 @@ def evaluate_custom_dataset(
             np.savez_compressed(store_path, **payload)
             print(f"Saved latent search data to {store_path}")
         except Exception as _e:
-            print(f"Failed to store latents to {store_path}: {_e}")
+            import traceback
+            print(f"Failed to store latents to {store_path}: {_e!r}")
+            traceback.print_exc()
     return metrics
 
 
