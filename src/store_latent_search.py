@@ -229,21 +229,16 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         P = np.concatenate(bgP, axis=0)
         V = orient(np.concatenate(bgV, axis=0))
         XX, YY, ZZ = _splat_background(P, V, xlim, ylim, n=240)
-        im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.5)
+        im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.8)
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label(field_name)
     else:
         ax.set_facecolor("white")
 
-    # ES population (alpha 0.7), colored by losses if we have them
+    # ES population (alpha 0.7), colored orange to match ES selected path
     if es.pop_pts is not None:
-        if es.pop_vals is not None and len(es.pop_vals) == len(es.pop_pts):
-            ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1],
-                       c=orient(np.asarray(es.pop_vals)), cmap=cmap, norm=norm,
-                       s=16, alpha=0.7, linewidths=0, zorder=1, label="ES population")
-        else:
-            ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=16, alpha=0.7,
-                       color="#777777", linewidths=0, zorder=1, label="ES population")
+        ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=16, alpha=0.7,
+                   color="#ff7f0e", linewidths=0, zorder=1, label="ES population")
 
     # ES selected path (best per generation if present, otherwise es.pts)
     es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
@@ -254,7 +249,24 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     if ga.pts is not None and len(ga.pts) > 1:
         _plot_traj(ax, ga.pts, color="#e91e63", label="GA path", alpha=1.0)
 
-    ax.legend(loc="upper right", frameon=True, fontsize=9)
+    # Create comprehensive legend with all elements
+    legend_elements = []
+    
+    # Sample types
+    legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#ff7f0e', 
+                                     markersize=8, alpha=0.7, label='ES population (unused)'))
+    
+    # Trajectory paths
+    legend_elements.append(plt.Line2D([0], [0], color='#ff7f0e', linewidth=2, label='ES selected path'))
+    legend_elements.append(plt.Line2D([0], [0], color='#e91e63', linewidth=2, label='GA path'))
+    
+    # Start/End markers
+    legend_elements.append(plt.Line2D([0], [0], marker='o', color='k', markerfacecolor='w', 
+                                     markersize=8, markeredgewidth=1, label='Start point'))
+    legend_elements.append(plt.Line2D([0], [0], marker='s', color='k', markerfacecolor='w', 
+                                     markersize=8, markeredgewidth=1, label='End point'))
+    
+    ax.legend(handles=legend_elements, loc="upper right", frameon=True, fontsize=9)
     plt.tight_layout()
 
     os.makedirs(out_dir, exist_ok=True)
