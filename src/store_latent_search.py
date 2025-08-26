@@ -229,20 +229,20 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         P = np.concatenate(bgP, axis=0)
         V = orient(np.concatenate(bgV, axis=0))
         XX, YY, ZZ = _splat_background(P, V, xlim, ylim, n=240)
-        im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0)
+        im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.5)
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label(field_name)
     else:
         ax.set_facecolor("white")
 
-    # ES population (alpha 0.5), colored by losses if we have them
+    # ES population (alpha 0.7), colored by losses if we have them
     if es.pop_pts is not None:
         if es.pop_vals is not None and len(es.pop_vals) == len(es.pop_pts):
             ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1],
                        c=orient(np.asarray(es.pop_vals)), cmap=cmap, norm=norm,
-                       s=14, alpha=0.5, linewidths=0, zorder=1, label="ES population")
+                       s=16, alpha=0.7, linewidths=0, zorder=1, label="ES population")
         else:
-            ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=14, alpha=0.5,
+            ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=16, alpha=0.7,
                        color="#777777", linewidths=0, zorder=1, label="ES population")
 
     # ES selected path (best per generation if present, otherwise es.pts)
@@ -252,7 +252,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
 
     # GA path
     if ga.pts is not None and len(ga.pts) > 1:
-        _plot_traj(ax, ga.pts, color="#1f77b4", label="GA path", alpha=1.0)
+        _plot_traj(ax, ga.pts, color="#e91e63", label="GA path", alpha=1.0)
 
     ax.legend(loc="upper right", frameon=True, fontsize=9)
     plt.tight_layout()
