@@ -13,6 +13,7 @@ import subprocess
 from typing import Optional, Tuple
 
 import numpy as np
+from dataclasses import dataclass
 
 
 def build_dataset_args(args: argparse.Namespace) -> list[str]:
@@ -52,7 +53,96 @@ def try_extract_2d_points(npz: np.lib.npyio.NpzFile, prefix: str) -> Optional[np
     return None
 
 
-def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str) -> Optional[str]:
+@dataclass
+class Trace:
+    pts: Optional[np.ndarray] = None
+    vals: Optional[np.ndarray] = None
+    best_per_gen: Optional[np.ndarray] = None
+    pop_pts: Optional[np.ndarray] = None
+    gen_idx: Optional[np.ndarray] = None
+
+
+def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
+    for k in [f"{prefix}losses", f"{prefix}scores",
+              f"{prefix}all_losses", f"{prefix}all_scores",
+              f"{prefix}best_scores_per_generation",
+              f"{prefix}best_losses_per_generation",
+              f"{prefix}ga_scores"]:
+        if k in npz:
+            arr = np.array(npz[k]).reshape(-1)
+            if arr.ndim == 1 and arr.size > 0:
+                return arr
+    return None
+
+
+def _extract_best_per_gen(npz, prefix: str) -> Optional[np.ndarray]:
+    for k in [f"{prefix}best_latents_per_generation", f"{prefix}elite_latents"]:
+        if k in npz:
+            arr = np.array(npz[k])
+            if arr.ndim >= 2 and arr.shape[-1] == 2:
+                return arr.reshape(-1, 2)
+    return None
+
+
+def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    pts = None
+    gens = None
+    if f"{prefix}all_latents" in npz:
+        pts = np.array(npz[f"{prefix}all_latents"]).reshape(-1, 2)
+    if f"{prefix}generation_idx" in npz:
+        gens = np.array(npz[f"{prefix}generation_idx"]).reshape(-1)
+    return pts, gens
+
+
+def _load_trace(npz_path: str, prefix: str) -> Trace:
+    t = Trace()
+    if os.path.exists(npz_path):
+        with np.load(npz_path, allow_pickle=True) as f:
+            t.pts = try_extract_2d_points(f, prefix)
+            t.vals = _extract_vals(f, prefix)
+            t.best_per_gen = _extract_best_per_gen(f, prefix)
+            pop_pts, gen_idx = _extract_pop(f, prefix)
+            t.pop_pts = pop_pts
+            t.gen_idx = gen_idx
+    return t
+
+
+def _nice_bounds(xy: np.ndarray, pad: float = 0.08) -> tuple[tuple[float, float], tuple[float, float]]:
+    xmin, ymin = xy.min(axis=0)
+    xmax, ymax = xy.max(axis=0)
+    dx = xmax - xmin
+    dy = ymax - ymin
+    px = dx * pad if dx > 0 else 1.0
+    py = dy * pad if dy > 0 else 1.0
+    return (xmin - px, xmax + px), (ymin - py, ymax + py)
+
+
+def _rbf_grid(xy: np.ndarray, v: np.ndarray, xlim, ylim, n: int = 200) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    X = xy[:, 0]; Y = xy[:, 1]
+    xv = np.linspace(xlim[0], xlim[1], n)
+    yv = np.linspace(ylim[0], ylim[1], n)
+    XX, YY = np.meshgrid(xv, yv)
+    P = np.stack([XX.ravel(), YY.ravel()], axis=1)
+    d2 = ((xy[None, :, :] - xy[:, None, :]) ** 2).sum(-1)
+    nn = np.sqrt(np.partition(d2 + np.eye(len(xy))*1e12, 1, axis=1)[:, 1])
+    eps = np.median(nn) + 1e-9
+    D2 = ((P[:, None, :] - xy[None, :, :]) ** 2).sum(-1)
+    W = np.exp(-0.5 * D2 / (eps * eps)) + 1e-12
+    Z = (W @ v) / W.sum(axis=1)
+    return XX, YY, Z.reshape(n, n)
+
+
+def _plot_traj(ax, pts: np.ndarray, label: str, color: str, arrow_every: int = 8):
+    ax.plot(pts[:, 0], pts[:, 1], linewidth=1.8, alpha=0.9, label=label, color=color)
+    for i in range(0, len(pts) - 1, arrow_every):
+        x0, y0 = pts[i]; x1, y1 = pts[i + 1]
+        ax.annotate("", xy=(x1, y1), xytext=(x0, y0),
+                    arrowprops=dict(arrowstyle="->", lw=1.2, color=color, shrinkA=0, shrinkB=0))
+    ax.scatter([pts[0, 0]], [pts[0, 1]], s=60, marker="o", edgecolors="black", linewidths=0.8, color=color, zorder=5, label=f"{label} start")
+    ax.scatter([pts[-1, 0]], [pts[-1, 1]], s=60, marker="s", edgecolors="black", linewidths=0.8, color=color, zorder=5, label=f"{label} end")
+
+
+def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: str = "loss") -> Optional[str]:
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -61,42 +151,97 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str) -> Optional[
         print(f"Plotting unavailable: {e}")
         return None
 
-    ga_pts = None
-    es_pts = None
-    if os.path.exists(ga_npz_path):
-        with np.load(ga_npz_path, allow_pickle=True) as f:
-            ga_pts = try_extract_2d_points(f, "ga_")
-    if os.path.exists(es_npz_path):
-        with np.load(es_npz_path, allow_pickle=True) as f:
-            es_pts = try_extract_2d_points(f, "es_")
+    ga = _load_trace(ga_npz_path, "ga_")
+    es = _load_trace(es_npz_path, "es_")
 
-    if ga_pts is None and es_pts is None:
+    if ga.pts is None and es.pts is None:
         print("No 2D latent arrays found to plot.")
         return None
 
-    plt.figure(figsize=(8, 6))
-    if ga_pts is not None and len(ga_pts) > 0:
-        c = np.linspace(0, 1, len(ga_pts))
-        plt.scatter(ga_pts[:, 0], ga_pts[:, 1], c=c, cmap="viridis", s=14, alpha=0.7, label="GA path")
-        plt.scatter(ga_pts[0, 0], ga_pts[0, 1], c="green", s=60, marker="o", edgecolors="black", linewidths=1.0, label="GA start")
-        plt.scatter(ga_pts[-1, 0], ga_pts[-1, 1], c="red", s=60, marker="s", edgecolors="black", linewidths=1.0, label="GA end")
-    if es_pts is not None and len(es_pts) > 0:
-        c = np.linspace(0, 1, len(es_pts))
-        plt.scatter(es_pts[:, 0], es_pts[:, 1], c=c, cmap="plasma", s=16, alpha=0.8, marker="^", label="ES path")
-        plt.scatter(es_pts[0, 0], es_pts[0, 1], c="blue", s=60, marker="^", edgecolors="black", linewidths=1.0, label="ES start")
-        plt.scatter(es_pts[-1, 0], es_pts[-1, 1], c="purple", s=60, marker="D", edgecolors="black", linewidths=1.0, label="ES end")
+    all_pts = []
+    if ga.pts is not None: all_pts.append(ga.pts)
+    if es.pts is not None: all_pts.append(es.pts)
+    XY = np.concatenate(all_pts, axis=0)
+    xlim, ylim = _nice_bounds(XY)
 
-    plt.xlabel("z1")
-    plt.ylabel("z2")
-    plt.title("Latent search trajectories (GA vs ES)")
-    plt.grid(True, alpha=0.25)
-    plt.legend(loc="best", frameon=True)
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "search_trajectories.png")
+    background_pts = []
+    background_vals = []
+    for tr in [ga, es]:
+        if tr.pts is not None and tr.vals is not None and len(tr.pts) == len(tr.vals):
+            background_pts.append(tr.pts)
+            background_vals.append(tr.vals)
+    have_field = len(background_pts) > 0
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5.8), sharex=True, sharey=True)
+    titles = ["GA vs ES on landscape" if have_field else "GA vs ES (no landscape values found)",
+              "Best-of-generation focus (ES)"]
+
+    for ax, ttl in zip(axes, titles):
+        ax.set_title(ttl)
+        ax.set_xlabel("z1")
+        ax.set_ylabel("z2")
+        ax.set_aspect("equal")
+        ax.grid(True, alpha=0.25)
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
+
+    ax0 = axes[0]
+    cbar = None
+    if have_field:
+        P = np.concatenate(background_pts, axis=0)
+        V = np.concatenate(background_vals, axis=0)
+        Zval = -V if field_name.lower() == "score" else V
+        XX, YY, ZZ = _rbf_grid(P, Zval, xlim, ylim, n=240)
+        im = ax0.pcolormesh(XX, YY, ZZ, shading="auto")
+        cbar = fig.colorbar(im, ax=ax0, fraction=0.046, pad=0.04)
+        cbar.set_label(field_name)
+
+    if ga.pts is not None and len(ga.pts) > 1:
+        _plot_traj(ax0, ga.pts, "GA", color="#1f77b4")
+    if es.pts is not None and len(es.pts) > 1:
+        _plot_traj(ax0, es.pts, "ES", color="#ff7f0e")
+
+    if es.pop_pts is not None:
+        if es.gen_idx is not None and len(es.gen_idx) == len(es.pop_pts):
+            ax0.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=8, alpha=0.25, c=es.gen_idx, cmap="viridis", label="ES population")
+        else:
+            ax0.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=8, alpha=0.15, label="ES population")
+
+    ax0.legend(loc="upper right", frameon=True, fontsize=9)
+
+    ax1 = axes[1]
+    if have_field:
+        im2 = ax1.pcolormesh(XX, YY, ZZ, shading="auto")
+        if cbar is None:
+            cbar = fig.colorbar(im2, ax=ax1, fraction=0.046, pad=0.04)
+            cbar.set_label(field_name)
+
+    if es.best_per_gen is not None and len(es.best_per_gen) > 1:
+        _plot_traj(ax1, es.best_per_gen, "ES best per gen", color="#ff7f0e")
+    elif es.pts is not None and len(es.pts) > 1:
+        _plot_traj(ax1, es.pts, "ES path", color="#ff7f0e")
+
+    if ga.pts is not None and len(ga.pts) > 1:
+        from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+        iax = inset_axes(ax1, width="38%", height="38%", loc="lower left", borderpad=1.2)
+        if have_field:
+            iax.pcolormesh(XX, YY, ZZ, shading="auto")
+        _plot_traj(iax, ga.pts, "GA", color="#1f77b4", arrow_every=max(1, len(ga.pts)//6))
+        iax.set_xticks([]); iax.set_yticks([])
+        iax.set_title("GA inset", fontsize=9)
+        iax.set_aspect("equal")
+
+    fig.suptitle("Latent search trajectories")
     plt.tight_layout()
-    plt.savefig(out_path, dpi=200)
-    plt.close()
-    return out_path
+
+    os.makedirs(out_dir, exist_ok=True)
+    png = os.path.join(out_dir, "search_trajectories.png")
+    svg = os.path.join(out_dir, "search_trajectories.svg")
+    fig.savefig(png, dpi=300)
+    fig.savefig(svg)
+    plt.close(fig)
+
+    return png
 
 
 def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str, es_npz: str, plot_path: Optional[str]) -> None:
