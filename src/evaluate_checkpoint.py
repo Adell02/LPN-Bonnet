@@ -546,13 +546,29 @@ def evaluate_custom_dataset(
                         es_lat = np.array(traj["best_latents_per_generation"])  # (*B, G, H)
                         print(f"[store_latents] es_best_latents_per_generation shape: {getattr(es_lat, 'shape', None)}")
                         payload["es_best_latents_per_generation"] = es_lat
-                    if "generation_accuracies" in traj:
+                    # Handle both old and new key names for compatibility
+                    if "generation_losses" in traj:
+                        es_gen_losses = np.array(traj["generation_losses"])  # (*B, G) or (G,)
+                        payload["es_generation_losses"] = es_gen_losses
+                        try:
+                            payload["es_best_losses_per_generation"] = es_gen_losses.reshape(-1)
+                        except Exception:
+                            pass
+                    elif "generation_accuracies" in traj:  # Fallback for old key names
                         es_gen_acc = np.array(traj["generation_accuracies"])  # (G, *B) or (*B, G)
                         payload["es_generation_accuracies"] = es_gen_acc
                         try:
                             payload["es_best_scores_per_generation"] = es_gen_acc.reshape(-1)
                         except Exception:
                             pass
+                    
+                    # Handle population losses per generation
+                    if "losses_per_generation" in traj:
+                        es_pop_losses = np.array(traj["losses_per_generation"])  # (*B, G, C)
+                        payload["es_losses_per_generation"] = es_pop_losses
+                        # Flatten for background heatmap
+                        payload["es_all_losses"] = es_pop_losses.reshape(-1)
+                    
                     # Optional: populations per generation for plotting cloud
                     if "populations_per_generation" in traj:
                         pop = np.array(traj["populations_per_generation"])  # (*B, G, C, H)
@@ -560,11 +576,17 @@ def evaluate_custom_dataset(
                         # generation indices for coloring
                         G = pop.shape[-3]
                         payload["es_generation_idx"] = np.repeat(np.arange(G), pop.shape[-2])
+                    
+                    # Handle fitness scores (fallback for old key names)
                     if "fitness_per_generation" in traj:
                         fit = np.array(traj["fitness_per_generation"])      # (*B, G, C)
                         payload["es_all_scores"] = fit.reshape(-1)
-                    if "final_best_accuracy" in traj:
-                        payload["es_final_best_accuracy"] = np.array(traj["final_best_accuracy"])  # scalar or (*B,)
+                    
+                    # Handle final best fitness/loss
+                    if "final_best_fitness" in traj:
+                        payload["es_final_best_fitness"] = np.array(traj["final_best_fitness"])
+                    elif "final_best_accuracy" in traj:  # Fallback for old key names
+                        payload["es_final_best_accuracy"] = np.array(traj["final_best_accuracy"])
 
             # Save compressed
             if not payload:

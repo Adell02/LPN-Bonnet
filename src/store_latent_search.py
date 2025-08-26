@@ -111,7 +111,8 @@ def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
         f"{prefix}all_scores",
         f"{prefix}best_scores_per_generation",
         f"{prefix}best_losses_per_generation",
-        f"{prefix}generation_losses",  # ES trajectory values
+        f"{prefix}generation_losses",  # ES trajectory values (new key)
+        f"{prefix}best_losses_per_generation",  # ES trajectory values (new key)
     ]:
         if k in npz:
             arr = np.array(npz[k]).reshape(-1)
@@ -144,8 +145,8 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
         pts = np.array(npz[f"{prefix}all_latents"]).reshape(-1, 2)
     if f"{prefix}generation_idx" in npz:
         gens = np.array(npz[f"{prefix}generation_idx"]).reshape(-1)
-    # Look for various possible keys for population values
-    for k in (f"{prefix}all_scores", f"{prefix}all_losses", f"{prefix}losses_per_generation"):
+    # Look for various possible keys for population values (new ES keys first)
+    for k in (f"{prefix}all_losses", f"{prefix}losses_per_generation", f"{prefix}all_scores"):
         if k in npz:
             vals = np.array(npz[k]).reshape(-1)
             break
@@ -250,9 +251,16 @@ def _splat_background(
 
 def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6, alpha: float = 1.0):
     ax.plot(pts[:, 0], pts[:, 1], color=color, linewidth=1.8, alpha=alpha, label=label, zorder=5)
+    
+    # Add small markers for every step
+    ax.scatter(pts[:, 0], pts[:, 1], s=15, color=color, alpha=alpha, zorder=4)
+    
+    # Add arrows between steps
     for i in range(0, len(pts) - 1, max(1, arrow_every)):
         ax.annotate("", xy=pts[i+1], xytext=pts[i],
                     arrowprops=dict(arrowstyle="->", lw=1.2, color=color, shrinkA=0, shrinkB=0))
+    
+    # Special markers for start and end points
     ax.scatter([pts[0, 0]], [pts[0, 1]], s=70, marker="o", edgecolors="black", linewidths=0.7,
                color=color, zorder=6, alpha=alpha)
     ax.scatter([pts[-1, 0]], [pts[-1, 1]], s=70, marker="s", edgecolors="black", linewidths=0.7,
@@ -318,7 +326,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     cmap = "viridis"
 
     # figure
-    fig, ax = plt.subplots(1, 1, figsize=(10.5, 7.5))
+    fig, ax = plt.subplots(1, 1, figsize=(14, 8))
     ax.set_title("Latent search: GA and ES")
     ax.set_xlabel("z1"); ax.set_ylabel("z2")
     ax.set_aspect("equal")
@@ -343,11 +351,11 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     else:
         ax.set_facecolor("white")
 
-    # ES population: show all samples in gray + translucent generation circles
+    # ES population: show all samples in orange with full alpha + translucent generation circles
     if es.pop_pts is not None:
-        # First plot ALL ES samples in gray (unused samples)
-        ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=20, alpha=0.4,
-                   color="gray", linewidths=0, zorder=1, label="ES population (all samples)")
+        # Plot ALL ES samples in orange with full alpha
+        ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=20, alpha=1.0,
+                   color="#ff7f0e", linewidths=0, zorder=1, label="ES population (all samples)")
         
         # Then add translucent circles to cluster samples from the same generation
         if es.gen_idx is not None:
@@ -386,10 +394,10 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # Create comprehensive legend with all elements
     legend_elements = []
     
-    # ES population (all samples in gray)
+    # ES population (all samples in orange)
     if es.pop_pts is not None:
-        legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', 
-                                       markersize=10, alpha=0.4, label='ES population (all samples)'))
+        legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#ff7f0e', 
+                                       markersize=10, alpha=1.0, label='ES population (all samples)'))
     
     # Generation clusters (general representation)
     if es.pop_pts is not None and es.gen_idx is not None:
