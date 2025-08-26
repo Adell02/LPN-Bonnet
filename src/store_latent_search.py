@@ -152,15 +152,15 @@ def _splat_background(P: np.ndarray, V: np.ndarray, xlim, ylim, n: int = 240) ->
     return XX, YY, Z
 
 
-def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6):
-    ax.plot(pts[:, 0], pts[:, 1], color=color, linewidth=1.8, alpha=0.95, label=label, zorder=5)
+def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6, alpha: float = 1.0):
+    ax.plot(pts[:, 0], pts[:, 1], color=color, linewidth=1.8, alpha=alpha, label=label, zorder=5)
     for i in range(0, len(pts) - 1, max(1, arrow_every)):
         ax.annotate("", xy=pts[i+1], xytext=pts[i],
                     arrowprops=dict(arrowstyle="->", lw=1.2, color=color, shrinkA=0, shrinkB=0))
     ax.scatter([pts[0, 0]], [pts[0, 1]], s=70, marker="o", edgecolors="black", linewidths=0.7,
-               color=color, zorder=6)
+               color=color, zorder=6, alpha=alpha)
     ax.scatter([pts[-1, 0]], [pts[-1, 1]], s=70, marker="s", edgecolors="black", linewidths=0.7,
-               color=color, zorder=6)
+               color=color, zorder=6, alpha=alpha)
 
 
 def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: str = "loss") -> Optional[str]:
@@ -248,11 +248,11 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # ES selected path (best per generation if present, otherwise es.pts)
     es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
     if es_sel is not None and len(es_sel) > 1:
-        _plot_traj(ax, es_sel, color="#ff7f0e", label="ES selected")
+        _plot_traj(ax, es_sel, color="#ff7f0e", label="ES selected", alpha=1.0)
 
     # GA path
     if ga.pts is not None and len(ga.pts) > 1:
-        _plot_traj(ax, ga.pts, color="#1f77b4", label="GA path")
+        _plot_traj(ax, ga.pts, color="#1f77b4", label="GA path", alpha=1.0)
 
     ax.legend(loc="upper right", frameon=True, fontsize=9)
     plt.tight_layout()
