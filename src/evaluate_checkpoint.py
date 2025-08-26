@@ -422,6 +422,67 @@ def evaluate_custom_dataset(
     ]
     # Aggregate the metrics over the devices and the batches.
     metrics = {k: jnp.stack([m[k] for m in metrics_list]).mean() for k in metrics_list[0].keys()}
+
+    # Optionally store latents/trajectory for a single representative batch if requested via kwargs
+    store_path = None
+    try:
+        store_path = evaluator.inference_mode_kwargs.get("store_latents_path", None)
+    except Exception:
+        store_path = None
+    if store_path:
+        try:
+            import numpy as np
+            # Build a variant that returns info
+            pmap_with_info = jax.pmap(
+                build_generate_output_batch_to_be_pmapped(
+                    model=evaluator.model,
+                    eval_inference_mode=evaluator.inference_mode,
+                    eval_inference_mode_kwargs=evaluator.inference_mode_kwargs,
+                    return_info=True,
+                ),
+                axis_name="num_devices",
+            )
+            # Use the first batch on each device
+            result_with_info = pmap_with_info(
+                train_state.params,
+                leave_one_out_grids[:, 0],
+                leave_one_out_shapes[:, 0],
+                grids[:, 0],
+                shapes[:, 0],
+                keys[:, 0],
+            )
+            # Collect info from first device
+            info0 = result_with_info["info"][0]
+            payload = {}
+
+            # GA trajectory -> save as ga_latents, ga_log_probs
+            if isinstance(info0, dict) and "optimization_trajectory" in info0 and info0["optimization_trajectory"]:
+                traj = info0["optimization_trajectory"]
+                if isinstance(traj, dict):
+                    if "latents" in traj:
+                        payload["ga_latents"] = np.array(traj["latents"])  # (*B, steps, C, H)
+                    if "log_probs" in traj:
+                        payload["ga_log_probs"] = np.array(traj["log_probs"])  # (*B, steps, C)
+
+            # ES trajectory -> save best_latents_per_generation under es_best_latents_per_generation
+            if isinstance(info0, dict) and "evolutionary_trajectory" in info0 and info0["evolutionary_trajectory"]:
+                traj = info0["evolutionary_trajectory"]
+                if isinstance(traj, dict):
+                    if "best_latents_per_generation" in traj and traj["best_latents_per_generation"] is not None:
+                        payload["es_best_latents_per_generation"] = np.array(traj["best_latents_per_generation"])  # (*B, G, H)
+                    if "generation_accuracies" in traj:
+                        payload["es_generation_accuracies"] = np.array(traj["generation_accuracies"])  # (G, *B)
+                    if "final_best_accuracy" in traj:
+                        payload["es_final_best_accuracy"] = np.array(traj["final_best_accuracy"])  # scalar or (*B,)
+
+            # Save compressed
+            if not payload:
+                payload["note"] = np.array(["no_trajectory_available"], dtype=object)
+            os.makedirs(os.path.dirname(store_path) or ".", exist_ok=True)
+            np.savez_compressed(store_path, **payload)
+            print(f"Saved latent search data to {store_path}")
+        except Exception as _e:
+            print(f"Failed to store latents to {store_path}: {_e}")
     return metrics
 
 

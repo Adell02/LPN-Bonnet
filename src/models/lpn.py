@@ -981,6 +981,7 @@ class LPN(nn.Module):
         # Optional tracking
         if track_progress:
             gen_bests = []
+            gen_best_latents = []
             best_so_far = -jnp.inf
 
         # ----- main evolutionary loop (plain Python, no extra JAX transform) -----
@@ -992,9 +993,22 @@ class LPN(nn.Module):
 
             # Track
             if track_progress:
+                # Per-batch best fitness and corresponding best latent this generation
                 gen_best = fitness.max(axis=-1)                       # (*B,)
                 best_so_far = jnp.maximum(best_so_far, gen_best.max())
                 gen_bests.append(gen_best)
+
+                # Indices of best per batch, gather latent
+                best_idx = jnp.argmax(fitness, axis=-1)              # (*B,)
+                if population.ndim == 4:
+                    # population: (*B, P, C, H) -> take first pair axis for representative
+                    rep = population[..., 0, :, :]                    # (*B, C, H)
+                else:
+                    rep = population                                  # (*B, C, H)
+                best_lat = jnp.take_along_axis(
+                    rep, best_idx[..., None, None], axis=-2
+                ).squeeze(axis=-2)                                    # (*B, H)
+                gen_best_latents.append(best_lat)
 
             # Select top half per batch
             num_survivors = population_size // 2
@@ -1070,9 +1084,12 @@ class LPN(nn.Module):
         )
 
         if track_progress:
+            # Stack as (*B, G, H) for latents and (*G, *B) for accuracies
+            gen_best_latents_arr = jnp.stack(gen_best_latents, axis=-2) if len(gen_best_latents) > 0 else None
             traj = {
-                "generation_accuracies": jnp.stack(gen_bests),                 # shape: (G, *B) or (*B, G) if you prefer
+                "generation_accuracies": jnp.stack(gen_bests),
                 "final_best_accuracy": best_so_far,
+                "best_latents_per_generation": gen_best_latents_arr,
             }
             return best_context, second_best_context, traj
 
