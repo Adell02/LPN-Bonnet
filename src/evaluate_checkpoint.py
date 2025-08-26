@@ -473,7 +473,7 @@ def evaluate_custom_dataset(
                 print(f"[store_latents] info0 keys: {list(info0.keys())}")
             payload = {}
 
-            # GA trajectory -> save as ga_latents, ga_log_probs
+            # GA trajectory -> save as ga_latents, ga_log_probs, derive ga_path, ga_scores/ga_losses
             if isinstance(info0, dict) and "optimization_trajectory" in info0 and info0["optimization_trajectory"]:
                 traj = info0["optimization_trajectory"]
                 try:
@@ -490,8 +490,19 @@ def evaluate_custom_dataset(
                         ga_lp = np.array(traj["log_probs"])  # (*B, steps, C)
                         print(f"[store_latents] ga_log_probs shape: {getattr(ga_lp, 'shape', None)}")
                         payload["ga_log_probs"] = ga_lp
+                        try:
+                            if ga_lat.ndim == 4 and ga_lp.ndim == 3:
+                                idx = np.argmax(ga_lp[0], axis=-1)  # (steps,)
+                                best_path = ga_lat[0, np.arange(ga_lat.shape[1]), idx]  # (steps, H)
+                                if best_path.shape[-1] == 2:
+                                    payload["ga_path"] = best_path
+                                best_scores = np.max(ga_lp[0], axis=-1)
+                                payload["ga_scores"] = best_scores
+                                payload["ga_losses"] = -best_scores
+                        except Exception as _pe:
+                            print(f"[store_latents] GA path/score derivation failed: {_pe!r}")
 
-            # ES trajectory -> save best_latents_per_generation under es_best_latents_per_generation
+            # ES trajectory -> save best_latents_per_generation, and expose best scores per generation
             if isinstance(info0, dict) and "evolutionary_trajectory" in info0 and info0["evolutionary_trajectory"]:
                 traj = info0["evolutionary_trajectory"]
                 try:
@@ -505,7 +516,12 @@ def evaluate_custom_dataset(
                         print(f"[store_latents] es_best_latents_per_generation shape: {getattr(es_lat, 'shape', None)}")
                         payload["es_best_latents_per_generation"] = es_lat
                     if "generation_accuracies" in traj:
-                        payload["es_generation_accuracies"] = np.array(traj["generation_accuracies"])  # (G, *B)
+                        es_gen_acc = np.array(traj["generation_accuracies"])  # (G, *B) or (*B, G)
+                        payload["es_generation_accuracies"] = es_gen_acc
+                        try:
+                            payload["es_best_scores_per_generation"] = es_gen_acc.reshape(-1)
+                        except Exception:
+                            pass
                     if "final_best_accuracy" in traj:
                         payload["es_final_best_accuracy"] = np.array(traj["final_best_accuracy"])  # scalar or (*B,)
 
