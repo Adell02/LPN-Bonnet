@@ -32,7 +32,7 @@ def build_dataset_args(args: argparse.Namespace) -> list[str]:
 
 
 def try_extract_2d_points(npz: np.lib.npyio.NpzFile, prefix: str) -> Optional[np.ndarray]:
-    # Prefer actual trajectory/path first, then best-of-gen, then raw sets
+    # prefer path first so GA uses the actual trajectory, then best-of-gen, then raw sets
     preferred = [
         f"{prefix}path",
         f"{prefix}best_latents_per_generation",
@@ -57,14 +57,16 @@ def try_extract_2d_points(npz: np.lib.npyio.NpzFile, prefix: str) -> Optional[np
 
 @dataclass
 class Trace:
-    pts: Optional[np.ndarray] = None
-    vals: Optional[np.ndarray] = None
-    best_per_gen: Optional[np.ndarray] = None
-    pop_pts: Optional[np.ndarray] = None
-    gen_idx: Optional[np.ndarray] = None
+    pts: Optional[np.ndarray] = None              # GA path or ES path (T,2)
+    vals: Optional[np.ndarray] = None             # values for pts (T,)
+    best_per_gen: Optional[np.ndarray] = None     # ES best per generation (G,2)
+    pop_pts: Optional[np.ndarray] = None          # ES population points (N,2)
+    gen_idx: Optional[np.ndarray] = None          # ES generation id (N,)
+    pop_vals: Optional[np.ndarray] = None         # ES population values (N,)
 
 
 def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
+    # values associated with the *trajectory* points (GA path or ES path)
     for k in [
         f"{prefix}losses",
         f"{prefix}scores",
@@ -90,14 +92,18 @@ def _extract_best_per_gen(npz, prefix: str) -> Optional[np.ndarray]:
     return None
 
 
-def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    pts = None
-    gens = None
+def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    # also read ES population scores so we can make the soft heatmap
+    pts = gens = vals = None
     if f"{prefix}all_latents" in npz:
         pts = np.array(npz[f"{prefix}all_latents"]).reshape(-1, 2)
     if f"{prefix}generation_idx" in npz:
         gens = np.array(npz[f"{prefix}generation_idx"]).reshape(-1)
-    return pts, gens
+    for k in (f"{prefix}all_scores", f"{prefix}all_losses"):
+        if k in npz:
+            vals = np.array(npz[k]).reshape(-1)
+            break
+    return pts, gens, vals
 
 
 def _load_trace(npz_path: str, prefix: str) -> Trace:
@@ -107,9 +113,10 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
             t.pts = try_extract_2d_points(f, prefix)
             t.vals = _extract_vals(f, prefix)
             t.best_per_gen = _extract_best_per_gen(f, prefix)
-            pop_pts, gen_idx = _extract_pop(f, prefix)
+            pop_pts, gen_idx, pop_vals = _extract_pop(f, prefix)
             t.pop_pts = pop_pts
             t.gen_idx = gen_idx
+            t.pop_vals = pop_vals
     return t
 
 
@@ -123,29 +130,37 @@ def _nice_bounds(xy: np.ndarray, pad: float = 0.08) -> tuple[tuple[float, float]
     return (xmin - px, xmax + px), (ymin - py, ymax + py)
 
 
-def _rbf_grid(xy: np.ndarray, v: np.ndarray, xlim, ylim, n: int = 200) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    X = xy[:, 0]; Y = xy[:, 1]
+def _splat_background(P: np.ndarray, V: np.ndarray, xlim, ylim, n: int = 240) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # Gaussian splat, sigma picked from median nn distance
     xv = np.linspace(xlim[0], xlim[1], n)
     yv = np.linspace(ylim[0], ylim[1], n)
     XX, YY = np.meshgrid(xv, yv)
-    P = np.stack([XX.ravel(), YY.ravel()], axis=1)
-    d2 = ((xy[None, :, :] - xy[:, None, :]) ** 2).sum(-1)
-    nn = np.sqrt(np.partition(d2 + np.eye(len(xy))*1e12, 1, axis=1)[:, 1])
-    eps = np.median(nn) + 1e-9
-    D2 = ((P[:, None, :] - xy[None, :, :]) ** 2).sum(-1)
-    W = np.exp(-0.5 * D2 / (eps * eps)) + 1e-12
-    Z = (W @ v) / W.sum(axis=1)
-    return XX, YY, Z.reshape(n, n)
+
+    if len(P) == 1:
+        sigma = 0.1 * max(xlim[1]-xlim[0], ylim[1]-ylim[0])
+    else:
+        d2 = ((P[None, :, :] - P[:, None, :]) ** 2).sum(-1)
+        nn = np.sqrt(np.partition(d2 + np.eye(len(P))*1e12, 1, axis=1)[:, 1])
+        sigma = float(np.median(nn) + 1e-9)
+
+    Xg = XX[..., None] - P[None, None, :, 0]
+    Yg = YY[..., None] - P[None, None, :, 1]
+    W = np.exp(-0.5 * (Xg*Xg + Yg*Yg) / (sigma * sigma)) + 1e-12   # [n,n,N]
+    num = (W * V[None, None, :]).sum(axis=-1)
+    den = W.sum(axis=-1)
+    Z = num / den
+    return XX, YY, Z
 
 
-def _plot_traj(ax, pts: np.ndarray, label: str, color: str, arrow_every: int = 8):
-    ax.plot(pts[:, 0], pts[:, 1], linewidth=1.8, alpha=0.9, label=label, color=color)
-    for i in range(0, len(pts) - 1, arrow_every):
-        x0, y0 = pts[i]; x1, y1 = pts[i + 1]
-        ax.annotate("", xy=(x1, y1), xytext=(x0, y0),
+def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6):
+    ax.plot(pts[:, 0], pts[:, 1], color=color, linewidth=1.8, alpha=0.95, label=label, zorder=5)
+    for i in range(0, len(pts) - 1, max(1, arrow_every)):
+        ax.annotate("", xy=pts[i+1], xytext=pts[i],
                     arrowprops=dict(arrowstyle="->", lw=1.2, color=color, shrinkA=0, shrinkB=0))
-    ax.scatter([pts[0, 0]], [pts[0, 1]], s=60, marker="o", edgecolors="black", linewidths=0.8, color=color, zorder=5, label=f"{label} start")
-    ax.scatter([pts[-1, 0]], [pts[-1, 1]], s=60, marker="s", edgecolors="black", linewidths=0.8, color=color, zorder=5, label=f"{label} end")
+    ax.scatter([pts[0, 0]], [pts[0, 1]], s=70, marker="o", edgecolors="black", linewidths=0.7,
+               color=color, zorder=6)
+    ax.scatter([pts[-1, 0]], [pts[-1, 1]], s=70, marker="s", edgecolors="black", linewidths=0.7,
+               color=color, zorder=6)
 
 
 def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: str = "loss") -> Optional[str]:
@@ -153,6 +168,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from matplotlib import colors
     except Exception as e:
         print(f"Plotting unavailable: {e}")
         return None
@@ -160,90 +176,85 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     ga = _load_trace(ga_npz_path, "ga_")
     es = _load_trace(es_npz_path, "es_")
 
-    if ga.pts is None and es.pts is None:
+    if ga.pts is None and es.pts is None and es.pop_pts is None:
         print("No 2D latent arrays found to plot.")
         return None
 
-    all_pts = []
-    if ga.pts is not None: all_pts.append(ga.pts)
-    if es.pts is not None: all_pts.append(es.pts)
-    XY = np.concatenate(all_pts, axis=0)
+    # unified bounds
+    pts_for_bounds = [p for p in [ga.pts, es.pts, es.pop_pts, es.best_per_gen] if p is not None]
+    XY = np.concatenate(pts_for_bounds, axis=0)
     xlim, ylim = _nice_bounds(XY)
 
-    background_pts = []
-    background_vals = []
-    for tr in [ga, es]:
-        if tr.pts is not None and tr.vals is not None and len(tr.pts) == len(tr.vals):
-            background_pts.append(tr.pts)
-            background_vals.append(tr.vals)
-    have_field = len(background_pts) > 0
-    if not have_field:
-        # Help debug mismatches
-        for name, tr in [("ga", ga), ("es", es)]:
-            if tr.pts is not None and tr.vals is not None:
-                print(f"[plot] {name}: points={len(tr.pts)} values={len(tr.vals)} (need equality to render field)")
+    # collect samples for the soft heatmap
+    bgP, bgV = [], []
+    # GA path values
+    if ga.pts is not None and ga.vals is not None and len(ga.pts) == len(ga.vals):
+        bgP.append(ga.pts); bgV.append(np.asarray(ga.vals))
+    # ES population values
+    if es.pop_pts is not None and es.pop_vals is not None and len(es.pop_pts) == len(es.pop_vals):
+        bgP.append(es.pop_pts); bgV.append(np.asarray(es.pop_vals))
+    # if nothing, background stays white
+    have_field = len(bgP) > 0
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6.0), sharex=True, sharey=True)
-    titles = ["Gradient Ascent", "Evolutionary Search"]
+    def orient(v: np.ndarray) -> np.ndarray:
+        return -v if field_name.lower() == "score" else v
 
-    for ax, ttl in zip(axes, titles):
-        ax.set_title(ttl)
-        ax.set_xlabel("z1")
-        ax.set_ylabel("z2")
-        ax.set_aspect("equal")
-        ax.grid(True, alpha=0.25)
-        ax.set_xlim(*xlim)
-        ax.set_ylim(*ylim)
-
-    ax0 = axes[0]
-    cbar = None
+    # normalization across everything we will color
+    all_for_norm = []
     if have_field:
-        P = np.concatenate(background_pts, axis=0)
-        V = np.concatenate(background_vals, axis=0)
-        Zval = -V if field_name.lower() == "score" else V
-        XX, YY, ZZ = _rbf_grid(P, Zval, xlim, ylim, n=240)
-        im0 = ax0.pcolormesh(XX, YY, ZZ, shading="auto", cmap="viridis")
-        cbar = fig.colorbar(im0, ax=ax0, fraction=0.046, pad=0.04)
+        all_for_norm.append(orient(np.concatenate(bgV)))
+    if ga.vals is not None:
+        all_for_norm.append(orient(np.asarray(ga.vals)))
+    if es.pop_vals is not None:
+        all_for_norm.append(orient(np.asarray(es.pop_vals)))
+    vmin, vmax = 0.0, 1.0
+    if len(all_for_norm) > 0:
+        vv = np.concatenate(all_for_norm)
+        vmin, vmax = float(np.nanmin(vv)), float(np.nanmax(vv))
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+            vmin, vmax = 0.0, 1.0
+    norm = colors.Normalize(vmin=vmin, vmax=vmax)
+    cmap = "viridis"
+
+    # figure
+    fig, ax = plt.subplots(1, 1, figsize=(10.5, 7.5))
+    ax.set_title("Latent search: GA and ES")
+    ax.set_xlabel("z1"); ax.set_ylabel("z2")
+    ax.set_aspect("equal")
+    ax.grid(True, alpha=0.25)
+    ax.set_xlim(*xlim); ax.set_ylim(*ylim)
+
+    # soft heatmap background by splatting losses if available
+    if have_field:
+        P = np.concatenate(bgP, axis=0)
+        V = orient(np.concatenate(bgV, axis=0))
+        XX, YY, ZZ = _splat_background(P, V, xlim, ylim, n=240)
+        im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0)
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label(field_name)
+    else:
+        ax.set_facecolor("white")
 
-    if ga.pts is not None and len(ga.pts) > 1:
-        _plot_traj(ax0, ga.pts, "GA", color="#1f77b4")
-    if es.pts is not None and len(es.pts) > 1:
-        _plot_traj(ax0, es.pts, "ES", color="#ff7f0e")
-
-    # Right panel: ES with populations
-    ax1 = axes[1]
-    if have_field:
-        im1 = ax1.pcolormesh(XX, YY, ZZ, shading="auto", cmap="viridis")
-        if cbar is None:
-            cbar = fig.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
-            cbar.set_label(field_name)
-
-    # ES populations (alpha=0.5) and chosen path (alpha=1)
+    # ES population (alpha 0.5), colored by losses if we have them
     if es.pop_pts is not None:
-        if es.gen_idx is not None and len(es.gen_idx) == len(es.pop_pts):
-            ax1.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=14, alpha=0.5, c=es.gen_idx, cmap="plasma", label="ES population")
+        if es.pop_vals is not None and len(es.pop_vals) == len(es.pop_pts):
+            ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1],
+                       c=orient(np.asarray(es.pop_vals)), cmap=cmap, norm=norm,
+                       s=14, alpha=0.5, linewidths=0, zorder=1, label="ES population")
         else:
-            ax1.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=14, alpha=0.5, color="#999999", label="ES population")
+            ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=14, alpha=0.5,
+                       color="#777777", linewidths=0, zorder=1, label="ES population")
 
-    ax0.legend(loc="upper right", frameon=True, fontsize=9)
+    # ES selected path (best per generation if present, otherwise es.pts)
+    es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
+    if es_sel is not None and len(es_sel) > 1:
+        _plot_traj(ax, es_sel, color="#ff7f0e", label="ES selected")
 
-    if es.best_per_gen is not None and len(es.best_per_gen) > 1:
-        _plot_traj(ax1, es.best_per_gen, "ES best per gen", color="#ff7f0e")
-    elif es.pts is not None and len(es.pts) > 1:
-        _plot_traj(ax1, es.pts, "ES path", color="#ff7f0e")
-
+    # GA path
     if ga.pts is not None and len(ga.pts) > 1:
-        from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-        iax = inset_axes(ax1, width="38%", height="38%", loc="lower left", borderpad=1.2)
-        if have_field:
-            iax.pcolormesh(XX, YY, ZZ, shading="auto")
-        _plot_traj(iax, ga.pts, "GA", color="#1f77b4", arrow_every=max(1, len(ga.pts)//6))
-        iax.set_xticks([]); iax.set_yticks([])
-        iax.set_title("GA inset", fontsize=9)
-        iax.set_aspect("equal")
+        _plot_traj(ax, ga.pts, color="#1f77b4", label="GA path")
 
-    fig.suptitle("Latent search trajectories")
+    ax.legend(loc="upper right", frameon=True, fontsize=9)
     plt.tight_layout()
 
     os.makedirs(out_dir, exist_ok=True)
@@ -252,7 +263,6 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     fig.savefig(png, dpi=300)
     fig.savefig(svg)
     plt.close(fig)
-
     return png
 
 
