@@ -451,13 +451,26 @@ def evaluate_custom_dataset(
                 shapes[:, 0],
                 keys[:, 0],
             )
-            # Collect info from first device
-            info0 = result_with_info["info"][0]
-            # Bring to host (avoid device-backed arrays in payload)
-            try:
-                info0 = jax.device_get(info0)
-            except Exception:
-                pass
+            # Collect info from first device across the pytree
+            info_tree = result_with_info.get("info", None)
+            if info_tree is None:
+                print("[store_latents] No 'info' key returned from pmapped function.")
+                info0 = None
+            else:
+                def _first_device(x):
+                    try:
+                        return x[0]
+                    except Exception:
+                        return x
+                info0 = jax.tree_map(_first_device, info_tree)
+                # Bring to host (avoid device-backed arrays in payload)
+                try:
+                    info0 = jax.device_get(info0)
+                except Exception:
+                    pass
+            print(f"[store_latents] info0 type: {type(info0)}")
+            if isinstance(info0, dict):
+                print(f"[store_latents] info0 keys: {list(info0.keys())}")
             payload = {}
 
             # GA trajectory -> save as ga_latents, ga_log_probs
@@ -468,10 +481,15 @@ def evaluate_custom_dataset(
                 except Exception:
                     pass
                 if isinstance(traj, dict):
+                    print(f"[store_latents] GA traj keys: {list(traj.keys())}")
                     if "latents" in traj:
-                        payload["ga_latents"] = np.array(traj["latents"])  # (*B, steps, C, H)
+                        ga_lat = np.array(traj["latents"])  # (*B, steps, C, H)
+                        print(f"[store_latents] ga_latents shape: {getattr(ga_lat, 'shape', None)}")
+                        payload["ga_latents"] = ga_lat
                     if "log_probs" in traj:
-                        payload["ga_log_probs"] = np.array(traj["log_probs"])  # (*B, steps, C)
+                        ga_lp = np.array(traj["log_probs"])  # (*B, steps, C)
+                        print(f"[store_latents] ga_log_probs shape: {getattr(ga_lp, 'shape', None)}")
+                        payload["ga_log_probs"] = ga_lp
 
             # ES trajectory -> save best_latents_per_generation under es_best_latents_per_generation
             if isinstance(info0, dict) and "evolutionary_trajectory" in info0 and info0["evolutionary_trajectory"]:
@@ -481,8 +499,11 @@ def evaluate_custom_dataset(
                 except Exception:
                     pass
                 if isinstance(traj, dict):
+                    print(f"[store_latents] ES traj keys: {list(traj.keys())}")
                     if "best_latents_per_generation" in traj and traj["best_latents_per_generation"] is not None:
-                        payload["es_best_latents_per_generation"] = np.array(traj["best_latents_per_generation"])  # (*B, G, H)
+                        es_lat = np.array(traj["best_latents_per_generation"])  # (*B, G, H)
+                        print(f"[store_latents] es_best_latents_per_generation shape: {getattr(es_lat, 'shape', None)}")
+                        payload["es_best_latents_per_generation"] = es_lat
                     if "generation_accuracies" in traj:
                         payload["es_generation_accuracies"] = np.array(traj["generation_accuracies"])  # (G, *B)
                     if "final_best_accuracy" in traj:
@@ -492,6 +513,7 @@ def evaluate_custom_dataset(
             if not payload:
                 payload["note"] = np.array(["no_trajectory_available"], dtype=object)
             os.makedirs(os.path.dirname(store_path) or ".", exist_ok=True)
+            print(f"[store_latents] Saving to {store_path} with keys: {list(payload.keys())}")
             np.savez_compressed(store_path, **payload)
             print(f"Saved latent search data to {store_path}")
         except Exception as _e:
