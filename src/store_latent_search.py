@@ -111,6 +111,7 @@ def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
         f"{prefix}all_scores",
         f"{prefix}best_scores_per_generation",
         f"{prefix}best_losses_per_generation",
+        f"{prefix}generation_losses",  # ES trajectory values
     ]:
         if k in npz:
             arr = np.array(npz[k]).reshape(-1)
@@ -136,7 +137,8 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
         pts = np.array(npz[f"{prefix}all_latents"]).reshape(-1, 2)
     if f"{prefix}generation_idx" in npz:
         gens = np.array(npz[f"{prefix}generation_idx"]).reshape(-1)
-    for k in (f"{prefix}all_scores", f"{prefix}all_losses"):
+    # Look for various possible keys for population values
+    for k in (f"{prefix}all_scores", f"{prefix}all_losses", f"{prefix}losses_per_generation"):
         if k in npz:
             vals = np.array(npz[k]).reshape(-1)
             break
@@ -147,6 +149,7 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
     t = Trace()
     if os.path.exists(npz_path):
         with np.load(npz_path, allow_pickle=True) as f:
+            print(f"[plot] Available keys for {prefix}: {list(f.keys())}")
             t.pts = try_extract_2d_points(f, prefix)
             t.vals = _extract_vals(f, prefix)
             t.best_per_gen = _extract_best_per_gen(f, prefix)
@@ -355,8 +358,8 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 gen_radius = np.max(np.linalg.norm(gen_pts - gen_center, axis=1)) * 1.2  # 20% padding
                 
                 # Draw translucent circle for this generation
-                circle = plt.Circle(gen_center, gen_radius, color=color, alpha=0.15, 
-                                  fill=True, linewidth=1, edgecolor=color, alpha_edge=0.3)
+                circle = plt.Circle(gen_center, gen_radius, fill=True, linewidth=1, 
+                                  edgecolor=color, facecolor=color, alpha=0.15)
                 ax.add_patch(circle)
                 
                 # Add generation label at cluster center
