@@ -391,18 +391,10 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', 
                                        markersize=10, alpha=0.4, label='ES population (all samples)'))
     
-    # Generation clusters (translucent circles)
+    # Generation clusters (general representation)
     if es.pop_pts is not None and es.gen_idx is not None:
-        unique_gens = np.unique(es.gen_idx)
-        generation_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-                           '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-        for i, gen in enumerate(unique_gens[:3]):  # Show first 3 generations
-            color = generation_colors[gen % len(generation_colors)]
-            legend_elements.append(plt.Line2D([0], [0], marker='o', color=color, markerfacecolor=color, 
-                                           markersize=12, alpha=0.3, label=f'ES Gen {gen} cluster'))
-        if len(unique_gens) > 3:
-            legend_elements.append(plt.Line2D([0], [0], marker='o', color='#7f7f7f', markerfacecolor='#7f7f7f', 
-                                           markersize=12, alpha=0.3, label=f'ES Gen {unique_gens[3:]}... clusters'))
+        legend_elements.append(plt.Line2D([0], [0], marker='o', color='#1f77b4', markerfacecolor='#1f77b4', 
+                                       markersize=12, alpha=0.3, label='ES generation clusters'))
     
     # Trajectory paths
     legend_elements.append(plt.Line2D([0], [0], color='#ff7f0e', linewidth=2, label='ES selected path'))
