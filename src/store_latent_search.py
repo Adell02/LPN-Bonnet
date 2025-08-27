@@ -48,6 +48,7 @@ import os
 import sys
 import subprocess
 import time
+from collections import Counter
 from typing import Optional, Tuple
 
 import numpy as np
@@ -529,9 +530,87 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # Get the most common original dimension (or max if different)
     original_dim = max(original_dims) if original_dims else 2
     
+    # IMPORTANT: Collect background data BEFORE PCA projection
+    # This ensures we have the original high-dimensional points for the loss landscape
+    bgP, bgV = [], []
+    bgP_original = []  # Store original high-dimensional points for background
+    bgV_original = []  # Store original values for background
+    
+    # Also populate bgP and bgV for 2D cases (when no PCA is needed)
+    def add_to_background(pts, vals, is_original=True):
+        if is_original:
+            bgP_original.append(pts)
+            bgV_original.append(vals)
+        # Always add to regular arrays for 2D cases
+        # Note: pts here should be the ORIGINAL high-dimensional points, not PCA-projected
+        pts_flat = pts.reshape(-1, pts.shape[-1])
+        vals_flat = vals.reshape(-1)
+        if len(pts_flat) == len(vals_flat):
+            bgP.append(pts_flat)
+            bgV.append(vals_flat)
+    
+    # GA path values
+    if ga.pts is not None and ga.vals is not None:
+        # Store original high-dimensional points for background
+        ga_pts_original = ga.pts.reshape(-1, ga.pts.shape[-1])  # (T, D) where D is original dim
+        ga_vals_flat = ga.vals.reshape(-1)
+        if len(ga_pts_original) == len(ga_vals_flat):
+            print(f"[plot] GA background: original pts={ga_pts_original.shape}, vals={ga_vals_flat.shape}")
+            add_to_background(ga_pts_original, ga_vals_flat, is_original=True)
+        else:
+            print(f"[plot] GA background mismatch: pts={ga_pts_original.shape}, vals={ga_vals_flat.shape}")
+    else:
+        print(f"[plot] GA background missing: pts={ga.pts is not None}, vals={ga.vals is not None}")
+    
+    # ES population values
+    if es.pop_pts is not None and es.pop_vals is not None:
+        # Store original high-dimensional points for background
+        es_pop_pts_original = es.pop_pts.reshape(-1, es.pop_pts.shape[-1])  # (N, D) where D is original dim
+        es_pop_vals_flat = es.pop_vals.reshape(-1)
+        print(f"[plot] ES background: original pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
+        if len(es_pop_pts_original) == len(es_pop_vals_flat):
+            print(f"[plot] ES background: pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
+            add_to_background(es_pop_pts_original, es_pop_vals_flat, is_original=True)
+        else:
+            print(f"[plot] ES background mismatch: pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
+            print(f"[plot] ES mismatch details: pts length {len(es_pop_pts_original)}, vals length {es_pop_vals_flat.shape}")
+    else:
+        print(f"[plot] ES background missing: pts={es.pop_pts is not None}, vals={es.pop_vals is not None}")
+    
+    # if nothing, background stays white
+    have_field = len(bgP_original) > 0
+    print(f"[plot] Background field available: {have_field} (bgP_original={len(bgP_original)}, bgV_original={len(bgV_original)})")
+    
+    # Debug: show what we're working with
+    if have_field:
+        for i, (pts, vals) in enumerate(zip(bgP_original, bgV_original)):
+            print(f"[plot] Background {i}: pts={pts.shape}, vals={vals.shape}")
+            if len(pts) != len(vals):
+                print(f"[plot] WARNING: Background {i} has mismatched lengths!")
+
     # Apply unified PCA if needed
     if original_dim > 2:
         print(f"[plot] Original latent dimension: {original_dim}D, applying unified PCA to project to 2D")
+        
+        # Check if all points have the same dimension
+        dims = [pts.shape[-1] for pts in all_points if pts is not None]
+        if len(set(dims)) > 1:
+            print(f"[plot] WARNING: Mixed dimensions detected: {dims}")
+            print(f"[plot] This can happen when different runs have different latent dimensions")
+            print(f"[plot] Using the most common dimension for PCA")
+            # Use the most common dimension
+            from collections import Counter
+            dim_counter = Counter(dims)
+            most_common_dim = dim_counter.most_common(1)[0][0]
+            print(f"[plot] Using dimension {most_common_dim} for PCA")
+            # Filter to only use points with the most common dimension
+            all_points_filtered = [pts for pts in all_points if pts is not None and pts.shape[-1] == most_common_dim]
+            if all_points_filtered:
+                all_points = all_points_filtered
+                original_dim = most_common_dim
+            else:
+                print(f"[plot] ERROR: No points with consistent dimension found")
+                return None, None
         
         # Fit PCA on all data combined with whitening to prevent stretching
         # Whitening ensures PC1 and PC2 have similar variance, preventing the plot from looking like a pancake
@@ -574,63 +653,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     
     print(f"[plot] View window: center=({cx:.3f}, {cy:.3f}), span={span:.3f}, xlim={xlim}, ylim={ylim}")
 
-    # collect samples for the soft heatmap
-    # IMPORTANT: For PCA cases, we need to create the background BEFORE PCA projection
-    # to preserve the loss landscape structure, then project the final heatmap
-    bgP, bgV = [], []
-    bgP_original = []  # Store original high-dimensional points for background
-    bgV_original = []  # Store original values for background
-    
-    # Also populate bgP and bgV for 2D cases (when no PCA is needed)
-    def add_to_background(pts, vals, is_original=True):
-        if is_original:
-            bgP_original.append(pts)
-            bgV_original.append(vals)
-        # Always add to regular arrays for 2D cases
-        pts_2d = pts.reshape(-1, pts.shape[-1])
-        vals_flat = vals.reshape(-1)
-        if len(pts_2d) == len(vals_flat):
-            bgP.append(pts_2d)
-            bgV.append(vals_flat)
-    
-    # GA path values
-    if ga.pts is not None and ga.vals is not None:
-        # Store original high-dimensional points for background
-        ga_pts_original = ga.pts.reshape(-1, ga.pts.shape[-1])  # (T, D) where D is original dim
-        ga_vals_flat = ga.vals.reshape(-1)
-        if len(ga_pts_original) == len(ga_vals_flat):
-            print(f"[plot] GA background: original pts={ga_pts_original.shape}, vals={ga_vals_flat.shape}")
-            add_to_background(ga_pts_original, ga_vals_flat, is_original=True)
-        else:
-            print(f"[plot] GA background mismatch: pts={ga_pts_original.shape}, vals={ga_vals_flat.shape}")
-    else:
-        print(f"[plot] GA background missing: pts={ga.pts is not None}, vals={ga.vals is not None}")
-    
-    # ES population values
-    if es.pop_pts is not None and es.pop_vals is not None:
-        # Store original high-dimensional points for background
-        es_pop_pts_original = es.pop_pts.reshape(-1, es.pop_pts.shape[-1])  # (N, D) where D is original dim
-        es_pop_vals_flat = es.pop_vals.reshape(-1)
-        print(f"[plot] ES background: original pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
-        if len(es_pop_pts_original) == len(es_pop_vals_flat):
-            print(f"[plot] ES background: pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
-            add_to_background(es_pop_pts_original, es_pop_vals_flat, is_original=True)
-        else:
-            print(f"[plot] ES background mismatch: pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
-            print(f"[plot] ES mismatch details: pts length {len(es_pop_pts_original)}, vals length {es_pop_vals_flat.shape}")
-    else:
-        print(f"[plot] ES background missing: pts={es.pop_pts is not None}, vals={es.pop_vals is not None}")
-    
-    # if nothing, background stays white
-    have_field = len(bgP_original) > 0
-    print(f"[plot] Background field available: {have_field} (bgP_original={len(bgP_original)}, bgV_original={len(bgV_original)})")
-    
-    # Debug: show what we're working with
-    if have_field:
-        for i, (pts, vals) in enumerate(zip(bgP_original, bgV_original)):
-            print(f"[plot] Background {i}: pts={pts.shape}, vals={vals.shape}")
-            if len(pts) != len(vals):
-                print(f"[plot] WARNING: Background {i} has mismatched lengths!")
+    # Background data has already been collected above, before PCA projection
 
     def orient(v: np.ndarray) -> np.ndarray:
         return -v if field_name.lower() == "score" else v
@@ -1043,6 +1066,16 @@ def main() -> None:
             # Force dataset_length to 1 for individual runs
             run_src_args = [arg for arg in run_src_args if not arg.startswith("--dataset-length")]
             run_src_args.extend(["--dataset-length", "1"])
+            
+            # Debug: show the final args
+            print(f"[run] Final args: {run_src_args}")
+            
+            # Verify the args are correct
+            expected_args = ["-d", args.dataset_folder, "--dataset-length", "1", "--dataset-batch-size", str(args.dataset_batch_size), "--dataset-use-hf", args.dataset_use_hf, "--dataset-seed", str(seed)]
+            print(f"[run] Expected args: {expected_args}")
+            if run_src_args != expected_args:
+                print(f"[run] WARNING: Args mismatch! Using expected args instead.")
+                run_src_args = expected_args
             
             # Run GA for this seed
             ga_cmd = [
