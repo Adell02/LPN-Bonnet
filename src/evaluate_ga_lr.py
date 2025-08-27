@@ -243,7 +243,9 @@ def main():
     
     # CSV logging
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    csv_path = out_dir / f"ga_lr_budget_sweep_{args.run_name}_{timestamp}.csv"
+    # Extract a name from the artifact path for the CSV filename
+    artifact_name = args.artifact_path.split('/')[-1]
+    csv_path = out_dir / f"ga_lr_budget_sweep_{artifact_name}_{timestamp}.csv"
     
     # Run evaluations
     successful_evals = 0
@@ -252,7 +254,7 @@ def main():
     with open(csv_path, 'w', newline='') as f_csv:
         writer = csv.writer(f_csv)
         writer.writerow([
-            "timestamp", "run_name", "lr", "budget", "total_loss", "execution_time", "success"
+            "timestamp", "artifact_name", "lr", "budget", "total_loss", "execution_time", "success"
         ])
         
         for i, lr in enumerate(lrs):
@@ -284,7 +286,7 @@ def main():
                 # Write to CSV
                 writer.writerow([
                     time.strftime("%Y-%m-%d %H:%M:%S"),
-                    args.run_name,
+                    artifact_name,
                     lr,
                     budget,
                     total_loss if total_loss is not None else "",
@@ -305,7 +307,7 @@ def main():
     print("\n" + "=" * 60)
     print("📈 GA LR vs BUDGET SWEEP SUMMARY")
     print("=" * 60)
-    print(f"Run: {args.run_name}")
+    print(f"Artifact: {args.artifact_path}")
     print(f"Successful evaluations: {successful_evals}")
     print(f"Failed evaluations: {failed_evals}")
     print(f"Total evaluations: {len(lrs) * len(budgets)}")
