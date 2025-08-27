@@ -532,7 +532,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                   background_resolution: int = 400, background_smoothing: bool = False,
                   background_knn: int = 5, background_bandwidth_scale: float = 1.25, 
                   background_global_mix: float = 0.05, ga_steps: int = None, 
-                  es_population: int = None, es_generations: int = None) -> tuple[Optional[str], Optional[str]]:
+                  es_population: int = None, es_generations: int = None) -> tuple[Optional[str], Optional[str], int]:
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -926,7 +926,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                                       es_population=es_population, 
                                       es_generations=es_generations)
     
-    return png, loss_plot_path
+    return png, loss_plot_path, original_dim
 
 
 def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2, 
@@ -1304,6 +1304,8 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                     'run_index': cfg.get('run_idx', 0),
                     'n_samples': cfg.get('n_samples', 1),
                     'dataset_length': cfg.get('dataset_length'),
+                    'dataset_folder': cfg.get('dataset_folder'),  # Dataset folder name
+                    'latent_dimension': cfg.get('latent_dimension'),  # Latent space dimension
                     'ga_return_code': cfg.get('ga_return_code'),
                     'es_return_code': cfg.get('es_return_code'),
                 }
@@ -1534,6 +1536,8 @@ def main() -> None:
                 "dataset_seed": seed,
                 "n_samples": args.n_samples,
                 "dataset_length": args.dataset_length,
+                "dataset_folder": args.dataset_folder,  # Dataset folder name
+                "latent_dimension": None,  # Will be updated after plotting
             }
             
             try:
@@ -1549,8 +1553,13 @@ def main() -> None:
                 run = wandb.init(**run_kwargs)
                 print(f"[wandb] Started run {run_idx + 1}/{args.n_samples} in group: {group_name}")
                 
-                # Log run start
-                wandb.log({"run_status": "started", "run_index": run_idx})
+                # Log run start with dataset info
+                wandb.log({
+                    "run_status": "started", 
+                    "run_index": run_idx,
+                    "dataset_folder": args.dataset_folder,
+                    "dataset_length": args.dataset_length
+                })
                 
             except Exception as e:
                 print(f"Failed to start wandb run: {e}")
@@ -1626,29 +1635,32 @@ def main() -> None:
                 wandb.log({"es_return_code": es_rc, "es_status": "completed"})
             
             # Plot for this run
-            trajectory_plot, loss_plot = plot_and_save(ga_out, es_out, args.out_dir, 
-                                                      background_resolution=args.background_resolution,
-                                                      background_smoothing=args.background_smoothing,
-                                                      background_knn=args.background_knn,
-                                                      background_bandwidth_scale=args.background_bandwidth_scale,
-                                                      background_global_mix=args.background_global_mix,
-                                                      ga_steps=ga_steps, es_population=pop, es_generations=gens)
+            trajectory_plot, loss_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
+                                                                  background_resolution=args.background_resolution,
+                                                                  background_smoothing=args.background_smoothing,
+                                                                  background_knn=args.background_knn,
+                                                                  background_bandwidth_scale=args.background_bandwidth_scale,
+                                                                  background_global_mix=args.background_global_mix,
+                                                                  ga_steps=ga_steps, es_population=pop, es_generations=gens)
             if trajectory_plot:
                 print(f"Saved trajectory plot to {trajectory_plot}")
             if loss_plot:
                 print(f"Saved loss curves plot to {loss_plot}")
             
+            print(f"📊 Latent space dimension: {latent_dim}")
+            
             # Log plotting completion
             if run is not None:
-                wandb.log({"plotting_status": "completed"})
+                wandb.log({"plotting_status": "completed", "latent_dimension": latent_dim})
             
             # Upload final results to W&B
             try:
                 if run is not None:
-                    # Add return codes to config for final upload
+                    # Add return codes and latent dimension to config for final upload
                     cfg.update({
                         "ga_return_code": ga_rc,
                         "es_return_code": es_rc,
+                        "latent_dimension": latent_dim,  # Latent space dimension
                     })
                     # Upload artifacts and final metrics
                     upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, group_name, existing_run=run)
@@ -1687,6 +1699,8 @@ def main() -> None:
             "background_knn": args.background_knn,
             "background_bandwidth_scale": args.background_bandwidth_scale,
             "background_global_mix": args.background_global_mix,
+            "dataset_folder": args.dataset_folder,  # Dataset folder name
+            "latent_dimension": None,  # Will be updated after plotting
         }
         
         try:
@@ -1700,37 +1714,44 @@ def main() -> None:
             )
             print(f"[wandb] Started single run")
             
-            # Log run start
-            wandb.log({"run_status": "started"})
+            # Log run start with dataset info
+            wandb.log({
+                "run_status": "started",
+                "dataset_folder": args.dataset_folder,
+                "dataset_length": args.dataset_length
+            })
             
         except Exception as e:
             print(f"Failed to start wandb run: {e}")
             run = None
         
         # Plot (with automatic PCA if latent dimension > 2)
-        trajectory_plot, loss_plot = plot_and_save(ga_out, es_out, args.out_dir, 
-                                                  background_resolution=args.background_resolution,
-                                                  background_smoothing=args.background_smoothing,
-                                                  background_knn=args.background_knn,
-                                                  background_bandwidth_scale=args.background_bandwidth_scale,
-                                                  background_global_mix=args.background_global_mix,
-                                                  ga_steps=ga_steps, es_population=pop, es_generations=gens)
+        trajectory_plot, loss_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
+                                                              background_resolution=args.background_resolution,
+                                                              background_smoothing=args.background_smoothing,
+                                                              background_knn=args.background_knn,
+                                                              background_bandwidth_scale=args.background_bandwidth_scale,
+                                                              background_global_mix=args.background_global_mix,
+                                                              ga_steps=ga_steps, es_population=pop, es_generations=gens)
         if trajectory_plot:
             print(f"Saved trajectory plot to {trajectory_plot}")
         if loss_plot:
             print(f"Saved loss curves plot to {loss_plot}")
 
+        print(f"📊 Latent space dimension: {latent_dim}")
+
         # Log plotting completion
         if run is not None:
-            wandb.log({"plotting_status": "completed"})
+            wandb.log({"plotting_status": "completed", "latent_dimension": latent_dim})
 
         # Upload final results to W&B
         try:
             if run is not None:
-                # Add return codes to config for final upload
+                # Add return codes and latent dimension to config for final upload
                 cfg.update({
                     "ga_return_code": ga_rc,
                     "es_return_code": es_rc,
+                    "latent_dimension": latent_dim,  # Latent space dimension
                 })
                 # Upload artifacts and final metrics
                 upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, existing_run=run)
