@@ -604,6 +604,10 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # CRITICAL: We collect points and their corresponding loss values BEFORE PCA projection
     # This ensures that when we project to 2D, each 2D point retains its original loss value
     # The result is an accurate 2D loss landscape that preserves the high-dimensional structure
+    # 
+    # KEY IMPROVEMENT: ES background now uses ALL population losses, not just winners
+    # This creates a comprehensive loss landscape showing the full exploration of the search space
+    # including poor-performing regions that help understand the optimization landscape
     bgP_original = []  # Store original high-dimensional points
     bgV_original = []  # Store corresponding loss values
     
@@ -621,70 +625,95 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     else:
         print(f"[plot] GA background missing: pts={ga.pts is not None}, vals={ga.vals is not None}")
     
-    # ES population values - IMPORTANT: Use the same value extraction method as loss curves
-    # This ensures consistency between background landscape and loss curves plot
+    # ES population values - CRITICAL: Use ALL population losses for comprehensive loss landscape
+    # This ensures the background shows the full exploration of the search space, not just winners
+    # 
+    # BEFORE: Only used trajectory values (best per generation) - missed poor regions
+    # AFTER: Uses full population losses - shows complete search space exploration
+    # This reveals valleys, plateaus, and local minima that help understand optimization difficulty
     if es.pop_pts is not None:
         es_pop_pts_original = es.pop_pts.reshape(-1, es.pop_pts.shape[-1])  # (N, D) where D is original dim
         
-        # Use the same values that will be plotted in loss curves (es.vals) for consistency
-        if es.vals is not None:
-            # For ES, we need to expand the trajectory values to match population points
-            # This ensures the background uses the same loss values as the loss curves
-            es_trajectory_vals = es.vals.reshape(-1)
-            print(f"[plot] ES trajectory values: {es_trajectory_vals.shape}, range: [{es_trajectory_vals.min():.4f}, {es_trajectory_vals.max():.4f}]")
-            
-            # Calculate how many population points per generation
-            num_generations = len(es_trajectory_vals)
-            population_per_gen = len(es_pop_pts_original) // num_generations
-            print(f"[plot] ES expansion: {num_generations} generations × {population_per_gen} population = {len(es_pop_pts_original)} total points")
-            
-            # Expand trajectory values to match population points
-            es_pop_vals_flat = np.repeat(es_trajectory_vals, population_per_gen)
-            
-            # Ensure we have the right number of values
+        # PREFER: Use full population losses (es.pop_vals) for comprehensive landscape
+        if es.pop_vals is not None:
+            es_pop_vals_flat = es.pop_vals.reshape(-1)
             if len(es_pop_vals_flat) == len(es_pop_pts_original):
                 print(f"[plot] ES background: pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
                 print(f"[plot] ES values range: [{es_pop_vals_flat.min():.4f}, {es_pop_vals_flat.max():.4f}]")
-                print(f"[plot] ES using trajectory values for background consistency")
+                print(f"[plot] ES using FULL population losses for comprehensive landscape")
                 bgP_original.append(es_pop_pts_original)
                 bgV_original.append(es_pop_vals_flat)
             else:
-                print(f"[plot] ES background value expansion failed: expected {len(es_pop_pts_original)}, got {len(es_pop_vals_flat)}")
-                print(f"[plot] ES fallback: using original pop_vals if available")
-                if es.pop_vals is not None:
-                    es_pop_vals_fallback = es.pop_vals.reshape(-1)
-                    if len(es_pop_vals_fallback) == len(es_pop_pts_original):
-                        print(f"[plot] ES fallback successful: using pop_vals")
-                        bgP_original.append(es_pop_pts_original)
-                        bgV_original.append(es_pop_vals_fallback)
+                print(f"[plot] ES population values length mismatch: pts={len(es_pop_pts_original)}, vals={len(es_pop_vals_flat)}")
+                print(f"[plot] ES fallback: attempting to reconstruct from trajectory values")
+                # Fallback to trajectory-based reconstruction
+                if es.vals is not None:
+                    es_trajectory_vals = es.vals.reshape(-1)
+                    num_generations = len(es_trajectory_vals)
+                    population_per_gen = len(es_pop_pts_original) // num_generations
+                    if num_generations > 0 and population_per_gen > 0:
+                        es_pop_vals_reconstructed = np.repeat(es_trajectory_vals, population_per_gen)
+                        if len(es_pop_vals_reconstructed) == len(es_pop_pts_original):
+                            print(f"[plot] ES reconstruction successful: {num_generations} gens × {population_per_gen} pop")
+                            bgP_original.append(es_pop_pts_original)
+                            bgV_original.append(es_pop_vals_reconstructed)
+                        else:
+                            print(f"[plot] ES reconstruction failed: expected {len(es_pop_pts_original)}, got {len(es_pop_vals_reconstructed)}")
                     else:
-                        print(f"[plot] ES fallback failed: pop_vals length mismatch")
-        else:
-            print(f"[plot] ES trajectory values missing, trying fallback to pop_vals")
-            if es.pop_vals is not None:
-                es_pop_vals_fallback = es.pop_vals.reshape(-1)
-                if len(es_pop_vals_fallback) == len(es_pop_pts_original):
-                    print(f"[plot] ES fallback: using pop_vals for background")
-                    bgP_original.append(es_pop_pts_original)
-                    bgV_original.append(es_pop_vals_fallback)
+                        print(f"[plot] ES reconstruction failed: invalid generation/population counts")
                 else:
-                    print(f"[plot] ES fallback failed: pop_vals length mismatch")
+                    print(f"[plot] ES trajectory values missing, cannot reconstruct population losses")
+        else:
+            print(f"[plot] ES population values missing, attempting trajectory-based reconstruction")
+            # Fallback: try to reconstruct from trajectory values
+            if es.vals is not None:
+                es_trajectory_vals = es.vals.reshape(-1)
+                num_generations = len(es_trajectory_vals)
+                population_per_gen = len(es_pop_pts_original) // num_generations
+                if num_generations > 0 and population_per_gen > 0:
+                    es_pop_vals_reconstructed = np.repeat(es_trajectory_vals, population_per_gen)
+                    if len(es_pop_vals_reconstructed) == len(es_pop_pts_original):
+                        print(f"[plot] ES reconstruction successful: {num_generations} gens × {population_per_gen} pop")
+                        bgP_original.append(es_pop_pts_original)
+                        bgV_original.append(es_pop_vals_reconstructed)
+                    else:
+                        print(f"[plot] ES reconstruction failed: expected {len(es_pop_pts_original)}, got {len(es_pop_vals_reconstructed)}")
+                else:
+                    print(f"[plot] ES reconstruction failed: invalid generation/population counts")
             else:
-                print(f"[plot] ES trajectory values missing, cannot create consistent background")
+                print(f"[plot] ES trajectory values missing, cannot create background")
     else:
         print(f"[plot] ES background missing: pts={es.pop_pts is not None}")
     
-    # Check for value consistency between GA and ES (now using same extraction method)
-    if ga.vals is not None and es.vals is not None:
+    # Check for value consistency between GA and ES
+    # Note: GA uses trajectory losses, ES uses full population losses for comprehensive landscape
+    if ga.vals is not None and es.pop_vals is not None:
+        ga_range = (ga.vals.min(), ga.vals.max())
+        es_pop_range = (es.pop_vals.min(), es.pop_vals.max())
+        print(f"[plot] Value consistency check:")
+        print(f"  GA trajectory range: [{ga_range[0]:.4f}, {ga_range[1]:.4f}]")
+        print(f"  ES population range: [{es_pop_range[0]:.4f}, {es_pop_range[1]:.4f}]")
+        print(f"  Note: ES population range may be wider than trajectory range (showing full exploration)")
+        
+        # Check if ES trajectory values are available for comparison
+        if es.vals is not None:
+            es_traj_range = (es.vals.min(), es.vals.max())
+            print(f"  ES trajectory range: [{es_traj_range[0]:.4f}, {es_traj_range[1]:.4f}]")
+            if abs(es_traj_range[0] - es_pop_range[0]) < 1e-3 and abs(es_traj_range[1] - es_pop_range[1]) < 1e-3:
+                print(f"  ✅ ES trajectory and population ranges are consistent")
+            else:
+                print(f"  ℹ️  ES population range differs from trajectory range (expected for comprehensive landscape)")
+    elif ga.vals is not None and es.vals is not None:
+        # Fallback: compare trajectory values if population values not available
         ga_range = (ga.vals.min(), ga.vals.max())
         es_range = (es.vals.min(), es.vals.max())
-        print(f"[plot] Value consistency check (using trajectory values):")
+        print(f"[plot] Value consistency check (trajectory values only):")
         print(f"  GA range: [{ga_range[0]:.4f}, {ga_range[1]:.4f}]")
         print(f"  ES range: [{es_range[0]:.4f}, {es_range[1]:.4f}]")
         if abs(ga_range[0] - es_range[0]) < 1e-3 and abs(ga_range[1] - es_range[1]) < 1e-3:
-            print(f"  ✅ GA and ES values are consistent (same range)")
+            print(f"  ✅ GA and ES trajectory values are consistent")
         else:
-            print(f"  ⚠️  GA and ES values have different ranges - this may indicate different evaluation methods")
+            print(f"  ⚠️  GA and ES trajectory values have different ranges")
     
     # Check if we have background data
     have_field = len(bgP_original) > 0
@@ -885,10 +914,13 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     if ga.vals is not None:
         print(f"[normalization] GA values: {ga.vals.shape}, range: [{ga.vals.min():.4f}, {ga.vals.max():.4f}]")
         all_for_norm.append(np.asarray(ga.vals))
-    # NOTE: Avoid including raw es.pop_vals in normalization to keep consistency with plotted landscape
-    # We already expanded es.vals for background; include es.vals directly if present
-    if es.vals is not None:
-        print(f"[normalization] ES trajectory values: {es.vals.shape}, range: [{es.vals.min():.4f}, {es.vals.max():.4f}]")
+    
+    # ES values: prefer population losses for comprehensive landscape, fallback to trajectory
+    if es.pop_vals is not None:
+        print(f"[normalization] ES population values: {es.pop_vals.shape}, range: [{es.pop_vals.min():.4f}, {es.pop_vals.max():.4f}]")
+        all_for_norm.append(np.asarray(es.pop_vals))
+    elif es.vals is not None:
+        print(f"[normalization] ES trajectory values (fallback): {es.vals.shape}, range: [{es.vals.min():.4f}, {es.vals.max():.4f}]")
         all_for_norm.append(np.asarray(es.vals))
     
     print(f"[normalization] Total arrays for normalization: {len(all_for_norm)}")
