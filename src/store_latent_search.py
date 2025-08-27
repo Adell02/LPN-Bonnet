@@ -1955,9 +1955,9 @@ def main() -> None:
                 
                 # Use custom run name if provided, otherwise use default naming
                 if args.run_name:
-                    run_name = f"{args.run_name}-s{run_idx}" if args.n_samples > 1 else args.run_name
+                    run_name = f"{args.run_name}-s{run_idx}-{int(time.time())}" if args.n_samples > 1 else f"{args.run_name}-{int(time.time())}"
                 else:
-                    run_name = f"latent-search-b{args.budget}-s{run_idx}"
+                    run_name = f"latent-search-b{args.budget}-s{run_idx}-{int(time.time())}"
                 
                 run_kwargs = {
                     "project": args.wandb_project,
@@ -2128,9 +2128,9 @@ def main() -> None:
             
             # Use custom run name if provided, otherwise use default naming
             if args.run_name:
-                run_name = args.run_name
+                run_name = f"{args.run_name}-{int(time.time())}"
             else:
-                run_name = f"latent-search-b{args.budget}"
+                run_name = f"latent-search-b{args.budget}-{int(time.time())}"
             
             run = wandb.init(
                 project=args.wandb_project,
