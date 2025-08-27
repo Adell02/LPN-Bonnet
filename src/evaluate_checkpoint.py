@@ -519,6 +519,13 @@ def evaluate_custom_dataset(
     if store_path:
         try:
             import numpy as np
+            # Collect per-sample loss curves for GA/ES over all batches when available
+            ga_losses_rows = []
+            es_losses_rows = []
+            ga_steps_len = None
+            es_gen_len = None
+            es_pop_size = evaluator.inference_mode_kwargs.get("population_size", None)
+
             # Build a variant that returns info
             pmap_with_info = jax.pmap(
                 build_generate_output_batch_to_be_pmapped(
@@ -529,15 +536,20 @@ def evaluate_custom_dataset(
                 ),
                 axis_name="num_devices",
             )
-            # Use the first batch on each device
-            result_with_info = pmap_with_info(
-                train_state.params,
-                leave_one_out_grids[:, 0],
-                leave_one_out_shapes[:, 0],
-                grids[:, 0],
-                shapes[:, 0],
-                keys[:, 0],
-            )
+            # Iterate all batches to collect per-sample losses
+            per_batch_infos = []
+            for i in trange(grids.shape[1], desc="Collecting loss trajectories"):
+                result_with_info = pmap_with_info(
+                    train_state.params,
+                    leave_one_out_grids[:, i],
+                    leave_one_out_shapes[:, i],
+                    grids[:, i],
+                    shapes[:, i],
+                    keys[:, i],
+                )
+                per_batch_infos.append(result_with_info)
+            # Use the first batch on each device for the representative payload as before
+            result_with_info = per_batch_infos[0]
             # Collect info from first device across the pytree
             info_tree = result_with_info.get("info", None)
             if info_tree is None:
@@ -697,6 +709,77 @@ def evaluate_custom_dataset(
                 payload["per_sample_pixel_correctness"] = np.asarray(per_sample_pixel_corr)
             if per_sample_acc is not None:
                 payload["per_sample_accuracy"] = np.asarray(per_sample_acc)
+
+            # Build per-sample loss curves from all batches when possible
+            try:
+                for result_with_info in per_batch_infos:
+                    info_tree = result_with_info.get("info", None)
+                    if info_tree is None:
+                        continue
+                    def _first_device(x):
+                        try:
+                            return x[0]
+                        except Exception:
+                            return x
+                    info0_batch = jax.tree_map(_first_device, info_tree)
+                    try:
+                        info0_batch = jax.device_get(info0_batch)
+                    except Exception:
+                        pass
+                    # GA per-sample losses per step
+                    if isinstance(info0_batch, dict) and "optimization_trajectory" in info0_batch and info0_batch["optimization_trajectory"]:
+                        t = info0_batch["optimization_trajectory"]
+                        if isinstance(t, dict) and "log_probs" in t:
+                            lp = np.array(t["log_probs"])  # (B, N, S, C) or similar
+                            # Move to (B, S, C) best candidate reduction
+                            while lp.ndim > 3:
+                                lp = lp[0]
+                            # If shape is (S, C) assume B==1, add batch axis
+                            if lp.ndim == 2:
+                                lp = lp[None, ...]
+                            # Reduce over candidate axis (last) to best score per step
+                            ga_scores_bs = lp.max(axis=-1)  # (B, S)
+                            ga_losses_bs = -ga_scores_bs
+                            if ga_steps_len is None:
+                                ga_steps_len = ga_losses_bs.shape[-1]
+                            ga_losses_rows.extend([row.reshape(-1) for row in ga_losses_bs])
+                    # ES per-sample losses per generation
+                    if isinstance(info0_batch, dict) and "evolutionary_trajectory" in info0_batch and info0_batch["evolutionary_trajectory"]:
+                        t = info0_batch["evolutionary_trajectory"]
+                        if isinstance(t, dict):
+                            if "losses_per_generation" in t:
+                                L = np.array(t["losses_per_generation"])  # (B, G) or (B, G, C)
+                                if L.ndim == 3:
+                                    # Reduce across population (min loss per generation)
+                                    L = L.min(axis=-1)
+                                if L.ndim == 1:
+                                    L = L[None, ...]
+                                if es_gen_len is None:
+                                    es_gen_len = L.shape[-1]
+                                es_losses_rows.extend([row.reshape(-1) for row in L])
+                            elif "generation_fitness" in t:
+                                F = np.array(t["generation_fitness"])  # (B, G)
+                                if F.ndim == 1:
+                                    F = F[None, ...]
+                                L = -F
+                                if es_gen_len is None:
+                                    es_gen_len = L.shape[-1]
+                                es_losses_rows.extend([row.reshape(-1) for row in L])
+            except Exception as _gpe:
+                print(f"[store_latents] Failed to gather per-sample loss curves: {_gpe!r}")
+
+            # Attach per-sample loss arrays and budgets if collected
+            if ga_losses_rows and ga_steps_len is not None:
+                ga_losses_per_sample = np.vstack(ga_losses_rows).astype(np.float32)
+                payload["ga_losses_per_sample"] = ga_losses_per_sample
+                payload["ga_budget"] = (2 * np.arange(1, ga_steps_len + 1)).astype(np.int32)
+            if es_losses_rows and es_gen_len is not None:
+                es_losses_per_sample = np.vstack(es_losses_rows).astype(np.float32)
+                payload["es_generation_losses_per_sample"] = es_losses_per_sample
+                # Budget per generation (start from gen1)
+                if es_pop_size is None:
+                    es_pop_size = 1
+                payload["es_budget"] = (np.arange(1, es_gen_len + 1) * int(es_pop_size)).astype(np.int32)
             os.makedirs(os.path.dirname(store_path) or ".", exist_ok=True)
             print(f"[store_latents] Saving to {store_path} with keys: {list(payload.keys())}")
             np.savez_compressed(store_path, **payload)

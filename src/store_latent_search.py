@@ -1339,53 +1339,81 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Ensure x-axis shows integers for budget
     ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
     
-    # Plot GA loss curve with budget on x-axis
-    if has_ga_loss:
+    # Helper: moving average
+    def _moving_average(x: np.ndarray, k: int = 3) -> np.ndarray:
+        if x.size == 0 or k <= 1:
+            return x
+        k = min(k, len(x))
+        c = np.convolve(x, np.ones(k)/k, mode='valid')
+        # Pad to original length at start
+        pad = np.full(len(x) - len(c), c[0]) if len(c) > 0 else np.array([])
+        return np.concatenate([pad, c])
+
+    # Plot GA per-sample traces if available in NPZ
+    ga_budget = None
+    if ga_npz_path and os.path.exists(ga_npz_path):
+        try:
+            with np.load(ga_npz_path, allow_pickle=True) as f:
+                if 'ga_budget' in f:
+                    ga_budget = np.array(f['ga_budget']).reshape(-1)
+                if dataset_length and dataset_length > 1 and 'ga_losses_per_sample' in f:
+                    L = np.array(f['ga_losses_per_sample'])  # (N, S)
+                    x = ga_budget if ga_budget is not None and len(ga_budget) == L.shape[1] else np.arange(L.shape[1])
+                    for row in L:
+                        ax.plot(x, row, color="#e91e63", alpha=0.5, linewidth=1.5)
+                    mean_curve = L.mean(axis=0)
+                    mean_ma = _moving_average(mean_curve, k=max(3, L.shape[1]//10))
+                    ax.plot(x, mean_ma, color="#e91e63", linewidth=3.0, label=f"GA mean", zorder=4)
+        except Exception as _ge:
+            print(f"[loss] Failed GA per-sample plotting: {_ge}")
+
+    # Fallback single GA curve if no per-sample available
+    if has_ga_loss and (not (ga_npz_path and os.path.exists(ga_npz_path))):
         if ga_steps is not None:
-            # GA budget: 2 evaluations per step (forward + backward pass)
-            # Start from 2 (first step evaluation), not 0
             ga_budget = 2 * np.arange(1, len(ga.vals) + 1)
             print(f"[loss] GA budget calculation: {len(ga.vals)} steps → budget points: {ga_budget}")
             ax.plot(ga_budget, ga.vals, color="#e91e63", linewidth=3.0, marker='o', 
                     markersize=6, label=f"Gradient Ascent (2×{ga_steps} steps)", zorder=3)
         else:
-            # Fallback to step indices if budget info not available
             ga_steps_indices = np.arange(len(ga.vals))
             ax.plot(ga_steps_indices, ga.vals, color="#e91e63", linewidth=3.0, marker='o', 
                     markersize=6, label="Gradient Ascent", zorder=3)
     
-    # Plot ES loss curve with budget on x-axis
-    if has_es_loss:
+    # Plot ES per-sample traces if available
+    es_budget = None
+    if es_npz_path and os.path.exists(es_npz_path):
+        try:
+            with np.load(es_npz_path, allow_pickle=True) as f:
+                if 'es_budget' in f:
+                    es_budget = np.array(f['es_budget']).reshape(-1)
+                if dataset_length and dataset_length > 1 and 'es_generation_losses_per_sample' in f:
+                    L = np.array(f['es_generation_losses_per_sample'])  # (N, G)
+                    x = es_budget if es_budget is not None and len(es_budget) == L.shape[1] else np.arange(1, L.shape[1]+1)
+                    for row in L:
+                        ax.plot(x, row, color="#ff7f0e", alpha=0.5, linewidth=1.5)
+                    mean_curve = L.mean(axis=0)
+                    mean_ma = _moving_average(mean_curve, k=max(3, L.shape[1]//4))
+                    ax.plot(x, mean_ma, color="#ff7f0e", linewidth=3.0, label=f"ES mean", zorder=4)
+        except Exception as _ee:
+            print(f"[loss] Failed ES per-sample plotting: {_ee}")
+
+    # Fallback single ES curve
+    if has_es_loss and (not (es_npz_path and os.path.exists(es_npz_path))):
         if es_population is not None and es_generations is not None:
-            # ES budget: cumulative evaluations at each generation
-            # Check if we have values for generation 0 or starting from generation 1
             if len(es.vals) == es_generations + 1:
-                # Values include generation 0: [0, pop, 2*pop, 3*pop, ...]
                 es_budget = np.arange(es_generations + 1) * es_population
-                print(f"[loss] ES budget (with gen 0): {es_generations} gens × {es_population} pop → budget points: {es_budget}")
             elif len(es.vals) == es_generations:
-                # Values start from generation 1: [pop, 2*pop, 3*pop, ...]
                 es_budget = np.arange(1, es_generations + 1) * es_population
-                print(f"[loss] ES budget (gen 1+): {es_generations} gens × {es_population} pop → budget points: {es_budget}")
             else:
-                # Unexpected length, use fallback
-                print(f"[loss] ES unexpected values length: {len(es.vals)} vs expected {es_generations} or {es_generations + 1}")
                 es_budget = np.arange(len(es.vals)) * es_population
-            
-            print(f"[loss] ES budget calculation: {es_generations} gens × {es_population} pop → budget points: {es_budget}")
             if len(es_budget) == len(es.vals):
-                print(f"[loss] Using ES budget: {es_budget}")
                 ax.plot(es_budget, es.vals, color="#ff7f0e", linewidth=3.0, marker='s', 
                         markersize=6, label=f"Evolutionary Search ({es_population}×{es_generations})", zorder=3)
             else:
-                # Fallback if budget doesn't match values length
-                print(f"[loss] ES budget mismatch: budget={es_budget}, values={len(es.vals)}")
-                print(f"[loss] Using fallback generation indices")
                 es_steps_indices = np.arange(len(es.vals))
                 ax.plot(es_steps_indices, es.vals, color="#ff7f0e", linewidth=3.0, marker='s', 
                         markersize=6, label="Evolutionary Search", zorder=3)
         else:
-            # Fallback to generation indices if budget info not available
             es_steps_indices = np.arange(len(es.vals))
             ax.plot(es_steps_indices, es.vals, color="#ff7f0e", linewidth=3.0, marker='s', 
                     markersize=6, label="Evolutionary Search", zorder=3)
