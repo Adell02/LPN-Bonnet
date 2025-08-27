@@ -209,47 +209,82 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
     if f"{prefix}generation_idx" in npz:
         gens = np.array(npz[f"{prefix}generation_idx"]).reshape(-1)
     
-    # Prefer per-sample losses for proper population pairing
-    if f"{prefix}losses_per_generation" in npz:
-        lp = np.array(npz[f"{prefix}losses_per_generation"])
-        # losses_per_generation is typically (G, P) - need to flatten to (G*P,)
-        if lp.ndim == 2:
-            vals = lp.reshape(-1)  # (G*P,) - flattened per-generation losses
-        else:
-            vals = lp.reshape(-1)  # fallback for other shapes
-        print(f"[plot] Using {prefix}losses_per_generation: {lp.shape} -> {vals.shape}")
-    elif f"{prefix}all_losses" in npz and gens is not None:
-        # Expand per-gen losses to population using the generation index
-        per_gen = np.array(npz[f"{prefix}all_losses"]).reshape(-1)
-        vals = per_gen[gens]  # broadcast by index to match all_latents
-        print(f"[plot] Using {prefix}all_losses expanded: {per_gen.shape} -> {vals.shape}")
-    elif f"{prefix}all_scores" in npz:
-        vals = np.array(npz[f"{prefix}all_scores"]).reshape(-1)
-        print(f"[plot] Using {prefix}all_scores: {vals.shape}")
+    # Prefer per-individual losses for exact pairing; then robust fallbacks
+    if pts is not None:
+        N = int(pts.reshape(-1, pts.shape[-1]).shape[0])
+    else:
+        N = None
+
+    # Helper to try adopt array if it matches N
+    def _try_use(arr: Optional[np.ndarray], label: str) -> Optional[np.ndarray]:
+        if arr is None or N is None:
+            return None
+        a = np.array(arr).reshape(-1)
+        if a.size == N:
+            print(f"[plot] Using {prefix}{label}: {a.shape}")
+            return a
+        return None
+
+    # 1) Exact per-individual losses
+    if f"{prefix}all_losses" in npz:
+        vals = _try_use(npz[f"{prefix}all_losses"], "all_losses")
+    if vals is None and f"{prefix}losses_per_generation" in npz:
+        lp = np.array(npz[f"{prefix}losses_per_generation"])  # (G,P) or similar
+        flat = lp.reshape(-1)
+        if N is not None and flat.size == N:
+            vals = flat
+            print(f"[plot] Using {prefix}losses_per_generation: {lp.shape} -> {vals.shape}")
+
+    # 2) Map per-generation losses to individuals via generation_idx
+    if vals is None and gens is not None:
+        # generation losses may be stored under multiple names
+        gen_losses = None
+        for k in (f"{prefix}generation_losses", f"{prefix}best_losses_per_generation"):
+            if k in npz:
+                gen_losses = np.array(npz[k]).reshape(-1)
+                break
+        if gen_losses is None and f"{prefix}all_losses" in npz:
+            # Sometimes all_losses is per-generation, try that too
+            tmp = np.array(npz[f"{prefix}all_losses"]).reshape(-1)
+            if N is not None and gens.size > 0 and tmp.size == len(np.unique(gens)):
+                gen_losses = tmp
+        if gen_losses is not None and gens.size > 0:
+            # Safe indexing by generation id
+            max_gen = int(np.max(gens))
+            if gen_losses.size >= max_gen + 1:
+                vals = gen_losses[gens]
+                print(f"[plot] Using {prefix}generation_losses expanded by generation_idx: {gen_losses.shape} -> {vals.shape}")
+
+    # 3) As a last resort, if we have scores use them (orientation handled later)
+    if vals is None and f"{prefix}all_scores" in npz:
+        if N is not None:
+            scores = np.array(npz[f"{prefix}all_scores"]).reshape(-1)
+            if scores.size == N:
+                vals = scores
+                print(f"[plot] Using {prefix}all_scores: {vals.shape}")
     
-    # Special handling for ES: if we have generation index but mismatched values,
-    # try to reconstruct per-individual losses from available data
-    if prefix == "es_" and pts is not None and vals is not None and gens is not None:
-        if len(vals) != len(pts):
-            print(f"[plot] ES mismatch detected: {len(vals)} values vs {len(pts)} points")
-            print(f"[plot] Attempting to reconstruct per-individual losses...")
-            
-            # Check if we can use generation_losses to expand
-            if f"{prefix}generation_losses" in npz:
-                gen_losses = np.array(npz[f"{prefix}generation_losses"]).reshape(-1)
-                if len(gen_losses) == len(np.unique(gens)):
-                    # We have per-generation losses, expand to per-individual
-                    # This assumes all individuals in a generation get the same loss
-                    expanded_vals = gen_losses[gens]
-                    if len(expanded_vals) == len(pts):
-                        vals = expanded_vals
-                        print(f"[plot] ES reconstruction successful: {len(vals)} values now match {len(pts)} points")
-                    else:
-                        print(f"[plot] ES reconstruction failed: expanded={len(expanded_vals)}, expected={len(pts)}")
+    # Ensure every point has a value; if still mismatched, align robustly
+    if prefix == "es_" and pts is not None:
+        n_pts = int(pts.reshape(-1, pts.shape[-1]).shape[0])
+        if vals is None and gens is not None:
+            # Assign a neutral per-generation value if nothing else available
+            # Use 0.0 as placeholder to still contribute density; normalization will span GA values too
+            unique_gens = np.unique(gens)
+            gen_vals = {g: 0.0 for g in unique_gens}
+            vals = np.array([gen_vals[g] for g in gens], dtype=float)
+            print(f"[plot] ES fallback: assigning neutral per-generation values (0.0) to ensure coverage: {vals.shape}")
+        if vals is not None:
+            vals = np.array(vals).reshape(-1)
+            if vals.size != n_pts:
+                print(f"[plot] ES length mismatch after extraction: vals={vals.size}, pts={n_pts}. Will tile/truncate to match.")
+                if vals.size == 1:
+                    vals = np.repeat(vals, n_pts)
+                elif vals.size < n_pts:
+                    reps = int(np.ceil(n_pts / vals.size))
+                    vals = np.tile(vals, reps)[:n_pts]
                 else:
-                    print(f"[plot] ES generation_losses mismatch: {len(gen_losses)} vs {len(np.unique(gens))} generations")
-            else:
-                print(f"[plot] ES generation_losses not available for reconstruction")
+                    vals = vals[:n_pts]
+                print(f"[plot] ES values aligned to points: {vals.shape}")
     
     # Debug: show what we're working with for ES
     if prefix == "es_":
