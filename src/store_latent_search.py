@@ -172,6 +172,14 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
         vals = np.array(npz[f"{prefix}all_scores"]).reshape(-1)
         print(f"[plot] Using {prefix}all_scores: {vals.shape}")
     
+    # Debug: show what we're working with for ES
+    if prefix == "es_":
+        print(f"[plot] ES population debug: pts={pts.shape if pts is not None else None}, "
+              f"gens={gens.shape if gens is not None else None}, vals={vals.shape if vals is not None else None}")
+        if pts is not None and vals is not None:
+            expected_vals = pts.shape[0] if pts.ndim >= 1 else 0
+            print(f"[plot] ES expected: {expected_vals} values for {pts.shape[0]} population points")
+    
     return pts, gens, vals
 
 
@@ -703,8 +711,8 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # Generate loss curves plot
     loss_plot_path = plot_loss_curves(ga, es, out_dir, original_dim, 
                                       ga_steps=ga_steps, 
-                                      es_population=pop, 
-                                      es_generations=gens)
+                                      es_population=es_population, 
+                                      es_generations=es_generations)
     
     return png, loss_plot_path
 
