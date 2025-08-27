@@ -23,7 +23,7 @@ training:
     num_workers: 4
     num_pairs: 4
     class: PATTERN
-    pattern_size: 4
+    pattern_size: 6
   train_datasets:
 
 
@@ -45,30 +45,30 @@ eval:
 
 encoder_transformer:
   _target_:  models.utils.EncoderTransformerConfig
-  max_rows: 10
-  max_cols: 10
+  max_rows: 15
+  max_cols: 15
   num_layers: 2
   transformer_layer:
     _target_:  models.utils.TransformerLayerConfig
     num_heads: 6
-    emb_dim_per_head: 16
-    mlp_dim_factor: 1.0
+    emb_dim_per_head: 12
+    mlp_dim_factor: 4.0
     dropout_rate: 0.0
     attention_dropout_rate: 0.0
-  latent_dim: 8
+  latent_dim: 2
   variational: True
   latent_projection_bias: False
 
 
 decoder_transformer:
   _target_:  models.utils.DecoderTransformerConfig
-  max_rows: 10
-  max_cols: 10
+  max_rows: 15
+  max_cols: 15
   num_layers: 2
   transformer_layer:
     _target_:  models.utils.TransformerLayerConfig
     num_heads: 6
-    emb_dim_per_head: 16
-    mlp_dim_factor: 1.0
+    emb_dim_per_head: 12
+    mlp_dim_factor: 4.0
     dropout_rate: 0.0
     attention_dropout_rate: 0.0
