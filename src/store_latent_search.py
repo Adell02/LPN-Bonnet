@@ -1486,8 +1486,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
     if existing_run is not None:
         run = existing_run
         print(f"[wandb] Using existing run: {run.name}")
-        # Skip the rest of the function since we're using an existing run
-        return
+        print(f"[wandb] Will upload plots and metrics to existing run: {run.name}")
     else:
         # Create run with optional group for n_samples > 1
         run_kwargs = {
@@ -1514,10 +1513,23 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
         run.log_artifact(es_art)
     
     # Log plots
+    print(f"[wandb] Attempting to upload plots...")
+    print(f"[wandb] Trajectory plot path: {trajectory_plot}")
+    print(f"[wandb] Loss plot path: {loss_plot}")
+    
     if trajectory_plot and os.path.exists(trajectory_plot):
+        print(f"[wandb] ✅ Uploading trajectory plot: {trajectory_plot}")
         wandb.log({"trajectory_plot": wandb.Image(trajectory_plot)})
+    else:
+        print(f"[wandb] ❌ Trajectory plot not found or invalid: {trajectory_plot}")
+    
     if loss_plot and os.path.exists(loss_plot):
+        print(f"[wandb] ✅ Uploading loss curves plot: {loss_plot}")
         wandb.log({"loss_curves_plot": wandb.Image(loss_plot)})
+    else:
+        print(f"[wandb] ❌ Loss plot not found or invalid: {loss_plot}")
+    
+    print(f"[wandb] Plot upload completed")
     
     # Log comprehensive metrics from both methods
     try:
@@ -2080,6 +2092,14 @@ def main() -> None:
                         "es_return_code": es_rc,
                         "latent_dimension": latent_dim,  # Latent space dimension
                     })
+                    
+                    # Debug: show plot paths before upload
+                    print(f"[debug] Plot paths before upload:")
+                    print(f"[debug] trajectory_plot: {trajectory_plot}")
+                    print(f"[debug] loss_plot: {loss_plot}")
+                    print(f"[debug] trajectory_plot exists: {os.path.exists(trajectory_plot) if trajectory_plot else False}")
+                    print(f"[debug] loss_plot exists: {os.path.exists(loss_plot) if loss_plot else False}")
+                    
                     # Upload artifacts and final metrics
                     upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, group_name, existing_run=run)
                 else:
@@ -2181,6 +2201,14 @@ def main() -> None:
                     "es_return_code": es_rc,
                     "latent_dimension": latent_dim,  # Latent space dimension
                 })
+                
+                # Debug: show plot paths before upload
+                print(f"[debug] Plot paths before upload:")
+                print(f"[debug] trajectory_plot: {trajectory_plot}")
+                print(f"[debug] loss_plot: {loss_plot}")
+                print(f"[debug] trajectory_plot exists: {os.path.exists(trajectory_plot) if trajectory_plot else False}")
+                print(f"[debug] loss_plot exists: {os.path.exists(loss_plot) if loss_plot else False}")
+                
                 # Upload artifacts and final metrics
                 upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, existing_run=run)
             else:
