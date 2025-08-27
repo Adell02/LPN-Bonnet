@@ -1226,7 +1226,16 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                                       es_population=es_population, 
                                       es_generations=es_generations, dataset_length=dataset_length)
     
-    return png, loss_plot_path, original_dim
+    # Generate statistical histograms if dataset_length > 1
+    stats_plot_path = None
+    if dataset_length and dataset_length > 1:
+        stats_plot_path = create_statistical_histograms(ga_npz_path, es_npz_path, out_dir, dataset_length)
+        if stats_plot_path:
+            print(f"[stats] Created statistical histograms: {stats_plot_path}")
+        else:
+            print(f"[stats] Failed to create statistical histograms")
+    
+    return png, loss_plot_path, stats_plot_path, original_dim
 
 
 def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2, 
@@ -1463,9 +1472,204 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     return png
 
 
+def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: str, dataset_length: int) -> Optional[str]:
+    """
+    Create statistical histograms comparing GA vs ES performance across the three metrics:
+    - accuracy (overall)
+    - shape correctness 
+    - pixel correctness
+    
+    Only creates histograms when dataset_length > 1 (multiple samples evaluated).
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+    except Exception as e:
+        print(f"Statistical histogram plotting unavailable: {e}")
+        return None
+    
+    if dataset_length <= 1:
+        print(f"[stats] Skipping statistical histograms: dataset_length={dataset_length} (need > 1)")
+        return None
+    
+    print(f"[stats] Creating statistical histograms for {dataset_length} samples...")
+    
+    # Extract per-sample metrics from both NPZ files
+    ga_metrics = {}
+    es_metrics = {}
+    
+    # Load GA metrics
+    if os.path.exists(ga_npz_path):
+        try:
+            with np.load(ga_npz_path, allow_pickle=True) as f:
+                print(f"[stats] GA NPZ keys: {list(f.keys())}")
+                
+                # Extract per-sample metrics
+                for key, wandb_key in [
+                    ('per_sample_accuracy', 'accuracy'),
+                    ('per_sample_shape_accuracy', 'shape_correctness'),
+                    ('per_sample_pixel_correctness', 'pixel_correctness'),
+                ]:
+                    if key in f:
+                        arr = np.array(f[key]).reshape(-1)
+                        if arr.size > 0:
+                            ga_metrics[wandb_key] = arr
+                            print(f"[stats] GA {wandb_key}: shape={arr.shape}, mean={arr.mean():.4f}, std={arr.std():.4f}")
+                        else:
+                            print(f"[stats] GA {wandb_key}: empty array")
+                    else:
+                        print(f"[stats] GA {wandb_key}: key '{key}' not found")
+        except Exception as e:
+            print(f"[stats] Failed to load GA metrics: {e}")
+    
+    # Load ES metrics
+    if os.path.exists(es_npz_path):
+        try:
+            with np.load(es_npz_path, allow_pickle=True) as f:
+                print(f"[stats] ES NPZ keys: {list(f.keys())}")
+                
+                # Extract per-sample metrics
+                for key, wandb_key in [
+                    ('per_sample_accuracy', 'accuracy'),
+                    ('per_sample_shape_accuracy', 'shape_correctness'),
+                    ('per_sample_pixel_correctness', 'pixel_correctness'),
+                ]:
+                    if key in f:
+                        arr = np.array(f[key]).reshape(-1)
+                        if arr.size > 0:
+                            es_metrics[wandb_key] = arr
+                            print(f"[stats] ES {wandb_key}: shape={arr.shape}, mean={arr.mean():.4f}, std={arr.std():.4f}")
+                        else:
+                            print(f"[stats] ES {wandb_key}: empty array")
+                    else:
+                        print(f"[stats] ES {wandb_key}: key '{key}' not found")
+        except Exception as e:
+            print(f"[stats] Failed to load ES metrics: {e}")
+    
+    # Check if we have enough data to create histograms
+    if not ga_metrics and not es_metrics:
+        print("[stats] No per-sample metrics found in either NPZ file")
+        return None
+    
+    # Create figure with 3 subplots (one for each metric)
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig.suptitle(f"Statistical Analysis: GA vs ES Performance ({dataset_length} samples)", fontsize=16, fontweight='bold')
+    
+    # Define colors and labels
+    ga_color = '#e91e63'  # Pink for GA
+    es_color = '#ff7f0e'  # Orange for ES
+    alpha = 0.7
+    
+    # Metric names and descriptions
+    metrics_info = {
+        'accuracy': ('Overall Accuracy', 'Fraction of completely correct solutions'),
+        'shape_correctness': ('Shape Correctness', 'Fraction of correct shape predictions'),
+        'pixel_correctness': ('Pixel Correctness', 'Fraction of correct pixel predictions')
+    }
+    
+    # Create histograms for each metric
+    for i, (metric, (title, description)) in enumerate(metrics_info.items()):
+        ax = axes[i]
+        
+        # Get data for this metric
+        ga_data = ga_metrics.get(metric, None)
+        es_data = es_metrics.get(metric, None)
+        
+        # Determine histogram bins based on available data
+        all_data = []
+        if ga_data is not None:
+            all_data.extend(ga_data)
+        if es_data is not None:
+            all_data.extend(es_data)
+        
+        if not all_data:
+            ax.text(0.5, 0.5, f"No data for {metric}", ha='center', va='center', 
+                   transform=ax.transAxes, fontsize=12)
+            ax.set_title(f"{title}\n{description}", fontsize=12)
+            continue
+        
+        # Create histogram bins (10-20 bins, adaptive to data range)
+        min_val, max_val = min(all_data), max(all_data)
+        if min_val == max_val:
+            bins = 10
+        else:
+            # Adaptive binning: more bins for wider ranges
+            range_val = max_val - min_val
+            if range_val < 0.1:
+                bins = 10
+            elif range_val < 0.5:
+                bins = 15
+            else:
+                bins = 20
+        
+        # Plot GA histogram
+        if ga_data is not None and len(ga_data) > 0:
+            ax.hist(ga_data, bins=bins, alpha=alpha, color=ga_color, label='GA', 
+                   edgecolor='black', linewidth=0.5, density=True)
+            
+            # Add mean and std lines
+            ga_mean = np.mean(ga_data)
+            ga_std = np.std(ga_data)
+            ax.axvline(ga_mean, color=ga_color, linestyle='--', linewidth=2, 
+                      label=f'GA Mean: {ga_mean:.3f}')
+            ax.axvline(ga_mean + ga_std, color=ga_color, linestyle=':', linewidth=1, alpha=0.7)
+            ax.axvline(ga_mean - ga_std, color=ga_color, linestyle=':', linewidth=1, alpha=0.7)
+            
+            # Add text annotation
+            ax.text(0.02, 0.98, f'GA: μ={ga_mean:.3f}, σ={ga_std:.3f}', 
+                   transform=ax.transAxes, fontsize=10, verticalalignment='top',
+                   bbox=dict(boxstyle="round,pad=0.3", facecolor=ga_color, alpha=0.8, color='white'))
+        
+        # Plot ES histogram
+        if es_data is not None and len(es_data) > 0:
+            ax.hist(es_data, bins=bins, alpha=alpha, color=es_color, label='ES', 
+                   edgecolor='black', linewidth=0.5, density=True)
+            
+            # Add mean and std lines
+            es_mean = np.mean(es_data)
+            es_std = np.std(es_data)
+            ax.axvline(es_mean, color=es_color, linestyle='--', linewidth=2, 
+                      label=f'ES Mean: {es_mean:.3f}')
+            ax.axvline(es_mean + es_std, color=es_color, linestyle=':', linewidth=1, alpha=0.7)
+            ax.axvline(es_mean - es_std, color=es_color, linestyle=':', linewidth=1, alpha=0.7)
+            
+            # Add text annotation
+            ax.text(0.02, 0.90, f'ES: μ={es_mean:.3f}, σ={es_std:.3f}', 
+                   transform=ax.transAxes, fontsize=10, verticalalignment='top',
+                   bbox=dict(boxstyle="round,pad=0.3", facecolor=es_color, alpha=0.8, color='white'))
+        
+        # Customize subplot
+        ax.set_title(f"{title}\n{description}", fontsize=12, fontweight='bold')
+        ax.set_xlabel(f"{title} Value", fontsize=11)
+        ax.set_ylabel("Density", fontsize=11)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=10)
+        
+        # Set x-axis limits with some padding
+        if all_data:
+            data_range = max(all_data) - min(all_data)
+            padding = 0.05 * data_range if data_range > 0 else 0.1
+            ax.set_xlim(min(all_data) - padding, max(all_data) + padding)
+    
+    # Adjust layout
+    plt.tight_layout()
+    
+    # Save plots
+    os.makedirs(out_dir, exist_ok=True)
+    png_path = os.path.join(out_dir, "statistical_analysis.png")
+    svg_path = os.path.join(out_dir, "statistical_analysis.svg")
+    
+    fig.savefig(png_path, dpi=300, bbox_inches='tight')
+    fig.savefig(svg_path, bbox_inches='tight')
+    plt.close(fig)
+    
+    print(f"[stats] Saved statistical histograms to {png_path}")
+    return png_path
+
+
 def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str, es_npz: str, 
-                    trajectory_plot: Optional[str], loss_plot: Optional[str], group_name: str = None, 
-                    existing_run = None) -> None:
+                    trajectory_plot: Optional[str], loss_plot: Optional[str], stats_plot: Optional[str] = None, 
+                    group_name: str = None, existing_run = None) -> None:
     """
     Upload comprehensive metrics and artifacts to W&B for a single run.
     
@@ -1562,6 +1766,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
     print(f"[wandb] Attempting to upload plots...")
     print(f"[wandb] Trajectory plot path: {trajectory_plot}")
     print(f"[wandb] Loss plot path: {loss_plot}")
+    print(f"[wandb] Statistical plot path: {stats_plot}")
     
     if trajectory_plot and os.path.exists(trajectory_plot):
         print(f"[wandb] ✅ Uploading trajectory plot: {trajectory_plot}")
@@ -1574,6 +1779,15 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
         wandb.log({"loss_curves_plot": wandb.Image(loss_plot)})
     else:
         print(f"[wandb] ❌ Loss plot not found or invalid: {loss_plot}")
+    
+    # Log statistical histograms if available
+    if stats_plot and os.path.exists(stats_plot):
+        print(f"[wandb] ✅ Uploading statistical histograms: {stats_plot}")
+        wandb.log({"statistical_analysis": wandb.Image(stats_plot)})
+    elif stats_plot:
+        print(f"[wandb] ❌ Statistical plot not found: {stats_plot}")
+    else:
+        print(f"[wandb] ℹ️  No statistical plot to upload (dataset_length <= 1)")
     
     print(f"[wandb] Plot upload completed")
     
@@ -2195,7 +2409,7 @@ def main() -> None:
                 wandb.log({"es_return_code": es_rc, "es_status": "completed"})
             
             # Plot for this run
-            trajectory_plot, loss_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
+            trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
                                                       background_resolution=args.background_resolution,
                                                       background_smoothing=args.background_smoothing,
                                                       background_knn=args.background_knn,
@@ -2206,6 +2420,10 @@ def main() -> None:
                 print(f"Saved trajectory plot to {trajectory_plot}")
             if loss_plot:
                 print(f"Saved loss curves plot to {loss_plot}")
+            if stats_plot:
+                print(f"Saved statistical histograms to {stats_plot}")
+            else:
+                print(f"No statistical histograms created (dataset_length={args.dataset_length})")
             
             print(f"📊 Latent space dimension: {latent_dim}")
             
@@ -2231,10 +2449,10 @@ def main() -> None:
                     print(f"[debug] loss_plot exists: {os.path.exists(loss_plot) if loss_plot else False}")
                     
                     # Upload artifacts and final metrics
-                    upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, group_name, existing_run=run)
+                    upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, stats_plot, group_name, existing_run=run)
                 else:
                     # Fallback: create new run for upload
-                    upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, group_name)
+                    upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, stats_plot, group_name)
             except Exception as e:
                 print(f"Failed to upload to wandb: {e}")
             
@@ -2304,7 +2522,7 @@ def main() -> None:
             run = None
         
         # Plot (with automatic PCA if latent dimension > 2)
-        trajectory_plot, loss_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
+        trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
                                                   background_resolution=args.background_resolution,
                                                   background_smoothing=args.background_smoothing,
                                                   background_knn=args.background_knn,
@@ -2315,6 +2533,10 @@ def main() -> None:
             print(f"Saved trajectory plot to {trajectory_plot}")
         if loss_plot:
             print(f"Saved loss curves plot to {loss_plot}")
+        if stats_plot:
+            print(f"Saved statistical histograms to {stats_plot}")
+        else:
+            print(f"No statistical histograms created (dataset_length={args.dataset_length})")
 
         print(f"📊 Latent space dimension: {latent_dim}")
 
@@ -2340,10 +2562,10 @@ def main() -> None:
                 print(f"[debug] loss_plot exists: {os.path.exists(loss_plot) if loss_plot else False}")
                 
                 # Upload artifacts and final metrics
-                upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, existing_run=run)
+                upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, stats_plot, existing_run=run)
             else:
                 # Fallback: create new run for upload
-                upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot)
+                upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, stats_plot)
         except Exception as e:
             print(f"Failed to upload to wandb: {e}")
         
