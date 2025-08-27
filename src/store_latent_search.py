@@ -126,6 +126,13 @@ def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
     if prefix == "es_" and f"{prefix}best_latents_per_generation" in npz:
         print(f"[plot] ES trajectory found but no values - this indicates a data saving issue")
         print(f"[plot] Available keys: {list(npz.keys())}")
+        
+        # Try to use generation_losses for ES trajectory
+        if f"{prefix}generation_losses" in npz:
+            gen_losses = np.array(npz[f"{prefix}generation_losses"]).reshape(-1)
+            if gen_losses.ndim == 1 and gen_losses.size > 0:
+                print(f"[plot] Using ES generation_losses for trajectory: {gen_losses.shape}")
+                return gen_losses
     
     return None
 
@@ -171,6 +178,30 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
     elif f"{prefix}all_scores" in npz:
         vals = np.array(npz[f"{prefix}all_scores"]).reshape(-1)
         print(f"[plot] Using {prefix}all_scores: {vals.shape}")
+    
+    # Special handling for ES: if we have generation index but mismatched values,
+    # try to reconstruct per-individual losses from available data
+    if prefix == "es_" and pts is not None and vals is not None and gens is not None:
+        if len(vals) != len(pts):
+            print(f"[plot] ES mismatch detected: {len(vals)} values vs {len(pts)} points")
+            print(f"[plot] Attempting to reconstruct per-individual losses...")
+            
+            # Check if we can use generation_losses to expand
+            if f"{prefix}generation_losses" in npz:
+                gen_losses = np.array(npz[f"{prefix}generation_losses"]).reshape(-1)
+                if len(gen_losses) == len(np.unique(gens)):
+                    # We have per-generation losses, expand to per-individual
+                    # This assumes all individuals in a generation get the same loss
+                    expanded_vals = gen_losses[gens]
+                    if len(expanded_vals) == len(pts):
+                        vals = expanded_vals
+                        print(f"[plot] ES reconstruction successful: {len(vals)} values now match {len(pts)} points")
+                    else:
+                        print(f"[plot] ES reconstruction failed: expanded={len(expanded_vals)}, expected={len(pts)}")
+                else:
+                    print(f"[plot] ES generation_losses mismatch: {len(gen_losses)} vs {len(np.unique(gens))} generations")
+            else:
+                print(f"[plot] ES generation_losses not available for reconstruction")
     
     # Debug: show what we're working with for ES
     if prefix == "es_":
@@ -242,6 +273,13 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
                       f"pop_pts={t.pop_pts.shape if t.pop_pts is not None else None}, "
                       f"pop_vals={t.pop_vals.shape if t.pop_vals is not None else None}, "
                       f"gen_idx={t.gen_idx.shape if t.gen_idx is not None else None}")
+            
+            # Debug: show trajectory data for both GA and ES
+            if t.pts is not None:
+                print(f"[plot] {prefix} trajectory: pts={t.pts.shape}, vals={t.vals.shape if t.vals is not None else None}")
+            else:
+                print(f"[plot] {prefix} trajectory: NO TRAJECTORY POINTS EXTRACTED!")
+                print(f"[plot] {prefix} available keys: {list(np.load(npz_path, allow_pickle=True).keys()) if os.path.exists(npz_path) else 'file not found'}")
     return t
 
 
