@@ -507,7 +507,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # This ensures PC1 and PC2 have similar visual impact even when PCA variance ratios are imbalanced
     # Instead of letting PC1 dominate the span, we use the maximum range from both components
     cx, cy = XY[:, 0].mean(), XY[:, 1].mean()
-    span = max(XY[:, 0].ptp(), XY[:, 1].ptp())  # ptp = max - min
+    span = max(np.ptp(XY[:, 0]), np.ptp(XY[:, 1]))  # ptp = max - min (NumPy 2.0 compatible)
     pad = 0.10 * span
     xlim = (cx - span/2 - pad, cx + span/2 + pad)
     ylim = (cy - span/2 - pad, cy + span/2 + pad)
