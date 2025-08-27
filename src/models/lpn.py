@@ -1049,9 +1049,10 @@ class LPN(nn.Module):
                     # population: (*B, P, C, H) -> best: (*B, P, H)
                     P = population.shape[-3]
                     Hdim = population.shape[-1]
-                    best_idx_expanded = best_idx[..., None, None]  # (*B, 1, 1)
-                    best_idx_broadcast = jnp.broadcast_to(best_idx_expanded, (*best_idx.shape, P, Hdim))  # (*B, P, H)
-                    elite = jnp.take_along_axis(population, best_idx_broadcast, axis=-2).squeeze(axis=-2)  # (*B, P, H)
+                    # best_idx: (*B,) -> (*B, 1, 1, 1) for proper broadcasting
+                    best_idx_expanded = best_idx[..., None, None, None]  # (*B, 1, 1, 1)
+                    elite = jnp.take_along_axis(population, best_idx_expanded, axis=-2)  # (*B, P, 1, H)
+                    elite = elite.squeeze(axis=-2)  # (*B, P, H)
                 else:
                     # population: (*B, C, H) -> best: (*B, H)
                     Hdim = population.shape[-1]
@@ -1076,18 +1077,17 @@ class LPN(nn.Module):
             # population shape is (*B, P, C, H) where P=pairs, C=candidates, H=latent_dim
             # We need to gather along the candidates axis (-2), and index shape must broadcast to population
             if population.ndim == 4:
-                # idx: (*B, S) -> (*B, 1, S, 1) then broadcast to (*B, P, S, H)
+                # idx: (*B, S) -> (*B, 1, S, 1) for proper broadcasting
                 P = population.shape[-3]
                 Hdim = population.shape[-1]
                 base_idx = idx[..., None, :, None]  # (*B, 1, S, 1)
-                gather_idx = jnp.broadcast_to(base_idx, (*idx.shape[:-1], P, idx.shape[-1], Hdim))  # (*B, P, S, H)
+                survivors = jnp.take_along_axis(population, base_idx, axis=-2)  # (*B, P, S, H)
             else:
                 # population has standard shape: (*B, C, H)
                 # idx: (*B, S) -> (*B, S, H)
                 Hdim = population.shape[-1]
                 gather_idx = jnp.repeat(idx[..., None], Hdim, axis=-1)  # (*B, S, H)
-            
-            survivors = jnp.take_along_axis(population, gather_idx, axis=-2)            # (*B, P, S, H) or (*B, S, H)
+                survivors = jnp.take_along_axis(population, gather_idx, axis=-2)  # (*B, S, H)
 
             # Refill to pop size: repeat survivors and add mutation
             if elitism:
