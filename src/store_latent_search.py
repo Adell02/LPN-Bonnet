@@ -1002,39 +1002,58 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                    color="#ff7f0e", linewidths=0, zorder=1, label="ES population (all samples)")
         
         # Then add translucent circles to cluster samples from the same generation
-        if es.gen_idx is not None:
-            unique_gens = np.unique(es.gen_idx)
-            # Complementary colors to viridis (blue-green-yellow): reds, oranges, purples, magentas
-            generation_colors = ['#d73027', '#f46d43', '#fdae61', '#fee08b', '#e6f598', 
+        if es.gen_idx is not None or es.vals is not None:
+            # Try to build a generation index aligned to flattened population
+            effective_gen_idx = None
+            if es.gen_idx is not None:
+                candidate = es.gen_idx.reshape(-1)
+                if len(candidate) == len(es_pop_pts_flat):
+                    effective_gen_idx = candidate
+                else:
+                    print(f"[plot] Gen idx length mismatch: gen_idx={len(candidate)} vs pop_pts={len(es_pop_pts_flat)}")
+            if effective_gen_idx is None and es.vals is not None:
+                num_generations = len(es.vals)
+                per_gen = len(es_pop_pts_flat) // num_generations if num_generations > 0 else 0
+                if num_generations > 0 and per_gen * num_generations == len(es_pop_pts_flat):
+                    print(f"[plot] Reconstructing generation index: {num_generations} gens × {per_gen} pop = {len(es_pop_pts_flat)}")
+                    effective_gen_idx = np.repeat(np.arange(num_generations), per_gen)
+                else:
+                    print(f"[plot] Failed to reconstruct generation index: num_generations={num_generations}, total_pop={len(es_pop_pts_flat)}")
+
+            if effective_gen_idx is not None:
+                unique_gens = np.unique(effective_gen_idx)
+                # Complementary colors to viridis (blue-green-yellow): reds, oranges, purples, magentas
+                generation_colors = ['#d73027', '#f46d43', '#fdae61', '#fee08b', '#e6f598', 
                                '#abdda4', '#66c2a5', '#3288bd', '#5e4fa2', '#8e0152']
-            
-            for gen in unique_gens:
-                mask = es.gen_idx == gen
-                # Apply the same mask to flattened points
-                gen_pts = es_pop_pts_flat[mask]
-                color = generation_colors[gen % len(generation_colors)]
-                
-                # Calculate generation cluster center and radius
-                gen_center = np.mean(gen_pts, axis=0)
-                gen_radius = np.max(np.linalg.norm(gen_pts - gen_center, axis=1)) * 1.2  # 20% padding
-                
-                # Debug: show generation circle bounds
-                circle_xmin = gen_center[0] - gen_radius
-                circle_xmax = gen_center[0] + gen_radius
-                circle_ymin = gen_center[1] - gen_radius
-                circle_ymax = gen_center[1] + gen_radius
-                print(f"[plot] Gen {gen} circle: center=({gen_center[0]:.3f}, {gen_center[1]:.3f}), radius={gen_radius:.3f}")
-                print(f"[plot] Gen {gen} bounds: x[{circle_xmin:.3f}, {circle_xmax:.3f}], y[{circle_ymin:.3f}, {circle_ymax:.3f}]")
-                
-                # Draw translucent circle for this generation
-                circle = plt.Circle(gen_center, gen_radius, fill=True, linewidth=2, 
-                                  edgecolor=color, facecolor=color, alpha=0.15)
-                ax.add_patch(circle)
-                
-                # Add generation label at cluster center
-                ax.text(gen_center[0], gen_center[1], f"Gen {gen}", 
-                       ha='center', va='center', fontsize=8, color=color, weight='bold',
-                       bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8, edgecolor=color))
+                for gen in unique_gens:
+                    mask = (effective_gen_idx == gen)
+                    if mask.shape[0] != es_pop_pts_flat.shape[0]:
+                        print(f"[plot] Skipping gen {gen}: mask/pop mismatch {mask.shape[0]} vs {es_pop_pts_flat.shape[0]}")
+                        continue
+                    gen_pts = es_pop_pts_flat[mask]
+                    if gen_pts.size == 0:
+                        continue
+                    color = generation_colors[int(gen) % len(generation_colors)]
+                    # Calculate generation cluster center and radius
+                    gen_center = np.mean(gen_pts, axis=0)
+                    gen_radius = np.max(np.linalg.norm(gen_pts - gen_center, axis=1)) * 1.2  # 20% padding
+                    # Debug: show generation circle bounds
+                    circle_xmin = gen_center[0] - gen_radius
+                    circle_xmax = gen_center[0] + gen_radius
+                    circle_ymin = gen_center[1] - gen_radius
+                    circle_ymax = gen_center[1] + gen_radius
+                    print(f"[plot] Gen {gen} circle: center=({gen_center[0]:.3f}, {gen_center[1]:.3f}), radius={gen_radius:.3f}")
+                    print(f"[plot] Gen {gen} bounds: x[{circle_xmin:.3f}, {circle_xmax:.3f}], y[{circle_ymin:.3f}, {circle_ymax:.3f}]")
+                    # Draw translucent circle for this generation
+                    circle = plt.Circle(gen_center, gen_radius, fill=True, linewidth=2, 
+                                      edgecolor=color, facecolor=color, alpha=0.15)
+                    ax.add_patch(circle)
+                    # Add generation label at cluster center
+                    ax.text(gen_center[0], gen_center[1], f"Gen {int(gen)}", 
+                           ha='center', va='center', fontsize=8, color=color, weight='bold',
+                           bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8, edgecolor=color))
+            else:
+                print(f"[plot] Skipping generation circles due to unavailable/mismatched generation index")
 
     # ES selected path (best per generation if present, otherwise es.pts)
     print(f"[plot] ES trajectory debug: best_per_gen={es.best_per_gen.shape if es.best_per_gen is not None else None}, es.pts={es.pts.shape if es.pts is not None else None}")
