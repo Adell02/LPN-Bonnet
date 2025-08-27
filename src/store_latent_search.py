@@ -1342,6 +1342,9 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
 
 
 def main() -> None:
+    # Initialize run variable
+    run = None
+    
     parser = argparse.ArgumentParser(
         description="Store and plot latent search trajectories (GA & ES). "
         "Both methods start from the same mean latent for fair comparison. "
