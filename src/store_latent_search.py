@@ -1,13 +1,26 @@
 #!/usr/bin/env python3
 """
-Run gradient_ascent and evolutionary_search once on a single W&B model artifact and
+Run gradient_ascent and evolutionary_search on a single W&B model artifact and
 store latent search trajectories to NPZ. Then plot both trajectories (2D latents) and
-upload NPZs and plot to W&B.
+upload comprehensive metrics, artifacts, and plots to W&B for analysis.
+
+Features:
+- Automatic PCA projection for high-dimensional latents
+- Comprehensive metrics logging (losses, scores, log probabilities)
+- Downloadable CSV files for all metrics
+- Statistical analysis across multiple runs
+- Beautiful 2D visualizations with viridis background
 
 Example usage:
 
 # Basic usage with automatic budget-based calculations:
 python src/store_latent_search.py --wandb_artifact_path "entity/project/artifact:v0" --budget 100
+
+# Multiple runs for statistical analysis:
+python src/store_latent_search.py \
+    --wandb_artifact_path "entity/project/artifact:v0" \
+    --budget 100 \
+    --n_samples 10
 
 # Custom GA and ES parameters:
 python src/store_latent_search.py \
@@ -40,6 +53,13 @@ python src/store_latent_search.py \
     --ga_steps 100 \
     --es_population 50 \
     --es_generations 2
+
+W&B Integration:
+- Logs comprehensive metrics for both GA and ES methods
+- Provides downloadable CSV files for all metrics
+- Creates artifacts for latent trajectories and plots
+- Supports grouped runs for statistical analysis
+- Tracks convergence, improvements, and comparisons
 """
 
 import argparse
@@ -52,6 +72,7 @@ from collections import Counter
 from typing import Optional, Tuple
 
 import numpy as np
+import pandas as pd
 from dataclasses import dataclass
 
 
@@ -941,17 +962,73 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
 
 def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str, es_npz: str, 
                     trajectory_plot: Optional[str], loss_plot: Optional[str], group_name: str = None) -> None:
+    """
+    Upload comprehensive metrics and artifacts to W&B for a single run.
+    
+    Logs the following metrics:
+    
+    GA (Gradient Ascent) Metrics:
+    - ga_final_loss: Final loss value after optimization
+    - ga_loss_progression: List of loss values at each step
+    - ga_loss_improvement: Total improvement from start to end
+    - ga_final_score: Final score value
+    - ga_score_progression: List of score values at each step
+    - ga_score_improvement: Total score improvement
+    - ga_final_log_prob: Final log probability
+    - ga_log_prob_progression: List of log probability values
+    - ga_log_prob_improvement: Total log probability improvement
+    
+    ES (Evolutionary Search) Metrics:
+    - es_final_loss: Final loss value after optimization
+    - es_loss_progression: List of loss values at each generation
+    - es_loss_improvement: Total improvement from start to end
+    - es_best_loss: Best loss achieved across all generations
+    - es_best_loss_progression: Best loss at each generation
+    - es_population_size: Total number of individuals evaluated
+    - es_min_loss: Minimum loss across population
+    - es_max_loss: Maximum loss across population
+    - es_mean_loss: Mean loss across population
+    - es_std_loss: Standard deviation of loss across population
+    - es_final_best_fitness: Final best fitness value
+    
+    Comparison Metrics:
+    - ga_vs_es_final_loss_diff: Difference in final losses (GA - ES)
+    - ga_vs_es_loss_improvement_diff: Difference in improvements (GA - ES)
+    
+    Run Summary Metrics:
+    - run_budget: Total budget allocated
+    - ga_steps: Number of GA steps
+    - es_population: ES population size
+    - es_generations: Number of ES generations
+    - run_seed: Random seed used
+    - run_index: Index of this run (for multiple runs)
+    - n_samples: Total number of runs
+    - dataset_length: Number of dataset samples evaluated
+    - ga_return_code: GA execution return code
+    - es_return_code: ES execution return code
+    - ga_convergence: Whether GA converged or diverged
+    - es_convergence: Whether ES converged or diverged
+    
+    Artifacts:
+    - GA latent trajectories (NPZ)
+    - ES latent trajectories (NPZ)
+    - GA metrics CSV (downloadable)
+    - ES metrics CSV (downloadable)
+    - Run summary CSV (downloadable)
+    - Trajectory plot (PNG)
+    - Loss curves plot (PNG)
+    """
     try:
         import wandb
     except Exception as e:
         print(f"wandb not available: {e}")
         return
     
-    # Create run with optional group for dataset_length > 1
+    # Create run with optional group for n_samples > 1
     run_kwargs = {
         "project": project,
         "entity": entity,
-        "name": f"latent-search-b{cfg.get('budget')}",
+        "name": f"latent-search-b{cfg.get('budget')}-s{cfg.get('run_idx', 0)}",
         "config": cfg
     }
     
@@ -961,18 +1038,223 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
     
     run = wandb.init(**run_kwargs)
     
+    # Log artifacts (NPZ files with latent trajectories)
     if os.path.exists(ga_npz):
-        ga_art = wandb.Artifact(name=f"ga_latents_b{cfg.get('budget')}", type="latent_trajectories")
+        ga_art = wandb.Artifact(name=f"ga_latents_b{cfg.get('budget')}_s{cfg.get('run_idx', 0)}", type="latent_trajectories")
         ga_art.add_file(ga_npz)
         run.log_artifact(ga_art)
     if os.path.exists(es_npz):
-        es_art = wandb.Artifact(name=f"es_latents_b{cfg.get('budget')}", type="latent_trajectories")
+        es_art = wandb.Artifact(name=f"es_latents_b{cfg.get('budget')}_s{cfg.get('run_idx', 0)}", type="latent_trajectories")
         es_art.add_file(es_npz)
         run.log_artifact(es_art)
+    
+    # Log plots
     if trajectory_plot and os.path.exists(trajectory_plot):
         wandb.log({"trajectory_plot": wandb.Image(trajectory_plot)})
     if loss_plot and os.path.exists(loss_plot):
         wandb.log({"loss_curves_plot": wandb.Image(loss_plot)})
+    
+    # Log comprehensive metrics from both methods
+    try:
+        # Load GA metrics
+        if os.path.exists(ga_npz):
+            with np.load(ga_npz, allow_pickle=True) as f:
+                ga_metrics = {}
+                if 'ga_losses' in f:
+                    ga_losses = np.array(f['ga_losses'])
+                    ga_metrics['ga_final_loss'] = float(ga_losses[-1]) if len(ga_losses) > 0 else None
+                    ga_metrics['ga_loss_progression'] = ga_losses.tolist()
+                    ga_metrics['ga_loss_improvement'] = float(ga_losses[0] - ga_losses[-1]) if len(ga_losses) > 0 else None
+                
+                if 'ga_scores' in f:
+                    ga_scores = np.array(f['ga_scores'])
+                    ga_metrics['ga_final_score'] = float(ga_scores[-1]) if len(ga_scores) > 0 else None
+                    ga_metrics['ga_score_progression'] = ga_scores.tolist()
+                    ga_metrics['ga_score_improvement'] = float(ga_scores[-1] - ga_scores[0]) if len(ga_scores) > 0 else None
+                
+                if 'ga_log_probs' in f:
+                    ga_log_probs = np.array(f['ga_log_probs'])
+                    ga_metrics['ga_final_log_prob'] = float(ga_log_probs[-1]) if len(ga_log_probs) > 0 else None
+                    ga_metrics['ga_log_prob_progression'] = ga_log_probs.tolist()
+                    ga_metrics['ga_log_prob_improvement'] = float(ga_log_probs[-1] - ga_log_probs[0]) if len(ga_log_probs) > 0 else None
+                
+                # Log GA metrics
+                for key, value in ga_metrics.items():
+                    if value is not None:
+                        wandb.log({key: value})
+                
+                # Create GA metrics CSV for download
+                ga_csv_path = f"ga_metrics_run_{cfg.get('run_idx', 0)}.csv"
+                ga_metrics_df = pd.DataFrame({
+                    'step': range(len(ga_losses)) if 'ga_losses' in f else [],
+                    'loss': ga_losses if 'ga_losses' in f else [],
+                    'score': ga_scores if 'ga_scores' in f else [],
+                    'log_prob': ga_log_probs if 'ga_log_probs' in f else []
+                })
+                ga_metrics_df.to_csv(ga_csv_path, index=False)
+                
+                # Upload GA metrics CSV
+                ga_csv_art = wandb.Artifact(name=f"ga_metrics_b{cfg.get('budget')}_s{cfg.get('run_idx', 0)}", type="metrics")
+                ga_csv_art.add_file(ga_csv_path)
+                run.log_artifact(ga_csv_art)
+                
+                # Clean up temporary CSV
+                os.remove(ga_csv_path)
+                
+        # Load ES metrics
+        if os.path.exists(es_npz):
+            with np.load(es_npz, allow_pickle=True) as f:
+                es_metrics = {}
+                
+                # Generation-level metrics
+                if 'es_generation_losses' in f:
+                    gen_losses = np.array(f['es_generation_losses'])
+                    es_metrics['es_final_loss'] = float(gen_losses[-1]) if len(gen_losses) > 0 else None
+                    es_metrics['es_loss_progression'] = gen_losses.tolist()
+                    es_metrics['es_loss_improvement'] = float(gen_losses[0] - gen_losses[-1]) if len(gen_losses) > 0 else None
+                    es_metrics['es_best_loss'] = float(np.min(gen_losses)) if len(gen_losses) > 0 else None
+                
+                if 'es_best_losses_per_generation' in f:
+                    best_losses = np.array(f['es_best_losses_per_generation'])
+                    es_metrics['es_best_loss_progression'] = best_losses.tolist()
+                
+                # Population-level metrics
+                if 'es_all_losses' in f:
+                    all_losses = np.array(f['es_all_losses'])
+                    es_metrics['es_population_size'] = len(all_losses)
+                    es_metrics['es_min_loss'] = float(np.min(all_losses)) if len(all_losses) > 0 else None
+                    es_metrics['es_max_loss'] = float(np.max(all_losses)) if len(all_losses) > 0 else None
+                    es_metrics['es_mean_loss'] = float(np.mean(all_losses)) if len(all_losses) > 0 else None
+                    es_metrics['es_std_loss'] = float(np.std(all_losses)) if len(all_losses) > 0 else None
+                
+                if 'es_final_best_fitness' in f:
+                    final_fitness = np.array(f['es_final_best_fitness'])
+                    es_metrics['es_final_best_fitness'] = float(final_fitness) if final_fitness.size > 0 else None
+                
+                # Log ES metrics
+                for key, value in es_metrics.items():
+                    if value is not None:
+                        wandb.log({key: value})
+                
+                # Create ES metrics CSV for download
+                es_csv_path = f"es_metrics_run_{cfg.get('run_idx', 0)}.csv"
+                
+                # Prepare ES metrics data
+                es_data = {}
+                if 'es_generation_losses' in f:
+                    es_data['generation'] = range(len(gen_losses))
+                    es_data['generation_loss'] = gen_losses
+                if 'es_best_losses_per_generation' in f:
+                    es_data['best_loss'] = best_losses
+                if 'es_all_losses' in f and 'es_generation_idx' in f:
+                    es_data['population_generation'] = np.array(f['es_generation_idx'])
+                    es_data['population_loss'] = all_losses
+                
+                es_metrics_df = pd.DataFrame(es_data)
+                es_metrics_df.to_csv(es_csv_path, index=False)
+                
+                # Upload ES metrics CSV
+                es_csv_art = wandb.Artifact(name=f"es_metrics_b{cfg.get('budget')}_s{cfg.get('run_idx', 0)}", type="metrics")
+                es_csv_art.add_file(es_csv_path)
+                run.log_artifact(es_csv_art)
+                
+                # Clean up temporary CSV
+                os.remove(es_csv_path)
+                
+                        # Log comparison metrics
+                comparison_metrics = {}
+                if 'ga_final_loss' in ga_metrics and 'es_final_loss' in es_metrics:
+                    comparison_metrics['ga_vs_es_final_loss_diff'] = ga_metrics['ga_final_loss'] - es_metrics['es_final_loss']
+                    comparison_metrics['ga_vs_es_loss_improvement_diff'] = ga_metrics['ga_loss_improvement'] - es_metrics['es_loss_improvement']
+                
+                # Log comparison metrics
+                for key, value in comparison_metrics.items():
+                    if value is not None:
+                        wandb.log({key: value})
+                
+                # Log summary statistics for the run
+                summary_metrics = {
+                    'run_budget': cfg.get('budget'),
+                    'ga_steps': cfg.get('ga_steps'),
+                    'es_population': cfg.get('es_population'),
+                    'es_generations': cfg.get('es_generations'),
+                    'run_seed': cfg.get('dataset_seed'),
+                    'run_index': cfg.get('run_idx', 0),
+                    'n_samples': cfg.get('n_samples', 1),
+                    'dataset_length': cfg.get('dataset_length'),
+                    'ga_return_code': cfg.get('ga_return_code'),
+                    'es_return_code': cfg.get('es_return_code'),
+                }
+                
+                # Add method-specific summary metrics
+                if 'ga_final_loss' in ga_metrics:
+                    summary_metrics['ga_convergence'] = 'converged' if ga_metrics['ga_loss_improvement'] > 0 else 'diverged'
+                if 'es_final_loss' in es_metrics:
+                    summary_metrics['es_convergence'] = 'converged' if es_metrics['es_loss_improvement'] > 0 else 'diverged'
+                
+                # Log summary metrics
+                for key, value in summary_metrics.items():
+                    if value is not None:
+                        wandb.log({key: value})
+                
+                # Create comprehensive summary CSV for the entire run
+                summary_csv_path = f"run_summary_{cfg.get('run_idx', 0)}.csv"
+                
+                # Combine all metrics into one comprehensive summary
+                summary_data = {
+                    'metric': [],
+                    'value': [],
+                    'method': [],
+                    'description': []
+                }
+                
+                # Add GA metrics
+                for key, value in ga_metrics.items():
+                    if value is not None:
+                        summary_data['metric'].append(key)
+                        summary_data['value'].append(value)
+                        summary_data['method'].append('GA')
+                        summary_data['description'].append('Gradient Ascent metric')
+                
+                # Add ES metrics
+                for key, value in es_metrics.items():
+                    if value is not None:
+                        summary_data['metric'].append(key)
+                        summary_data['value'].append(value)
+                        summary_data['method'].append('ES')
+                        summary_data['description'].append('Evolutionary Search metric')
+                
+                # Add comparison metrics
+                for key, value in comparison_metrics.items():
+                    if value is not None:
+                        summary_data['metric'].append(key)
+                        summary_data['value'].append(value)
+                        summary_data['method'].append('Comparison')
+                        summary_data['description'].append('GA vs ES comparison')
+                
+                # Add summary metrics
+                for key, value in summary_metrics.items():
+                    if value is not None:
+                        summary_data['metric'].append(key)
+                        summary_data['value'].append(value)
+                        summary_data['method'].append('Run')
+                        summary_data['description'].append('Run configuration and status')
+                
+                # Create and save summary CSV
+                summary_df = pd.DataFrame(summary_data)
+                summary_df.to_csv(summary_csv_path, index=False)
+                
+                # Upload comprehensive summary CSV
+                summary_csv_art = wandb.Artifact(name=f"run_summary_b{cfg.get('budget')}_s{cfg.get('run_idx', 0)}", type="summary")
+                summary_csv_art.add_file(summary_csv_path)
+                run.log_artifact(summary_csv_art)
+                
+                # Clean up temporary CSV
+                os.remove(summary_csv_path)
+                
+    except Exception as e:
+        print(f"Warning: Failed to extract metrics from NPZ files: {e}")
+    
     run.finish()
 
 
