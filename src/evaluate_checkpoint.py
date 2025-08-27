@@ -425,6 +425,91 @@ def evaluate_custom_dataset(
     # Aggregate the metrics over the devices and the batches.
     metrics = {k: jnp.stack([m[k] for m in metrics_list]).mean() for k in metrics_list[0].keys()}
 
+    # If storing latents, also collect per-sample metrics across the whole evaluated dataset
+    per_sample_shape_acc = None
+    per_sample_pixel_corr = None
+    per_sample_acc = None
+
+    try:
+        store_path_flag = evaluator.inference_mode_kwargs.get("store_latents_path", None)
+    except Exception:
+        store_path_flag = None
+
+    if store_path_flag:
+        # Build a pmap that returns per-sample metrics (no averaging)
+        def build_generate_output_batch_per_sample(model: LPN, eval_inference_mode: str, eval_inference_mode_kwargs: dict) -> callable:
+            def generate_output_batch_per_sample(params, leave_one_out_grids, leave_one_out_shapes, dataset_grids, dataset_shapes, keys) -> dict[str, chex.Array]:
+                grids_inputs, labels_grids_outputs = dataset_grids[..., 0], dataset_grids[..., 1]
+                shapes_inputs, labels_shapes_outputs = dataset_shapes[..., 0], dataset_shapes[..., 1]
+                generated_grids_outputs, generated_shapes_outputs, _ = model.apply(
+                    {"params": params},
+                    leave_one_out_grids,
+                    leave_one_out_shapes,
+                    grids_inputs,
+                    shapes_inputs,
+                    keys,
+                    dropout_eval=True,
+                    mode=eval_inference_mode,
+                    **eval_inference_mode_kwargs,
+                    method=model.generate_output,
+                )
+                correct_shapes = jnp.all(generated_shapes_outputs == labels_shapes_outputs, axis=-1)
+                batch_ndims = len(grids_inputs.shape[:-2])
+                row_arange_broadcast = jnp.arange(grids_inputs.shape[-2]).reshape((*batch_ndims * (1,), grids_inputs.shape[-2]))
+                input_row_mask = row_arange_broadcast < labels_shapes_outputs[..., :1]
+                col_arange_broadcast = jnp.arange(grids_inputs.shape[-1]).reshape((*batch_ndims * (1,), grids_inputs.shape[-1]))
+                input_col_mask = col_arange_broadcast < labels_shapes_outputs[..., 1:]
+                input_mask = input_row_mask[..., None] & input_col_mask[..., None, :]
+                pixels_equal = jnp.where(
+                    input_mask & correct_shapes[..., None, None],
+                    (generated_grids_outputs == labels_grids_outputs),
+                    False,
+                )
+                pixel_correctness = pixels_equal.sum(axis=(-1, -2)) / labels_shapes_outputs.prod(axis=-1)
+                accuracy = pixels_equal.sum(axis=(-1, -2)) == labels_shapes_outputs.prod(axis=-1)
+                return {
+                    "per_sample_shape_accuracy": correct_shapes.astype(jnp.float32),
+                    "per_sample_pixel_correctness": pixel_correctness.astype(jnp.float32),
+                    "per_sample_accuracy": accuracy.astype(jnp.float32),
+                }
+            return generate_output_batch_per_sample
+
+        pmap_dataset_generate_output_batch_per_sample = jax.pmap(
+            build_generate_output_batch_per_sample(
+                model=evaluator.model,
+                eval_inference_mode=evaluator.inference_mode,
+                eval_inference_mode_kwargs=evaluator.inference_mode_kwargs,
+            ),
+            axis_name="num_devices",
+        )
+
+        # Collect per-sample metrics across batches
+        per_shape_list = []
+        per_pixel_list = []
+        per_acc_list = []
+        for i in trange(grids.shape[1], desc="Collecting per-sample metrics"):
+            out = pmap_dataset_generate_output_batch_per_sample(
+                train_state.params,
+                leave_one_out_grids[:, i],
+                leave_one_out_shapes[:, i],
+                grids[:, i],
+                shapes[:, i],
+                keys[:, i],
+            )
+            host = jax.device_get(out)
+            per_shape_list.append(host["per_sample_shape_accuracy"].reshape(-1))
+            per_pixel_list.append(host["per_sample_pixel_correctness"].reshape(-1))
+            per_acc_list.append(host["per_sample_accuracy"].reshape(-1))
+
+        try:
+            import numpy as np
+            per_sample_shape_acc = np.concatenate(per_shape_list, axis=0)
+            per_sample_pixel_corr = np.concatenate(per_pixel_list, axis=0)
+            per_sample_acc = np.concatenate(per_acc_list, axis=0)
+            print(f"[per-sample] shape_acc: {per_sample_shape_acc.shape}, pixel: {per_sample_pixel_corr.shape}, acc: {per_sample_acc.shape}")
+        except Exception as _ps_e:
+            print(f"[per-sample] Failed to assemble per-sample arrays: {_ps_e!r}")
+
     # Optionally store latents/trajectory for a single representative batch if requested via kwargs
     store_path = None
     try:
@@ -533,7 +618,7 @@ def evaluate_custom_dataset(
                         except Exception as _pe:
                             print(f"[store_latents] GA path/score derivation failed: {_pe!r}")
 
-            # ES trajectory -> save best_latents_per_generation, best scores per generation, and populations
+            # ES trajectory -> save best_latents_per_generation, per-generation losses, and populations
             if isinstance(info0, dict) and "evolutionary_trajectory" in info0 and info0["evolutionary_trajectory"]:
                 traj = info0["evolutionary_trajectory"]
                 try:
@@ -546,14 +631,26 @@ def evaluate_custom_dataset(
                         es_lat = np.array(traj["best_latents_per_generation"])  # (*B, G, H)
                         print(f"[store_latents] es_best_latents_per_generation shape: {getattr(es_lat, 'shape', None)}")
                         payload["es_best_latents_per_generation"] = es_lat
-                    # Handle both old and new key names for compatibility
-                    if "generation_losses" in traj:
-                        es_gen_losses = np.array(traj["generation_losses"])  # (*B, G) or (G,)
+                    # Handle generation metrics: prefer positive losses
+                    if "losses_per_generation" in traj:
+                        es_gen_losses = np.array(traj["losses_per_generation"])  # (*B, G) or (G,)
                         payload["es_generation_losses"] = es_gen_losses
                         try:
                             payload["es_best_losses_per_generation"] = es_gen_losses.reshape(-1)
                         except Exception:
                             pass
+                    elif "final_best_loss" in traj or "generation_fitness" in traj:
+                        # Backward compatibility: if only fitness provided, convert to losses
+                        if "generation_fitness" in traj:
+                            gen_fit = np.array(traj["generation_fitness"])  # fitness = -loss
+                            es_gen_losses = -gen_fit
+                            payload["es_generation_losses"] = es_gen_losses
+                            try:
+                                payload["es_best_losses_per_generation"] = es_gen_losses.reshape(-1)
+                            except Exception:
+                                pass
+                        if "final_best_loss" in traj:
+                            payload["es_final_best_loss"] = np.array(traj["final_best_loss"])  # positive
                     elif "generation_accuracies" in traj:  # Fallback for old key names
                         es_gen_acc = np.array(traj["generation_accuracies"])  # (G, *B) or (*B, G)
                         payload["es_generation_accuracies"] = es_gen_acc
@@ -582,15 +679,24 @@ def evaluate_custom_dataset(
                         fit = np.array(traj["fitness_per_generation"])      # (*B, G, C)
                         payload["es_all_scores"] = fit.reshape(-1)
                     
-                    # Handle final best fitness/loss
+                    # Handle final best metrics
+                    if "final_best_loss" in traj:
+                        payload["es_final_best_loss"] = np.array(traj["final_best_loss"])  # positive
                     if "final_best_fitness" in traj:
-                        payload["es_final_best_fitness"] = np.array(traj["final_best_fitness"])
+                        payload["es_final_best_fitness"] = np.array(traj["final_best_fitness"])  # negative of loss
                     elif "final_best_accuracy" in traj:  # Fallback for old key names
-                        payload["es_final_best_accuracy"] = np.array(traj["final_best_accuracy"])
+                        payload["es_final_best_accuracy"] = np.array(traj["final_best_accuracy"])    
 
             # Save compressed
             if not payload:
                 payload["note"] = np.array(["no_trajectory_available"], dtype=object)
+            # Attach per-sample metrics if available
+            if per_sample_shape_acc is not None:
+                payload["per_sample_shape_accuracy"] = np.asarray(per_sample_shape_acc)
+            if per_sample_pixel_corr is not None:
+                payload["per_sample_pixel_correctness"] = np.asarray(per_sample_pixel_corr)
+            if per_sample_acc is not None:
+                payload["per_sample_accuracy"] = np.asarray(per_sample_acc)
             os.makedirs(os.path.dirname(store_path) or ".", exist_ok=True)
             print(f"[store_latents] Saving to {store_path} with keys: {list(payload.keys())}")
             np.savez_compressed(store_path, **payload)

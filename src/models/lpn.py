@@ -1102,10 +1102,11 @@ class LPN(nn.Module):
         )
 
         if track_progress:
-            # Stack as (*B, G, H) for latents and (*G, *B) for losses
+            # Stack as (*B, G, H) for latents and (*B, G) for metrics
             gen_best_latents_arr = jnp.stack(gen_best_latents, axis=-2) if len(gen_best_latents) > 0 else None
             traj = {
-                "generation_losses": jnp.stack(gen_bests),  # Best fitness per generation
+                # Save best fitness per generation under clear name (fitness = -loss)
+                "generation_fitness": jnp.stack(gen_bests),
                 "final_best_fitness": best_so_far,
                 "best_latents_per_generation": gen_best_latents_arr,
             }
@@ -1113,8 +1114,11 @@ class LPN(nn.Module):
                 # populations: list of (*B, C, H) -> (*B, G, C, H)
                 traj["populations_per_generation"] = jnp.stack(gen_populations, axis=-3)
             if len(gen_fitnesses) > 0:
-                # losses: list of (*B,) -> (*B, G) - best loss per generation (lower is better)
-                traj["losses_per_generation"] = jnp.stack(gen_fitnesses, axis=-1)
+                # best loss per generation (positive, lower is better)
+                per_gen_best_loss = jnp.stack(gen_fitnesses, axis=-1)  # (*B, G)
+                traj["losses_per_generation"] = per_gen_best_loss
+                # final best loss across generations
+                traj["final_best_loss"] = jnp.min(per_gen_best_loss, axis=-1)
             return best_context, second_best_context, traj
 
         return best_context, second_best_context

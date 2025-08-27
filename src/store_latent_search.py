@@ -1599,6 +1599,24 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                     if value is not None:
                         wandb.log({key: value})
                 
+                # Per-sample histograms (if available)
+                for key, wandb_key in [
+                    ('per_sample_accuracy', 'ga_per_sample_accuracy'),
+                    ('per_sample_shape_accuracy', 'ga_per_sample_shape_accuracy'),
+                    ('per_sample_pixel_correctness', 'ga_per_sample_pixel_correctness'),
+                ]:
+                    if key in f:
+                        arr = np.array(f[key]).reshape(-1)
+                        if arr.size > 0:
+                            try:
+                                import numpy as np
+                                import wandb as _wandb
+                                run.log({f"{wandb_key}_hist": _wandb.Histogram(arr)})
+                                run.log({f"{wandb_key}_mean": float(np.mean(arr))})
+                                run.log({f"{wandb_key}_std": float(np.std(arr))})
+                            except Exception as _we:
+                                print(f"[metrics] Failed to log GA histogram {wandb_key}: {_we}")
+
                 # Create GA metrics CSV for download
                 ga_csv_path = f"ga_metrics_run_{cfg.get('run_idx', 0)}.csv"
                 
@@ -1647,8 +1665,13 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                 es_metrics = {}
                 
                 # Generation-level metrics
+                gen_losses = None
                 if 'es_generation_losses' in f:
                     gen_losses = np.array(f['es_generation_losses'])
+                elif 'es_generation_fitness' in f:
+                    # Convert fitness to positive losses
+                    gen_losses = -np.array(f['es_generation_fitness'])
+                if gen_losses is not None:
                     if len(gen_losses) > 0:
                         es_metrics['es_final_loss'] = safe_array_to_scalar(gen_losses[-1])
                         es_metrics['es_loss_progression'] = gen_losses.tolist()
@@ -1679,12 +1702,32 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                         es_metrics['es_mean_loss'] = None
                         es_metrics['es_std_loss'] = None
                 
+                if 'es_final_best_loss' in f:
+                    es_metrics['es_final_best_loss'] = safe_array_to_scalar(np.array(f['es_final_best_loss']))
                 if 'es_final_best_fitness' in f:
                     final_fitness = np.array(f['es_final_best_fitness'])
                     es_metrics['es_final_best_fitness'] = safe_array_to_scalar(final_fitness)
                     if final_fitness.size > 1:
                         print(f"[metrics] Note: es_final_best_fitness had {final_fitness.size} elements, using first: {final_fitness.flat[0]:.4f}")
                 
+                # Per-sample histograms (if available)
+                for key, wandb_key in [
+                    ('per_sample_accuracy', 'es_per_sample_accuracy'),
+                    ('per_sample_shape_accuracy', 'es_per_sample_shape_accuracy'),
+                    ('per_sample_pixel_correctness', 'es_per_sample_pixel_correctness'),
+                ]:
+                    if key in f:
+                        arr = np.array(f[key]).reshape(-1)
+                        if arr.size > 0:
+                            try:
+                                import numpy as np
+                                import wandb as _wandb
+                                run.log({f"{wandb_key}_hist": _wandb.Histogram(arr)})
+                                run.log({f"{wandb_key}_mean": float(np.mean(arr))})
+                                run.log({f"{wandb_key}_std": float(np.std(arr))})
+                            except Exception as _we:
+                                print(f"[metrics] Failed to log ES histogram {wandb_key}: {_we}")
+
                 # Log ES metrics
                 for key, value in es_metrics.items():
                     if value is not None:
