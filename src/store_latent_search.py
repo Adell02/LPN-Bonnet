@@ -294,6 +294,12 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
             t.gen_idx = gen_idx
             t.pop_vals = pop_vals
             
+            # Debug: show what was extracted for best_per_gen
+            if prefix == "es_":
+                print(f"[plot] ES best_per_gen extracted: {t.best_per_gen.shape if t.best_per_gen is not None else None}")
+                if t.best_per_gen is not None:
+                    print(f"[plot] ES best_per_gen content: min={t.best_per_gen.min():.3f}, max={t.best_per_gen.max():.3f}")
+            
             # Debug: show what we extracted
             if prefix == "es_":
                 print(f"[plot] ES trace: pts={t.pts.shape if t.pts is not None else None}, "
@@ -307,7 +313,13 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
                 print(f"[plot] {prefix} trajectory: pts={t.pts.shape}, vals={t.vals.shape if t.vals is not None else None}")
             else:
                 print(f"[plot] {prefix} trajectory: NO TRAJECTORY POINTS EXTRACTED!")
-                print(f"[plot] {prefix} available keys: {list(np.load(npz_path, allow_pickle=True).keys()) if os.path.exists(npz_path) else 'file not found'}")
+                if prefix == "es_":
+                    print(f"[plot] ES trajectory extraction failed. Available keys: {list(f.keys())}")
+                    print(f"[plot] ES best_per_gen available: {t.best_per_gen is not None}")
+                    if t.best_per_gen is not None:
+                        print(f"[plot] ES best_per_gen shape: {t.best_per_gen.shape}")
+                else:
+                    print(f"[plot] {prefix} available keys: {list(np.load(npz_path, allow_pickle=True).keys()) if os.path.exists(npz_path) else 'file not found'}")
     return t
 
 
@@ -726,7 +738,6 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     ax.set_title(title)
     ax.set_xlabel("z1"); ax.set_ylabel("z2")
     ax.set_aspect("equal")  # With whitened PCA, this will look balanced
-    ax.grid(True, alpha=0.25)
     ax.set_xlim(*xlim); ax.set_ylim(*ylim)
 
     # soft heatmap background by splatting losses if available
@@ -800,11 +811,29 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                        bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8, edgecolor=color))
 
     # ES selected path (best per generation if present, otherwise es.pts)
+    print(f"[plot] ES trajectory debug: best_per_gen={es.best_per_gen.shape if es.best_per_gen is not None else None}, es.pts={es.pts.shape if es.pts is not None else None}")
     es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
+    print(f"[plot] ES selected for plotting: {es_sel.shape if es_sel is not None else None}")
+    
     if es_sel is not None and len(es_sel) > 1:
         # Flatten ES selected path for plotting
         es_sel_flat = es_sel.reshape(-1, 2)
+        print(f"[plot] Plotting ES trajectory: {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
         _plot_traj(ax, es_sel_flat, color="#ff7f0e", label="ES selected", alpha=1.0)
+    else:
+        print(f"[plot] ES trajectory plotting skipped: es_sel={es_sel is not None}, len={len(es_sel) if es_sel is not None else 0}")
+        
+        # Fallback: try to plot ES trajectory from best_per_gen if available
+        if es.best_per_gen is not None and es.best_per_gen.size > 0:
+            print(f"[plot] ES fallback: attempting to plot from best_per_gen")
+            es_fallback = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])
+            if es_fallback.shape[0] > 1:
+                print(f"[plot] ES fallback plotting: {es_fallback.shape}")
+                _plot_traj(ax, es_fallback, color="#ff7f0e", label="ES selected (fallback)", alpha=1.0)
+            else:
+                print(f"[plot] ES fallback failed: not enough points ({es_fallback.shape[0]})")
+        else:
+            print(f"[plot] ES fallback: no best_per_gen available")
 
     # GA path
     if ga.pts is not None and len(ga.pts) > 1:
@@ -859,7 +888,15 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
 
 def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2, 
                      ga_steps: int = None, es_population: int = None, es_generations: int = None) -> Optional[str]:
-    """Generate a plot comparing loss curves for GA and ES methods with budget on x-axis."""
+    """
+    Generate a plot comparing loss curves for GA and ES methods with budget on x-axis.
+    
+    Budget calculation:
+    - GA: 2 evaluations per step (forward + backward pass)
+      Example: 5 steps → [2, 4, 6, 8, 10] budget points (no zero evaluation)
+    - ES: Cumulative evaluations at each generation
+      Example: 4 generations × 5 population → [5, 10, 15, 20] budget points (no zero evaluation)
+    """
     try:
         import matplotlib.pyplot as plt
     except Exception as e:
@@ -884,15 +921,17 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     title = f"Optimization Progress: Gradient Ascent vs Evolutionary Search (Z_dim = {original_dim})"
     ax.set_title(title)
-    ax.set_xlabel("Budget (2×steps for GA, pop×gen for ES)")
+    ax.set_xlabel("Budget (evaluations: starting from first evaluation)")
     ax.set_ylabel("Loss (lower is better)")
     ax.grid(True, alpha=0.3)
     
     # Plot GA loss curve with budget on x-axis
     if has_ga_loss:
         if ga_steps is not None:
-            # Use actual budget: 2 × steps
-            ga_budget = 2 * np.arange(len(ga.vals))
+            # GA budget: 2 evaluations per step (forward + backward pass)
+            # Start from 2 (first step evaluation), not 0
+            ga_budget = 2 * np.arange(1, len(ga.vals) + 1)
+            print(f"[loss] GA budget calculation: {len(ga.vals)} steps → budget points: {ga_budget}")
             ax.plot(ga_budget, ga.vals, color="#e91e63", linewidth=2.5, marker='o', 
                     markersize=6, label=f"Gradient Ascent (2×{ga_steps} steps)", zorder=3)
         else:
@@ -904,13 +943,16 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Plot ES loss curve with budget on x-axis
     if has_es_loss:
         if es_population is not None and es_generations is not None:
-            # Use actual budget: population × generations
-            es_budget = np.arange(es_generations + 1) * es_population  # +1 to include initial
+            # ES budget: cumulative evaluations at each generation
+            # Start from population (first generation evaluation), not 0
+            es_budget = np.arange(1, es_generations + 2) * es_population
+            print(f"[loss] ES budget calculation: {es_generations} gens × {es_population} pop → budget points: {es_budget}")
             if len(es_budget) == len(es.vals):
                 ax.plot(es_budget, es.vals, color="#ff7f0e", linewidth=2.5, marker='s', 
                         markersize=6, label=f"Evolutionary Search ({es_population}×{es_generations})", zorder=3)
             else:
                 # Fallback if budget doesn't match values length
+                print(f"[loss] ES budget mismatch: budget={es_budget}, values={len(es.vals)}")
                 es_steps_indices = np.arange(len(es.vals))
                 ax.plot(es_steps_indices, es.vals, color="#ff7f0e", linewidth=2.5, marker='s', 
                         markersize=6, label="Evolutionary Search", zorder=3)
