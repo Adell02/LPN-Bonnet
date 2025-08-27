@@ -575,46 +575,59 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     print(f"[plot] View window: center=({cx:.3f}, {cy:.3f}), span={span:.3f}, xlim={xlim}, ylim={ylim}")
 
     # collect samples for the soft heatmap
+    # IMPORTANT: For PCA cases, we need to create the background BEFORE PCA projection
+    # to preserve the loss landscape structure, then project the final heatmap
     bgP, bgV = [], []
+    bgP_original = []  # Store original high-dimensional points for background
+    bgV_original = []  # Store original values for background
+    
+    # Also populate bgP and bgV for 2D cases (when no PCA is needed)
+    def add_to_background(pts, vals, is_original=True):
+        if is_original:
+            bgP_original.append(pts)
+            bgV_original.append(vals)
+        # Always add to regular arrays for 2D cases
+        pts_2d = pts.reshape(-1, pts.shape[-1])
+        vals_flat = vals.reshape(-1)
+        if len(pts_2d) == len(vals_flat):
+            bgP.append(pts_2d)
+            bgV.append(vals_flat)
     
     # GA path values
     if ga.pts is not None and ga.vals is not None:
-        # Flatten GA points to 2D and ensure vals match
-        ga_pts_flat = ga.pts.reshape(-1, 2)
+        # Store original high-dimensional points for background
+        ga_pts_original = ga.pts.reshape(-1, ga.pts.shape[-1])  # (T, D) where D is original dim
         ga_vals_flat = ga.vals.reshape(-1)
-        if len(ga_pts_flat) == len(ga_vals_flat):
-            print(f"[plot] GA data: pts={ga_pts_flat.shape}, vals={ga_vals_flat.shape}")
-            bgP.append(ga_pts_flat)
-            bgV.append(ga_vals_flat)
+        if len(ga_pts_original) == len(ga_vals_flat):
+            print(f"[plot] GA background: original pts={ga_pts_original.shape}, vals={ga_vals_flat.shape}")
+            add_to_background(ga_pts_original, ga_vals_flat, is_original=True)
         else:
-            print(f"[plot] GA data mismatch: pts={ga_pts_flat.shape}, vals={ga_vals_flat.shape}")
+            print(f"[plot] GA background mismatch: pts={ga_pts_original.shape}, vals={ga_vals_flat.shape}")
     else:
-        print(f"[plot] GA data missing: pts={ga.pts is not None}, vals={ga.vals is not None}")
+        print(f"[plot] GA background missing: pts={ga.pts is not None}, vals={ga.vals is not None}")
     
     # ES population values
     if es.pop_pts is not None and es.pop_vals is not None:
-        # Flatten ES population points to 2D and ensure vals match
-        es_pop_pts_flat = es.pop_pts.reshape(-1, 2)
+        # Store original high-dimensional points for background
+        es_pop_pts_original = es.pop_pts.reshape(-1, es.pop_pts.shape[-1])  # (N, D) where D is original dim
         es_pop_vals_flat = es.pop_vals.reshape(-1)
-        print(f"[plot] ES debug: pop_pts={es.pop_pts.shape}, pop_vals={es.pop_vals.shape}")
-        print(f"[plot] ES debug: flattened pts={es_pop_pts_flat.shape}, vals={es_pop_vals_flat.shape}")
-        if len(es_pop_pts_flat) == len(es_pop_vals_flat):
-            print(f"[plot] ES data: pts={es_pop_pts_flat.shape}, vals={es_pop_vals_flat.shape}")
-            bgP.append(es_pop_pts_flat)
-            bgV.append(es_pop_vals_flat)
+        print(f"[plot] ES background: original pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
+        if len(es_pop_pts_original) == len(es_pop_vals_flat):
+            print(f"[plot] ES background: pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
+            add_to_background(es_pop_pts_original, es_pop_vals_flat, is_original=True)
         else:
-            print(f"[plot] ES data mismatch: pts={es_pop_pts_flat.shape}, vals={es_pop_vals_flat.shape}")
-            print(f"[plot] ES mismatch details: pts length {len(es_pop_pts_flat)}, vals length {len(es_pop_vals_flat)}")
+            print(f"[plot] ES background mismatch: pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
+            print(f"[plot] ES mismatch details: pts length {len(es_pop_pts_original)}, vals length {es_pop_vals_flat.shape}")
     else:
-        print(f"[plot] ES data missing: pts={es.pop_pts is not None}, vals={es.pop_vals is not None}")
+        print(f"[plot] ES background missing: pts={es.pop_pts is not None}, vals={es.pop_vals is not None}")
     
     # if nothing, background stays white
-    have_field = len(bgP) > 0
-    print(f"[plot] Background field available: {have_field} (bgP={len(bgP)}, bgV={len(bgV)})")
+    have_field = len(bgP_original) > 0
+    print(f"[plot] Background field available: {have_field} (bgP_original={len(bgP_original)}, bgV_original={len(bgV_original)})")
     
     # Debug: show what we're working with
     if have_field:
-        for i, (pts, vals) in enumerate(zip(bgP, bgV)):
+        for i, (pts, vals) in enumerate(zip(bgP_original, bgV_original)):
             print(f"[plot] Background {i}: pts={pts.shape}, vals={vals.shape}")
             if len(pts) != len(vals):
                 print(f"[plot] WARNING: Background {i} has mismatched lengths!")
@@ -650,16 +663,43 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
 
     # soft heatmap background by splatting losses if available
     if have_field:
-        P = np.concatenate(bgP, axis=0)
-        V = orient(np.concatenate(bgV, axis=0))
-        XX, YY, ZZ = _splat_background(
-            P, V, xlim, ylim, 
-            n=background_resolution, 
-            enable_smoothing=background_smoothing,
-            knn_k=background_knn,
-            bandwidth_scale=background_bandwidth_scale,
-            global_mix=background_global_mix
-        )
+        # For PCA cases, create background using original high-dimensional points
+        # to preserve the loss landscape structure, then project to 2D
+        if original_dim > 2 and pca_transformer is not None:
+            print(f"[plot] Creating background using original {original_dim}D points for better loss landscape")
+            
+            # Use original high-dimensional points for background
+            P_original = np.concatenate(bgP_original, axis=0)  # (N, D) where D is original dim
+            V_original = orient(np.concatenate(bgV_original, axis=0))  # (N,)
+            
+            # Project original points to 2D for background creation
+            P_2d = _apply_fitted_pca(P_original, pca_transformer, target_dim=2)
+            print(f"[plot] Background: {len(P_original)} {original_dim}D points projected to {P_2d.shape}")
+            
+            # Create the background heatmap using the projected points
+            XX, YY, ZZ = _splat_background(
+                P_2d, V_original, xlim, ylim, 
+                n=background_resolution, 
+                enable_smoothing=background_smoothing,
+                knn_k=background_knn,
+                bandwidth_scale=background_bandwidth_scale,
+                global_mix=background_global_mix
+            )
+            
+        else:
+            # For 2D data, use the projected points directly
+            P = np.concatenate(bgP, axis=0)
+            V = orient(np.concatenate(bgV, axis=0))
+            XX, YY, ZZ = _splat_background(
+                P, V, xlim, ylim, 
+                n=background_resolution, 
+                enable_smoothing=background_smoothing,
+                knn_k=background_knn,
+                bandwidth_scale=background_bandwidth_scale,
+                global_mix=background_global_mix
+            )
+        
+        # Display the background
         im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.7)
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label(field_name)
