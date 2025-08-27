@@ -537,6 +537,9 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # Get the most common original dimension (or max if different)
     original_dim = max(original_dims) if original_dims else 2
     
+    # Initialize PCA transformer early to avoid scope issues
+    pca_transformer = None
+    
     # Collect background data for loss landscape visualization
     # CRITICAL: We collect points and their corresponding loss values BEFORE PCA projection
     # This ensures that when we project to 2D, each 2D point retains its original loss value
@@ -602,7 +605,6 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             have_field = False
 
     # Apply unified PCA if needed
-    pca_transformer = None  # Initialize pca_transformer
     if original_dim > 2:
         print(f"[plot] Original latent dimension: {original_dim}D, applying unified PCA to project to 2D")
         
@@ -752,8 +754,9 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         # Then add translucent circles to cluster samples from the same generation
         if es.gen_idx is not None:
             unique_gens = np.unique(es.gen_idx)
-            generation_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-                               '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+            # Complementary colors to viridis (blue-green-yellow): reds, oranges, purples, magentas
+            generation_colors = ['#d73027', '#f46d43', '#fdae61', '#fee08b', '#e6f598', 
+                               '#abdda4', '#66c2a5', '#3288bd', '#5e4fa2', '#8e0152']
             
             for gen in unique_gens:
                 mask = es.gen_idx == gen
@@ -801,7 +804,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     
     # Generation clusters (general representation)
     if es.pop_pts is not None and es.gen_idx is not None:
-        legend_elements.append(plt.Line2D([0], [0], marker='o', color='#1f77b4', markerfacecolor='#1f77b4', 
+        legend_elements.append(plt.Line2D([0], [0], marker='o', color='#d73027', markerfacecolor='#d73027', 
                                        markersize=12, alpha=0.3, label='ES generation clusters'))
     
     # Trajectory paths
