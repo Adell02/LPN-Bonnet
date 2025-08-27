@@ -704,11 +704,17 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # Instead of letting PC1 dominate the span, we use the maximum range from both components
     cx, cy = XY[:, 0].mean(), XY[:, 1].mean()
     span = max(np.ptp(XY[:, 0]), np.ptp(XY[:, 1]))  # ptp = max - min (NumPy 2.0 compatible)
+    
+    # Ensure minimum span for visibility when trajectories are very small
+    min_span = 0.5  # Minimum span to ensure trajectories are visible
+    span = max(span, min_span)
+    
     pad = 0.10 * span
     xlim = (cx - span/2 - pad, cx + span/2 + pad)
     ylim = (cy - span/2 - pad, cy + span/2 + pad)
     
     print(f"[plot] View window: center=({cx:.3f}, {cy:.3f}), span={span:.3f}, xlim={xlim}, ylim={ylim}")
+    print(f"[plot] Note: Using minimum span {min_span} to ensure trajectory visibility")
 
     # Background data has already been collected above, before PCA projection
 
@@ -1364,7 +1370,7 @@ def main() -> None:
     parser.add_argument("--subspace_dim", type=int, default=32)
     parser.add_argument("--ga_step_length", type=float, default=0.5)
     parser.add_argument("--trust_region_radius", type=float, default=None)
-    parser.add_argument("--disable_elitism", action="store_true", help="Disable elitism in ES (best individual can die)")
+
     parser.add_argument("--track_progress", action="store_true", help="Enable progress tracking for both GA and ES")
     parser.add_argument("--background_resolution", type=int, default=400, help="Base resolution for background heatmap (higher = smoother)")
     parser.add_argument("--background_smoothing", action="store_true", help="Enable additional Gaussian smoothing for small-scale searches")
@@ -1440,8 +1446,7 @@ def main() -> None:
         es_cmd += ["--use-subspace-mutation", "--subspace-dim", str(args.subspace_dim), "--ga-step-length", str(args.ga_step_length)]
         if args.trust_region_radius is not None:
             es_cmd += ["--trust-region-radius", str(args.trust_region_radius)]
-    if args.disable_elitism:
-        es_cmd.append("--disable-elitism")
+
     # Log ES start
     if run is not None:
         wandb.log({"es_status": "started"})
@@ -1480,7 +1485,7 @@ def main() -> None:
                 "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
                 "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
                 "trust_region_radius": args.trust_region_radius,
-                "elitism": not args.disable_elitism,  # Enable elitism by default
+
                 "track_progress": args.track_progress,
                 "background_resolution": args.background_resolution,
                 "background_smoothing": args.background_smoothing,
@@ -1573,8 +1578,7 @@ def main() -> None:
                 es_cmd += ["--use-subspace-mutation", "--subspace-dim", str(args.subspace_dim), "--ga-step-length", str(args.ga_step_length)]
                 if args.trust_region_radius is not None:
                     es_cmd += ["--trust-region-radius", str(args.trust_region_radius)]
-            if args.disable_elitism:
-                es_cmd.append("--disable-elitism")
+
             print("Running ES:", " ".join(es_cmd))
             es_rc = subprocess.run(es_cmd, check=False).returncode
             print(f"ES return code: {es_rc}")
@@ -1638,7 +1642,7 @@ def main() -> None:
             "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
             "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
             "trust_region_radius": args.trust_region_radius,
-            "elitism": not args.disable_elitism,  # Enable elitism by default
+
             "track_progress": args.track_progress,
             "background_resolution": args.background_resolution,
             "background_smoothing": args.background_smoothing,

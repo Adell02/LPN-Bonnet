@@ -966,12 +966,7 @@ if __name__ == "__main__":
         default=None,
         help="Trust region radius for evolutionary search (default: None).",
     )
-    parser.add_argument(
-        "--disable-elitism",
-        action="store_true",
-        required=False,
-        help="Disable elitism in evolutionary search (best individual can die).",
-    )
+
     args = parser.parse_args()
     if (
         args.json_challenges_file is None
@@ -1014,7 +1009,6 @@ if __name__ == "__main__":
         "subspace_dim": args.subspace_dim,
         "ga_step_length": args.ga_step_length,
         "trust_region_radius": args.trust_region_radius,
-        "elitism": not args.disable_elitism,  # Enable elitism by default
     }
     for arg in [
         "scan_batch_size",
