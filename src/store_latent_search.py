@@ -559,7 +559,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                   background_resolution: int = 400, background_smoothing: bool = False,
                   background_knn: int = 5, background_bandwidth_scale: float = 1.25, 
                   background_global_mix: float = 0.05, ga_steps: int = None, 
-                  es_population: int = None, es_generations: int = None) -> tuple[Optional[str], Optional[str], int]:
+                  es_population: int = None, es_generations: int = None, dataset_length: int = None) -> tuple[Optional[str], Optional[str], int]:
     try:
         import matplotlib
         matplotlib.use("Agg")
