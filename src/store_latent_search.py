@@ -1357,7 +1357,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             with np.load(ga_npz_path, allow_pickle=True) as f:
                 if 'ga_budget' in f:
                     ga_budget = np.array(f['ga_budget']).reshape(-1)
-                if 'ga_losses_per_sample' in f:
+                if (dataset_length is not None and dataset_length > 1) and 'ga_losses_per_sample' in f:
                     L = np.array(f['ga_losses_per_sample'])  # (N, S)
                     x = ga_budget if ga_budget is not None and len(ga_budget) == L.shape[1] else np.arange(L.shape[1])
                     ga_min = np.min(L, axis=0)
@@ -1390,7 +1390,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             with np.load(es_npz_path, allow_pickle=True) as f:
                 if 'es_budget' in f:
                     es_budget = np.array(f['es_budget']).reshape(-1)
-                if 'es_generation_losses_per_sample' in f:
+                if (dataset_length is not None and dataset_length > 1) and 'es_generation_losses_per_sample' in f:
                     L = np.array(f['es_generation_losses_per_sample'])  # (N, G)
                     x = es_budget if es_budget is not None and len(es_budget) == L.shape[1] else np.arange(1, L.shape[1]+1)
                     es_min = np.min(L, axis=0)
