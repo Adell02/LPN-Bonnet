@@ -1192,14 +1192,14 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                                       ga_npz_path, es_npz_path,
                                       ga_steps=ga_steps, 
                                       es_population=es_population, 
-                                      es_generations=es_generations)
+                                      es_generations=es_generations, dataset_length=dataset_length)
     
     return png, loss_plot_path, original_dim
 
 
 def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2, 
                      ga_npz_path: str = None, es_npz_path: str = None,
-                     ga_steps: int = None, es_population: int = None, es_generations: int = None) -> Optional[str]:
+                     ga_steps: int = None, es_population: int = None, es_generations: int = None, dataset_length: int = None) -> Optional[str]:
     """
     Generate a plot comparing loss curves for GA and ES methods with budget on x-axis.
     
@@ -2169,7 +2169,7 @@ def main() -> None:
                                                       background_knn=args.background_knn,
                                                       background_bandwidth_scale=args.background_bandwidth_scale,
                                                       background_global_mix=args.background_global_mix,
-                                                      ga_steps=ga_steps, es_population=pop, es_generations=gens)
+                                                      ga_steps=ga_steps, es_population=pop, es_generations=gens, dataset_length=args.dataset_length)
             if trajectory_plot:
                 print(f"Saved trajectory plot to {trajectory_plot}")
             if loss_plot:
@@ -2278,7 +2278,7 @@ def main() -> None:
                                                   background_knn=args.background_knn,
                                                   background_bandwidth_scale=args.background_bandwidth_scale,
                                                   background_global_mix=args.background_global_mix,
-                                                  ga_steps=ga_steps, es_population=pop, es_generations=gens)
+                                                  ga_steps=ga_steps, es_population=pop, es_generations=gens, dataset_length=args.dataset_length)
         if trajectory_plot:
             print(f"Saved trajectory plot to {trajectory_plot}")
         if loss_plot:
