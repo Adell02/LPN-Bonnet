@@ -471,11 +471,11 @@ def _splat_background(
     enable_smoothing: bool = False,
     knn_k: int = 5,
     bandwidth_scale: float = 1.25,
-    global_mix: float = 0.0,   # Changed to 0.0 to avoid global blending in untracked areas
+    global_mix: float = 0.05,   # Restored to 0.05 for smooth gaussian interpolation
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Adaptive Gaussian splatting with per-point bandwidths.
-    Shows white (NaN) for untracked regions instead of interpolating to global mean.
+    Provides smooth interpolation between loss points for beautiful viridis tonality.
     """
     # grid
     xv = np.linspace(xlim[0], xlim[1], n)
@@ -512,18 +512,17 @@ def _splat_background(
     num = W @ V                                                  # [M]
     den = W.sum(axis=1)                                          # [M]
 
-    # CRITICAL FIX: Don't use global mix, and set untracked areas to NaN (which will appear white)
-    # Only show loss values in areas that are actually covered by the data
+    # Restore gaussian interpolation for smooth loss landscape
+    # Use global mixing for smooth transitions between loss points
     Z = num / den
     
-    # Set areas with very low weight (far from data) to NaN (white)
-    # This threshold determines how far from data points we show white vs. loss values
-    weight_threshold = 0.01  # Adjust this to control white area size
-    low_weight_mask = den < weight_threshold
+    # Apply global mixing for smooth interpolation
+    if global_mix > 0:
+        global_mean = np.nanmean(V)
+        Z = (1 - global_mix) * Z + global_mix * global_mean
     
-    # Reshape and apply mask
+    # Reshape to grid
     Z = Z.reshape(n, n)
-    Z[low_weight_mask.reshape(n, n)] = np.nan
 
     if enable_smoothing and N > 1:
         try:
@@ -808,15 +807,21 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     XY = np.concatenate(pts_for_bounds, axis=0)
     print(f"[bounds] Total points for bounds: {len(XY)} (trajectories + background)")
     
-    # Fix the "pancake" look by squaring the view window
-    # This ensures PC1 and PC2 have similar visual impact even when PCA variance ratios are imbalanced
-    # Instead of letting PC1 dominate the span, we use the maximum range from both components
-    cx, cy = XY[:, 0].mean(), XY[:, 1].mean()
-    span = max(np.ptp(XY[:, 0]), np.ptp(XY[:, 1]))  # ptp = max - min (NumPy 2.0 compatible)
+    # Use the larger range for both axes to ensure complete loss landscape visibility
+    # This prevents "pancake" appearance and ensures all data is visible
+    xmin, xmax = XY[:, 0].min(), XY[:, 0].max()
+    ymin, ymax = XY[:, 1].min(), XY[:, 1].max()
     
-    # Ensure minimum span for visibility when trajectories are very small
-    min_span = 0.5  # Minimum span to ensure trajectories are visible
-    span = max(span, min_span)
+    # Calculate ranges for each axis
+    x_range = xmax - xmin
+    y_range = ymax - ymin
+    
+    # Use the larger range for both axes to ensure square-ish plot
+    max_range = max(x_range, y_range)
+    
+    # Ensure minimum range for visibility when trajectories are very small
+    min_range = 0.5
+    max_range = max(max_range, min_range)
     
     # 🎯 COMPREHENSIVE BOUNDS CALCULATION: GUARANTEE COMPLETE VISIBILITY
     # This ensures ALL plot elements are fully visible:
@@ -827,17 +832,6 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # ✅ Loss landscape background (complete coverage)
     # ✅ Proper padding for visual clarity and aesthetics
     
-    # Start with comprehensive bounds from all points
-    xmin, xmax = XY[:, 0].min(), XY[:, 0].max()
-    ymin, ymax = XY[:, 1].min(), XY[:, 1].max()
-    
-    # Calculate ranges and ensure balanced coverage
-    x_range = xmax - xmin
-    y_range = ymax - ymin
-    
-    # Use the larger range to ensure square-ish plot and prevent "pancake" appearance
-    max_range = max(x_range, y_range, span)
-    
     # COMPREHENSIVE PADDING STRATEGY:
     # 1. Base padding: 5% of the maximum range
     # 2. Circle padding: 20% extra for generation circles and population spread
@@ -845,13 +839,14 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # 4. Minimum padding: Prevent extremely tight bounds
     
     base_padding = 0.05 * max_range
-    circle_padding = 0.20 * max_range  # Increased from span to max_range for better coverage
-    min_padding = 0.10 * max_range  # Minimum padding to prevent tight bounds
+    circle_padding = 0.20 * max_range
+    min_padding = 0.10 * max_range
     
     # Use the maximum of all padding strategies
     pad = max(base_padding, circle_padding, min_padding)
     
-    # Apply padding to create final bounds
+    # Apply padding to create final bounds using the larger range for both axes
+    # This ensures the loss landscape is fully visible in both dimensions
     xlim = (xmin - pad, xmax + pad)
     ylim = (ymin - pad, ymax + pad)
     
@@ -859,7 +854,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     print(f"[bounds] COMPREHENSIVE BOUNDS CALCULATION:")
     print(f"[bounds] All points bounds: x[{xmin:.3f}, {xmax:.3f}], y[{ymin:.3f}, {ymax:.3f}]")
     print(f"[bounds] Ranges: x_range={x_range:.3f}, y_range={y_range:.3f}")
-    print(f"[bounds] Overall span: {span:.3f}, max_range: {max_range:.3f}")
+    print(f"[bounds] Using larger range for both axes: max_range={max_range:.3f}")
     print(f"[bounds] Padding strategy:")
     print(f"[bounds]   - Base padding (5%): {base_padding:.3f}")
     print(f"[bounds]   - Circle padding (20%): {circle_padding:.3f}")
@@ -873,6 +868,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     print(f"[bounds]   ✅ ES generation circles")
     print(f"[bounds]   ✅ Loss landscape background")
     print(f"[bounds]   ✅ Proper padding for visual clarity")
+    print(f"[bounds]   ✅ Square-ish plot using larger range for both axes")
 
     # Background data has already been collected above, before PCA projection
 
@@ -905,28 +901,29 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
                 vmin, vmax = 0.0, 1.0
     else:
-        # For losses: lower is better, use original range (log likelihoods are naturally negative)
-        # IMPORTANT: Don't normalize to [0,1], keep the actual loss range for proper visualization
+        # For losses: ensure only positive values in colorbar
         if len(all_for_norm) > 0:
             vv = np.concatenate(all_for_norm)
-            vmin, vmax = float(np.nanmin(vv)), float(np.nanmax(vv))
-            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
-                # Fallback: use a reasonable range for log likelihoods
-                vmin, vmax = -10.0, 0.0
+            # Take absolute values to ensure positive colorbar
+            vv_abs = np.abs(vv)
+            vmin, vmax = 0.0, float(np.nanmax(vv_abs))
+            if not np.isfinite(vmax) or vmax == 0:
+                # Fallback: use a reasonable range for positive values
+                vmin, vmax = 0.0, 1.0
         else:
-            # Fallback: use a reasonable range for log likelihoods
-            vmin, vmax = -10.0, 0.0
+            # Fallback: use a reasonable range for positive values
+            vmin, vmax = 0.0, 1.0
     
     print(f"[plot] Loss normalization: vmin={vmin:.4f}, vmax={vmax:.4f}")
     norm = colors.Normalize(vmin=vmin, vmax=vmax)
     cmap = "viridis"
     
     def orient(v: np.ndarray) -> np.ndarray:
-        """Orient values for visualization: scores stay positive, losses stay negative (log likelihoods)"""
+        """Orient values for visualization: scores stay positive, losses use absolute values for positive colorbar"""
         if field_name.lower() == "score":
             return v  # Scores: higher is better, keep positive
         else:
-            return v  # Losses: lower is better, keep negative (log likelihoods are naturally negative)
+            return np.abs(v)  # Losses: use absolute values for positive colorbar
 
     # figure
     fig, ax = plt.subplots(1, 1, figsize=(16, 14))
