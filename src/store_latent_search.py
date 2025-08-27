@@ -1329,17 +1329,17 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             with np.load(ga_npz_path, allow_pickle=True) as f:
                 ga_accuracies = {}
                 # Try different possible accuracy key names
-                for key in ['ga_overall_accuracy', 'overall_accuracy', 'ga_accuracy']:
+                for key in ['ga_overall_accuracy', 'overall_accuracy', 'ga_accuracy', 'accuracy']:
                     if key in f:
                         ga_accuracies['overall'] = safe_array_to_scalar(np.array(f[key]))
                         break
                 
-                for key in ['ga_top_1_shape_accuracy', 'top_1_shape_accuracy', 'ga_shape_accuracy']:
+                for key in ['ga_top_1_shape_accuracy', 'top_1_shape_accuracy', 'ga_shape_accuracy', 'correct_shapes', 'shape_accuracy']:
                     if key in f:
                         ga_accuracies['shape'] = safe_array_to_scalar(np.array(f[key]))
                         break
                 
-                for key in ['ga_top_1_accuracy', 'top_1_accuracy', 'ga_grid_accuracy']:
+                for key in ['ga_top_1_accuracy', 'top_1_accuracy', 'ga_grid_accuracy', 'pixel_correctness', 'grid_accuracy']:
                     if key in f:
                         ga_accuracies['grid'] = safe_array_to_scalar(np.array(f[key]))
                         break
@@ -1367,17 +1367,17 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             with np.load(es_npz_path, allow_pickle=True) as f:
                 es_accuracies = {}
                 # Try different possible accuracy key names
-                for key in ['es_overall_accuracy', 'overall_accuracy', 'es_accuracy']:
+                for key in ['es_overall_accuracy', 'overall_accuracy', 'es_accuracy', 'accuracy']:
                     if key in f:
                         es_accuracies['overall'] = safe_array_to_scalar(np.array(f[key]))
                         break
                 
-                for key in ['es_top_1_shape_accuracy', 'top_1_shape_accuracy', 'es_shape_accuracy']:
+                for key in ['es_top_1_shape_accuracy', 'top_1_shape_accuracy', 'es_shape_accuracy', 'correct_shapes', 'shape_accuracy']:
                     if key in f:
                         es_accuracies['shape'] = safe_array_to_scalar(np.array(f[key]))
                         break
                 
-                for key in ['es_top_1_accuracy', 'top_1_accuracy', 'es_grid_accuracy']:
+                for key in ['es_top_1_accuracy', 'top_1_accuracy', 'es_grid_accuracy', 'pixel_correctness', 'grid_accuracy']:
                     if key in f:
                         es_accuracies['grid'] = safe_array_to_scalar(np.array(f[key]))
                         break
