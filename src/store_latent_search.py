@@ -157,7 +157,11 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
     # Prefer per-sample losses for proper population pairing
     if f"{prefix}losses_per_generation" in npz:
         lp = np.array(npz[f"{prefix}losses_per_generation"])
-        vals = lp.reshape(-1)  # (G*P,) - flattened per-generation losses
+        # losses_per_generation is typically (G, P) - need to flatten to (G*P,)
+        if lp.ndim == 2:
+            vals = lp.reshape(-1)  # (G*P,) - flattened per-generation losses
+        else:
+            vals = lp.reshape(-1)  # fallback for other shapes
         print(f"[plot] Using {prefix}losses_per_generation: {lp.shape} -> {vals.shape}")
     elif f"{prefix}all_losses" in npz and gens is not None:
         # Expand per-gen losses to population using the generation index
@@ -222,6 +226,14 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
             t.pop_pts = pop_pts
             t.gen_idx = gen_idx
             t.pop_vals = pop_vals
+            
+            # Debug: show what we extracted
+            if prefix == "es_":
+                print(f"[plot] ES trace: pts={t.pts.shape if t.pts is not None else None}, "
+                      f"vals={t.vals.shape if t.vals is not None else None}, "
+                      f"pop_pts={t.pop_pts.shape if t.pop_pts is not None else None}, "
+                      f"pop_vals={t.pop_vals.shape if t.pop_vals is not None else None}, "
+                      f"gen_idx={t.gen_idx.shape if t.gen_idx is not None else None}")
     return t
 
 
@@ -431,7 +443,8 @@ def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6
 def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: str = "loss", 
                   background_resolution: int = 400, background_smoothing: bool = False,
                   background_knn: int = 5, background_bandwidth_scale: float = 1.25, 
-                  background_global_mix: float = 0.05) -> tuple[Optional[str], Optional[str]]:
+                  background_global_mix: float = 0.05, ga_steps: int = None, 
+                  es_population: int = None, es_generations: int = None) -> tuple[Optional[str], Optional[str]]:
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -536,12 +549,15 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         # Flatten ES population points to 2D and ensure vals match
         es_pop_pts_flat = es.pop_pts.reshape(-1, 2)
         es_pop_vals_flat = es.pop_vals.reshape(-1)
+        print(f"[plot] ES debug: pop_pts={es.pop_pts.shape}, pop_vals={es.pop_vals.shape}")
+        print(f"[plot] ES debug: flattened pts={es_pop_pts_flat.shape}, vals={es_pop_vals_flat.shape}")
         if len(es_pop_pts_flat) == len(es_pop_vals_flat):
             print(f"[plot] ES data: pts={es_pop_pts_flat.shape}, vals={es_pop_vals_flat.shape}")
             bgP.append(es_pop_pts_flat)
             bgV.append(es_pop_vals_flat)
         else:
             print(f"[plot] ES data mismatch: pts={es_pop_pts_flat.shape}, vals={es_pop_vals_flat.shape}")
+            print(f"[plot] ES mismatch details: pts length {len(es_pop_pts_flat)}, vals length {len(es_pop_vals_flat)}")
     else:
         print(f"[plot] ES data missing: pts={es.pop_pts is not None}, vals={es.pop_vals is not None}")
     
@@ -913,7 +929,8 @@ def main() -> None:
                                               background_smoothing=args.background_smoothing,
                                               background_knn=args.background_knn,
                                               background_bandwidth_scale=args.background_bandwidth_scale,
-                                              background_global_mix=args.background_global_mix)
+                                              background_global_mix=args.background_global_mix,
+                                              ga_steps=ga_steps, es_population=pop, es_generations=gens)
     if trajectory_plot:
         print(f"Saved trajectory plot to {trajectory_plot}")
     if loss_plot:
