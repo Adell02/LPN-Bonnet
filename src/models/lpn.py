@@ -871,7 +871,14 @@ class LPN(nn.Module):
             track_progress: bool = False,
             **kwargs,
         ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:
-        """Evolutionary search for optimal latent context with optional subspace mutation."""
+        """Evolutionary search for optimal latent context with optional subspace mutation.
+        
+        Features:
+        - Elitism: The best individual from each generation is automatically preserved
+        - Selection: Top 50% of individuals survive (excluding elite)
+        - Mutation: Offspring are created by mutating survivors
+        - Population: New generation = [elite, survivors, offspring]
+        """
 
         # ----- helper: evaluate candidates EXACTLY like random search -----
         def _eval_candidates(cand_latents: chex.Array) -> chex.Array:
@@ -948,6 +955,7 @@ class LPN(nn.Module):
         subspace_dim = kwargs.get("subspace_dim", 32)
         ga_step_length = kwargs.get("ga_step_length", 0.5)
         trust_region_radius = kwargs.get("trust_region_radius", None)
+        elitism = kwargs.get("elitism", True)  # Enable elitism by default
         
         if use_subspace_mutation:
             key, basis_key = jax.random.split(key)
@@ -1028,9 +1036,38 @@ class LPN(nn.Module):
                 ).squeeze(axis=-1)  # (*B,) - only the best loss this generation
                 gen_fitnesses.append(best_loss_this_gen)
 
-            # Select top half per batch
-            num_survivors = population_size // 2
-            idx = jnp.argsort(fitness, axis=-1, descending=True)[..., :num_survivors]   # (*B, S)
+            # Implement elitism: preserve the best individual from each generation
+            # Find the best individual per batch
+            best_idx = jnp.argmax(fitness, axis=-1)  # (*B,) - index of best individual per batch
+            best_fitness = jnp.max(fitness, axis=-1)  # (*B,) - best fitness per batch
+            
+            if elitism:
+                print(f"         🏆 Generation {_+1}: Best fitness = {best_fitness.mean():.4f} (elite preserved)")
+                
+                # Create proper gather index for the best individual
+                if population.ndim == 4:
+                    # population: (*B, P, C, H) -> best: (*B, P, H)
+                    P = population.shape[-3]
+                    Hdim = population.shape[-1]
+                    best_idx_expanded = best_idx[..., None, None]  # (*B, 1, 1)
+                    best_idx_broadcast = jnp.broadcast_to(best_idx_expanded, (*best_idx.shape, P, Hdim))  # (*B, P, H)
+                    elite = jnp.take_along_axis(population, best_idx_broadcast, axis=-2).squeeze(axis=-2)  # (*B, P, H)
+                else:
+                    # population: (*B, C, H) -> best: (*B, H)
+                    Hdim = population.shape[-1]
+                    best_idx_expanded = best_idx[..., None]  # (*B, 1)
+                    elite = jnp.take_along_axis(population, best_idx_expanded, axis=-1).squeeze(axis=-1)  # (*B, H)
+                
+                # Select top half per batch (excluding the elite which is already preserved)
+                num_survivors = (population_size - 1) // 2  # Reserve 1 slot for elite
+                idx = jnp.argsort(fitness, axis=-1, descending=True)[..., 1:num_survivors+1]   # (*B, S) - skip best (elite)
+            else:
+                print(f"         🏆 Generation {_+1}: Best fitness = {best_fitness.mean():.4f} (elitism disabled)")
+                elite = None
+                
+                # Select top half per batch (no elite preservation)
+                num_survivors = population_size // 2
+                idx = jnp.argsort(fitness, axis=-1, descending=True)[..., :num_survivors]   # (*B, S)
             
             # Debug: print shapes to understand the dimension mismatch
             print(f"         🔍 Debug shapes: fitness={fitness.shape}, population={population.shape}, idx={idx.shape}")
@@ -1053,7 +1090,10 @@ class LPN(nn.Module):
             survivors = jnp.take_along_axis(population, gather_idx, axis=-2)            # (*B, P, S, H) or (*B, S, H)
 
             # Refill to pop size: repeat survivors and add mutation
-            need = population_size - num_survivors
+            if elitism:
+                need = population_size - num_survivors - 1  # Reserve 1 slot for elite
+            else:
+                need = population_size - num_survivors  # No elite slot
             reps = (need + num_survivors - 1) // num_survivors  # ceil(need / S)
             
             # Handle both 3D and 4D cases for survivors
@@ -1080,17 +1120,41 @@ class LPN(nn.Module):
                 # Standard isotropic mutation
                 offspring = parents + sigma * jax.random.normal(nk, parents.shape)
 
-            # Concatenate survivors and offspring, handling dimension mismatch
-            if survivors.ndim == 4 and offspring.ndim == 3:
-                # survivors: (*B, P, S, H), offspring: (*B, need, H)
-                # Expand offspring to match survivors: (*B, P, need, H)
-                offspring = jnp.expand_dims(offspring, -3).repeat(survivors.shape[-3], axis=-3)
-            elif survivors.ndim == 3 and offspring.ndim == 4:
-                # survivors: (*B, S, H), offspring: (*B, P, need, H)
-                # Expand survivors to match offspring: (*B, P, S, H)
-                survivors = jnp.expand_dims(survivors, -3).repeat(offspring.shape[-3], axis=-3)
-            
-            population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, P, C, H) or (*B, C, H)
+            # Concatenate survivors and offspring (and elite if using elitism), handling dimension mismatch
+            if elitism:
+                # First, ensure elite has the right shape for concatenation
+                if elite.ndim == 3 and (survivors.ndim == 4 or offspring.ndim == 4):
+                    # elite: (*B, P, H) -> (*B, P, 1, H) for concatenation
+                    elite = elite[..., None, :]
+                elif elite.ndim == 2 and (survivors.ndim == 3 or offspring.ndim == 3):
+                    # elite: (*B, H) -> (*B, 1, H) for concatenation
+                    elite = elite[..., None, :]
+                
+                # Handle survivors and offspring dimension mismatch
+                if survivors.ndim == 4 and offspring.ndim == 3:
+                    # survivors: (*B, P, S, H), offspring: (*B, need, H)
+                    # Expand offspring to match survivors: (*B, P, need, H)
+                    offspring = jnp.expand_dims(offspring, -3).repeat(survivors.shape[-3], axis=-3)
+                elif survivors.ndim == 3 and offspring.ndim == 4:
+                    # survivors: (*B, S, H), offspring: (*B, P, need, H)
+                    # Expand survivors to match offspring: (*B, P, need, H)
+                    survivors = jnp.expand_dims(survivors, -3).repeat(offspring.shape[-3], axis=-3)
+                
+                # Concatenate: [elite, survivors, offspring]
+                population = jnp.concatenate([elite, survivors, offspring], axis=-2)               # (*B, P, C, H) or (*B, C, H)
+            else:
+                # Handle survivors and offspring dimension mismatch (no elite)
+                if survivors.ndim == 4 and offspring.ndim == 3:
+                    # survivors: (*B, P, S, H), offspring: (*B, need, H)
+                    # Expand offspring to match survivors: (*B, P, need, H)
+                    offspring = jnp.expand_dims(offspring, -3).repeat(survivors.shape[-3], axis=-3)
+                elif survivors.ndim == 3 and offspring.ndim == 4:
+                    # survivors: (*B, S, H), offspring: (*B, P, need, H)
+                    # Expand survivors to match offspring: (*B, P, need, H)
+                    survivors = jnp.expand_dims(survivors, -3).repeat(offspring.shape[-3], axis=-3)
+                
+                # Concatenate: [survivors, offspring]
+                population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, P, C, H) or (*B, C, H)
 
         # ----- final selection like random search -----
         final_losses = _eval_candidates(population)              # (*B, P, C)

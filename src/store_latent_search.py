@@ -510,20 +510,20 @@ def _splat_background(
 
 def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6, alpha: float = 1.0):
     print(f"[_plot_traj] Plotting {label}: {pts.shape}, color={color}, alpha={alpha}")
-    ax.plot(pts[:, 0], pts[:, 1], color=color, linewidth=1.8, alpha=alpha, label=label, zorder=5)
+    ax.plot(pts[:, 0], pts[:, 1], color=color, linewidth=3.0, alpha=alpha, label=label, zorder=5)
     
     # Add small markers for every step
-    ax.scatter(pts[:, 0], pts[:, 1], s=15, color=color, alpha=alpha, zorder=4)
+    ax.scatter(pts[:, 0], pts[:, 1], s=25, color=color, alpha=alpha, zorder=4)
     
     # Add arrows between steps
     for i in range(0, len(pts) - 1, max(1, arrow_every)):
         ax.annotate("", xy=pts[i+1], xytext=pts[i],
-                    arrowprops=dict(arrowstyle="->", lw=1.2, color=color, shrinkA=0, shrinkB=0))
+                    arrowprops=dict(arrowstyle="->", lw=2.5, color=color, shrinkA=0, shrinkB=0))
     
     # Special markers for start and end points
-    ax.scatter([pts[0, 0]], [pts[0, 1]], s=70, marker="o", edgecolors="black", linewidths=0.7,
+    ax.scatter([pts[0, 0]], [pts[0, 1]], s=100, marker="o", edgecolors="black", linewidths=1.2,
                color=color, zorder=6, alpha=alpha)
-    ax.scatter([pts[-1, 0]], [pts[-1, 1]], s=70, marker="s", edgecolors="black", linewidths=0.7,
+    ax.scatter([pts[-1, 0]], [pts[-1, 1]], s=100, marker="s", edgecolors="black", linewidths=1.2,
                color=color, zorder=6, alpha=alpha)
     print(f"[_plot_traj] Completed plotting {label}")
 
@@ -780,7 +780,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         es_pop_pts_flat = es.pop_pts.reshape(-1, 2)
         
         # Plot ALL ES samples in orange with full alpha
-        ax.scatter(es_pop_pts_flat[:, 0], es_pop_pts_flat[:, 1], s=20, alpha=1.0,
+        ax.scatter(es_pop_pts_flat[:, 0], es_pop_pts_flat[:, 1], s=35, alpha=1.0,
                    color="#ff7f0e", linewidths=0, zorder=1, label="ES population (all samples)")
         
         # Then add translucent circles to cluster samples from the same generation
@@ -801,7 +801,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 gen_radius = np.max(np.linalg.norm(gen_pts - gen_center, axis=1)) * 1.2  # 20% padding
                 
                 # Draw translucent circle for this generation
-                circle = plt.Circle(gen_center, gen_radius, fill=True, linewidth=1, 
+                circle = plt.Circle(gen_center, gen_radius, fill=True, linewidth=2, 
                                   edgecolor=color, facecolor=color, alpha=0.15)
                 ax.add_patch(circle)
                 
@@ -815,25 +815,35 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
     print(f"[plot] ES selected for plotting: {es_sel.shape if es_sel is not None else None}")
     
-    if es_sel is not None and len(es_sel) > 1:
-        # Flatten ES selected path for plotting
-        es_sel_flat = es_sel.reshape(-1, 2)
-        print(f"[plot] Plotting ES trajectory: {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
-        _plot_traj(ax, es_sel_flat, color="#ff7f0e", label="ES selected", alpha=1.0)
-    else:
-        print(f"[plot] ES trajectory plotting skipped: es_sel={es_sel is not None}, len={len(es_sel) if es_sel is not None else 0}")
-        
-        # Fallback: try to plot ES trajectory from best_per_gen if available
-        if es.best_per_gen is not None and es.best_per_gen.size > 0:
-            print(f"[plot] ES fallback: attempting to plot from best_per_gen")
-            es_fallback = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])
-            if es_fallback.shape[0] > 1:
-                print(f"[plot] ES fallback plotting: {es_fallback.shape}")
-                _plot_traj(ax, es_fallback, color="#ff7f0e", label="ES selected (fallback)", alpha=1.0)
-            else:
-                print(f"[plot] ES fallback failed: not enough points ({es_fallback.shape[0]})")
+    if es_sel is not None and es_sel.size > 0:
+        # Check if we have enough trajectory points (more than 1 generation)
+        # es_sel shape is typically (1, G, 2) where G is number of generations
+        if es_sel.ndim == 3 and es_sel.shape[1] > 1:
+            # Flatten ES selected path for plotting: (1, G, 2) -> (G, 2)
+            es_sel_flat = es_sel.reshape(-1, 2)
+            print(f"[plot] Plotting ES trajectory: {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
+            _plot_traj(ax, es_sel_flat, color="#ff7f0e", label="ES selected", alpha=1.0)
+        elif es_sel.ndim == 2 and es_sel.shape[0] > 1:
+            # Already flattened: (G, 2)
+            es_sel_flat = es_sel
+            print(f"[plot] Plotting ES trajectory (already flat): {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
+            _plot_traj(ax, es_sel_flat, color="#ff7f0e", label="ES selected", alpha=1.0)
         else:
-            print(f"[plot] ES fallback: no best_per_gen available")
+            print(f"[plot] ES trajectory plotting skipped: es_sel shape={es_sel.shape}, not enough generations")
+            
+            # Fallback: try to plot ES trajectory from best_per_gen if available
+            if es.best_per_gen is not None and es.best_per_gen.size > 0:
+                print(f"[plot] ES fallback: attempting to plot from best_per_gen")
+                es_fallback = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])
+                if es_fallback.shape[0] > 1:
+                    print(f"[plot] ES fallback plotting: {es_fallback.shape}")
+                    _plot_traj(ax, es_fallback, color="#ff7f0e", label="ES selected (fallback)", alpha=1.0)
+                else:
+                    print(f"[plot] ES fallback failed: not enough points ({es_fallback.shape[0]})")
+            else:
+                print(f"[plot] ES fallback: no best_per_gen available")
+    else:
+        print(f"[plot] ES trajectory plotting skipped: es_sel is None or empty")
 
     # GA path
     if ga.pts is not None and len(ga.pts) > 1:
@@ -858,8 +868,8 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                                        markersize=12, alpha=0.3, label='ES generation clusters'))
     
     # Trajectory paths
-    legend_elements.append(plt.Line2D([0], [0], color='#ff7f0e', linewidth=2, label='ES selected path'))
-    legend_elements.append(plt.Line2D([0], [0], color='#e91e63', linewidth=2, label='GA path'))
+    legend_elements.append(plt.Line2D([0], [0], color='#ff7f0e', linewidth=3, label='ES selected path'))
+    legend_elements.append(plt.Line2D([0], [0], color='#e91e63', linewidth=3, label='GA path'))
     
     # Start/End markers
     legend_elements.append(plt.Line2D([0], [0], marker='o', color='k', markerfacecolor='w', 
@@ -895,13 +905,17 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     - GA: 2 evaluations per step (forward + backward pass)
       Example: 5 steps → [2, 4, 6, 8, 10] budget points (no zero evaluation)
     - ES: Cumulative evaluations at each generation
-      Example: 4 generations × 5 population → [5, 10, 15, 20] budget points (no zero evaluation)
+      Example: 4 generations × 5 population → [0, 5, 10, 15, 20] budget points
+      Note: Generation 0: 0 evaluations, Generation 1: pop evaluations, Generation 2: 2*pop evaluations, etc.
     """
     try:
         import matplotlib.pyplot as plt
     except Exception as e:
         print(f"Loss curve plotting unavailable: {e}")
         return None
+    
+    # Debug: show input parameters
+    print(f"[loss] Function inputs: ga_steps={ga_steps}, es_population={es_population}, es_generations={es_generations}")
     
     # Check if we have loss data for both methods
     has_ga_loss = ga.vals is not None and len(ga.vals) > 0
@@ -910,8 +924,10 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     print(f"[loss] GA loss data: {has_ga_loss}, ES loss data: {has_es_loss}")
     if has_ga_loss:
         print(f"[loss] GA vals shape: {ga.vals.shape}, type: {type(ga.vals)}")
+        print(f"[loss] GA vals content: {ga.vals}")
     if has_es_loss:
         print(f"[loss] ES vals shape: {es.vals.shape}, type: {type(es.vals)}")
+        print(f"[loss] ES vals content: {es.vals}")
     
     if not has_ga_loss and not has_es_loss:
         print("No loss data available for plotting loss curves.")
@@ -925,6 +941,9 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     ax.set_ylabel("Loss (lower is better)")
     ax.grid(True, alpha=0.3)
     
+    # Ensure x-axis shows integers for budget
+    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    
     # Plot GA loss curve with budget on x-axis
     if has_ga_loss:
         if ga_steps is not None:
@@ -932,34 +951,48 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             # Start from 2 (first step evaluation), not 0
             ga_budget = 2 * np.arange(1, len(ga.vals) + 1)
             print(f"[loss] GA budget calculation: {len(ga.vals)} steps → budget points: {ga_budget}")
-            ax.plot(ga_budget, ga.vals, color="#e91e63", linewidth=2.5, marker='o', 
+            ax.plot(ga_budget, ga.vals, color="#e91e63", linewidth=3.0, marker='o', 
                     markersize=6, label=f"Gradient Ascent (2×{ga_steps} steps)", zorder=3)
         else:
             # Fallback to step indices if budget info not available
             ga_steps_indices = np.arange(len(ga.vals))
-            ax.plot(ga_steps_indices, ga.vals, color="#e91e63", linewidth=2.5, marker='o', 
+            ax.plot(ga_steps_indices, ga.vals, color="#e91e63", linewidth=3.0, marker='o', 
                     markersize=6, label="Gradient Ascent", zorder=3)
     
     # Plot ES loss curve with budget on x-axis
     if has_es_loss:
         if es_population is not None and es_generations is not None:
             # ES budget: cumulative evaluations at each generation
-            # Start from population (first generation evaluation), not 0
-            es_budget = np.arange(1, es_generations + 2) * es_population
+            # Check if we have values for generation 0 or starting from generation 1
+            if len(es.vals) == es_generations + 1:
+                # Values include generation 0: [0, pop, 2*pop, 3*pop, ...]
+                es_budget = np.arange(es_generations + 1) * es_population
+                print(f"[loss] ES budget (with gen 0): {es_generations} gens × {es_population} pop → budget points: {es_budget}")
+            elif len(es.vals) == es_generations:
+                # Values start from generation 1: [pop, 2*pop, 3*pop, ...]
+                es_budget = np.arange(1, es_generations + 1) * es_population
+                print(f"[loss] ES budget (gen 1+): {es_generations} gens × {es_population} pop → budget points: {es_budget}")
+            else:
+                # Unexpected length, use fallback
+                print(f"[loss] ES unexpected values length: {len(es.vals)} vs expected {es_generations} or {es_generations + 1}")
+                es_budget = np.arange(len(es.vals)) * es_population
+            
             print(f"[loss] ES budget calculation: {es_generations} gens × {es_population} pop → budget points: {es_budget}")
             if len(es_budget) == len(es.vals):
-                ax.plot(es_budget, es.vals, color="#ff7f0e", linewidth=2.5, marker='s', 
+                print(f"[loss] Using ES budget: {es_budget}")
+                ax.plot(es_budget, es.vals, color="#ff7f0e", linewidth=3.0, marker='s', 
                         markersize=6, label=f"Evolutionary Search ({es_population}×{es_generations})", zorder=3)
             else:
                 # Fallback if budget doesn't match values length
                 print(f"[loss] ES budget mismatch: budget={es_budget}, values={len(es.vals)}")
+                print(f"[loss] Using fallback generation indices")
                 es_steps_indices = np.arange(len(es.vals))
-                ax.plot(es_steps_indices, es.vals, color="#ff7f0e", linewidth=2.5, marker='s', 
+                ax.plot(es_steps_indices, es.vals, color="#ff7f0e", linewidth=3.0, marker='s', 
                         markersize=6, label="Evolutionary Search", zorder=3)
         else:
             # Fallback to generation indices if budget info not available
             es_steps_indices = np.arange(len(es.vals))
-            ax.plot(es_steps_indices, es.vals, color="#ff7f0e", linewidth=2.5, marker='s', 
+            ax.plot(es_steps_indices, es.vals, color="#ff7f0e", linewidth=3.0, marker='s', 
                     markersize=6, label="Evolutionary Search", zorder=3)
     else:
         # Fallback: try to reconstruct ES curve from available data
@@ -1003,7 +1036,8 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
 
 
 def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str, es_npz: str, 
-                    trajectory_plot: Optional[str], loss_plot: Optional[str], group_name: str = None) -> None:
+                    trajectory_plot: Optional[str], loss_plot: Optional[str], group_name: str = None, 
+                    existing_run = None) -> None:
     """
     Upload comprehensive metrics and artifacts to W&B for a single run.
     
@@ -1066,19 +1100,24 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
         print(f"wandb not available: {e}")
         return
     
-    # Create run with optional group for n_samples > 1
-    run_kwargs = {
-        "project": project,
-        "entity": entity,
-        "name": f"latent-search-b{cfg.get('budget')}-s{cfg.get('run_idx', 0)}",
-        "config": cfg
-    }
-    
-    if group_name:
-        run_kwargs["group"] = group_name
-        print(f"[wandb] Creating grouped run: {group_name}")
-    
-    run = wandb.init(**run_kwargs)
+    # Use existing run if provided, otherwise create new one
+    if existing_run is not None:
+        run = existing_run
+        print(f"[wandb] Using existing run: {run.name}")
+    else:
+        # Create run with optional group for n_samples > 1
+        run_kwargs = {
+            "project": project,
+            "entity": entity,
+            "name": f"latent-search-b{cfg.get('budget')}-s{cfg.get('run_idx', 0)}",
+            "config": cfg
+        }
+        
+        if group_name:
+            run_kwargs["group"] = group_name
+            print(f"[wandb] Creating grouped run: {group_name}")
+        
+        run = wandb.init(**run_kwargs)
     
     # Log artifacts (NPZ files with latent trajectories)
     if os.path.exists(ga_npz):
@@ -1297,7 +1336,9 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
     except Exception as e:
         print(f"Warning: Failed to extract metrics from NPZ files: {e}")
     
-    run.finish()
+    # Only finish the run if we created it (not if using existing_run)
+    if existing_run is None:
+        run.finish()
 
 
 def main() -> None:
@@ -1320,6 +1361,7 @@ def main() -> None:
     parser.add_argument("--subspace_dim", type=int, default=32)
     parser.add_argument("--ga_step_length", type=float, default=0.5)
     parser.add_argument("--trust_region_radius", type=float, default=None)
+    parser.add_argument("--disable_elitism", action="store_true", help="Disable elitism in ES (best individual can die)")
     parser.add_argument("--track_progress", action="store_true", help="Enable progress tracking for both GA and ES")
     parser.add_argument("--background_resolution", type=int, default=400, help="Base resolution for background heatmap (higher = smoother)")
     parser.add_argument("--background_smoothing", action="store_true", help="Enable additional Gaussian smoothing for small-scale searches")
@@ -1360,9 +1402,17 @@ def main() -> None:
     if args.track_progress:
         ga_cmd.append("--track-progress")
     ga_cmd += src_args
+    # Log GA start
+    if run is not None:
+        wandb.log({"ga_status": "started"})
+    
     print("Running:", " ".join(ga_cmd))
     ga_rc = subprocess.run(ga_cmd, check=False).returncode
     print(f"GA return code: {ga_rc}")
+    
+    # Log GA completion
+    if run is not None:
+        wandb.log({"ga_return_code": ga_rc, "ga_status": "completed"})
 
     # Evolutionary Search config
     pop = args.es_population if args.es_population is not None else max(3, min(32, int(round(math.sqrt(args.budget)))))
@@ -1387,9 +1437,19 @@ def main() -> None:
         es_cmd += ["--use-subspace-mutation", "--subspace-dim", str(args.subspace_dim), "--ga-step-length", str(args.ga_step_length)]
         if args.trust_region_radius is not None:
             es_cmd += ["--trust-region-radius", str(args.trust_region_radius)]
+    if args.disable_elitism:
+        es_cmd.append("--disable-elitism")
+    # Log ES start
+    if run is not None:
+        wandb.log({"es_status": "started"})
+    
     print("Running:", " ".join(es_cmd))
     es_rc = subprocess.run(es_cmd, check=False).returncode
     print(f"ES return code: {es_rc}")
+    
+    # Log ES completion
+    if run is not None:
+        wandb.log({"es_return_code": es_rc, "es_status": "completed"})
 
     # Handle multiple runs when n_samples > 1
     # NOTE: n_samples controls how many times to run the script with different seeds
@@ -1404,6 +1464,52 @@ def main() -> None:
             seed = args.dataset_seed + run_idx
             print(f"\n🔬 Run {run_idx + 1}/{args.n_samples} with seed {seed}")
             
+            # Start W&B run at the beginning to capture all logs
+            cfg = {
+                "artifact_path": args.wandb_artifact_path,
+                "budget": args.budget,
+                "ga_steps": ga_steps,
+                "ga_lr": args.ga_lr,
+                "es_population": pop,
+                "es_generations": gens,
+                "es_mutation_std": args.es_mutation_std,
+                "use_subspace_mutation": args.use_subspace_mutation,
+                "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
+                "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
+                "trust_region_radius": args.trust_region_radius,
+                "elitism": not args.disable_elitism,  # Enable elitism by default
+                "track_progress": args.track_progress,
+                "background_resolution": args.background_resolution,
+                "background_smoothing": args.background_smoothing,
+                "background_knn": args.background_knn,
+                "background_bandwidth_scale": args.background_bandwidth_scale,
+                "background_global_mix": args.background_global_mix,
+                "run_idx": run_idx,
+                "dataset_seed": seed,
+                "n_samples": args.n_samples,
+                "dataset_length": args.dataset_length,
+            }
+            
+            try:
+                # Initialize W&B run at the start
+                import wandb
+                run_kwargs = {
+                    "project": args.wandb_project,
+                    "entity": args.wandb_entity,
+                    "name": f"latent-search-b{args.budget}-s{run_idx}",
+                    "config": cfg,
+                    "group": group_name
+                }
+                run = wandb.init(**run_kwargs)
+                print(f"[wandb] Started run {run_idx + 1}/{args.n_samples} in group: {group_name}")
+                
+                # Log run start
+                wandb.log({"run_status": "started", "run_index": run_idx})
+                
+            except Exception as e:
+                print(f"Failed to start wandb run: {e}")
+                run = None
+            
             # Build the correct arguments manually to avoid parsing issues
             # Each run uses the same dataset_length but different seeds
             run_src_args = [
@@ -1416,6 +1522,10 @@ def main() -> None:
             
             # Debug: show the final args
             print(f"[run] Final args: {run_src_args}")
+            
+            # Log GA start
+            if run is not None:
+                wandb.log({"ga_status": "started", "ga_seed": seed})
             
             # Run GA for this seed
             ga_cmd = [
@@ -1433,6 +1543,14 @@ def main() -> None:
             print("Running GA:", " ".join(ga_cmd))
             ga_rc = subprocess.run(ga_cmd, check=False).returncode
             print(f"GA return code: {ga_rc}")
+            
+            # Log GA completion
+            if run is not None:
+                wandb.log({"ga_return_code": ga_rc, "ga_status": "completed"})
+            
+            # Log ES start
+            if run is not None:
+                wandb.log({"es_status": "started", "es_seed": seed})
             
             # Run ES for this seed
             es_cmd = [
@@ -1452,9 +1570,15 @@ def main() -> None:
                 es_cmd += ["--use-subspace-mutation", "--subspace-dim", str(args.subspace_dim), "--ga-step-length", str(args.ga_step_length)]
                 if args.trust_region_radius is not None:
                     es_cmd += ["--trust-region-radius", str(args.trust_region_radius)]
+            if args.disable_elitism:
+                es_cmd.append("--disable-elitism")
             print("Running ES:", " ".join(es_cmd))
             es_rc = subprocess.run(es_cmd, check=False).returncode
             print(f"ES return code: {es_rc}")
+            
+            # Log ES completion
+            if run is not None:
+                wandb.log({"es_return_code": es_rc, "es_status": "completed"})
             
             # Plot for this run
             trajectory_plot, loss_plot = plot_and_save(ga_out, es_out, args.out_dir, 
@@ -1469,41 +1593,75 @@ def main() -> None:
             if loss_plot:
                 print(f"Saved loss curves plot to {loss_plot}")
             
-            # Upload to W&B with group name
-            cfg = {
-                "artifact_path": args.wandb_artifact_path,
-                "budget": args.budget,
-                "ga_steps": ga_steps,
-                "ga_lr": args.ga_lr,
-                "es_population": pop,
-                "es_generations": gens,
-                "es_mutation_std": args.es_mutation_std,
-                "use_subspace_mutation": args.use_subspace_mutation,
-                "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
-                "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
-                "trust_region_radius": args.trust_region_radius,
-                "track_progress": args.track_progress,
-                "background_resolution": args.background_resolution,
-                "background_smoothing": args.background_smoothing,
-                "background_knn": args.background_knn,
-                "background_bandwidth_scale": args.background_bandwidth_scale,
-                "background_global_mix": args.background_global_mix,
-                "ga_return_code": ga_rc,
-                "es_return_code": es_rc,
-                "run_idx": run_idx,
-                "dataset_seed": seed,
-                "n_samples": args.n_samples,
-                "dataset_length": args.dataset_length,
-            }
+            # Log plotting completion
+            if run is not None:
+                wandb.log({"plotting_status": "completed"})
+            
+            # Upload final results to W&B
             try:
-                upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, group_name)
+                if run is not None:
+                    # Add return codes to config for final upload
+                    cfg.update({
+                        "ga_return_code": ga_rc,
+                        "es_return_code": es_rc,
+                    })
+                    # Upload artifacts and final metrics
+                    upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, group_name, existing_run=run)
+                else:
+                    # Fallback: create new run for upload
+                    upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, group_name)
             except Exception as e:
                 print(f"Failed to upload to wandb: {e}")
+            
+            # Finish the W&B run
+            if run is not None:
+                run.finish()
+                print(f"[wandb] Finished run {run_idx + 1}/{args.n_samples}")
         
         print(f"\n✅ Completed {args.n_samples} runs in group: {group_name}")
         
     else:
         # Single run (original behavior)
+        # Start W&B run at the beginning
+        cfg = {
+            "artifact_path": args.wandb_artifact_path,
+            "budget": args.budget,
+            "ga_steps": ga_steps,
+            "ga_lr": args.ga_lr,
+            "es_population": pop,
+            "es_generations": gens,
+            "es_mutation_std": args.es_mutation_std,
+            "use_subspace_mutation": args.use_subspace_mutation,
+            "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
+            "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
+            "trust_region_radius": args.trust_region_radius,
+            "elitism": not args.disable_elitism,  # Enable elitism by default
+            "track_progress": args.track_progress,
+            "background_resolution": args.background_resolution,
+            "background_smoothing": args.background_smoothing,
+            "background_knn": args.background_knn,
+            "background_bandwidth_scale": args.background_bandwidth_scale,
+            "background_global_mix": args.background_global_mix,
+        }
+        
+        try:
+            # Initialize W&B run at the start
+            import wandb
+            run = wandb.init(
+                project=args.wandb_project,
+                entity=args.wandb_entity,
+                name=f"latent-search-b{args.budget}",
+                config=cfg
+            )
+            print(f"[wandb] Started single run")
+            
+            # Log run start
+            wandb.log({"run_status": "started"})
+            
+        except Exception as e:
+            print(f"Failed to start wandb run: {e}")
+            run = None
+        
         # Plot (with automatic PCA if latent dimension > 2)
         trajectory_plot, loss_plot = plot_and_save(ga_out, es_out, args.out_dir, 
                                                   background_resolution=args.background_resolution,
@@ -1517,32 +1675,30 @@ def main() -> None:
         if loss_plot:
             print(f"Saved loss curves plot to {loss_plot}")
 
-        # Upload to W&B
-        cfg = {
-            "artifact_path": args.wandb_artifact_path,
-            "budget": args.budget,
-            "ga_steps": ga_steps,
-            "ga_lr": args.ga_lr,
-            "es_population": pop,
-            "es_generations": gens,
-            "es_mutation_std": args.es_mutation_std,
-            "use_subspace_mutation": args.use_subspace_mutation,
-            "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
-            "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
-            "trust_region_radius": args.trust_region_radius,
-            "track_progress": args.track_progress,
-            "background_resolution": args.background_resolution,
-            "background_smoothing": args.background_smoothing,
-            "background_knn": args.background_knn,
-            "background_bandwidth_scale": args.background_bandwidth_scale,
-            "background_global_mix": args.background_global_mix,
-            "ga_return_code": ga_rc,
-            "es_return_code": es_rc,
-        }
+        # Log plotting completion
+        if run is not None:
+            wandb.log({"plotting_status": "completed"})
+
+        # Upload final results to W&B
         try:
-            upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot)
+            if run is not None:
+                # Add return codes to config for final upload
+                cfg.update({
+                    "ga_return_code": ga_rc,
+                    "es_return_code": es_rc,
+                })
+                # Upload artifacts and final metrics
+                upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, existing_run=run)
+            else:
+                # Fallback: create new run for upload
+                upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot)
         except Exception as e:
             print(f"Failed to upload to wandb: {e}")
+        
+        # Finish the W&B run
+        if run is not None:
+            run.finish()
+            print(f"[wandb] Finished single run")
 
 
 if __name__ == "__main__":
