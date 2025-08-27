@@ -170,6 +170,24 @@ def _extract_best_per_gen(npz, prefix: str) -> Optional[np.ndarray]:
     return None
 
 
+def safe_array_to_scalar(arr: np.ndarray, default=None):
+    """
+    Safely convert a numpy array to a scalar value.
+    Handles arrays of any size by taking the first element or using a default.
+    """
+    if arr is None:
+        return default
+    
+    arr = np.asarray(arr)
+    if arr.size == 0:
+        return default
+    elif arr.size == 1:
+        return float(arr)
+    else:
+        # Array has multiple elements, take the first one
+        return float(arr.flat[0])
+
+
 def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
     """
     Extract ES population data with proper loss pairing.
@@ -320,7 +338,7 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
                         print(f"[plot] ES best_per_gen shape: {t.best_per_gen.shape}")
                 else:
                     print(f"[plot] {prefix} available keys: {list(np.load(npz_path, allow_pickle=True).keys()) if os.path.exists(npz_path) else 'file not found'}")
-    return t
+        return t
 
 
 def _fit_unified_pca(all_points: list[np.ndarray], target_dim: int = 2, whiten: bool = True):
@@ -446,11 +464,11 @@ def _splat_background(
     enable_smoothing: bool = False,
     knn_k: int = 5,
     bandwidth_scale: float = 1.25,
-    global_mix: float = 0.05,   # 0 = off, 0.02–0.1 is usually enough
+    global_mix: float = 0.0,   # Changed to 0.0 to avoid global blending in untracked areas
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Adaptive Gaussian splatting with per-point bandwidths + optional global blend.
-    Guarantees a continuous surface even when samples are irregularly spaced.
+    Adaptive Gaussian splatting with per-point bandwidths.
+    Shows white (NaN) for untracked regions instead of interpolating to global mean.
     """
     # grid
     xv = np.linspace(xlim[0], xlim[1], n)
@@ -487,15 +505,18 @@ def _splat_background(
     num = W @ V                                                  # [M]
     den = W.sum(axis=1)                                          # [M]
 
-    if global_mix > 0.0:
-        # simple global prior: pulls Z toward the global mean where den is tiny
-        Vmean = float(np.mean(V))
-        lam = float(global_mix)                                  # acts like an extra, very wide kernel
-        Z = (num + lam * Vmean) / (den + lam)
-    else:
-        Z = num / den
-
+    # CRITICAL FIX: Don't use global mix, and set untracked areas to NaN (which will appear white)
+    # Only show loss values in areas that are actually covered by the data
+    Z = num / den
+    
+    # Set areas with very low weight (far from data) to NaN (white)
+    # This threshold determines how far from data points we show white vs. loss values
+    weight_threshold = 0.01  # Adjust this to control white area size
+    low_weight_mask = den < weight_threshold
+    
+    # Reshape and apply mask
     Z = Z.reshape(n, n)
+    Z[low_weight_mask.reshape(n, n)] = np.nan
 
     if enable_smoothing and N > 1:
         try:
@@ -586,6 +607,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         ga_vals_flat = ga.vals.reshape(-1)
         if len(ga_pts_original) == len(ga_vals_flat):
             print(f"[plot] GA background: original pts={ga_pts_original.shape}, vals={ga_vals_flat.shape}")
+            print(f"[plot] GA values range: [{ga_vals_flat.min():.4f}, {ga_vals_flat.max():.4f}]")
             bgP_original.append(ga_pts_original)
             bgV_original.append(ga_vals_flat)
         else:
@@ -599,6 +621,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         es_pop_vals_flat = es.pop_vals.reshape(-1)
         if len(es_pop_pts_original) == len(es_pop_vals_flat):
             print(f"[plot] ES background: pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
+            print(f"[plot] ES values range: [{es_pop_vals_flat.min():.4f}, {es_pop_vals_flat.max():.4f}]")
             bgP_original.append(es_pop_pts_original)
             bgV_original.append(es_pop_vals_flat)
         else:
@@ -606,6 +629,18 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             print(f"[plot] ES mismatch details: pts length {len(es_pop_pts_original)}, vals length {es_pop_vals_flat.shape}")
     else:
         print(f"[plot] ES background missing: pts={es.pop_pts is not None}, vals={es.pop_vals is not None}")
+    
+    # Check for value consistency between GA and ES
+    if ga.vals is not None and es.pop_vals is not None:
+        ga_range = (ga.vals.min(), ga.vals.max())
+        es_range = (es.pop_vals.min(), es.pop_vals.max())
+        print(f"[plot] Value consistency check:")
+        print(f"  GA range: [{ga_range[0]:.4f}, {ga_range[1]:.4f}]")
+        print(f"  ES range: [{es_range[0]:.4f}, {es_range[1]:.4f}]")
+        if abs(ga_range[0] - es_range[0]) < 1e-3 and abs(ga_range[1] - es_range[1]) < 1e-3:
+            print(f"  ✅ GA and ES values are consistent (same range)")
+        else:
+            print(f"  ⚠️  GA and ES values have different ranges - this may indicate different evaluation methods")
     
     # Check if we have background data
     have_field = len(bgP_original) > 0
@@ -615,8 +650,16 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     if have_field:
         for i, (pts, vals) in enumerate(zip(bgP_original, bgV_original)):
             print(f"[plot] Background {i}: pts={pts.shape}, vals={vals.shape}")
+            print(f"[plot] Background {i} values range: [{vals.min():.4f}, {vals.max():.4f}]")
             if len(pts) != len(vals):
                 print(f"[plot] WARNING: Background {i} has mismatched lengths!")
+        
+        # Show combined background statistics
+        all_bg_vals = np.concatenate(bgV_original)
+        print(f"[plot] Combined background: {len(all_bg_vals)} values")
+        print(f"[plot] Combined background range: [{all_bg_vals.min():.4f}, {all_bg_vals.max():.4f}]")
+        print(f"[plot] Combined background mean: {all_bg_vals.mean():.4f}")
+        print(f"[plot] Combined background std: {all_bg_vals.std():.4f}")
     
     # After PCA, filter background data to only use points with consistent dimension
     if original_dim > 2 and pca_transformer is not None:
@@ -737,14 +780,19 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
                 vmin, vmax = 0.0, 1.0
     else:
-        # For losses: lower is better, use original range (log likelihoods are negative)
-        vmin, vmax = 0.0, 1.0
+        # For losses: lower is better, use original range (log likelihoods are naturally negative)
+        # IMPORTANT: Don't normalize to [0,1], keep the actual loss range for proper visualization
         if len(all_for_norm) > 0:
             vv = np.concatenate(all_for_norm)
             vmin, vmax = float(np.nanmin(vv)), float(np.nanmax(vv))
             if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
-                vmin, vmax = 0.0, 1.0
+                # Fallback: use a reasonable range for log likelihoods
+                vmin, vmax = -10.0, 0.0
+        else:
+            # Fallback: use a reasonable range for log likelihoods
+            vmin, vmax = -10.0, 0.0
     
+    print(f"[plot] Loss normalization: vmin={vmin:.4f}, vmax={vmax:.4f}")
     norm = colors.Normalize(vmin=vmin, vmax=vmax)
     cmap = "viridis"
     
@@ -769,8 +817,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         # Project the points to 2D while preserving the loss landscape structure
         # This ensures each 2D point has its correct loss value, creating an accurate loss landscape
         P_original = np.concatenate(bgP_original, axis=0)  # (N, D) where D is original dim
-        V_original = orient(np.concatenate(bgV_original, axis=0))  # (N,)
-        
+        V_original = orient(np.concatenate(bgV_original, axis=0))  # (N,)         
         if original_dim > 2 and pca_transformer is not None:
             print(f"[plot] Creating background using {len(P_original)} {original_dim}D points projected to 2D")
             # Project original high-dimensional points to 2D for background creation
@@ -779,16 +826,16 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         else:
             print(f"[plot] Creating background using {len(P_original)} 2D points directly")
             P_2d = P_original  # Already 2D
-        
+            
         # Create the background heatmap using the projected points with their original loss values
-        XX, YY, ZZ = _splat_background(
-            P_2d, V_original, xlim, ylim, 
-            n=background_resolution, 
-            enable_smoothing=background_smoothing,
-            knn_k=background_knn,
-            bandwidth_scale=background_bandwidth_scale,
-            global_mix=background_global_mix
-        )
+            XX, YY, ZZ = _splat_background(
+                P_2d, V_original, xlim, ylim, 
+                n=background_resolution, 
+                enable_smoothing=background_smoothing,
+                knn_k=background_knn,
+                bandwidth_scale=background_bandwidth_scale,
+                global_mix=background_global_mix
+            )
         
         # Display the background
         im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.7)
@@ -957,10 +1004,25 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     print(f"[loss] GA loss data: {has_ga_loss}, ES loss data: {has_es_loss}")
     if has_ga_loss:
         print(f"[loss] GA vals shape: {ga.vals.shape}, type: {type(ga.vals)}")
+        print(f"[loss] GA vals range: [{ga.vals.min():.4f}, {ga.vals.max():.4f}]")
         print(f"[loss] GA vals content: {ga.vals}")
     if has_es_loss:
         print(f"[loss] ES vals shape: {es.vals.shape}, type: {type(es.vals)}")
+        print(f"[loss] ES vals range: [{es.vals.min():.4f}, {es.vals.max():.4f}]")
         print(f"[loss] ES vals content: {es.vals}")
+    
+    # Check for consistency between GA and ES loss values
+    if has_ga_loss and has_es_loss:
+        ga_loss_range = (ga.vals.min(), ga.vals.max())
+        es_loss_range = (es.vals.min(), es.vals.max())
+        print(f"[loss] Loss consistency check:")
+        print(f"  GA loss range: [{ga_loss_range[0]:.4f}, {ga_loss_range[1]:.4f}]")
+        print(f"  ES loss range: [{es_loss_range[0]:.4f}, {es_loss_range[1]:.4f}]")
+        if abs(ga_loss_range[0] - es_loss_range[0]) < 1e-3 and abs(ga_loss_range[1] - es_loss_range[1]) < 1e-3:
+            print(f"  ✅ GA and ES loss values are consistent")
+        else:
+            print(f"  ⚠️  GA and ES loss values have different ranges")
+            print(f"  This may indicate they're using different evaluation methods or data")
     
     if not has_ga_loss and not has_es_loss:
         print("No loss data available for plotting loss curves.")
@@ -1142,15 +1204,15 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
         run_kwargs = {
             "project": project,
             "entity": entity,
-            "name": f"latent-search-b{cfg.get('budget')}-s{cfg.get('run_idx', 0)}",
+                "name": f"latent-search-b{cfg.get('budget')}-s{cfg.get('run_idx', 0)}",
             "config": cfg
         }
-        
-        if group_name:
-            run_kwargs["group"] = group_name
-            print(f"[wandb] Creating grouped run: {group_name}")
-        
-        run = wandb.init(**run_kwargs)
+    
+    if group_name:
+        run_kwargs["group"] = group_name
+        print(f"[wandb] Creating grouped run: {group_name}")
+    
+    run = wandb.init(**run_kwargs)
     
     # Log artifacts (NPZ files with latent trajectories)
     if os.path.exists(ga_npz):
@@ -1171,27 +1233,51 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
     # Log comprehensive metrics from both methods
     try:
         print("[metrics] Extracting metrics from NPZ files...")
+        
+        # Debug: show what keys are available in the NPZ files
+        if os.path.exists(ga_npz):
+            with np.load(ga_npz, allow_pickle=True) as f:
+                print(f"[metrics] GA NPZ keys: {list(f.keys())}")
+        if os.path.exists(es_npz):
+            with np.load(es_npz, allow_pickle=True) as f:
+                print(f"[metrics] ES NPZ keys: {list(f.keys())}")
+        
         # Load GA metrics
         if os.path.exists(ga_npz):
             with np.load(ga_npz, allow_pickle=True) as f:
                 ga_metrics = {}
                 if 'ga_losses' in f:
                     ga_losses = np.array(f['ga_losses'])
-                    ga_metrics['ga_final_loss'] = float(ga_losses[-1]) if len(ga_losses) > 0 else None
-                    ga_metrics['ga_loss_progression'] = ga_losses.tolist()
-                    ga_metrics['ga_loss_improvement'] = float(ga_losses[0] - ga_losses[-1]) if len(ga_losses) > 0 else None
+                    if len(ga_losses) > 0:
+                        ga_metrics['ga_final_loss'] = safe_array_to_scalar(ga_losses[-1])
+                        ga_metrics['ga_loss_progression'] = ga_losses.tolist()
+                        ga_metrics['ga_loss_improvement'] = safe_array_to_scalar(ga_losses[0] - ga_losses[-1])
+                    else:
+                        ga_metrics['ga_final_loss'] = None
+                        ga_metrics['ga_loss_progression'] = []
+                        ga_metrics['ga_loss_improvement'] = None
                 
                 if 'ga_scores' in f:
                     ga_scores = np.array(f['ga_scores'])
-                    ga_metrics['ga_final_score'] = float(ga_scores[-1]) if len(ga_scores) > 0 else None
-                    ga_metrics['ga_score_progression'] = ga_scores.tolist()
-                    ga_metrics['ga_score_improvement'] = float(ga_scores[-1] - ga_scores[0]) if len(ga_scores) > 0 else None
+                    if len(ga_scores) > 0:
+                        ga_metrics['ga_final_score'] = safe_array_to_scalar(ga_scores[-1])
+                        ga_metrics['ga_score_progression'] = ga_scores.tolist()
+                        ga_metrics['ga_score_improvement'] = safe_array_to_scalar(ga_scores[-1] - ga_scores[0])
+                    else:
+                        ga_metrics['ga_final_score'] = None
+                        ga_metrics['ga_score_progression'] = []
+                        ga_metrics['ga_score_improvement'] = None
                 
                 if 'ga_log_probs' in f:
                     ga_log_probs = np.array(f['ga_log_probs'])
-                    ga_metrics['ga_final_log_prob'] = float(ga_log_probs[-1]) if len(ga_log_probs) > 0 else None
-                    ga_metrics['ga_log_prob_progression'] = ga_log_probs.tolist()
-                    ga_metrics['ga_log_prob_improvement'] = float(ga_log_probs[-1] - ga_log_probs[0]) if len(ga_log_probs) > 0 else None
+                    if len(ga_log_probs) > 0:
+                        ga_metrics['ga_final_log_prob'] = safe_array_to_scalar(ga_log_probs[-1])
+                        ga_metrics['ga_log_prob_progression'] = ga_log_probs.tolist()
+                        ga_metrics['ga_log_prob_improvement'] = safe_array_to_scalar(ga_log_probs[-1] - ga_log_probs[0])
+                    else:
+                        ga_metrics['ga_final_log_prob'] = None
+                        ga_metrics['ga_log_prob_progression'] = []
+                        ga_metrics['ga_log_prob_improvement'] = None
                 
                 # Log GA metrics
                 for key, value in ga_metrics.items():
@@ -1224,10 +1310,16 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                 # Generation-level metrics
                 if 'es_generation_losses' in f:
                     gen_losses = np.array(f['es_generation_losses'])
-                    es_metrics['es_final_loss'] = float(gen_losses[-1]) if len(gen_losses) > 0 else None
-                    es_metrics['es_loss_progression'] = gen_losses.tolist()
-                    es_metrics['es_loss_improvement'] = float(gen_losses[0] - gen_losses[-1]) if len(gen_losses) > 0 else None
-                    es_metrics['es_best_loss'] = float(np.min(gen_losses)) if len(gen_losses) > 0 else None
+                    if len(gen_losses) > 0:
+                        es_metrics['es_final_loss'] = safe_array_to_scalar(gen_losses[-1])
+                        es_metrics['es_loss_progression'] = gen_losses.tolist()
+                        es_metrics['es_loss_improvement'] = safe_array_to_scalar(gen_losses[0] - gen_losses[-1])
+                        es_metrics['es_best_loss'] = safe_array_to_scalar(np.min(gen_losses))
+                    else:
+                        es_metrics['es_final_loss'] = None
+                        es_metrics['es_loss_progression'] = []
+                        es_metrics['es_loss_improvement'] = None
+                        es_metrics['es_best_loss'] = None
                 
                 if 'es_best_losses_per_generation' in f:
                     best_losses = np.array(f['es_best_losses_per_generation'])
@@ -1237,21 +1329,22 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                 if 'es_all_losses' in f:
                     all_losses = np.array(f['es_all_losses'])
                     es_metrics['es_population_size'] = len(all_losses)
-                    es_metrics['es_min_loss'] = float(np.min(all_losses)) if len(all_losses) > 0 else None
-                    es_metrics['es_max_loss'] = float(np.max(all_losses)) if len(all_losses) > 0 else None
-                    es_metrics['es_mean_loss'] = float(np.mean(all_losses)) if len(all_losses) > 0 else None
-                    es_metrics['es_std_loss'] = float(np.std(all_losses)) if len(all_losses) > 0 else None
+                    if len(all_losses) > 0:
+                        es_metrics['es_min_loss'] = safe_array_to_scalar(np.min(all_losses))
+                        es_metrics['es_max_loss'] = safe_array_to_scalar(np.max(all_losses))
+                        es_metrics['es_mean_loss'] = safe_array_to_scalar(np.mean(all_losses))
+                        es_metrics['es_std_loss'] = safe_array_to_scalar(np.std(all_losses))
+                    else:
+                        es_metrics['es_min_loss'] = None
+                        es_metrics['es_max_loss'] = None
+                        es_metrics['es_mean_loss'] = None
+                        es_metrics['es_std_loss'] = None
                 
                 if 'es_final_best_fitness' in f:
                     final_fitness = np.array(f['es_final_best_fitness'])
-                    # Handle arrays that might have multiple elements
-                    if final_fitness.size == 1:
-                        es_metrics['es_final_best_fitness'] = float(final_fitness)
-                    elif final_fitness.size > 1:
-                        es_metrics['es_final_best_fitness'] = float(final_fitness[0])  # Take first element
-                        print(f"[metrics] Note: es_final_best_fitness had {final_fitness.size} elements, using first: {final_fitness[0]}")
-                    else:
-                        es_metrics['es_final_best_fitness'] = None
+                    es_metrics['es_final_best_fitness'] = safe_array_to_scalar(final_fitness)
+                    if final_fitness.size > 1:
+                        print(f"[metrics] Note: es_final_best_fitness had {final_fitness.size} elements, using first: {final_fitness.flat[0]:.4f}")
                 
                 # Log ES metrics
                 for key, value in es_metrics.items():
@@ -1381,6 +1474,27 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
     except Exception as e:
         print(f"Warning: Failed to extract metrics from NPZ files: {e}")
         print(f"[metrics] Error details: {type(e).__name__}: {str(e)}")
+        
+        # Try to identify which specific metric extraction failed
+        import traceback
+        print(f"[metrics] Full traceback:")
+        traceback.print_exc()
+        
+        # Continue with basic metrics even if some fail
+        print(f"[metrics] Attempting to continue with basic metrics...")
+        
+        # Log basic run information
+        try:
+            if 'run' in locals():
+                wandb.log({
+                    "metrics_extraction_failed": True,
+                    "metrics_error": str(e),
+                    "run_budget": cfg.get('budget', 'unknown'),
+                    "dataset_folder": cfg.get('dataset_folder', 'unknown'),
+                    "latent_dimension": cfg.get('latent_dimension', 'unknown')
+                })
+        except Exception as log_error:
+            print(f"[metrics] Failed to log error to wandb: {log_error}")
     
     # Only finish the run if we created it (not if using existing_run)
     if existing_run is None:
@@ -1494,7 +1608,7 @@ def main() -> None:
     print("Running:", " ".join(es_cmd))
     es_rc = subprocess.run(es_cmd, check=False).returncode
     print(f"ES return code: {es_rc}")
-    
+
     # Log ES completion
     if run is not None:
         wandb.log({"es_return_code": es_rc, "es_status": "completed"})
@@ -1636,12 +1750,12 @@ def main() -> None:
             
             # Plot for this run
             trajectory_plot, loss_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
-                                                                  background_resolution=args.background_resolution,
-                                                                  background_smoothing=args.background_smoothing,
-                                                                  background_knn=args.background_knn,
-                                                                  background_bandwidth_scale=args.background_bandwidth_scale,
-                                                                  background_global_mix=args.background_global_mix,
-                                                                  ga_steps=ga_steps, es_population=pop, es_generations=gens)
+                                                      background_resolution=args.background_resolution,
+                                                      background_smoothing=args.background_smoothing,
+                                                      background_knn=args.background_knn,
+                                                      background_bandwidth_scale=args.background_bandwidth_scale,
+                                                      background_global_mix=args.background_global_mix,
+                                                      ga_steps=ga_steps, es_population=pop, es_generations=gens)
             if trajectory_plot:
                 print(f"Saved trajectory plot to {trajectory_plot}")
             if loss_plot:
@@ -1727,12 +1841,12 @@ def main() -> None:
         
         # Plot (with automatic PCA if latent dimension > 2)
         trajectory_plot, loss_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
-                                                              background_resolution=args.background_resolution,
-                                                              background_smoothing=args.background_smoothing,
-                                                              background_knn=args.background_knn,
-                                                              background_bandwidth_scale=args.background_bandwidth_scale,
-                                                              background_global_mix=args.background_global_mix,
-                                                              ga_steps=ga_steps, es_population=pop, es_generations=gens)
+                                                  background_resolution=args.background_resolution,
+                                                  background_smoothing=args.background_smoothing,
+                                                  background_knn=args.background_knn,
+                                                  background_bandwidth_scale=args.background_bandwidth_scale,
+                                                  background_global_mix=args.background_global_mix,
+                                                  ga_steps=ga_steps, es_population=pop, es_generations=gens)
         if trajectory_plot:
             print(f"Saved trajectory plot to {trajectory_plot}")
         if loss_plot:
@@ -1749,8 +1863,8 @@ def main() -> None:
             if run is not None:
                 # Add return codes and latent dimension to config for final upload
                 cfg.update({
-                    "ga_return_code": ga_rc,
-                    "es_return_code": es_rc,
+            "ga_return_code": ga_rc,
+            "es_return_code": es_rc,
                     "latent_dimension": latent_dim,  # Latent space dimension
                 })
                 # Upload artifacts and final metrics
