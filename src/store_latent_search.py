@@ -2383,6 +2383,7 @@ def main() -> None:
     parser.add_argument("--dataset_seed", type=int, default=0)
     parser.add_argument("--n_samples", type=int, default=1, help="Number of times to run the script with different random seeds (for statistical analysis)")
     parser.add_argument("--aggregate_statistics", action="store_true", help="Aggregate per-sample metrics across n_samples runs and generate an aggregated statistical plot")
+    parser.add_argument("--no_files", action="store_true", help="Disable file generation and plotting (faster, just return values)")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -2605,22 +2606,38 @@ def main() -> None:
             if run is not None:
                 wandb.log({"es_return_code": es_rc, "es_status": "completed"})
             
-            # Plot for this run
-            trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
-                                                      background_resolution=args.background_resolution,
-                                                      background_smoothing=args.background_smoothing,
-                                                      background_knn=args.background_knn,
-                                                      background_bandwidth_scale=args.background_bandwidth_scale,
-                                                      background_global_mix=args.background_global_mix,
-                                                      ga_steps=ga_steps, es_population=pop, es_generations=gens, dataset_length=args.dataset_length)
-            if trajectory_plot:
-                print(f"Saved trajectory plot to {trajectory_plot}")
-            if loss_plot:
-                print(f"Saved loss curves plot to {loss_plot}")
-            if stats_plot:
-                print(f"Saved statistical histograms to {stats_plot}")
+            # Plot for this run - skip if no_files is set
+            if args.no_files:
+                print("🚫 File generation disabled - skipping plots and file saves")
+                trajectory_plot, loss_plot, stats_plot = None, None, None
+                # Try to get latent dimension from existing files if available
+                latent_dim = 2  # Default fallback
+                try:
+                    if os.path.exists(ga_out):
+                        with np.load(ga_out, allow_pickle=True) as f:
+                            if 'ga_latents' in f:
+                                ga_latents = np.array(f['ga_latents'])
+                                if ga_latents.size > 0:
+                                    latent_dim = ga_latents.shape[-1]
+                                    print(f"📊 Extracted latent dimension from existing GA file: {latent_dim}")
+                except Exception as e:
+                    print(f"⚠️  Could not extract latent dimension: {e}")
             else:
-                print(f"No statistical histograms created (dataset_length={args.dataset_length})")
+                trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
+                                                          background_resolution=args.background_resolution,
+                                                          background_smoothing=args.background_smoothing,
+                                                          background_knn=args.background_knn,
+                                                          background_bandwidth_scale=args.background_bandwidth_scale,
+                                                          background_global_mix=args.background_global_mix,
+                                                          ga_steps=ga_steps, es_population=pop, es_generations=gens, dataset_length=args.dataset_length)
+                if trajectory_plot:
+                    print(f"Saved trajectory plot to {trajectory_plot}")
+                if loss_plot:
+                    print(f"Saved loss curves plot to {loss_plot}")
+                if stats_plot:
+                    print(f"Saved statistical histograms to {stats_plot}")
+                else:
+                    print(f"No statistical histograms created (dataset_length={args.dataset_length})")
             
             print(f"📊 Latent space dimension: {latent_dim}")
             
@@ -2736,103 +2753,106 @@ def main() -> None:
                 # Dataset length for aggregated plot is total number of per-sample entries if present
                 agg_len = int(max(ga_acc.size, es_acc.size, ga_shp.size, es_shp.size, ga_pix.size, es_pix.size, ga_bl.size, es_bl.size))
                 
-                # Create aggregated statistical histograms
-                agg_plot = create_statistical_histograms(agg_ga_npz, agg_es_npz, args.out_dir, dataset_length=agg_len if agg_len > 1 else 2)
-                if agg_plot:
-                    print(f"[aggregate] Saved aggregated statistical histograms to {agg_plot}")
-                    
-                    # Create aggregated W&B run
-                    try:
-                        import wandb
-                        
-                        # Create aggregated run name with "agg_" prefix
-                        if args.run_name:
-                            agg_run_name = f"agg_{args.run_name}-{int(time.time())}"
-                        else:
-                            agg_run_name = f"agg_latent-search-b{args.budget}-{int(time.time())}"
-                        
-                        # Create aggregated run configuration
-                        agg_cfg = {
-                            "artifact_path": args.wandb_artifact_path,
-                            "budget": args.budget,
-                            "ga_steps": ga_steps,
-                            "ga_lr": args.ga_lr,
-                            "es_population": pop,
-                            "es_generations": gens,
-                            "es_mutation_std": args.es_mutation_std,
-                            "use_subspace_mutation": args.use_subspace_mutation,
-                            "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
-                            "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
-                            "trust_region_radius": args.trust_region_radius,
-                            "track_progress": args.track_progress,
-                            "background_resolution": args.background_resolution,
-                            "background_smoothing": args.background_smoothing,
-                            "background_knn": args.background_knn,
-                            "background_bandwidth_scale": args.background_bandwidth_scale,
-                            "background_global_mix": args.background_global_mix,
-                            "run_name": agg_run_name,
-                            "dataset_folder": args.dataset_folder,
-                            "n_samples": args.n_samples,
-                            "aggregated": True,
-                            "total_samples": agg_len,
-                            "ga_return_code": 0,  # Aggregated runs don't have return codes
-                            "es_return_code": 0,
-                            "latent_dimension": None,  # Will be updated after plotting
-                        }
-                        
-                        # Start aggregated W&B run
-                        agg_run = wandb.init(
-                            project=args.wandb_project,
-                            entity=args.wandb_entity,
-                            name=agg_run_name,
-                            config=agg_cfg,
-                            group=group_name
-                        )
-                        print(f"[wandb] Started aggregated run: {agg_run_name}")
-                        
-                        # Log aggregated metrics
-                        if ga_acc.size > 0:
-                            wandb.log({
-                                "aggregated/ga_accuracy_mean": float(np.mean(ga_acc)),
-                                "aggregated/ga_accuracy_std": float(np.std(ga_acc)),
-                                "aggregated/ga_shape_correctness_mean": float(np.mean(ga_shp)),
-                                "aggregated/ga_shape_correctness_std": float(np.std(ga_shp)),
-                                "aggregated/ga_pixel_correctness_mean": float(np.mean(ga_pix)),
-                                "aggregated/ga_pixel_correctness_std": float(np.std(ga_pix)),
-                            })
-                        if ga_bl.size > 0:
-                            wandb.log({
-                                "aggregated/ga_best_loss_mean": float(np.mean(ga_bl)),
-                                "aggregated/ga_best_loss_std": float(np.std(ga_bl)),
-                            })
-                        if es_acc.size > 0:
-                            wandb.log({
-                                "aggregated/es_accuracy_mean": float(np.mean(es_acc)),
-                                "aggregated/es_accuracy_std": float(np.std(es_acc)),
-                                "aggregated/es_shape_correctness_mean": float(np.mean(es_shp)),
-                                "aggregated/es_shape_correctness_std": float(np.std(es_shp)),
-                                "aggregated/es_pixel_correctness_mean": float(np.mean(es_pix)),
-                                "aggregated/es_pixel_correctness_std": float(np.std(es_pix)),
-                            })
-                        if es_bl.size > 0:
-                            wandb.log({
-                                "aggregated/es_best_loss_mean": float(np.mean(es_bl)),
-                                "aggregated/es_best_loss_std": float(np.std(es_bl)),
-                            })
-                        
-                        # Upload aggregated plots and NPZ files
-                        upload_to_wandb(args.wandb_project, args.wandb_entity, agg_cfg, agg_ga_npz, agg_es_npz, 
-                                      None, None, agg_plot, group_name, existing_run=agg_run)
-                        
-                        # Finish aggregated run
-                        agg_run.finish()
-                        print(f"[wandb] Finished aggregated run: {agg_run_name}")
-                        
-                    except Exception as e:
-                        print(f"[aggregate] Failed to create aggregated W&B run: {e}")
-                        
+                # Create aggregated statistical histograms - skip if no_files is set
+                if args.no_files:
+                    print("🚫 File generation disabled - skipping aggregated statistical histograms")
+                    agg_plot = None
                 else:
-                    print(f"[aggregate] Failed to generate aggregated statistical histograms")
+                    agg_plot = create_statistical_histograms(agg_ga_npz, agg_es_npz, args.out_dir, dataset_length=agg_len if agg_len > 1 else 2)
+                    if agg_plot:
+                        print(f"[aggregate] Saved aggregated statistical histograms to {agg_plot}")
+                    else:
+                        print(f"[aggregate] Failed to generate aggregated statistical histograms")
+                
+                # Create aggregated W&B run (regardless of no_files flag)
+                try:
+                    import wandb
+                    
+                    # Create aggregated run name with "agg_" prefix
+                    if args.run_name:
+                        agg_run_name = f"agg_{args.run_name}-{int(time.time())}"
+                    else:
+                        agg_run_name = f"agg_latent-search-b{args.budget}-{int(time.time())}"
+                    
+                    # Create aggregated run configuration
+                    agg_cfg = {
+                        "artifact_path": args.wandb_artifact_path,
+                        "budget": args.budget,
+                        "ga_steps": ga_steps,
+                        "ga_lr": args.ga_lr,
+                        "es_population": pop,
+                        "es_generations": gens,
+                        "es_mutation_std": args.es_mutation_std,
+                        "use_subspace_mutation": args.use_subspace_mutation,
+                        "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
+                        "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
+                        "trust_region_radius": args.trust_region_radius,
+                        "track_progress": args.track_progress,
+                        "background_resolution": args.background_resolution,
+                        "background_smoothing": args.background_smoothing,
+                        "background_knn": args.background_knn,
+                        "background_bandwidth_scale": args.background_bandwidth_scale,
+                        "background_global_mix": args.background_global_mix,
+                        "run_name": agg_run_name,
+                        "dataset_folder": args.dataset_folder,
+                        "n_samples": args.n_samples,
+                        "aggregated": True,
+                        "total_samples": agg_len,
+                        "ga_return_code": 0,  # Aggregated runs don't have return codes
+                        "es_return_code": 0,
+                        "latent_dimension": None,  # Will be updated after plotting
+                    }
+                    
+                    # Start aggregated W&B run
+                    agg_run = wandb.init(
+                        project=args.wandb_project,
+                        entity=args.wandb_entity,
+                        name=agg_run_name,
+                        config=agg_cfg,
+                        group=group_name
+                    )
+                    print(f"[wandb] Started aggregated run: {agg_run_name}")
+                    
+                    # Log aggregated metrics
+                    if ga_acc.size > 0:
+                        wandb.log({
+                            "aggregated/ga_accuracy_mean": float(np.mean(ga_acc)),
+                            "aggregated/ga_accuracy_std": float(np.std(ga_acc)),
+                            "aggregated/ga_shape_correctness_mean": float(np.mean(ga_shp)),
+                            "aggregated/ga_shape_correctness_std": float(np.std(ga_shp)),
+                            "aggregated/ga_pixel_correctness_mean": float(np.mean(ga_pix)),
+                            "aggregated/ga_pixel_correctness_std": float(np.std(ga_pix)),
+                        })
+                    if ga_bl.size > 0:
+                        wandb.log({
+                            "aggregated/ga_best_loss_mean": float(np.mean(ga_bl)),
+                            "aggregated/ga_best_loss_std": float(np.std(ga_bl)),
+                        })
+                    if es_acc.size > 0:
+                        wandb.log({
+                            "aggregated/es_accuracy_mean": float(np.mean(es_acc)),
+                            "aggregated/es_accuracy_std": float(np.std(es_acc)),
+                            "aggregated/es_shape_correctness_mean": float(np.mean(es_shp)),
+                            "aggregated/es_shape_correctness_std": float(np.std(es_shp)),
+                            "aggregated/es_pixel_correctness_mean": float(np.mean(es_pix)),
+                            "aggregated/es_pixel_correctness_std": float(np.std(es_pix)),
+                        })
+                    if es_bl.size > 0:
+                        wandb.log({
+                            "aggregated/es_best_loss_mean": float(np.mean(es_bl)),
+                            "aggregated/es_best_loss_std": float(np.std(es_bl)),
+                        })
+                    
+                    # Upload aggregated plots and NPZ files
+                    upload_to_wandb(args.wandb_project, args.wandb_entity, agg_cfg, agg_ga_npz, agg_es_npz, 
+                                  None, None, agg_plot, group_name, existing_run=agg_run)
+                    
+                    # Finish aggregated run
+                    agg_run.finish()
+                    print(f"[wandb] Finished aggregated run: {agg_run_name}")
+                    
+                except Exception as e:
+                    print(f"[aggregate] Failed to create aggregated W&B run: {e}")
             except Exception as _agg_plot_e:
                 print(f"[aggregate] Aggregation failed: {_agg_plot_e}")
         
@@ -2851,7 +2871,6 @@ def main() -> None:
             "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
             "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
             "trust_region_radius": args.trust_region_radius,
-
             "track_progress": args.track_progress,
             "background_resolution": args.background_resolution,
             "background_smoothing": args.background_smoothing,
@@ -2894,22 +2913,38 @@ def main() -> None:
             print(f"Failed to start wandb run: {e}")
             run = None
         
-        # Plot (with automatic PCA if latent dimension > 2)
-        trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
-                                                  background_resolution=args.background_resolution,
-                                                  background_smoothing=args.background_smoothing,
-                                                  background_knn=args.background_knn,
-                                                  background_bandwidth_scale=args.background_bandwidth_scale,
-                                                  background_global_mix=args.background_global_mix,
-                                                  ga_steps=ga_steps, es_population=pop, es_generations=gens, dataset_length=args.dataset_length)
-        if trajectory_plot:
-            print(f"Saved trajectory plot to {trajectory_plot}")
-        if loss_plot:
-            print(f"Saved loss curves plot to {loss_plot}")
-        if stats_plot:
-            print(f"Saved statistical histograms to {stats_plot}")
+        # Plot (with automatic PCA if latent dimension > 2) - skip if no_files is set
+        if args.no_files:
+            print("🚫 File generation disabled - skipping plots and file saves")
+            trajectory_plot, loss_plot, stats_plot = None, None, None
+            # Try to get latent dimension from existing files if available
+            latent_dim = 2  # Default fallback
+            try:
+                if os.path.exists(ga_out):
+                    with np.load(ga_out, allow_pickle=True) as f:
+                        if 'ga_latents' in f:
+                            ga_latents = np.array(f['ga_latents'])
+                            if ga_latents.size > 0:
+                                latent_dim = ga_latents.shape[-1]
+                                print(f"📊 Extracted latent dimension from existing GA file: {latent_dim}")
+            except Exception as e:
+                print(f"⚠️  Could not extract latent dimension: {e}")
         else:
-            print(f"No statistical histograms created (dataset_length={args.dataset_length})")
+            trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
+                                                      background_resolution=args.background_resolution,
+                                                      background_smoothing=args.background_smoothing,
+                                                      background_knn=args.background_knn,
+                                                      background_bandwidth_scale=args.background_bandwidth_scale,
+                                                      background_global_mix=args.background_global_mix,
+                                                      ga_steps=ga_steps, es_population=pop, es_generations=gens, dataset_length=args.dataset_length)
+            if trajectory_plot:
+                print(f"Saved trajectory plot to {trajectory_plot}")
+            if loss_plot:
+                print(f"Saved loss curves plot to {loss_plot}")
+            if stats_plot:
+                print(f"Saved statistical histograms to {stats_plot}")
+            else:
+                print(f"No statistical histograms created (dataset_length={args.dataset_length})")
 
         print(f"📊 Latent space dimension: {latent_dim}")
 

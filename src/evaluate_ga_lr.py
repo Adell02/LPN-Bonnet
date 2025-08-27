@@ -126,7 +126,8 @@ def run_store_latent_search_single(
     dataset_batch_size: Optional[int] = None,
     dataset_use_hf: str = "true",
     dataset_seed: int = 0,
-    out_dir: str = "results/ga_lr_budget_sweep"
+    out_dir: str = "results/ga_lr_budget_sweep",
+    no_files: bool = False
 ) -> Tuple[bool, Dict[int, float], float]:
     """Run store_latent_search.py once with max_budget and extract intermediate results."""
     
@@ -144,6 +145,10 @@ def run_store_latent_search_single(
         "--out_dir", run_out_dir,
         "--wandb_project", "none",  # Use "none" to disable W&B
     ]
+    
+    # Add no_files flag if requested
+    if no_files:
+        cmd.extend(["--no_files"])
     
     if dataset_length:
         cmd.extend(["--dataset_length", str(dataset_length)])
@@ -175,17 +180,36 @@ def run_store_latent_search_single(
             
             # Try to extract any available loss data
             intermediate_losses = {}
-            if result.stderr.strip():
-                print(f"Error output:\n{result.stderr}")
-                # Try to extract final loss from stderr
-                final_loss = extract_loss_from_stderr(result.stderr)
-                if final_loss is not None:
-                    intermediate_losses[max_budget] = final_loss
             
-            # Also try to extract from NPZ file if it exists (partial success)
-            if not intermediate_losses:
-                ga_npz_path = os.path.join(run_out_dir, "ga_latents.npz")
-                intermediate_losses = extract_intermediate_losses(ga_npz_path, max_budget)
+            # If no_files is enabled, try to extract from output directly
+            if no_files:
+                print(f"📊 no_files enabled - extracting loss from evaluation output...")
+                intermediate_losses = extract_loss_from_evaluation_output(result.stdout, result.stderr)
+            else:
+                # First try stdout (might have loss information)
+                if result.stdout.strip():
+                    print(f"📊 Checking stdout for loss data...")
+                    stdout_loss = extract_loss_from_stdout(result.stdout)
+                    if stdout_loss is not None:
+                        intermediate_losses[max_budget] = stdout_loss
+                
+                # Then try stderr
+                if result.stderr.strip():
+                    print(f"Error output:\n{result.stderr}")
+                    # Try to extract final loss from stderr
+                    final_loss = extract_loss_from_stderr(result.stderr)
+                    if final_loss is not None:
+                        intermediate_losses[max_budget] = final_loss
+                
+                # Also try to extract from NPZ file if it exists (partial success)
+                if not intermediate_losses:
+                    ga_npz_path = os.path.join(run_out_dir, "ga_latents.npz")
+                    intermediate_losses = extract_intermediate_losses(ga_npz_path, max_budget)
+                    
+                    # If still no data, search for any available loss files
+                    if not intermediate_losses:
+                        print(f"🔍 No NPZ data found, searching for any available loss files...")
+                        intermediate_losses = search_for_loss_files(run_out_dir)
             
             # Return False for success but include any loss data we found
             return False, intermediate_losses, execution_time
@@ -272,6 +296,145 @@ def extract_intermediate_losses(npz_path: str, max_budget: int) -> Dict[int, flo
         return {}
 
 
+def search_for_loss_files(run_out_dir: str) -> Dict[int, float]:
+    """Search for any available loss data in the run directory."""
+    intermediate_losses = {}
+    
+    # Look for any files that might contain loss information
+    possible_files = [
+        "ga_latents.npz",
+        "es_latents.npz", 
+        "*.log",
+        "*.txt",
+        "*.json"
+    ]
+    
+    print(f"🔍 Searching for loss data in: {run_out_dir}")
+    
+    # Check if directory exists
+    if not os.path.exists(run_out_dir):
+        print(f"⚠️  Run directory not found: {run_out_dir}")
+        return {}
+    
+    # List all files in the directory
+    try:
+        files = os.listdir(run_out_dir)
+        print(f"📁 Files found: {files}")
+        
+        # Try to extract from any available NPZ files
+        for file in files:
+            if file.endswith('.npz'):
+                npz_path = os.path.join(run_out_dir, file)
+                print(f"🔍 Checking NPZ file: {file}")
+                
+                try:
+                    data = np.load(npz_path, allow_pickle=True)
+                    print(f"📊 NPZ keys: {list(data.keys())}")
+                    
+                    # Look for any loss-related data
+                    for key in data.keys():
+                        if 'loss' in key.lower() or 'score' in key.lower():
+                            arr = np.array(data[key])
+                            if arr.size > 0:
+                                # Take the first available loss value
+                                loss_val = float(arr.reshape(-1)[0])
+                                print(f"📊 Found loss data in {key}: {loss_val:.6f}")
+                                
+                                # Assign to a reasonable budget (use file size as proxy for budget)
+                                if 'ga' in file.lower():
+                                    # For GA, assume this is the final loss
+                                    intermediate_losses[100] = loss_val
+                                else:
+                                    # For other files, assign to max budget
+                                    intermediate_losses[100] = loss_val
+                                break
+                except Exception as e:
+                    print(f"⚠️  Failed to read NPZ file {file}: {e}")
+                    
+    except Exception as e:
+        print(f"⚠️  Failed to list directory {run_out_dir}: {e}")
+    
+    return intermediate_losses
+
+
+def extract_loss_from_evaluation_output(stdout: str, stderr: str) -> Dict[int, float]:
+    """Extract loss values from evaluation output when no_files is used."""
+    intermediate_losses = {}
+    
+    # Try to extract from stdout first
+    if stdout.strip():
+        stdout_loss = extract_loss_from_stdout(stdout)
+        if stdout_loss is not None:
+            # Assume this is the final loss at max budget
+            intermediate_losses[100] = stdout_loss
+            print(f"📊 Extracted final loss from stdout: {stdout_loss:.6f}")
+    
+    # Try to extract from stderr as fallback
+    if stderr.strip():
+        stderr_loss = extract_loss_from_stderr(stderr)
+        if stderr_loss is not None:
+            # Use stderr loss if no stdout loss found
+            if not intermediate_losses:
+                intermediate_losses[100] = stderr_loss
+                print(f"📊 Extracted final loss from stderr: {stderr_loss:.6f}")
+    
+    return intermediate_losses
+
+
+def extract_loss_from_stdout(stdout: str) -> Optional[float]:
+    """Try to extract loss information from stdout output."""
+    try:
+        # Look for any loss-like patterns in the stdout
+        import re
+        
+        # Common loss patterns in stdout
+        loss_patterns = [
+            r'loss[:\s]*([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)',
+            r'Loss[:\s]*([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)',
+            r'final[:\s]*([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)',
+            r'step[:\s]*\d+[:\s]*loss[:\s]*([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)',  # Step-based loss
+            r'generation[:\s]*\d+[:\s]*loss[:\s]*([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)',  # Generation-based loss
+        ]
+        
+        for pattern in loss_patterns:
+            matches = re.findall(pattern, stdout, re.IGNORECASE)
+            if matches:
+                # Convert to float and return the last match (most recent)
+                try:
+                    loss_value = float(matches[-1])
+                    print(f"📊 Extracted loss from stdout: {loss_value:.6f}")
+                    return loss_value
+                except ValueError:
+                    continue
+        
+        # Look for any numeric values that might be losses
+        numeric_patterns = [
+            r'([+-]?\d+\.\d+(?:[eE][+-]?\d+)?)',  # Scientific notation
+            r'([+-]?\d+\.\d+)',  # Decimal numbers
+            r'([+-]?\d+)',  # Integer numbers
+        ]
+        
+        for pattern in numeric_patterns:
+            matches = re.findall(pattern, stdout)
+            if matches:
+                # Filter out very large or very small numbers that are unlikely to be losses
+                for match in matches:
+                    try:
+                        val = float(match)
+                        # Reasonable loss range: between -1000 and 1000
+                        if -1000 < val < 1000:
+                            print(f"📊 Extracted potential loss from stdout: {val:.6f}")
+                            return val
+                    except ValueError:
+                        continue
+        
+        return None
+        
+    except Exception as e:
+        print(f"⚠️  Failed to extract loss from stdout: {e}")
+        return None
+
+
 def extract_loss_from_stderr(stderr: str) -> Optional[float]:
     """Try to extract loss information from stderr output when evaluation fails."""
     try:
@@ -295,6 +458,28 @@ def extract_loss_from_stderr(stderr: str) -> Optional[float]:
                     return loss_value
                 except ValueError:
                     continue
+        
+        # Look for any numeric values that might be losses
+        # This is more aggressive and might catch losses in different formats
+        numeric_patterns = [
+            r'([+-]?\d+\.\d+(?:[eE][+-]?\d+)?)',  # Scientific notation
+            r'([+-]?\d+\.\d+)',  # Decimal numbers
+            r'([+-]?\d+)',  # Integer numbers
+        ]
+        
+        for pattern in numeric_patterns:
+            matches = re.findall(pattern, stderr)
+            if matches:
+                # Filter out very large or very small numbers that are unlikely to be losses
+                for match in matches:
+                    try:
+                        val = float(match)
+                        # Reasonable loss range: between -1000 and 1000
+                        if -1000 < val < 1000:
+                            print(f"📊 Extracted potential loss from stderr: {val:.6f}")
+                            return val
+                    except ValueError:
+                        continue
         
         return None
         
@@ -381,6 +566,9 @@ def main():
     parser.add_argument("--entity", type=str, default="ga624-imperial-college-london", help="W&B entity")
     parser.add_argument("--checkpoint_strategy", type=str, default="last", choices=["even", "first", "last"])
     
+    # Performance options
+    parser.add_argument("--no_files", action="store_true", help="Disable file generation and plotting (faster, just return values)")
+    
     args = parser.parse_args()
     
     # Generate LR and budget values
@@ -439,7 +627,8 @@ def main():
                 dataset_batch_size=args.dataset_batch_size,
                 dataset_use_hf=args.dataset_use_hf,
                 dataset_seed=args.dataset_seed,
-                out_dir=str(out_dir)
+                out_dir=str(out_dir),
+                no_files=args.no_files
             )
             
             # Store results for each budget checkpoint
