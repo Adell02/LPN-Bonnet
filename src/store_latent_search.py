@@ -171,38 +171,49 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
     return t
 
 
-def _apply_pca_if_needed(points: np.ndarray, target_dim: int = 2) -> tuple[np.ndarray, int]:
+def _fit_unified_pca(all_points: list[np.ndarray], target_dim: int = 2):
     """
-    Apply PCA to reduce points to target dimension if needed.
-    Returns (transformed_points, original_dim).
+    Fit PCA on all data combined to ensure consistent coordinate system.
+    Returns PCA transformer that can be applied to individual arrays.
     """
-    if points is None or points.size == 0:
-        return points, 0
+    if not all_points:
+        return None
     
-    original_dim = points.shape[-1]
+    # Collect all points and flatten to 2D
+    all_flat = []
+    for points in all_points:
+        if points is not None and points.size > 0:
+            points_flat = points.reshape(-1, points.shape[-1])
+            all_flat.append(points_flat)
+    
+    if not all_flat:
+        return None
+    
+    # Combine all points
+    combined_points = np.concatenate(all_flat, axis=0)
+    original_dim = combined_points.shape[-1]
+    
     if original_dim <= target_dim:
-        return points, original_dim
+        return None
     
-    print(f"[PCA] Reducing {original_dim}D latents to {target_dim}D using PCA")
+    print(f"[PCA] Fitting unified PCA on {original_dim}D data to project to {target_dim}D")
+    print(f"[PCA] Total points for PCA fitting: {len(combined_points)}")
     
-    # Reshape to (N, D) for PCA
-    original_shape = points.shape
-    points_2d = points.reshape(-1, original_dim)
-    
-    # Apply PCA
+    # Fit PCA on combined data
     try:
         from sklearn.decomposition import PCA
         pca = PCA(n_components=target_dim)
-        points_transformed = pca.fit_transform(points_2d)
+        pca.fit(combined_points)
         explained_variance_ratio = pca.explained_variance_ratio_
-        print(f"[PCA] Explained variance ratio: {explained_variance_ratio}")
+        print(f"[PCA] Unified PCA explained variance ratio: {explained_variance_ratio}")
         print(f"[PCA] Cumulative explained variance: {np.sum(explained_variance_ratio):.3f}")
+        return pca
     except ImportError:
         print("[PCA] sklearn not available, using manual PCA implementation")
         # Manual PCA implementation
         # Center the data
-        mean = np.mean(points_2d, axis=0)
-        centered = points_2d - mean
+        mean = np.mean(combined_points, axis=0)
+        centered = combined_points - mean
         
         # Compute covariance matrix
         cov_matrix = np.cov(centered.T)
@@ -215,20 +226,46 @@ def _apply_pca_if_needed(points: np.ndarray, target_dim: int = 2) -> tuple[np.nd
         eigenvalues = eigenvalues[sorted_indices]
         eigenvectors = eigenvectors[:, sorted_indices]
         
-        # Project data onto top components
-        points_transformed = centered @ eigenvectors[:, :target_dim]
+        # Store transformation matrix
+        pca_transformer = {
+            'mean': mean,
+            'eigenvectors': eigenvectors[:, :target_dim],
+            'explained_variance_ratio': eigenvalues[:target_dim] / np.sum(eigenvalues)
+        }
         
-        # Compute explained variance ratio
-        total_variance = np.sum(eigenvalues)
-        explained_variance_ratio = eigenvalues[:target_dim] / total_variance
-        print(f"[PCA] Explained variance ratio: {explained_variance_ratio}")
-        print(f"[PCA] Cumulative explained variance: {np.sum(explained_variance_ratio):.3f}")
+        print(f"[PCA] Manual PCA explained variance ratio: {pca_transformer['explained_variance_ratio']}")
+        print(f"[PCA] Cumulative explained variance: {np.sum(pca_transformer['explained_variance_ratio']):.3f}")
+        
+        return pca_transformer
+
+
+def _apply_fitted_pca(points: np.ndarray, pca_transformer, target_dim: int = 2) -> np.ndarray:
+    """
+    Apply a fitted PCA transformer to new points.
+    """
+    if points is None or points.size == 0:
+        return points
+    
+    original_shape = points.shape
+    points_flat = points.reshape(-1, points.shape[-1])
+    
+    if pca_transformer is None:
+        return points
+    
+    # Apply transformation
+    if hasattr(pca_transformer, 'transform'):  # sklearn PCA
+        points_transformed = pca_transformer.transform(points_flat)
+    else:  # manual PCA
+        mean = pca_transformer['mean']
+        eigenvectors = pca_transformer['eigenvectors']
+        centered = points_flat - mean
+        points_transformed = centered @ eigenvectors
     
     # Reshape back to original shape but with target_dim as last dimension
     new_shape = list(original_shape[:-1]) + [target_dim]
     points_transformed = points_transformed.reshape(new_shape)
     
-    return points_transformed, original_dim
+    return points_transformed
 
 
 def _nice_bounds(xy: np.ndarray, pad: float = 0.08) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -352,34 +389,43 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
 
     # Apply PCA if needed and track original dimensions
     original_dims = []
+    all_points = []
     
-    # Apply PCA to GA points if needed
+    # Collect all points for unified PCA fitting
     if ga.pts is not None:
-        ga.pts, ga_dim = _apply_pca_if_needed(ga.pts, target_dim=2)
-        if ga_dim > 0:
-            original_dims.append(ga_dim)
-    
-    # Apply PCA to ES points if needed
+        all_points.append(ga.pts)
+        original_dims.append(ga.pts.shape[-1])
     if es.pts is not None:
-        es.pts, es_dim = _apply_pca_if_needed(es.pts, target_dim=2)
-        if es_dim > 0:
-            original_dims.append(es_dim)
-    
-    # Apply PCA to ES population points if needed
+        all_points.append(es.pts)
+        original_dims.append(es.pts.shape[-1])
     if es.pop_pts is not None:
-        es.pop_pts, es_pop_dim = _apply_pca_if_needed(es.pop_pts, target_dim=2)
-        if es_pop_dim > 0:
-            original_dims.append(es_pop_dim)
-    
-    # Apply PCA to ES best per generation if needed
+        all_points.append(es.pop_pts)
+        original_dims.append(es.pop_pts.shape[-1])
     if es.best_per_gen is not None:
-        es.best_per_gen, es_best_dim = _apply_pca_if_needed(es.best_per_gen, target_dim=2)
-        if es_best_dim > 0:
-            original_dims.append(es_best_dim)
+        all_points.append(es.best_per_gen)
+        original_dims.append(es.best_per_gen.shape[-1])
     
     # Get the most common original dimension (or max if different)
     original_dim = max(original_dims) if original_dims else 2
-    print(f"[plot] Original latent dimension: {original_dim}D, projected to 2D using PCA")
+    
+    # Apply unified PCA if needed
+    if original_dim > 2:
+        print(f"[plot] Original latent dimension: {original_dim}D, applying unified PCA to project to 2D")
+        
+        # Fit PCA on all data combined
+        pca_transformer = _fit_unified_pca(all_points, target_dim=2)
+        
+        # Apply the same PCA transformation to all arrays
+        if ga.pts is not None:
+            ga.pts = _apply_fitted_pca(ga.pts, pca_transformer, target_dim=2)
+        if es.pts is not None:
+            es.pts = _apply_fitted_pca(es.pts, pca_transformer, target_dim=2)
+        if es.pop_pts is not None:
+            es.pop_pts = _apply_fitted_pca(es.pop_pts, pca_transformer, target_dim=2)
+        if es.best_per_gen is not None:
+            es.best_per_gen = _apply_fitted_pca(es.best_per_gen, pca_transformer, target_dim=2)
+    else:
+        print(f"[plot] Original latent dimension: {original_dim}D, no PCA needed")
 
     # unified bounds - flatten all arrays to 2D before concatenation
     pts_for_bounds = []
