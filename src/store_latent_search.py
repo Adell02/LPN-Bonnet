@@ -1351,6 +1351,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
 
     # Plot GA per-sample traces if available in NPZ
     ga_budget = None
+    did_ga_overlay = False
     if ga_npz_path and os.path.exists(ga_npz_path):
         try:
             with np.load(ga_npz_path, allow_pickle=True) as f:
@@ -1360,15 +1361,16 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     L = np.array(f['ga_losses_per_sample'])  # (N, S)
                     x = ga_budget if ga_budget is not None and len(ga_budget) == L.shape[1] else np.arange(L.shape[1])
                     for row in L:
-                        ax.plot(x, row, color="#e91e63", alpha=0.5, linewidth=1.5)
+                        ax.plot(x, row, color="#e91e63", alpha=0.5, linewidth=1.5, label=None, zorder=2)
                     mean_curve = L.mean(axis=0)
                     mean_ma = _moving_average(mean_curve, k=max(3, L.shape[1]//10))
                     ax.plot(x, mean_ma, color="#e91e63", linewidth=3.0, label=f"GA mean", zorder=4)
+                    did_ga_overlay = True
         except Exception as _ge:
             print(f"[loss] Failed GA per-sample plotting: {_ge}")
 
     # Fallback single GA curve if no per-sample available
-    if has_ga_loss and (not (ga_npz_path and os.path.exists(ga_npz_path))):
+    if has_ga_loss and not did_ga_overlay:
         if ga_steps is not None:
             ga_budget = 2 * np.arange(1, len(ga.vals) + 1)
             print(f"[loss] GA budget calculation: {len(ga.vals)} steps → budget points: {ga_budget}")
@@ -1381,6 +1383,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     
     # Plot ES per-sample traces if available
     es_budget = None
+    did_es_overlay = False
     if es_npz_path and os.path.exists(es_npz_path):
         try:
             with np.load(es_npz_path, allow_pickle=True) as f:
@@ -1390,15 +1393,16 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     L = np.array(f['es_generation_losses_per_sample'])  # (N, G)
                     x = es_budget if es_budget is not None and len(es_budget) == L.shape[1] else np.arange(1, L.shape[1]+1)
                     for row in L:
-                        ax.plot(x, row, color="#ff7f0e", alpha=0.5, linewidth=1.5)
+                        ax.plot(x, row, color="#ff7f0e", alpha=0.5, linewidth=1.5, label=None, zorder=2)
                     mean_curve = L.mean(axis=0)
                     mean_ma = _moving_average(mean_curve, k=max(3, L.shape[1]//4))
                     ax.plot(x, mean_ma, color="#ff7f0e", linewidth=3.0, label=f"ES mean", zorder=4)
+                    did_es_overlay = True
         except Exception as _ee:
             print(f"[loss] Failed ES per-sample plotting: {_ee}")
 
     # Fallback single ES curve
-    if has_es_loss and (not (es_npz_path and os.path.exists(es_npz_path))):
+    if has_es_loss and not did_es_overlay:
         if es_population is not None and es_generations is not None:
             if len(es.vals) == es_generations + 1:
                 es_budget = np.arange(es_generations + 1) * es_population
