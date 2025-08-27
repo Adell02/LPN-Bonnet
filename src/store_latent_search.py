@@ -602,6 +602,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             have_field = False
 
     # Apply unified PCA if needed
+    pca_transformer = None  # Initialize pca_transformer
     if original_dim > 2:
         print(f"[plot] Original latent dimension: {original_dim}D, applying unified PCA to project to 2D")
         
