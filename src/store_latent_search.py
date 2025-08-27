@@ -1609,9 +1609,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                         arr = np.array(f[key]).reshape(-1)
                         if arr.size > 0:
                             try:
-                                import numpy as np
-                                import wandb as _wandb
-                                run.log({f"{wandb_key}_hist": _wandb.Histogram(arr)})
+                                run.log({f"{wandb_key}_hist": wandb.Histogram(arr)})
                                 run.log({f"{wandb_key}_mean": float(np.mean(arr))})
                                 run.log({f"{wandb_key}_std": float(np.std(arr))})
                             except Exception as _we:
@@ -1720,9 +1718,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                         arr = np.array(f[key]).reshape(-1)
                         if arr.size > 0:
                             try:
-                                import numpy as np
-                                import wandb as _wandb
-                                run.log({f"{wandb_key}_hist": _wandb.Histogram(arr)})
+                                run.log({f"{wandb_key}_hist": wandb.Histogram(arr)})
                                 run.log({f"{wandb_key}_mean": float(np.mean(arr))})
                                 run.log({f"{wandb_key}_std": float(np.std(arr))})
                             except Exception as _we:
