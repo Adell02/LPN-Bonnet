@@ -2,10 +2,10 @@
 """
 Generate a pattern_4 dataset for use with store_latent_search.py
 
-This script creates a dataset with 4x4 patterns that matches the model's training configuration:
+This script creates a dataset with 4x4 patterns embedded in 10x10 grids:
 - pattern_size: 4 (4x4 patterns)
-- num_rows: 4, num_cols: 4
-- Compatible with models trained on pattern_size=4
+- num_rows: 10, num_cols: 10 (10x10 grid size)
+- Compatible with models trained on pattern_size=4 with 10x10 grids
 """
 
 import numpy as np
@@ -30,6 +30,7 @@ def generate_pattern4_dataset(length=100, num_pairs=4, seed=0):
     print(f"  Length: {length} tasks")
     print(f"  Pairs per task: {num_pairs}")
     print(f"  Pattern size: 4x4")
+    print(f"  Grid size: 10x10")
     print(f"  Seed: {seed}")
     
     # Generate the dataset using the PATTERN task generator
@@ -39,16 +40,16 @@ def generate_pattern4_dataset(length=100, num_pairs=4, seed=0):
         num_workers=0,  # Single-threaded for reproducibility
         task_generator_class='PATTERN',
         pattern_size=4,  # 4x4 patterns
-        num_rows=4,      # 4 rows
-        num_cols=4,      # 4 columns
+        num_rows=10,     # 10 rows (grid size)
+        num_cols=10,     # 10 columns (grid size)
         online_data_augmentation=False, 
         seed=seed
     )
     
     print(f"Generated dataset:")
-    print(f"  Grids shape: {grids.shape}")
-    print(f"  Shapes shape: {shapes.shape}")
-    print(f"  Program IDs shape: {program_ids.shape}")
+    print(f"  Grids shape: {grids.shape} (should be (length, num_pairs, 10, 10, 2))")
+    print(f"  Shapes shape: {shapes.shape} (should be (length, num_pairs, 2))")
+    print(f"  Program IDs shape: {program_ids.shape} (should be (length,))")
     
     return grids, shapes, program_ids
 
