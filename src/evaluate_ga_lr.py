@@ -122,21 +122,48 @@ def generate_lr_plot(lrs: List[float], results_data: List[Dict[str, Any]],
         # Create subplots: one for loss (log scale), one for accuracy
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 12))
         
-        # Plot 1: Loss vs Learning Rate (log y-axis) - Note: Loss metric not available yet
-        # For now, we'll show a placeholder message
-        ax1.text(0.5, 0.5, 'Loss metric not available\nin current evaluation output', 
-                transform=ax1.transAxes, ha='center', va='center', fontsize=14,
-                bbox=dict(boxstyle="round,pad=0.3", facecolor='lightgray', alpha=0.7))
+        # Plot 1: Loss vs Learning Rate (log y-axis)
+        loss_values = []
+        for lr in lrs:
+            result = next((r for r in results_data if r['lr'] == lr), None)
+            if result and result.get('success') and result.get('results'):
+                val = result['results'].get('total_final_loss')
+                loss_values.append(val if val is not None else np.nan)
+            else:
+                loss_values.append(np.nan)
+        
+        # Filter out NaN values for plotting
+        valid_indices = ~np.isnan(loss_values)
+        if np.any(valid_indices):
+            valid_lrs = [lr for i, lr in enumerate(lrs) if valid_indices[i]]
+            valid_losses = [loss for loss in loss_values if not np.isnan(loss)]
+            
+            ax1.plot(valid_lrs, valid_losses, marker='o', linewidth=2, markersize=8,
+                     color='#FBB998', label='Total Final Loss', alpha=0.8)
+            
+            # Find best learning rate (lowest loss)
+            if valid_losses:
+                best_idx = np.argmin(valid_losses)
+                best_lr = valid_lrs[best_idx]
+                best_loss = valid_losses[best_idx]
+                ax1.axvline(x=best_lr, color='red', linestyle='--', alpha=0.7, 
+                           label=f'Best LR: {best_lr:.4f}')
+                ax1.scatter([best_lr], [best_loss], color='red', s=100, zorder=5)
+        else:
+            # Fallback message if no loss data available
+            ax1.text(0.5, 0.5, 'No loss data available\nfor this evaluation', 
+                    transform=ax1.transAxes, ha='center', va='center', fontsize=14,
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor='lightgray', alpha=0.7))
         
         ax1.set_xlabel("Learning Rate", fontsize=14)
         ax1.set_ylabel("Total Final Loss (log scale)", fontsize=14)
         ax1.set_title(
             f"Gradient Ascent Loss vs Learning Rate\n"
-            f"Checkpoint: {checkpoint_name} (Step: {checkpoint_step})\n"
-            f"⚠️  Loss metric not available in evaluation output",
+            f"Checkpoint: {checkpoint_name} (Step: {checkpoint_step})",
             fontsize=16,
         )
         ax1.grid(True, alpha=0.3)
+        ax1.legend(fontsize=12)
         ax1.set_xscale('log')
         ax1.set_yscale('log')
         ax1.grid(True, which="both", ls="-", alpha=0.2)
@@ -609,7 +636,7 @@ def main():
     print("   - top_2_shape_accuracy")
     print("   - top_2_accuracy")
     print("   - top_2_pixel_correctness")
-    print("   - total_final_loss (⚠️  Not available in current evaluation output)")
+    print("   - total_final_loss")
 
     try:
         run.finish()

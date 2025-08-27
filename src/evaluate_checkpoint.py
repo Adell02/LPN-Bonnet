@@ -324,6 +324,56 @@ def build_generate_output_batch_to_be_pmapped(
             "pixel_correctness": jnp.mean(pixel_correctness),
             "accuracy": jnp.mean(accuracy),
         }
+        
+        # Extract loss values from gradient ascent process if available
+        if eval_inference_mode == "gradient_ascent" and info is not None:
+            try:
+                # For gradient ascent, extract loss from optimization trajectory
+                if hasattr(info, 'get') and callable(info.get):
+                    if "optimization_trajectory" in info:
+                        trajectory = info["optimization_trajectory"]
+                        if isinstance(trajectory, dict):
+                            # Try to extract final loss from trajectory
+                            if "log_probs" in trajectory:
+                                log_probs = trajectory["log_probs"]
+                                if isinstance(log_probs, jnp.ndarray):
+                                    # Get the final step log probabilities (best across candidates)
+                                    if log_probs.ndim >= 2:
+                                        # Take the last step and best candidate
+                                        final_step_log_probs = log_probs[..., -1, :]  # Last step
+                                        best_final_log_probs = jnp.max(final_step_log_probs, axis=-1)  # Best candidate
+                                        final_losses = -best_final_log_probs  # Convert to positive loss
+                                        metrics["total_final_loss"] = jnp.mean(final_losses)
+                                    else:
+                                        metrics["total_final_loss"] = None
+                                else:
+                                    metrics["total_final_loss"] = None
+                            elif "losses" in trajectory:
+                                # Direct access to losses if available
+                                losses = trajectory["losses"]
+                                if isinstance(losses, jnp.ndarray):
+                                    # Get final loss (last step)
+                                    if losses.ndim >= 1:
+                                        final_losses = losses[..., -1]  # Last step
+                                        metrics["total_final_loss"] = jnp.mean(final_losses)
+                                    else:
+                                        metrics["total_final_loss"] = None
+                                else:
+                                    metrics["total_final_loss"] = None
+                            else:
+                                metrics["total_final_loss"] = None
+                        else:
+                            metrics["total_final_loss"] = None
+                    else:
+                        metrics["total_final_loss"] = None
+                else:
+                    metrics["total_final_loss"] = None
+            except Exception as e:
+                # If any error occurs during loss extraction, set to None
+                metrics["total_final_loss"] = None
+        else:
+            metrics["total_final_loss"] = None
+        
         if return_info:
             return {"metrics": metrics, "info": info}
         return metrics
@@ -838,7 +888,10 @@ def pretty_print(metrics: dict) -> None:
     print("Metrics:")
     for k, v in metrics.items():
         if isinstance(v, (jnp.ndarray, float, int)):
-            print(f"{k}: {v:.4f}")
+            if k == "total_final_loss":
+                print(f"{k}: {v:.6f}")
+            else:
+                print(f"{k}: {v:.4f}")
         else:
             print(f"{k}: not a scalar")
 
@@ -1262,6 +1315,10 @@ if __name__ == "__main__":
         inference_mode_kwargs["track_progress"] = True
         # We will use this key to signal saving in dataset eval path
         inference_mode_kwargs["store_latents_path"] = args.store_latents
+    
+    # For gradient ascent, always enable track_progress to capture loss information
+    if args.inference_mode == "gradient_ascent":
+        inference_mode_kwargs["track_progress"] = True
     main(
         artifact_path=args.wandb_artifact_path,
         json_challenges_file=args.json_challenges_file,

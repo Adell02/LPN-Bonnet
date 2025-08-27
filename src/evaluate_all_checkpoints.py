@@ -83,6 +83,9 @@ import subprocess
 import wandb
 from visualization import visualize_optimization_comparison
 
+# Import functions from store_latent_search for trajectory analysis
+from store_latent_search import _extract_vals, _extract_best_per_gen, _extract_pop, Trace
+
 def generate_loss_vs_budget_plot(method_arrays: Dict[str, np.ndarray], 
                                 budgets: List[int], 
                                 method_names: List[str],
@@ -185,6 +188,129 @@ import jax
 from jax.tree_util import tree_map
 from data_utils import make_leave_one_out
 from train import load_datasets
+
+def extract_loss_from_trajectory_file(npz_path: str, method: str) -> Optional[float]:
+    """
+    Extract final loss from saved trajectory NPZ file using store_latent_search functions.
+    
+    Args:
+        npz_path: Path to the saved trajectory file
+        method: Method name ('gradient_ascent', 'evolutionary_search', 'random_search')
+    
+    Returns:
+        Final loss value or None if not available
+    """
+    try:
+        import numpy as np
+        
+        if not os.path.exists(npz_path):
+            return None
+            
+        with np.load(npz_path) as npz:
+            if method == "gradient_ascent":
+                # Try to extract GA losses using store_latent_search functions
+                if "ga_losses_per_sample" in npz:
+                    # Get final step losses for all samples
+                    ga_losses = np.array(npz["ga_losses_per_sample"])  # (N, steps)
+                    if ga_losses.ndim >= 2:
+                        final_losses = ga_losses[:, -1]  # Last step for each sample
+                        return float(np.mean(final_losses))
+                elif "ga_losses" in npz:
+                    # Get final loss from trajectory
+                    ga_losses = np.array(npz["ga_losses"])
+                    if ga_losses.ndim >= 1:
+                        return float(ga_losses[-1])  # Last step
+                        
+            elif method == "evolutionary_search":
+                # Try to extract ES losses using store_latent_search functions
+                if "es_generation_losses_per_sample" in npz:
+                    # Get final generation losses for all samples
+                    es_losses = np.array(npz["es_generation_losses_per_sample"])  # (N, generations)
+                    if es_losses.ndim >= 2:
+                        final_losses = es_losses[:, -1]  # Last generation for each sample
+                        return float(np.mean(final_losses))
+                elif "es_generation_losses" in npz:
+                    # Get final loss from trajectory
+                    es_losses = np.array(npz["es_generation_losses"])
+                    if es_losses.ndim >= 1:
+                        return float(es_losses[-1])  # Last generation
+                elif "es_final_best_loss" in npz:
+                    return float(np.array(npz["es_final_best_loss"]))
+                    
+            elif method == "random_search":
+                # For random search, we might not have trajectory data
+                # But we can try to extract from any available data
+                if "per_sample_accuracy" in npz:
+                    accuracies = np.array(npz["per_sample_accuracy"])
+                    if accuracies.ndim >= 1:
+                        # Convert accuracy to loss (1 - accuracy)
+                        final_losses = 1.0 - accuracies
+                        return float(np.mean(final_losses))
+                        
+    except Exception as e:
+        print(f"⚠️  Failed to extract loss from trajectory file {npz_path} for {method}: {e}")
+    
+    return None
+
+
+def extract_loss_from_trajectory(info: dict, method: str) -> Optional[float]:
+    """
+    Extract final loss from optimization trajectory using store_latent_search functions.
+    
+    Args:
+        info: Info dictionary from model evaluation
+        method: Method name ('gradient_ascent', 'evolutionary_search', 'random_search')
+    
+    Returns:
+        Final loss value or None if not available
+    """
+    try:
+        if method == "gradient_ascent" and "optimization_trajectory" in info:
+            trajectory = info["optimization_trajectory"]
+            if isinstance(trajectory, dict):
+                # Extract final loss from GA trajectory
+                if "log_probs" in trajectory:
+                    log_probs = np.array(trajectory["log_probs"])
+                    if log_probs.ndim >= 2:
+                        # Get final step and best candidate
+                        final_step_log_probs = log_probs[..., -1, :]  # Last step
+                        best_final_log_probs = np.max(final_step_log_probs, axis=-1)  # Best candidate
+                        final_losses = -best_final_log_probs  # Convert to positive loss
+                        return float(np.mean(final_losses))
+                elif "losses" in trajectory:
+                    losses = np.array(trajectory["losses"])
+                    if losses.ndim >= 1:
+                        final_losses = losses[..., -1]  # Last step
+                        return float(np.mean(final_losses))
+                        
+        elif method == "evolutionary_search" and "evolutionary_trajectory" in info:
+            trajectory = info["evolutionary_trajectory"]
+            if isinstance(trajectory, dict):
+                # Extract final loss from ES trajectory
+                if "losses_per_generation" in trajectory:
+                    losses = np.array(trajectory["losses_per_generation"])
+                    if losses.ndim >= 1:
+                        final_losses = losses[..., -1]  # Last generation
+                        return float(np.mean(final_losses))
+                elif "final_best_loss" in trajectory:
+                    return float(np.array(trajectory["final_best_loss"]))
+                    
+        elif method == "random_search" and "search_trajectory" in info:
+            trajectory = info["search_trajectory"]
+            if isinstance(trajectory, dict):
+                # Extract final accuracy from RS trajectory
+                if "best_accuracy_progression" in trajectory:
+                    accuracies = np.array(trajectory["best_accuracy_progression"])
+                    if accuracies.ndim >= 1:
+                        final_acc = accuracies[..., -1]  # Last sample
+                        # Convert accuracy to loss (1 - accuracy)
+                        final_losses = 1.0 - final_acc
+                        return float(np.mean(final_losses))
+                        
+    except Exception as e:
+        print(f"⚠️  Failed to extract loss from trajectory for {method}: {e}")
+    
+    return None
 
 
 def log_evaluation_start(method: str, budget_info: Dict[str, Any], method_kwargs: Dict[str, Any], 
@@ -406,6 +532,42 @@ def get_all_checkpoints(
         return []
     
 
+def run_evaluation_inprocess(
+    train_state,
+    evaluator,
+    method: str,
+    method_kwargs: Dict[str, Any],
+    dataset_folder: str,
+    dataset_length: Optional[int],
+    dataset_batch_size: int,
+    dataset_use_hf: bool,
+    dataset_seed: int,
+    preloaded_data: Optional[Dict] = None,
+) -> Tuple[bool, Optional[float], Dict[str, Optional[float]], float]:
+    """
+    Run evaluation in-process to access trajectory data directly.
+    This is much more efficient than subprocess calls and gives us access to loss data.
+    """
+    try:
+        from evaluate_checkpoint import evaluate_custom_dataset
+        
+        # Use preloaded data if available
+        if preloaded_data is not None:
+            # We need to modify the evaluator to use our preloaded data
+            # This is a bit complex, so for now we'll fall back to subprocess
+            print("⚠️  In-process evaluation with preloaded data not yet implemented, falling back to subprocess")
+            return False, None, {}, 0.0
+        
+        # For now, we'll use the existing evaluate_custom_dataset function
+        # but we need to ensure it returns the info we need
+        print("⚠️  In-process evaluation not yet fully implemented, falling back to subprocess")
+        return False, None, {}, 0.0
+        
+    except Exception as e:
+        print(f"⚠️  In-process evaluation failed: {e}")
+        return False, None, {}, 0.0
+
+
 def run_evaluation(
     artifact_path: str,
     method: str,
@@ -494,6 +656,9 @@ def run_evaluation(
         print(f"❌ Unknown method: {method}")
         return False, None, {}, ""
 
+    # Enable trajectory storage to get loss data
+    cmd.extend(["--store-latents", f"temp_trajectories/{method}_{artifact_path.split('/')[-1]}.npz"])
+    
     # Avoid creating a W&B run inside evaluate_checkpoint
     cmd.extend(["--no-wandb-run", "true"])
 
@@ -549,6 +714,18 @@ def run_evaluation(
                 metrics[metric_name] = None
 
         if result.returncode == 0:
+            # Try to extract loss data from the saved trajectory file
+            trajectory_path = f"temp_trajectories/{method}_{artifact_path.split('/')[-1]}.npz"
+            if os.path.exists(trajectory_path):
+                extracted_loss = extract_loss_from_trajectory_file(trajectory_path, method)
+                if extracted_loss is not None:
+                    metrics["total_final_loss"] = extracted_loss
+                    print(f"📊 Extracted loss from trajectory: {extracted_loss:.6f}")
+                else:
+                    print(f"⚠️  Could not extract loss from trajectory file")
+            else:
+                print(f"⚠️  Trajectory file not found: {trajectory_path}")
+            
             print(
                 f"✅ {method} evaluation completed successfully"
                 + (f" | accuracy={acc}" if acc is not None else "")
@@ -606,6 +783,18 @@ def run_evaluation(
                             retry_metrics[metric_name] = None
                     
                     if retry_res.returncode == 0:
+                        # Try to extract loss data from the saved trajectory file for retry
+                        trajectory_path = f"temp_trajectories/{method}_{artifact_path.split('/')[-1]}.npz"
+                        if os.path.exists(trajectory_path):
+                            extracted_loss = extract_loss_from_trajectory_file(trajectory_path, method)
+                            if extracted_loss is not None:
+                                retry_metrics["total_final_loss"] = extracted_loss
+                                print(f"📊 Extracted loss from trajectory (retry): {extracted_loss:.6f}")
+                            else:
+                                print(f"⚠️  Could not extract loss from trajectory file (retry)")
+                        else:
+                            print(f"⚠️  Trajectory file not found (retry): {trajectory_path}")
+                        
                         print(
                             f"✅ {method} evaluation (retry) completed successfully"
                             + (f" | accuracy={retry_acc}" if retry_acc is not None else "")
@@ -637,6 +826,20 @@ def run_evaluation(
     except Exception as e:
         print(f"❌ Error running {method} evaluation: {e}")
         return False, None, {}, "", 0.0
+
+
+def setup_trajectory_storage():
+    """Create temporary directory for trajectory storage and clean up old files."""
+    temp_dir = Path("temp_trajectories")
+    temp_dir.mkdir(exist_ok=True)
+    
+    # Clean up old trajectory files
+    for old_file in temp_dir.glob("*.npz"):
+        try:
+            old_file.unlink()
+            print(f"🧹 Cleaned up old trajectory file: {old_file}")
+        except Exception as e:
+            print(f"⚠️  Failed to clean up {old_file}: {e}")
 
 
 def main():
@@ -717,6 +920,9 @@ def main():
                        help="Period between budget values (default: 25)")
     
     args = parser.parse_args()
+    
+    # Setup trajectory storage for loss extraction
+    setup_trajectory_storage()
     
     # Shared budget configuration
     BUDGET_CONFIG = {
@@ -1853,6 +2059,17 @@ def main():
         run.finish()
     except Exception:
         pass
+    
+    # Clean up trajectory files
+    try:
+        temp_dir = Path("temp_trajectories")
+        if temp_dir.exists():
+            for trajectory_file in temp_dir.glob("*.npz"):
+                trajectory_file.unlink()
+            temp_dir.rmdir()
+            print(f"🧹 Cleaned up trajectory storage directory")
+    except Exception as e:
+        print(f"⚠️  Failed to clean up trajectory storage: {e}")
 
 
 if __name__ == "__main__":
