@@ -572,20 +572,20 @@ def _splat_background(
 
 def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6, alpha: float = 1.0):
     print(f"[_plot_traj] Plotting {label}: {pts.shape}, color={color}, alpha={alpha}")
-    ax.plot(pts[:, 0], pts[:, 1], color=color, linewidth=3.0, alpha=alpha, label=label, zorder=5)
+    ax.plot(pts[:, 0], pts[:, 1], color=color, linewidth=5.0, alpha=alpha, label=label, zorder=5)
     
     # Add small markers for every step
-    ax.scatter(pts[:, 0], pts[:, 1], s=25, color=color, alpha=alpha, zorder=4)
+    ax.scatter(pts[:, 0], pts[:, 1], s=40, color=color, alpha=alpha, zorder=4)
     
     # Add arrows between steps
     for i in range(0, len(pts) - 1, max(1, arrow_every)):
         ax.annotate("", xy=pts[i+1], xytext=pts[i],
-                    arrowprops=dict(arrowstyle="->", lw=2.5, color=color, shrinkA=0, shrinkB=0))
+                    arrowprops=dict(arrowstyle="->", lw=4.0, color=color, shrinkA=0, shrinkB=0))
     
     # Special markers for start and end points
-    ax.scatter([pts[0, 0]], [pts[0, 1]], s=100, marker="o", edgecolors="black", linewidths=1.2,
+    ax.scatter([pts[0, 0]], [pts[0, 1]], s=150, marker="o", edgecolors="black", linewidths=2.0,
                color=color, zorder=6, alpha=alpha)
-    ax.scatter([pts[-1, 0]], [pts[-1, 1]], s=100, marker="s", edgecolors="black", linewidths=1.2,
+    ax.scatter([pts[-1, 0]], [pts[-1, 1]], s=150, marker="s", edgecolors="black", linewidths=2.0,
                color=color, zorder=6, alpha=alpha)
     print(f"[_plot_traj] Completed plotting {label}")
 
@@ -990,20 +990,23 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     
     print(f"[plot] Loss normalization: vmin={vmin:.4f}, vmax={vmax:.4f}")
     norm = colors.Normalize(vmin=vmin, vmax=vmax)
-    cmap = "viridis"
+    # Use custom colormap from the specified palette
+    from matplotlib.colors import LinearSegmentedColormap
+    custom_colors = ['#FBB998', '#DB74DB', '#5361E5', '#96DCF8']
+    cmap = LinearSegmentedColormap.from_list('custom_palette', custom_colors, N=256)
     
     def orient(v: np.ndarray) -> np.ndarray:
         """Orient values for visualization: keep original values for losses (no abs)."""
         if field_name.lower() == "score":
             return v  # Scores: higher is better, keep positive
         else:
-            return v  # Losses: keep original sign (continuous viridis background)
+            return v  # Losses: keep original sign (continuous custom background)
 
     # figure
     fig, ax = plt.subplots(1, 1, figsize=(16, 14))
     title = f"Latent search: GA and ES (Z_dim = {original_dim})"
-    ax.set_title(title)
-    ax.set_xlabel("z1"); ax.set_ylabel("z2")
+    ax.set_title(title, fontsize=20, fontweight='bold')
+    ax.set_xlabel("z1", fontsize=16); ax.set_ylabel("z2", fontsize=16)
     ax.set_aspect("equal")  # With whitened PCA, this will look balanced
     ax.set_xlim(*xlim); ax.set_ylim(*ylim)
 
@@ -1057,11 +1060,11 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         
         # Set appropriate colorbar label based on field type
         if field_name.lower() == "loss":
-            cbar.set_label("Loss (log likelihood, lower is better)")
+            cbar.set_label("Loss (log likelihood, lower is better)", fontsize=14)
         elif field_name.lower() == "score":
-            cbar.set_label("Score (higher is better)")
+            cbar.set_label("Score (higher is better)", fontsize=14)
         else:
-            cbar.set_label(field_name)
+            cbar.set_label(field_name, fontsize=14)
         
         # Set unexplored areas to white by setting the background color
         ax.set_facecolor("white")
@@ -1073,9 +1076,9 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         # Flatten ES population points for plotting
         es_pop_pts_flat = es.pop_pts.reshape(-1, 2)
         
-        # Plot ALL ES samples in orange with full alpha
-        ax.scatter(es_pop_pts_flat[:, 0], es_pop_pts_flat[:, 1], s=35, alpha=1.0,
-                   color="#ff7f0e", linewidths=0, zorder=1, label="ES population (all samples)")
+        # Plot ALL ES samples with custom color
+        ax.scatter(es_pop_pts_flat[:, 0], es_pop_pts_flat[:, 1], s=50, alpha=1.0,
+                   color="#DB74DB", linewidths=0, zorder=1, label="ES population (all samples)")
         
         # Then add translucent circles to cluster samples from the same generation
         if es.gen_idx is not None or es.vals is not None:
@@ -1098,9 +1101,8 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
 
             if effective_gen_idx is not None:
                 unique_gens = np.unique(effective_gen_idx)
-                # Complementary colors to viridis (blue-green-yellow): reds, oranges, purples, magentas
-                generation_colors = ['#d73027', '#f46d43', '#fdae61', '#fee08b', '#e6f598', 
-                               '#abdda4', '#66c2a5', '#3288bd', '#5e4fa2', '#8e0152']
+                # Use custom color palette for generation clusters
+                generation_colors = ['#FBB998', '#DB74DB', '#5361E5', '#96DCF8']
                 for gen in unique_gens:
                     mask = (effective_gen_idx == gen)
                     if mask.shape[0] != es_pop_pts_flat.shape[0]:
@@ -1121,13 +1123,10 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                     print(f"[plot] Gen {gen} circle: center=({gen_center[0]:.3f}, {gen_center[1]:.3f}), radius={gen_radius:.3f}")
                     print(f"[plot] Gen {gen} bounds: x[{circle_xmin:.3f}, {circle_xmax:.3f}], y[{circle_ymin:.3f}, {circle_ymax:.3f}]")
                     # Draw translucent circle for this generation
-                    circle = plt.Circle(gen_center, gen_radius, fill=True, linewidth=2, 
+                    circle = plt.Circle(gen_center, gen_radius, fill=True, linewidth=3, 
                                       edgecolor=color, facecolor=color, alpha=0.15)
                     ax.add_patch(circle)
-                    # Add generation label at cluster center
-                    ax.text(gen_center[0], gen_center[1], f"Gen {int(gen)}", 
-                           ha='center', va='center', fontsize=8, color=color, weight='bold',
-                           bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8, edgecolor=color))
+                    # Generation labels removed as requested
             else:
                 print(f"[plot] Skipping generation circles due to unavailable/mismatched generation index")
 
@@ -1143,12 +1142,12 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             # Flatten ES selected path for plotting: (1, G, 2) -> (G, 2)
             es_sel_flat = es_sel.reshape(-1, 2)
             print(f"[plot] Plotting ES trajectory: {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
-            _plot_traj(ax, es_sel_flat, color="#ff7f0e", label="ES selected", alpha=1.0)
+            _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES selected", alpha=1.0)
         elif es_sel.ndim == 2 and es_sel.shape[0] > 1:
             # Already flattened: (G, 2)
             es_sel_flat = es_sel
             print(f"[plot] Plotting ES trajectory (already flat): {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
-            _plot_traj(ax, es_sel_flat, color="#ff7f0e", label="ES selected", alpha=1.0)
+            _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES selected", alpha=1.0)
         else:
             print(f"[plot] ES trajectory plotting skipped: es_sel shape={es_sel.shape}, not enough generations")
             
@@ -1158,7 +1157,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 es_fallback = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])
                 if es_fallback.shape[0] > 1:
                     print(f"[plot] ES fallback plotting: {es_fallback.shape}")
-                    _plot_traj(ax, es_fallback, color="#ff7f0e", label="ES selected (fallback)", alpha=1.0)
+                    _plot_traj(ax, es_fallback, color="#DB74DB", label="ES selected (fallback)", alpha=1.0)
                 else:
                     print(f"[plot] ES fallback failed: not enough points ({es_fallback.shape[0]})")
             else:
@@ -1171,34 +1170,34 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         # Flatten GA path for plotting
         ga_pts_flat = ga.pts.reshape(-1, 2)
         print(f"[plot] Plotting GA trajectory: {ga_pts_flat.shape}, range: x[{ga_pts_flat[:, 0].min():.3f}, {ga_pts_flat[:, 0].max():.3f}], y[{ga_pts_flat[:, 1].min():.3f}, {ga_pts_flat[:, 1].max():.3f}]")
-        _plot_traj(ax, ga_pts_flat, color="#e91e63", label="GA path", alpha=1.0)
+        _plot_traj(ax, ga_pts_flat, color="#FBB998", label="GA path", alpha=1.0)
     else:
         print(f"[plot] GA plotting skipped: pts={ga.pts is not None}, len={len(ga.pts) if ga.pts is not None else 0}")
 
     # Create comprehensive legend with all elements
     legend_elements = []
     
-    # ES population (all samples in orange)
+    # ES population (all samples with custom color)
     if es.pop_pts is not None:
-        legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#ff7f0e', 
-                                       markersize=10, alpha=1.0, label='ES population (all samples)'))
+        legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#DB74DB', 
+                                       markersize=15, alpha=1.0, label='ES population (all samples)'))
     
     # Generation clusters (general representation)
     if es.pop_pts is not None and es.gen_idx is not None:
-        legend_elements.append(plt.Line2D([0], [0], marker='o', color='#d73027', markerfacecolor='#d73027', 
-                                       markersize=12, alpha=0.3, label='ES generation clusters'))
+        legend_elements.append(plt.Line2D([0], [0], marker='o', color='#FBB998', markerfacecolor='#FBB998', 
+                                       markersize=18, alpha=0.3, label='ES generation clusters'))
     
     # Trajectory paths
-    legend_elements.append(plt.Line2D([0], [0], color='#ff7f0e', linewidth=3, label='ES selected path'))
-    legend_elements.append(plt.Line2D([0], [0], color='#e91e63', linewidth=3, label='GA path'))
+    legend_elements.append(plt.Line2D([0], [0], color='#DB74DB', linewidth=5, label='ES selected path'))
+    legend_elements.append(plt.Line2D([0], [0], color='#FBB998', linewidth=5, label='GA path'))
     
     # Start/End markers
     legend_elements.append(plt.Line2D([0], [0], marker='o', color='k', markerfacecolor='w', 
-                                     markersize=10, markeredgewidth=1, label='Start point'))
+                                     markersize=15, markeredgewidth=2, label='Start point'))
     legend_elements.append(plt.Line2D([0], [0], marker='s', color='k', markerfacecolor='w', 
-                                     markersize=10, markeredgewidth=1, label='End point'))
+                                     markersize=15, markeredgewidth=2, label='End point'))
     
-    ax.legend(handles=legend_elements, loc="upper right", frameon=True, fontsize=9)
+    ax.legend(handles=legend_elements, loc="upper right", frameon=True, fontsize=14)
     plt.tight_layout()
 
     # FINAL VERIFICATION: Ensure all elements are within plot bounds
@@ -1372,9 +1371,9 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     ga_min = np.min(L, axis=0)
                     ga_max = np.max(L, axis=0)
                     ga_mean = np.mean(L, axis=0)
-                    ax.fill_between(x, ga_min, ga_max, color="#e91e63", alpha=0.25, label="GA range", zorder=2)
+                    ax.fill_between(x, ga_min, ga_max, color="#FBB998", alpha=0.25, label="GA range", zorder=2)
                     ga_mean_ma = _moving_average(ga_mean, k=max(3, L.shape[1]//10))
-                    ax.plot(x, ga_mean_ma, color="#e91e63", linewidth=3.0, label=f"GA mean", zorder=4)
+                    ax.plot(x, ga_mean_ma, color="#FBB998", linewidth=3.0, label=f"GA mean", zorder=4)
                     did_ga_overlay = True
         except Exception as _ge:
             print(f"[loss] Failed GA per-sample plotting: {_ge}")
@@ -1384,11 +1383,11 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
         if ga_steps is not None:
             ga_budget = 2 * np.arange(1, len(ga.vals) + 1)
             print(f"[loss] GA budget calculation: {len(ga.vals)} steps → budget points: {ga_budget}")
-            ax.plot(ga_budget, ga.vals, color="#e91e63", linewidth=3.0, marker='o', 
+            ax.plot(ga_budget, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
                     markersize=6, label=f"Gradient Ascent (2×{ga_steps} steps)", zorder=3)
         else:
             ga_steps_indices = np.arange(len(ga.vals))
-            ax.plot(ga_steps_indices, ga.vals, color="#e91e63", linewidth=3.0, marker='o', 
+            ax.plot(ga_steps_indices, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
                     markersize=6, label="Gradient Ascent", zorder=3)
     
     # Plot ES envelope (min/max) with mean line if available
@@ -1405,9 +1404,9 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     es_min = np.min(L, axis=0)
                     es_max = np.max(L, axis=0)
                     es_mean = np.mean(L, axis=0)
-                    ax.fill_between(x, es_min, es_max, color="#ff7f0e", alpha=0.25, label="ES range", zorder=2)
+                    ax.fill_between(x, es_min, es_max, color="#DB74DB", alpha=0.25, label="ES range", zorder=2)
                     es_mean_ma = _moving_average(es_mean, k=max(3, L.shape[1]//4))
-                    ax.plot(x, es_mean_ma, color="#ff7f0e", linewidth=3.0, label=f"ES mean", zorder=4)
+                    ax.plot(x, es_mean_ma, color="#DB74DB", linewidth=3.0, label=f"ES mean", zorder=4)
                     did_es_overlay = True
         except Exception as _ee:
             print(f"[loss] Failed ES per-sample plotting: {_ee}")
@@ -1422,15 +1421,15 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             else:
                 es_budget = np.arange(len(es.vals)) * es_population
             if len(es_budget) == len(es.vals):
-                ax.plot(es_budget, es.vals, color="#ff7f0e", linewidth=3.0, marker='s', 
+                ax.plot(es_budget, es.vals, color="#DB74DB", linewidth=3.0, marker='s', 
                         markersize=6, label=f"Evolutionary Search ({es_population}×{es_generations})", zorder=3)
             else:
                 es_steps_indices = np.arange(len(es.vals))
-                ax.plot(es_steps_indices, es.vals, color="#ff7f0e", linewidth=3.0, marker='s', 
+                ax.plot(es_steps_indices, es.vals, color="#DB74DB", linewidth=3.0, marker='s', 
                         markersize=6, label="Evolutionary Search", zorder=3)
         else:
             es_steps_indices = np.arange(len(es.vals))
-            ax.plot(es_steps_indices, es.vals, color="#ff7f0e", linewidth=3.0, marker='s', 
+            ax.plot(es_steps_indices, es.vals, color="#DB74DB", linewidth=3.0, marker='s', 
                     markersize=6, label="Evolutionary Search", zorder=3)
     else:
         # Fallback: try to reconstruct ES curve from available data
@@ -1521,7 +1520,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     # Position note in upper left
                     ax.text(0.02, 0.98, ga_note, transform=ax.transAxes, 
                            fontsize=9, verticalalignment='top',
-                           bbox=dict(boxstyle="round,pad=0.3", facecolor='#e91e63', alpha=0.8, color='white'))
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor='#FBB998', alpha=0.8, color='white'))
                     print(f"[loss] GA accuracy note added: {ga_note}")
         except Exception as e:
             print(f"[loss] Failed to extract GA accuracy metrics: {e}")
@@ -1587,7 +1586,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     # Position note below GA note
                     ax.text(0.02, 0.92, es_note, transform=ax.transAxes, 
                            fontsize=9, verticalalignment='top',
-                           bbox=dict(boxstyle="round,pad=0.3", facecolor='#ff7f0e', alpha=0.8, color='white'))
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor='#DB74DB', alpha=0.8, color='white'))
                     print(f"[loss] ES accuracy note added: {es_note}")
         except Exception as e:
             print(f"[loss] Failed to extract ES accuracy metrics: {e}")
@@ -1608,10 +1607,11 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
 
 def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: str, dataset_length: int) -> Optional[str]:
     """
-    Create statistical histograms comparing GA vs ES performance across the three metrics:
+    Create statistical histograms comparing GA vs ES performance across the four metrics:
     - accuracy (overall)
     - shape correctness 
     - pixel correctness
+    - best loss (minimum loss achieved per sample)
     
     Only creates histograms when dataset_length > 1 (multiple samples evaluated).
     """
@@ -1653,6 +1653,20 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                             print(f"[stats] GA {wandb_key}: empty array")
                     else:
                         print(f"[stats] GA {wandb_key}: key '{key}' not found")
+                
+                # Extract best losses from per-sample loss trajectories
+                if 'ga_losses_per_sample' in f:
+                    ga_losses_per_sample = np.array(f['ga_losses_per_sample'])
+                    if ga_losses_per_sample.size > 0:
+                        # Take the minimum loss (best performance) for each sample
+                        ga_best_losses = np.min(ga_losses_per_sample, axis=1)
+                        ga_metrics['best_loss'] = ga_best_losses
+                        print(f"[stats] GA best_loss: shape={ga_best_losses.shape}, mean={ga_best_losses.mean():.4f}, std={ga_best_losses.std():.4f}")
+                    else:
+                        print(f"[stats] GA best_loss: empty array")
+                else:
+                    print(f"[stats] GA best_loss: key 'ga_losses_per_sample' not found")
+                    
         except Exception as e:
             print(f"[stats] Failed to load GA metrics: {e}")
     
@@ -1677,6 +1691,20 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                             print(f"[stats] ES {wandb_key}: empty array")
                     else:
                         print(f"[stats] ES {wandb_key}: key '{key}' not found")
+                
+                # Extract best losses from per-sample loss trajectories
+                if 'es_generation_losses_per_sample' in f:
+                    es_losses_per_sample = np.array(f['es_generation_losses_per_sample'])
+                    if es_losses_per_sample.size > 0:
+                        # Take the minimum loss (best performance) for each sample
+                        es_best_losses = np.min(es_losses_per_sample, axis=1)
+                        es_metrics['best_loss'] = es_best_losses
+                        print(f"[stats] ES best_loss: shape={es_best_losses.shape}, mean={es_best_losses.mean():.4f}, std={es_best_losses.std():.4f}")
+                    else:
+                        print(f"[stats] ES best_loss: empty array")
+                else:
+                    print(f"[stats] ES best_loss: key 'es_generation_losses_per_sample' not found")
+                    
         except Exception as e:
             print(f"[stats] Failed to load ES metrics: {e}")
     
@@ -1706,25 +1734,33 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
     _warn_if_identical('accuracy', ga_metrics.get('accuracy'), es_metrics.get('accuracy'))
     _warn_if_identical('shape_correctness', ga_metrics.get('shape_correctness'), es_metrics.get('shape_correctness'))
     _warn_if_identical('pixel_correctness', ga_metrics.get('pixel_correctness'), es_metrics.get('pixel_correctness'))
+    _warn_if_identical('best_loss', ga_metrics.get('best_loss'), es_metrics.get('best_loss'))
 
-    # Create figure with 3 subplots (one for each metric)
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    # Create figure with 4 subplots (one for each metric)
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     fig.suptitle(f"Statistical Analysis: GA vs ES Performance ({dataset_length} samples)", fontsize=16, fontweight='bold')
     
+    # Flatten axes for easier iteration
+    axes = axes.flatten()
+    
     # Define colors and labels
-    ga_color = '#e91e63'  # Pink for GA
-    es_color = '#ff7f0e'  # Orange for ES
+    ga_color = '#FBB998'  # Custom color for GA
+    es_color = '#DB74DB'  # Custom color for ES
     alpha = 0.7
     
     # Metric names and descriptions
     metrics_info = {
         'accuracy': ('Overall Accuracy', 'Fraction of completely correct solutions'),
         'shape_correctness': ('Shape Correctness', 'Fraction of correct shape predictions'),
-        'pixel_correctness': ('Pixel Correctness', 'Fraction of correct pixel predictions')
+        'pixel_correctness': ('Pixel Correctness', 'Fraction of correct pixel predictions'),
+        'best_loss': ('Best Loss', 'Minimum loss achieved per sample (lower is better)')
     }
     
     # Create histograms for each metric
     for i, (metric, (title, description)) in enumerate(metrics_info.items()):
+        if i >= len(axes):
+            break
+            
         ax = axes[i]
         
         # Get data for this metric
@@ -2346,6 +2382,7 @@ def main() -> None:
     parser.add_argument("--dataset_use_hf", type=str, default="true")
     parser.add_argument("--dataset_seed", type=int, default=0)
     parser.add_argument("--n_samples", type=int, default=1, help="Number of times to run the script with different random seeds (for statistical analysis)")
+    parser.add_argument("--aggregate_statistics", action="store_true", help="Aggregate per-sample metrics across n_samples runs and generate an aggregated statistical plot")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -2428,6 +2465,10 @@ def main() -> None:
         else:
             group_name = f"latent-search-b{args.budget}-n{args.n_samples}-{int(time.time())}"
         
+        # Optional aggregators for cross-run statistics
+        ga_agg_acc, ga_agg_shape, ga_agg_pixel, ga_agg_best_loss = [], [], [], []
+        es_agg_acc, es_agg_shape, es_agg_pixel, es_agg_best_loss = [], [], [], []
+
         for run_idx in range(args.n_samples):
             seed = args.dataset_seed + run_idx
             print(f"\n🔬 Run {run_idx + 1}/{args.n_samples} with seed {seed}")
@@ -2612,12 +2653,188 @@ def main() -> None:
             except Exception as e:
                 print(f"Failed to upload to wandb: {e}")
             
-            # Finish the W&B run
+                        # Finish the W&B run
             if run is not None:
                 run.finish()
                 print(f"[wandb] Finished run {run_idx + 1}/{args.n_samples}")
-        
+
+            # Aggregate per-sample metrics across runs (if requested later)
+            try:
+                # Load GA per-sample metrics from NPZ
+                if os.path.exists(ga_out):
+                    with np.load(ga_out, allow_pickle=True) as fga:
+                        if 'per_sample_accuracy' in fga:
+                            ga_agg_acc.append(np.array(fga['per_sample_accuracy']).reshape(-1))
+                        if 'per_sample_shape_accuracy' in fga:
+                            ga_agg_shape.append(np.array(fga['per_sample_shape_accuracy']).reshape(-1))
+                        if 'per_sample_pixel_correctness' in fga:
+                            ga_agg_pixel.append(np.array(fga['per_sample_pixel_correctness']).reshape(-1))
+                        if 'ga_losses_per_sample' in fga:
+                            ga_losses_per_sample = np.array(fga['ga_losses_per_sample'])
+                            if ga_losses_per_sample.size > 0:
+                                ga_best_losses = np.min(ga_losses_per_sample, axis=1)
+                                ga_agg_best_loss.append(ga_best_losses)
+                # Load ES per-sample metrics from NPZ
+                if os.path.exists(es_out):
+                    with np.load(es_out, allow_pickle=True) as fes:
+                        if 'per_sample_accuracy' in fes:
+                            es_agg_acc.append(np.array(fes['per_sample_accuracy']).reshape(-1))
+                        if 'per_sample_shape_accuracy' in fes:
+                            es_agg_shape.append(np.array(fes['per_sample_shape_accuracy']).reshape(-1))
+                        if 'per_sample_pixel_correctness' in fes:
+                            es_agg_pixel.append(np.array(fes['per_sample_pixel_correctness']).reshape(-1))
+                        if 'es_generation_losses_per_sample' in fes:
+                            es_losses_per_sample = np.array(fes['es_generation_losses_per_sample'])
+                            if es_losses_per_sample.size > 0:
+                                es_best_losses = np.min(es_losses_per_sample, axis=1)
+                                es_agg_best_loss.append(es_best_losses)
+            except Exception as _agg_e:
+                print(f"[aggregate] Skipped aggregation for run {run_idx}: {_agg_e}")
+
         print(f"\n✅ Completed {args.n_samples} runs in group: {group_name}")
+
+        # Generate aggregated statistics if requested
+        if args.aggregate_statistics:
+            try:
+                print(f"\n📊 Generating aggregated statistics across {args.n_samples} runs...")
+                
+                # Concatenate across runs if available
+                def _concat(lst):
+                    return np.concatenate(lst, axis=0) if lst else np.array([])
+                ga_acc = _concat(ga_agg_acc)
+                ga_shp = _concat(ga_agg_shape)
+                ga_pix = _concat(ga_agg_pixel)
+                ga_bl = _concat(ga_agg_best_loss)
+                es_acc = _concat(es_agg_acc)
+                es_shp = _concat(es_agg_shape)
+                es_pix = _concat(es_agg_pixel)
+                es_bl = _concat(es_agg_best_loss)
+
+                # Save aggregated NPZs (so we can reuse existing plotting function)
+                agg_ga_npz = os.path.join(args.out_dir, "ga_aggregated.npz")
+                agg_es_npz = os.path.join(args.out_dir, "es_aggregated.npz")
+                if ga_acc.size or ga_shp.size or ga_pix.size or ga_bl.size:
+                    np.savez_compressed(agg_ga_npz,
+                        per_sample_accuracy=ga_acc if ga_acc.size else np.array([]),
+                        per_sample_shape_accuracy=ga_shp if ga_shp.size else np.array([]),
+                        per_sample_pixel_correctness=ga_pix if ga_pix.size else np.array([]),
+                        ga_losses_per_sample=np.array([ga_bl]) if ga_bl.size else np.array([])  # Reshape for compatibility
+                    )
+                else:
+                    # ensure files exist
+                    np.savez_compressed(agg_ga_npz)
+                if es_acc.size or es_shp.size or es_pix.size or es_bl.size:
+                    np.savez_compressed(agg_es_npz,
+                        per_sample_accuracy=es_acc if es_acc.size else np.array([]),
+                        per_sample_shape_accuracy=es_shp if es_shp.size else np.array([]),
+                        per_sample_pixel_correctness=es_pix if es_pix.size else np.array([]),
+                        es_generation_losses_per_sample=np.array([es_bl]) if es_bl.size else np.array([])  # Reshape for compatibility
+                    )
+                else:
+                    np.savez_compressed(agg_es_npz)
+
+                # Dataset length for aggregated plot is total number of per-sample entries if present
+                agg_len = int(max(ga_acc.size, es_acc.size, ga_shp.size, es_shp.size, ga_pix.size, es_pix.size, ga_bl.size, es_bl.size))
+                
+                # Create aggregated statistical histograms
+                agg_plot = create_statistical_histograms(agg_ga_npz, agg_es_npz, args.out_dir, dataset_length=agg_len if agg_len > 1 else 2)
+                if agg_plot:
+                    print(f"[aggregate] Saved aggregated statistical histograms to {agg_plot}")
+                    
+                    # Create aggregated W&B run
+                    try:
+                        import wandb
+                        
+                        # Create aggregated run name with "agg_" prefix
+                        if args.run_name:
+                            agg_run_name = f"agg_{args.run_name}-{int(time.time())}"
+                        else:
+                            agg_run_name = f"agg_latent-search-b{args.budget}-{int(time.time())}"
+                        
+                        # Create aggregated run configuration
+                        agg_cfg = {
+                            "artifact_path": args.wandb_artifact_path,
+                            "budget": args.budget,
+                            "ga_steps": ga_steps,
+                            "ga_lr": args.ga_lr,
+                            "es_population": pop,
+                            "es_generations": gens,
+                            "es_mutation_std": args.es_mutation_std,
+                            "use_subspace_mutation": args.use_subspace_mutation,
+                            "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
+                            "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
+                            "trust_region_radius": args.trust_region_radius,
+                            "track_progress": args.track_progress,
+                            "background_resolution": args.background_resolution,
+                            "background_smoothing": args.background_smoothing,
+                            "background_knn": args.background_knn,
+                            "background_bandwidth_scale": args.background_bandwidth_scale,
+                            "background_global_mix": args.background_global_mix,
+                            "run_name": agg_run_name,
+                            "dataset_folder": args.dataset_folder,
+                            "n_samples": args.n_samples,
+                            "aggregated": True,
+                            "total_samples": agg_len,
+                            "ga_return_code": 0,  # Aggregated runs don't have return codes
+                            "es_return_code": 0,
+                            "latent_dimension": None,  # Will be updated after plotting
+                        }
+                        
+                        # Start aggregated W&B run
+                        agg_run = wandb.init(
+                            project=args.wandb_project,
+                            entity=args.wandb_entity,
+                            name=agg_run_name,
+                            config=agg_cfg,
+                            group=group_name
+                        )
+                        print(f"[wandb] Started aggregated run: {agg_run_name}")
+                        
+                        # Log aggregated metrics
+                        if ga_acc.size > 0:
+                            wandb.log({
+                                "aggregated/ga_accuracy_mean": float(np.mean(ga_acc)),
+                                "aggregated/ga_accuracy_std": float(np.std(ga_acc)),
+                                "aggregated/ga_shape_correctness_mean": float(np.mean(ga_shp)),
+                                "aggregated/ga_shape_correctness_std": float(np.std(ga_shp)),
+                                "aggregated/ga_pixel_correctness_mean": float(np.mean(ga_pix)),
+                                "aggregated/ga_pixel_correctness_std": float(np.std(ga_pix)),
+                            })
+                        if ga_bl.size > 0:
+                            wandb.log({
+                                "aggregated/ga_best_loss_mean": float(np.mean(ga_bl)),
+                                "aggregated/ga_best_loss_std": float(np.std(ga_bl)),
+                            })
+                        if es_acc.size > 0:
+                            wandb.log({
+                                "aggregated/es_accuracy_mean": float(np.mean(es_acc)),
+                                "aggregated/es_accuracy_std": float(np.std(es_acc)),
+                                "aggregated/es_shape_correctness_mean": float(np.mean(es_shp)),
+                                "aggregated/es_shape_correctness_std": float(np.std(es_shp)),
+                                "aggregated/es_pixel_correctness_mean": float(np.mean(es_pix)),
+                                "aggregated/es_pixel_correctness_std": float(np.std(es_pix)),
+                            })
+                        if es_bl.size > 0:
+                            wandb.log({
+                                "aggregated/es_best_loss_mean": float(np.mean(es_bl)),
+                                "aggregated/es_best_loss_std": float(np.std(es_bl)),
+                            })
+                        
+                        # Upload aggregated plots and NPZ files
+                        upload_to_wandb(args.wandb_project, args.wandb_entity, agg_cfg, agg_ga_npz, agg_es_npz, 
+                                      None, None, agg_plot, group_name, existing_run=agg_run)
+                        
+                        # Finish aggregated run
+                        agg_run.finish()
+                        print(f"[wandb] Finished aggregated run: {agg_run_name}")
+                        
+                    except Exception as e:
+                        print(f"[aggregate] Failed to create aggregated W&B run: {e}")
+                        
+                else:
+                    print(f"[aggregate] Failed to generate aggregated statistical histograms")
+            except Exception as _agg_plot_e:
+                print(f"[aggregate] Aggregation failed: {_agg_plot_e}")
         
     else:
         # Single run (original behavior)

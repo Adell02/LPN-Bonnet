@@ -226,7 +226,7 @@ def visualize_heatmap(data, proportion):
     fig.colorbar(im1, ax=ax1, label="Value")
 
     # Plot the proportion data
-    im2 = ax2.imshow(proportion, cmap="viridis")
+    im2 = ax2.imshow(proportion, cmap="cool")
     ax2.set_title("Proportion in Dataset")
     ax2.set_xlabel("Column")
     ax2.set_ylabel("Row")
@@ -281,8 +281,10 @@ def visualize_tsne(latents, program_ids, perplexity=2, max_iter=1000, random_sta
     unique_ids = np.unique(program_ids)
     num_colors = len(unique_ids)
 
-    # Use a color palette that ensures distinct colors
-    color_palette = sns.color_palette("husl", n_colors=num_colors)
+    # Use custom color palette
+    custom_colors = ['#FBB998', '#DB74DB', '#5361E5', '#4B9D61']
+    # Cycle through custom colors if we have more program IDs than colors
+    color_palette = [custom_colors[i % len(custom_colors)] for i in range(num_colors)]
     color_map = dict(zip(unique_ids, color_palette))
 
     # Plot each program ID with its assigned color and add numbering
@@ -447,7 +449,7 @@ def visualize_optimization_comparison(
         diff_masked,
         extent=[x0, x1, y0, y1],
         origin='lower', aspect='auto',
-        cmap='viridis', vmin=-vmax, vmax=+vmax
+        cmap='cool', vmin=-vmax, vmax=+vmax
     )
 
     # zero contour A==B, and make it show in legend

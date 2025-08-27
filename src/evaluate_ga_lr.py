@@ -117,13 +117,58 @@ def log_evaluation_summary(checkpoint_name: str, checkpoint_step: int,
 
 def generate_lr_plot(lrs: List[float], results_data: List[Dict[str, Any]],
                      checkpoint_name: str, checkpoint_step: int) -> str:
-    """Generate a line plot showing how learning rate affects accuracy metrics."""
+    """Generate a line plot showing how learning rate affects loss and accuracy metrics."""
     try:
+        # Create subplots: one for loss (log scale), one for accuracy
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 12))
+        
+        # Plot 1: Loss vs Learning Rate (log y-axis)
+        loss_values = []
+        for lr in lrs:
+            result = next((r for r in results_data if r['lr'] == lr), None)
+            if result and result.get('success') and result.get('results'):
+                val = result['results'].get('total_final_loss')
+                loss_values.append(val if val is not None else np.nan)
+            else:
+                loss_values.append(np.nan)
+        
+        # Filter out NaN values for plotting
+        valid_indices = ~np.isnan(loss_values)
+        if np.any(valid_indices):
+            valid_lrs = [lr for i, lr in enumerate(lrs) if valid_indices[i]]
+            valid_losses = [loss for loss in loss_values if not np.isnan(loss)]
+            
+            ax1.plot(valid_lrs, valid_losses, marker='o', linewidth=2, markersize=8,
+                     color='#FBB998', label='Total Final Loss', alpha=0.8)
+            
+            # Find best learning rate (lowest loss)
+            if valid_losses:
+                best_idx = np.argmin(valid_losses)
+                best_lr = valid_lrs[best_idx]
+                best_loss = valid_losses[best_idx]
+                ax1.axvline(x=best_lr, color='red', linestyle='--', alpha=0.7, 
+                           label=f'Best LR: {best_lr:.4f}')
+                ax1.scatter([best_lr], [best_loss], color='red', s=100, zorder=5)
+        
+        ax1.set_xlabel("Learning Rate", fontsize=14)
+        ax1.set_ylabel("Total Final Loss (log scale)", fontsize=14)
+        ax1.set_title(
+            f"Gradient Ascent Loss vs Learning Rate\n"
+            f"Checkpoint: {checkpoint_name} (Step: {checkpoint_step})",
+            fontsize=16,
+        )
+        ax1.grid(True, alpha=0.3)
+        ax1.legend(fontsize=12)
+        ax1.set_xscale('log')
+        ax1.set_yscale('log')
+        ax1.grid(True, which="both", ls="-", alpha=0.2)
+        ax1.grid(True, which="minor", ls=":", alpha=0.2)
+        
+        # Plot 2: Accuracy vs Learning Rate (original plot)
         metrics = ["overall_accuracy", "top_1_shape_accuracy", "top_1_pixel_correctness"]
         metric_names = ["Overall Accuracy", "Shape Accuracy", "Pixel Correctness"]
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
-
-        fig, ax = plt.subplots(figsize=(12, 8))
+        colors = ['#FBB998', '#DB74DB', '#5361E5']
+        
         for metric, metric_name, color in zip(metrics, metric_names, colors):
             values = []
             for lr in lrs:
@@ -133,24 +178,24 @@ def generate_lr_plot(lrs: List[float], results_data: List[Dict[str, Any]],
                     values.append(val if val is not None else np.nan)
                 else:
                     values.append(np.nan)
-            ax.plot(lrs, values, marker='o', linewidth=2, markersize=8,
-                    color=color, label=metric_name, alpha=0.8)
+            ax2.plot(lrs, values, marker='o', linewidth=2, markersize=8,
+                     color=color, label=metric_name, alpha=0.8)
 
-        ax.set_xlabel("Learning Rate", fontsize=14)
-        ax.set_ylabel("Accuracy", fontsize=14)
-        ax.set_title(
-            f"Gradient Ascent Performance vs Learning Rate\n"
+        ax2.set_xlabel("Learning Rate", fontsize=14)
+        ax2.set_ylabel("Accuracy", fontsize=14)
+        ax2.set_title(
+            f"Gradient Ascent Accuracy vs Learning Rate\n"
             f"Checkpoint: {checkpoint_name} (Step: {checkpoint_step})",
             fontsize=16,
         )
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=12)
-        ax.set_xscale('log')
-        ax.set_ylim(0, 1)
+        ax2.grid(True, alpha=0.3)
+        ax2.legend(fontsize=12)
+        ax2.set_xscale('log')
+        ax2.set_ylim(0, 1)
+        ax2.grid(True, which="both", ls="-", alpha=0.2)
+        ax2.grid(True, which="minor", ls=":", alpha=0.2)
 
-        ax.grid(True, which="both", ls="-", alpha=0.2)
-        ax.grid(True, which="minor", ls=":", alpha=0.2)
-
+        plt.tight_layout()
         out_dir = Path("results")
         out_dir.mkdir(parents=True, exist_ok=True)
         fig_path = out_dir / f"ga_lr_sweep_{checkpoint_step}.png"
@@ -296,6 +341,8 @@ def run_evaluation(
             "top_2_pixel_correctness": r"top_2_pixel_correctness:\s*([0-9]*\.?[0-9]+)",
             "correct_shapes": r"correct_shapes:\s*([0-9]*\.?[0-9]+)",
             "pixel_correctness": r"pixel_correctness:\s*([0-9]*\.?[0-9]+)",
+            # Loss metrics
+            "total_final_loss": r"total_final_loss:\s*([0-9]*\.?[0-9]+)",
         }
         for metric_name, pattern in metric_patterns.items():
             try:
@@ -313,6 +360,7 @@ def run_evaluation(
                 + (f" | accuracy={acc}" if acc is not None else "")
                 + (f" | shape_acc={metrics.get('top_1_shape_accuracy', 'N/A')}" if metrics.get('top_1_shape_accuracy') is not None else "")
                 + (f" | pixel_acc={metrics.get('top_1_pixel_correctness', 'N/A')}" if metrics.get('top_1_pixel_correctness') is not None else "")
+                + (f" | loss={metrics.get('total_final_loss', 'N/A')}" if metrics.get('total_final_loss') is not None else "")
                 + f" | time={execution_time:.2f}s"
             )
             return True, acc, metrics, stdout, execution_time
@@ -466,7 +514,7 @@ def main():
                 "num_steps", "optimizer", "lr_schedule", "lr_schedule_exponent",
                 "overall_accuracy", "top_1_shape_accuracy", "top_1_accuracy",
                 "top_1_pixel_correctness", "top_2_shape_accuracy", "top_2_accuracy",
-                "top_2_pixel_correctness", "execution_time",
+                "top_2_pixel_correctness", "total_final_loss", "execution_time",
             ])
 
         for i, lr in enumerate(lrs, 1):
@@ -513,6 +561,7 @@ def main():
                         f"lr_{lr:.6f}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
                         f"lr_{lr:.6f}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
                         f"lr_{lr:.6f}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
+                        f"lr_{lr:.6f}/total_final_loss": metrics.get("total_final_loss", 0.0) or 0.0,
                         f"lr_{lr:.6f}/execution_time": execution_time,
                         f"lr_{lr:.6f}/num_steps": args.num_steps,
                         f"lr_{lr:.6f}/optimizer": args.optimizer,
@@ -530,7 +579,7 @@ def main():
                 acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
                 metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
                 metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", ""),
-                execution_time,
+                metrics.get("total_final_loss", ""), execution_time,
             ])
 
     try:
@@ -582,6 +631,7 @@ def main():
     print("   - top_2_shape_accuracy")
     print("   - top_2_accuracy")
     print("   - top_2_pixel_correctness")
+    print("   - total_final_loss")
 
     try:
         run.finish()
