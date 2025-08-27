@@ -235,16 +235,21 @@ def _collapse_to_steps(arr: np.ndarray, steps_len: int) -> np.ndarray:
     else:
         t_axis = axes[-1]
     
+    print(f"[_collapse_to_steps] Input shape: {arr.shape}, steps_len: {steps_len}, t_axis: {t_axis}")
+    
     # Move T to position -2 so final shape is (..., T, D)
     order = [i for i in range(arr.ndim) if i != t_axis and i != arr.ndim - 1] + [t_axis, arr.ndim - 1]
     arr = np.transpose(arr, order)
+    print(f"[_collapse_to_steps] After transpose: {arr.shape}")
     
     # Now average over all leading axes except T and D
     lead_axes = tuple(range(arr.ndim - 2))
     if lead_axes:
+        print(f"[_collapse_to_steps] Averaging over axes: {lead_axes}")
         arr = arr.mean(axis=lead_axes)
     
     # arr is now (T, D)
+    print(f"[_collapse_to_steps] Final shape: {arr.shape}")
     return arr
 
 
@@ -471,6 +476,7 @@ def _splat_background(
 
 
 def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6, alpha: float = 1.0):
+    print(f"[_plot_traj] Plotting {label}: {pts.shape}, color={color}, alpha={alpha}")
     ax.plot(pts[:, 0], pts[:, 1], color=color, linewidth=1.8, alpha=alpha, label=label, zorder=5)
     
     # Add small markers for every step
@@ -486,6 +492,7 @@ def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6
                color=color, zorder=6, alpha=alpha)
     ax.scatter([pts[-1, 0]], [pts[-1, 1]], s=70, marker="s", edgecolors="black", linewidths=0.7,
                color=color, zorder=6, alpha=alpha)
+    print(f"[_plot_traj] Completed plotting {label}")
 
 
 def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: str = "loss", 
@@ -530,33 +537,21 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # Get the most common original dimension (or max if different)
     original_dim = max(original_dims) if original_dims else 2
     
-    # IMPORTANT: Collect background data BEFORE PCA projection
-    # This ensures we have the original high-dimensional points for the loss landscape
-    bgP, bgV = [], []
-    bgP_original = []  # Store original high-dimensional points for background
-    bgV_original = []  # Store original values for background
-    
-    # Also populate bgP and bgV for 2D cases (when no PCA is needed)
-    def add_to_background(pts, vals, is_original=True):
-        if is_original:
-            bgP_original.append(pts)
-            bgV_original.append(vals)
-        # Always add to regular arrays for 2D cases
-        # Note: pts here should be the ORIGINAL high-dimensional points, not PCA-projected
-        pts_flat = pts.reshape(-1, pts.shape[-1])
-        vals_flat = vals.reshape(-1)
-        if len(pts_flat) == len(vals_flat):
-            bgP.append(pts_flat)
-            bgV.append(vals_flat)
+    # Collect background data for loss landscape visualization
+    # CRITICAL: We collect points and their corresponding loss values BEFORE PCA projection
+    # This ensures that when we project to 2D, each 2D point retains its original loss value
+    # The result is an accurate 2D loss landscape that preserves the high-dimensional structure
+    bgP_original = []  # Store original high-dimensional points
+    bgV_original = []  # Store corresponding loss values
     
     # GA path values
     if ga.pts is not None and ga.vals is not None:
-        # Store original high-dimensional points for background
         ga_pts_original = ga.pts.reshape(-1, ga.pts.shape[-1])  # (T, D) where D is original dim
         ga_vals_flat = ga.vals.reshape(-1)
         if len(ga_pts_original) == len(ga_vals_flat):
             print(f"[plot] GA background: original pts={ga_pts_original.shape}, vals={ga_vals_flat.shape}")
-            add_to_background(ga_pts_original, ga_vals_flat, is_original=True)
+            bgP_original.append(ga_pts_original)
+            bgV_original.append(ga_vals_flat)
         else:
             print(f"[plot] GA background mismatch: pts={ga_pts_original.shape}, vals={ga_vals_flat.shape}")
     else:
@@ -564,20 +559,19 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     
     # ES population values
     if es.pop_pts is not None and es.pop_vals is not None:
-        # Store original high-dimensional points for background
         es_pop_pts_original = es.pop_pts.reshape(-1, es.pop_pts.shape[-1])  # (N, D) where D is original dim
         es_pop_vals_flat = es.pop_vals.reshape(-1)
-        print(f"[plot] ES background: original pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
         if len(es_pop_pts_original) == len(es_pop_vals_flat):
             print(f"[plot] ES background: pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
-            add_to_background(es_pop_pts_original, es_pop_vals_flat, is_original=True)
+            bgP_original.append(es_pop_pts_original)
+            bgV_original.append(es_pop_vals_flat)
         else:
             print(f"[plot] ES background mismatch: pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
             print(f"[plot] ES mismatch details: pts length {len(es_pop_pts_original)}, vals length {es_pop_vals_flat.shape}")
     else:
         print(f"[plot] ES background missing: pts={es.pop_pts is not None}, vals={es.pop_vals is not None}")
     
-    # if nothing, background stays white
+    # Check if we have background data
     have_field = len(bgP_original) > 0
     print(f"[plot] Background field available: {have_field} (bgP_original={len(bgP_original)}, bgV_original={len(bgV_original)})")
     
@@ -587,6 +581,25 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             print(f"[plot] Background {i}: pts={pts.shape}, vals={vals.shape}")
             if len(pts) != len(vals):
                 print(f"[plot] WARNING: Background {i} has mismatched lengths!")
+    
+    # After PCA, filter background data to only use points with consistent dimension
+    if original_dim > 2 and pca_transformer is not None:
+        # Filter background to only use points with the PCA dimension
+        bgP_original_filtered = []
+        bgV_original_filtered = []
+        for pts, vals in zip(bgP_original, bgV_original):
+            if pts.shape[-1] == original_dim:
+                bgP_original_filtered.append(pts)
+                bgV_original_filtered.append(vals)
+        
+        if bgP_original_filtered:
+            print(f"[plot] Filtered background to {len(bgP_original_filtered)} arrays with dimension {original_dim}")
+            bgP_original = bgP_original_filtered
+            bgV_original = bgV_original_filtered
+            have_field = len(bgP_original) > 0
+        else:
+            print(f"[plot] WARNING: No background data with dimension {original_dim}, disabling background")
+            have_field = False
 
     # Apply unified PCA if needed
     if original_dim > 2:
@@ -599,7 +612,6 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             print(f"[plot] This can happen when different runs have different latent dimensions")
             print(f"[plot] Using the most common dimension for PCA")
             # Use the most common dimension
-            from collections import Counter
             dim_counter = Counter(dims)
             most_common_dim = dim_counter.most_common(1)[0][0]
             print(f"[plot] Using dimension {most_common_dim} for PCA")
@@ -608,6 +620,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             if all_points_filtered:
                 all_points = all_points_filtered
                 original_dim = most_common_dim
+                print(f"[plot] Filtered to {len(all_points_filtered)} arrays with dimension {most_common_dim}")
             else:
                 print(f"[plot] ERROR: No points with consistent dimension found")
                 return None, None
@@ -618,13 +631,21 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         
         # Apply the same PCA transformation to all arrays
         if ga.pts is not None:
+            print(f"[PCA] GA before projection: {ga.pts.shape}")
             ga.pts = _apply_fitted_pca(ga.pts, pca_transformer, target_dim=2)
+            print(f"[PCA] GA after projection: {ga.pts.shape}")
         if es.pts is not None:
+            print(f"[PCA] ES before projection: {es.pts.shape}")
             es.pts = _apply_fitted_pca(es.pts, pca_transformer, target_dim=2)
+            print(f"[PCA] ES after projection: {es.pts.shape}")
         if es.pop_pts is not None:
+            print(f"[PCA] ES pop before projection: {es.pop_pts.shape}")
             es.pop_pts = _apply_fitted_pca(es.pop_pts, pca_transformer, target_dim=2)
+            print(f"[PCA] ES pop after projection: {es.pop_pts.shape}")
         if es.best_per_gen is not None:
+            print(f"[PCA] ES best before projection: {es.best_per_gen.shape}")
             es.best_per_gen = _apply_fitted_pca(es.best_per_gen, pca_transformer, target_dim=2)
+            print(f"[PCA] ES best after projection: {es.best_per_gen.shape}")
     else:
         print(f"[plot] Original latent dimension: {original_dim}D, no PCA needed")
 
@@ -661,7 +682,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # normalization across everything we will color
     all_for_norm = []
     if have_field:
-        all_for_norm.append(orient(np.concatenate(bgV)))
+        all_for_norm.append(orient(np.concatenate(bgV_original)))
     if ga.vals is not None:
         all_for_norm.append(orient(np.asarray(ga.vals)))
     if es.pop_vals is not None:
@@ -686,41 +707,30 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
 
     # soft heatmap background by splatting losses if available
     if have_field:
-        # For PCA cases, create background using original high-dimensional points
-        # to preserve the loss landscape structure, then project to 2D
+        # KEY IMPROVEMENT: Create background using original high-dimensional points and their loss values
+        # Project the points to 2D while preserving the loss landscape structure
+        # This ensures each 2D point has its correct loss value, creating an accurate loss landscape
+        P_original = np.concatenate(bgP_original, axis=0)  # (N, D) where D is original dim
+        V_original = orient(np.concatenate(bgV_original, axis=0))  # (N,)
+        
         if original_dim > 2 and pca_transformer is not None:
-            print(f"[plot] Creating background using original {original_dim}D points for better loss landscape")
-            
-            # Use original high-dimensional points for background
-            P_original = np.concatenate(bgP_original, axis=0)  # (N, D) where D is original dim
-            V_original = orient(np.concatenate(bgV_original, axis=0))  # (N,)
-            
-            # Project original points to 2D for background creation
+            print(f"[plot] Creating background using {len(P_original)} {original_dim}D points projected to 2D")
+            # Project original high-dimensional points to 2D for background creation
             P_2d = _apply_fitted_pca(P_original, pca_transformer, target_dim=2)
-            print(f"[plot] Background: {len(P_original)} {original_dim}D points projected to {P_2d.shape}")
-            
-            # Create the background heatmap using the projected points
-            XX, YY, ZZ = _splat_background(
-                P_2d, V_original, xlim, ylim, 
-                n=background_resolution, 
-                enable_smoothing=background_smoothing,
-                knn_k=background_knn,
-                bandwidth_scale=background_bandwidth_scale,
-                global_mix=background_global_mix
-            )
-            
+            print(f"[plot] Background: {P_original.shape} -> {P_2d.shape}")
         else:
-            # For 2D data, use the projected points directly
-            P = np.concatenate(bgP, axis=0)
-            V = orient(np.concatenate(bgV, axis=0))
-            XX, YY, ZZ = _splat_background(
-                P, V, xlim, ylim, 
-                n=background_resolution, 
-                enable_smoothing=background_smoothing,
-                knn_k=background_knn,
-                bandwidth_scale=background_bandwidth_scale,
-                global_mix=background_global_mix
-            )
+            print(f"[plot] Creating background using {len(P_original)} 2D points directly")
+            P_2d = P_original  # Already 2D
+        
+        # Create the background heatmap using the projected points with their original loss values
+        XX, YY, ZZ = _splat_background(
+            P_2d, V_original, xlim, ylim, 
+            n=background_resolution, 
+            enable_smoothing=background_smoothing,
+            knn_k=background_knn,
+            bandwidth_scale=background_bandwidth_scale,
+            global_mix=background_global_mix
+        )
         
         # Display the background
         im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.7)
@@ -775,7 +785,10 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     if ga.pts is not None and len(ga.pts) > 1:
         # Flatten GA path for plotting
         ga_pts_flat = ga.pts.reshape(-1, 2)
+        print(f"[plot] Plotting GA trajectory: {ga_pts_flat.shape}, range: x[{ga_pts_flat[:, 0].min():.3f}, {ga_pts_flat[:, 0].max():.3f}], y[{ga_pts_flat[:, 1].min():.3f}, {ga_pts_flat[:, 1].max():.3f}]")
         _plot_traj(ax, ga_pts_flat, color="#e91e63", label="GA path", alpha=1.0)
+    else:
+        print(f"[plot] GA plotting skipped: pts={ga.pts is not None}, len={len(ga.pts) if ga.pts is not None else 0}")
 
     # Create comprehensive legend with all elements
     legend_elements = []
@@ -1058,24 +1071,17 @@ def main() -> None:
             seed = args.dataset_seed + run_idx
             print(f"\n🔬 Run {run_idx + 1}/{args.dataset_length} with seed {seed}")
             
-            # Update dataset args for this run
-            run_src_args = build_dataset_args(args)
-            # Replace the seed in the args
-            run_src_args = [arg for arg in run_src_args if not arg.startswith("--dataset-seed")]
-            run_src_args.extend(["--dataset-seed", str(seed)])
-            # Force dataset_length to 1 for individual runs
-            run_src_args = [arg for arg in run_src_args if not arg.startswith("--dataset-length")]
-            run_src_args.extend(["--dataset-length", "1"])
+            # Build the correct arguments manually to avoid parsing issues
+            run_src_args = [
+                "-d", args.dataset_folder,
+                "--dataset-length", "1",
+                "--dataset-batch-size", str(args.dataset_batch_size),
+                "--dataset-use-hf", args.dataset_use_hf,
+                "--dataset-seed", str(seed)
+            ]
             
             # Debug: show the final args
             print(f"[run] Final args: {run_src_args}")
-            
-            # Verify the args are correct
-            expected_args = ["-d", args.dataset_folder, "--dataset-length", "1", "--dataset-batch-size", str(args.dataset_batch_size), "--dataset-use-hf", args.dataset_use_hf, "--dataset-seed", str(seed)]
-            print(f"[run] Expected args: {expected_args}")
-            if run_src_args != expected_args:
-                print(f"[run] WARNING: Args mismatch! Using expected args instead.")
-                run_src_args = expected_args
             
             # Run GA for this seed
             ga_cmd = [
