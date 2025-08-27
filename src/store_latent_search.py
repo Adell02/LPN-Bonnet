@@ -471,11 +471,11 @@ def _splat_background(
     enable_smoothing: bool = False,
     knn_k: int = 5,
     bandwidth_scale: float = 1.25,
-    global_mix: float = 0.0,   # No global blending in untracked areas
+    global_mix: float = 0.05,   # Restored to 0.05 for smooth gaussian interpolation
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Adaptive Gaussian splatting with per-point bandwidths.
-    Shows white (NaN) for untracked regions (no global blending).
+    Provides smooth interpolation between loss points for beautiful viridis tonality.
     """
     # grid
     xv = np.linspace(xlim[0], xlim[1], n)
@@ -512,16 +512,17 @@ def _splat_background(
     num = W @ V                                                  # [M]
     den = W.sum(axis=1)                                          # [M]
 
-    # Compute field
+    # Restore gaussian interpolation for smooth loss landscape
+    # Use global mixing for smooth transitions between loss points
     Z = num / den
-
-    # Mask low-confidence areas to white (NaN)
-    weight_threshold = 0.01
-    low_weight_mask = den < weight_threshold
-
-    # Reshape and apply mask
+    
+    # Apply global mixing for smooth interpolation
+    if global_mix > 0:
+        global_mean = np.nanmean(V)
+        Z = (1 - global_mix) * Z + global_mix * global_mean
+    
+    # Reshape to grid
     Z = Z.reshape(n, n)
-    Z[low_weight_mask.reshape(n, n)] = np.nan
 
     if enable_smoothing and N > 1:
         try:
@@ -557,7 +558,7 @@ def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6
 def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: str = "loss", 
                   background_resolution: int = 400, background_smoothing: bool = False,
                   background_knn: int = 5, background_bandwidth_scale: float = 1.25, 
-                  background_global_mix: float = 0.0, ga_steps: int = None, 
+                  background_global_mix: float = 0.05, ga_steps: int = None, 
                   es_population: int = None, es_generations: int = None) -> tuple[Optional[str], Optional[str], int]:
     try:
         import matplotlib
@@ -884,9 +885,11 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     if ga.vals is not None:
         print(f"[normalization] GA values: {ga.vals.shape}, range: [{ga.vals.min():.4f}, {ga.vals.max():.4f}]")
         all_for_norm.append(np.asarray(ga.vals))
-    if es.pop_vals is not None:
-        print(f"[normalization] ES pop values: {es.pop_vals.shape}, range: [{es.pop_vals.min():.4f}, {es.pop_vals.max():.4f}]")
-        all_for_norm.append(np.asarray(es.pop_vals))
+    # NOTE: Avoid including raw es.pop_vals in normalization to keep consistency with plotted landscape
+    # We already expanded es.vals for background; include es.vals directly if present
+    if es.vals is not None:
+        print(f"[normalization] ES trajectory values: {es.vals.shape}, range: [{es.vals.min():.4f}, {es.vals.max():.4f}]")
+        all_for_norm.append(np.asarray(es.vals))
     
     print(f"[normalization] Total arrays for normalization: {len(all_for_norm)}")
     
@@ -900,17 +903,13 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
                 vmin, vmax = 0.0, 1.0
     else:
-        # For losses: ensure only positive values in colorbar
+        # For losses: use original range (continuous viridis background, no abs, no white gaps)
         if len(all_for_norm) > 0:
             vv = np.concatenate(all_for_norm)
-            # Take absolute values to ensure positive colorbar
-            vv_abs = np.abs(vv)
-            vmin, vmax = 0.0, float(np.nanmax(vv_abs))
-            if not np.isfinite(vmax) or vmax == 0:
-                # Fallback: use a reasonable range for positive values
+            vmin, vmax = float(np.nanmin(vv)), float(np.nanmax(vv))
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
                 vmin, vmax = 0.0, 1.0
         else:
-            # Fallback: use a reasonable range for positive values
             vmin, vmax = 0.0, 1.0
     
     print(f"[plot] Loss normalization: vmin={vmin:.4f}, vmax={vmax:.4f}")
@@ -918,11 +917,11 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     cmap = "viridis"
     
     def orient(v: np.ndarray) -> np.ndarray:
-        """Orient values for visualization: scores stay positive, losses use absolute values for positive colorbar"""
+        """Orient values for visualization: keep original values for losses (no abs)."""
         if field_name.lower() == "score":
             return v  # Scores: higher is better, keep positive
         else:
-            return np.abs(v)  # Losses: use absolute values for positive colorbar
+            return v  # Losses: keep original sign (continuous viridis background)
 
     # figure
     fig, ax = plt.subplots(1, 1, figsize=(16, 14))
