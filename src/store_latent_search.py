@@ -817,22 +817,28 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         pca_transformer = _fit_unified_pca(all_points, target_dim=2, whiten=True)
         
         # Apply the same PCA transformation to all arrays
-        if ga.pts is not None:
-            print(f"[PCA] GA before projection: {ga.pts.shape}")
-            ga.pts = _apply_fitted_pca(ga.pts, pca_transformer, target_dim=2)
-            print(f"[PCA] GA after projection: {ga.pts.shape}")
-        if es.pts is not None:
-            print(f"[PCA] ES before projection: {es.pts.shape}")
-            es.pts = _apply_fitted_pca(es.pts, pca_transformer, target_dim=2)
-            print(f"[PCA] ES after projection: {es.pts.shape}")
-        if es.pop_pts is not None:
-            print(f"[PCA] ES pop before projection: {es.pop_pts.shape}")
-            es.pop_pts = _apply_fitted_pca(es.pop_pts, pca_transformer, target_dim=2)
-            print(f"[PCA] ES pop after projection: {es.pop_pts.shape}")
-        if es.best_per_gen is not None:
-            print(f"[PCA] ES best before projection: {es.best_per_gen.shape}")
-            es.best_per_gen = _apply_fitted_pca(es.best_per_gen, pca_transformer, target_dim=2)
-            print(f"[PCA] ES best after projection: {es.best_per_gen.shape}")
+        # Determine PCA input feature dimension
+        try:
+            expected_feat = pca_transformer.n_features_in_
+        except Exception:
+            expected_feat = len(pca_transformer['mean']) if isinstance(pca_transformer, dict) and 'mean' in pca_transformer else None
+
+        def _maybe_project(name: str, arr: Optional[np.ndarray]) -> Optional[np.ndarray]:
+            if arr is None:
+                return None
+            d = arr.shape[-1]
+            if expected_feat is not None and d != expected_feat:
+                print(f"[PCA] Skipping projection for {name}: last-dim={d} != expected {expected_feat}")
+                return arr
+            print(f"[PCA] {name} before projection: {arr.shape}")
+            out = _apply_fitted_pca(arr, pca_transformer, target_dim=2)
+            print(f"[PCA] {name} after projection: {out.shape}")
+            return out
+
+        ga.pts = _maybe_project("GA", ga.pts)
+        es.pts = _maybe_project("ES", es.pts)
+        es.pop_pts = _maybe_project("ES pop", es.pop_pts)
+        es.best_per_gen = _maybe_project("ES best", es.best_per_gen)
     else:
         print(f"[plot] Original latent dimension: {original_dim}D, no PCA needed")
 
@@ -1473,6 +1479,34 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     if key in f:
                         ga_accuracies['grid'] = safe_array_to_scalar(np.array(f[key]))
                         break
+
+                # Fallback: compute from per-sample arrays if scalars weren't found
+                if ('overall' not in ga_accuracies or 'shape' not in ga_accuracies or 'grid' not in ga_accuracies):
+                    overall = ga_accuracies.get('overall', None)
+                    shape = ga_accuracies.get('shape', None)
+                    grid = ga_accuracies.get('grid', None)
+                    try:
+                        if overall is None and 'per_sample_accuracy' in f:
+                            arr = np.array(f['per_sample_accuracy']).reshape(-1)
+                            if arr.size > 0:
+                                overall = float(np.mean(arr))
+                        if shape is None and 'per_sample_shape_accuracy' in f:
+                            arr = np.array(f['per_sample_shape_accuracy']).reshape(-1)
+                            if arr.size > 0:
+                                shape = float(np.mean(arr))
+                        if grid is None and 'per_sample_pixel_correctness' in f:
+                            arr = np.array(f['per_sample_pixel_correctness']).reshape(-1)
+                            if arr.size > 0:
+                                grid = float(np.mean(arr))
+                    except Exception as _ga_fallback_e:
+                        print(f"[loss] GA fallback accuracies failed: {_ga_fallback_e}")
+
+                    if overall is not None:
+                        ga_accuracies['overall'] = overall
+                    if shape is not None:
+                        ga_accuracies['shape'] = shape
+                    if grid is not None:
+                        ga_accuracies['grid'] = grid
                 
                 # Add GA accuracy note
                 if ga_accuracies:
@@ -1511,6 +1545,34 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     if key in f:
                         es_accuracies['grid'] = safe_array_to_scalar(np.array(f[key]))
                         break
+
+                # Fallback: compute from per-sample arrays if scalars weren't found
+                if ('overall' not in es_accuracies or 'shape' not in es_accuracies or 'grid' not in es_accuracies):
+                    overall = es_accuracies.get('overall', None)
+                    shape = es_accuracies.get('shape', None)
+                    grid = es_accuracies.get('grid', None)
+                    try:
+                        if overall is None and 'per_sample_accuracy' in f:
+                            arr = np.array(f['per_sample_accuracy']).reshape(-1)
+                            if arr.size > 0:
+                                overall = float(np.mean(arr))
+                        if shape is None and 'per_sample_shape_accuracy' in f:
+                            arr = np.array(f['per_sample_shape_accuracy']).reshape(-1)
+                            if arr.size > 0:
+                                shape = float(np.mean(arr))
+                        if grid is None and 'per_sample_pixel_correctness' in f:
+                            arr = np.array(f['per_sample_pixel_correctness']).reshape(-1)
+                            if arr.size > 0:
+                                grid = float(np.mean(arr))
+                    except Exception as _es_fallback_e:
+                        print(f"[loss] ES fallback accuracies failed: {_es_fallback_e}")
+
+                    if overall is not None:
+                        es_accuracies['overall'] = overall
+                    if shape is not None:
+                        es_accuracies['shape'] = shape
+                    if grid is not None:
+                        es_accuracies['grid'] = grid
                 
                 # Add ES accuracy note
                 if es_accuracies:
@@ -1623,6 +1685,28 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
         print("[stats] No per-sample metrics found in either NPZ file")
         return None
     
+    # Optional diagnostic: warn if GA and ES arrays are (nearly) identical
+    def _warn_if_identical(name: str, a: Optional[np.ndarray], b: Optional[np.ndarray]):
+        try:
+            if a is None or b is None:
+                return
+            if a.size == 0 or b.size == 0:
+                return
+            n = min(a.size, b.size)
+            aa = a[:n].astype(float)
+            bb = b[:n].astype(float)
+            if np.allclose(aa, bb, atol=1e-8, rtol=1e-6):
+                print(f"[stats][warn] GA and ES {name} arrays are numerically identical (n={n}).")
+            else:
+                diff = float(np.mean(np.abs(aa - bb)))
+                print(f"[stats] Mean |GA-ES| for {name}: {diff:.6f} (n={n})")
+        except Exception as _w_e:
+            print(f"[stats] Identical-check failed for {name}: {_w_e}")
+
+    _warn_if_identical('accuracy', ga_metrics.get('accuracy'), es_metrics.get('accuracy'))
+    _warn_if_identical('shape_correctness', ga_metrics.get('shape_correctness'), es_metrics.get('shape_correctness'))
+    _warn_if_identical('pixel_correctness', ga_metrics.get('pixel_correctness'), es_metrics.get('pixel_correctness'))
+
     # Create figure with 3 subplots (one for each metric)
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     fig.suptitle(f"Statistical Analysis: GA vs ES Performance ({dataset_length} samples)", fontsize=16, fontweight='bold')
