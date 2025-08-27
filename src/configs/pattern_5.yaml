@@ -23,7 +23,7 @@ training:
     num_workers: 4
     num_pairs: 4
     class: PATTERN
-    pattern_size: 4  # Changed from 5 to 4 to avoid JAX fusion compilation error
+    pattern_size: 5
   train_datasets:
 
 
@@ -33,7 +33,7 @@ eval:
     - generator: PATTERN
       task_generator_kwargs:
         pattern_size: ${training.task_generator.pattern_size}
-      name: pattern_4_mean  # Updated name to reflect pattern_size change
+      name: pattern_5_mean
       num_pairs: 4
       length: 10
       batch_size: 8
@@ -41,7 +41,7 @@ eval:
     - generator: PATTERN
       task_generator_kwargs:
         pattern_size: ${training.task_generator.pattern_size}
-      name: pattern_4_ga_1  # Updated name to reflect pattern_size change
+      name: pattern_5_ga_1
       num_pairs: 4
       length: 10
       batch_size: 8
