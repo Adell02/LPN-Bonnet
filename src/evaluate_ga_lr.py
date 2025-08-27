@@ -188,7 +188,7 @@ def create_heatmap(
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate GA with different learning rates and budgets")
-    parser.add_argument("--run_name", type=str, required=True, help="Name of the W&B run")
+    parser.add_argument("--artifact_path", type=str, required=True, help="W&B artifact path (e.g., 'entity/project/artifact_name')")
     parser.add_argument("--dataset_folder", type=str, required=True, help="Dataset folder under 'src/datasets'")
     
     # LR sweep configuration
@@ -229,8 +229,8 @@ def main():
     print(f"   - Steps: {args.budget_steps}")
     print(f"   - Values: {budgets}")
     
-    # Get checkpoint artifact path
-    artifact_path = f"{args.entity}/{args.project}/{args.run_name}"
+    # Use provided artifact path
+    artifact_path = args.artifact_path
     print(f"🔍 Using artifact path: {artifact_path}")
     
     # Create output directory
