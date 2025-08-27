@@ -471,11 +471,11 @@ def _splat_background(
     enable_smoothing: bool = False,
     knn_k: int = 5,
     bandwidth_scale: float = 1.25,
-    global_mix: float = 0.05,   # Restored to 0.05 for smooth gaussian interpolation
+    global_mix: float = 0.0,   # No global blending in untracked areas
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Adaptive Gaussian splatting with per-point bandwidths.
-    Provides smooth interpolation between loss points for beautiful viridis tonality.
+    Shows white (NaN) for untracked regions (no global blending).
     """
     # grid
     xv = np.linspace(xlim[0], xlim[1], n)
@@ -512,17 +512,16 @@ def _splat_background(
     num = W @ V                                                  # [M]
     den = W.sum(axis=1)                                          # [M]
 
-    # Restore gaussian interpolation for smooth loss landscape
-    # Use global mixing for smooth transitions between loss points
+    # Compute field
     Z = num / den
-    
-    # Apply global mixing for smooth interpolation
-    if global_mix > 0:
-        global_mean = np.nanmean(V)
-        Z = (1 - global_mix) * Z + global_mix * global_mean
-    
-    # Reshape to grid
+
+    # Mask low-confidence areas to white (NaN)
+    weight_threshold = 0.01
+    low_weight_mask = den < weight_threshold
+
+    # Reshape and apply mask
     Z = Z.reshape(n, n)
+    Z[low_weight_mask.reshape(n, n)] = np.nan
 
     if enable_smoothing and N > 1:
         try:
@@ -558,7 +557,7 @@ def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6
 def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: str = "loss", 
                   background_resolution: int = 400, background_smoothing: bool = False,
                   background_knn: int = 5, background_bandwidth_scale: float = 1.25, 
-                  background_global_mix: float = 0.05, ga_steps: int = None, 
+                  background_global_mix: float = 0.0, ga_steps: int = None, 
                   es_population: int = None, es_generations: int = None) -> tuple[Optional[str], Optional[str], int]:
     try:
         import matplotlib
@@ -1584,12 +1583,36 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                 
                 # Create GA metrics CSV for download
                 ga_csv_path = f"ga_metrics_run_{cfg.get('run_idx', 0)}.csv"
-                ga_metrics_df = pd.DataFrame({
-                    'step': range(len(ga_losses)) if 'ga_losses' in f else [],
-                    'loss': ga_losses if 'ga_losses' in f else [],
-                    'score': ga_scores if 'ga_scores' in f else [],
-                    'log_prob': ga_log_probs if 'ga_log_probs' in f else []
-                })
+                
+                # Ensure 1D arrays and align lengths
+                losses_1d = np.array(f['ga_losses']).reshape(-1) if 'ga_losses' in f else np.array([])
+                scores_1d = np.array(f['ga_scores']).reshape(-1) if 'ga_scores' in f else np.array([])
+                logprobs_1d = np.array(f['ga_log_probs']).reshape(-1) if 'ga_log_probs' in f else np.array([])
+                
+                lengths = [len(losses_1d), len(scores_1d), len(logprobs_1d)]
+                max_len = max([l for l in lengths] + [0])
+                
+                def align_len(arr: np.ndarray, n: int) -> list:
+                    if n == 0:
+                        return []
+                    if arr.size == 0:
+                        return [float('nan')] * n
+                    if len(arr) == n:
+                        return arr.astype(float).tolist()
+                    if len(arr) > n:
+                        return arr[:n].astype(float).tolist()
+                    # pad with NaN
+                    pad = [float('nan')] * (n - len(arr))
+                    return arr.astype(float).tolist() + pad
+                
+                data_dict = {
+                    'step': list(range(max_len)) if max_len > 0 else [],
+                    'loss': align_len(losses_1d, max_len),
+                    'score': align_len(scores_1d, max_len),
+                    'log_prob': align_len(logprobs_1d, max_len),
+                }
+                
+                ga_metrics_df = pd.DataFrame(data_dict)
                 ga_metrics_df.to_csv(ga_csv_path, index=False)
                 
                 # Upload GA metrics CSV
@@ -1652,16 +1675,37 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                 # Create ES metrics CSV for download
                 es_csv_path = f"es_metrics_run_{cfg.get('run_idx', 0)}.csv"
                 
-                # Prepare ES metrics data
-                es_data = {}
-                if 'es_generation_losses' in f:
-                    es_data['generation'] = range(len(gen_losses))
-                    es_data['generation_loss'] = gen_losses
-                if 'es_best_losses_per_generation' in f:
-                    es_data['best_loss'] = best_losses
-                if 'es_all_losses' in f and 'es_generation_idx' in f:
-                    es_data['population_generation'] = np.array(f['es_generation_idx'])
-                    es_data['population_loss'] = all_losses
+                # Prepare ES metrics data (ensure 1D arrays and aligned lengths)
+                es_csv_path = f"es_metrics_run_{cfg.get('run_idx', 0)}.csv"
+                
+                gens_1d = np.array(range(len(gen_losses))) if 'es_generation_losses' in f else np.array([])
+                gen_losses_1d = np.array(gen_losses).reshape(-1) if 'es_generation_losses' in f else np.array([])
+                best_losses_1d = np.array(best_losses).reshape(-1) if 'es_best_losses_per_generation' in f else np.array([])
+                pop_gen_1d = np.array(f['es_generation_idx']).reshape(-1) if 'es_all_losses' in f and 'es_generation_idx' in f else np.array([])
+                pop_loss_1d = np.array(all_losses).reshape(-1) if 'es_all_losses' in f else np.array([])
+                
+                lengths = [len(gens_1d), len(gen_losses_1d), len(best_losses_1d), len(pop_gen_1d), len(pop_loss_1d)]
+                max_len = max([l for l in lengths] + [0])
+                
+                def align_len_es(arr: np.ndarray, n: int) -> list:
+                    if n == 0:
+                        return []
+                    if arr.size == 0:
+                        return [float('nan')] * n
+                    if len(arr) == n:
+                        return arr.astype(float).tolist()
+                    if len(arr) > n:
+                        return arr[:n].astype(float).tolist()
+                    pad = [float('nan')] * (n - len(arr))
+                    return arr.astype(float).tolist() + pad
+                
+                es_data = {
+                    'generation': align_len_es(gens_1d, max_len),
+                    'generation_loss': align_len_es(gen_losses_1d, max_len),
+                    'best_loss': align_len_es(best_losses_1d, max_len),
+                    'population_generation': align_len_es(pop_gen_1d, max_len),
+                    'population_loss': align_len_es(pop_loss_1d, max_len),
+                }
                 
                 es_metrics_df = pd.DataFrame(es_data)
                 es_metrics_df.to_csv(es_csv_path, index=False)
