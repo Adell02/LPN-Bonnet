@@ -141,19 +141,66 @@ def _extract_best_per_gen(npz, prefix: str) -> Optional[np.ndarray]:
 
 
 def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
-    # also read ES population scores so we can make the soft heatmap
+    """
+    Extract ES population data with proper loss pairing.
+    Prefer per-sample losses to ensure counts match.
+    """
     pts = gens = vals = None
+    
     if f"{prefix}all_latents" in npz:
         pts = np.array(npz[f"{prefix}all_latents"])
         # Don't reshape here - PCA will handle dimension reduction
+    
     if f"{prefix}generation_idx" in npz:
         gens = np.array(npz[f"{prefix}generation_idx"]).reshape(-1)
-    # Look for various possible keys for population values (new ES keys first)
-    for k in (f"{prefix}all_losses", f"{prefix}losses_per_generation", f"{prefix}all_scores"):
-        if k in npz:
-            vals = np.array(npz[k]).reshape(-1)
-            break
+    
+    # Prefer per-sample losses for proper population pairing
+    if f"{prefix}losses_per_generation" in npz:
+        lp = np.array(npz[f"{prefix}losses_per_generation"])
+        vals = lp.reshape(-1)  # (G*P,) - flattened per-generation losses
+        print(f"[plot] Using {prefix}losses_per_generation: {lp.shape} -> {vals.shape}")
+    elif f"{prefix}all_losses" in npz and gens is not None:
+        # Expand per-gen losses to population using the generation index
+        per_gen = np.array(npz[f"{prefix}all_losses"]).reshape(-1)
+        vals = per_gen[gens]  # broadcast by index to match all_latents
+        print(f"[plot] Using {prefix}all_losses expanded: {per_gen.shape} -> {vals.shape}")
+    elif f"{prefix}all_scores" in npz:
+        vals = np.array(npz[f"{prefix}all_scores"]).reshape(-1)
+        print(f"[plot] Using {prefix}all_scores: {vals.shape}")
+    
     return pts, gens, vals
+
+
+def _collapse_to_steps(arr: np.ndarray, steps_len: int) -> np.ndarray:
+    """
+    Collapse GA latents to one point per step by averaging over non-step axes.
+    This ensures T matches loss length for proper pairing.
+    """
+    arr = np.asarray(arr)
+    if arr.ndim < 2:
+        return arr
+    
+    D = arr.shape[-1]  # latent dimension
+    
+    # Find axis with size == steps_len among all but last
+    axes = [i for i in range(arr.ndim - 1) if arr.shape[i] == steps_len]
+    if not axes:
+        # Fall back: assume second-to-last is T
+        t_axis = arr.ndim - 2
+    else:
+        t_axis = axes[-1]
+    
+    # Move T to position -2 so final shape is (..., T, D)
+    order = [i for i in range(arr.ndim) if i != t_axis and i != arr.ndim - 1] + [t_axis, arr.ndim - 1]
+    arr = np.transpose(arr, order)
+    
+    # Now average over all leading axes except T and D
+    lead_axes = tuple(range(arr.ndim - 2))
+    if lead_axes:
+        arr = arr.mean(axis=lead_axes)
+    
+    # arr is now (T, D)
+    return arr
 
 
 def _load_trace(npz_path: str, prefix: str) -> Trace:
@@ -163,6 +210,13 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
             print(f"[plot] Available keys for {prefix}: {list(f.keys())}")
             t.pts = try_extract_2d_points(f, prefix)
             t.vals = _extract_vals(f, prefix)
+            
+            # Fix GA shape mismatch: collapse latents to one point per step
+            if prefix == "ga_" and t.pts is not None and t.vals is not None:
+                print(f"[plot] GA shape fix: pts={t.pts.shape}, vals={t.vals.shape}")
+                t.pts = _collapse_to_steps(t.pts, steps_len=len(t.vals))
+                print(f"[plot] GA shape after fix: pts={t.pts.shape}, vals={t.vals.shape}")
+            
             t.best_per_gen = _extract_best_per_gen(f, prefix)
             pop_pts, gen_idx, pop_vals = _extract_pop(f, prefix)
             t.pop_pts = pop_pts
@@ -171,7 +225,7 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
     return t
 
 
-def _fit_unified_pca(all_points: list[np.ndarray], target_dim: int = 2):
+def _fit_unified_pca(all_points: list[np.ndarray], target_dim: int = 2, whiten: bool = True):
     """
     Fit PCA on all data combined to ensure consistent coordinate system.
     Returns PCA transformer that can be applied to individual arrays.
@@ -197,12 +251,13 @@ def _fit_unified_pca(all_points: list[np.ndarray], target_dim: int = 2):
         return None
     
     print(f"[PCA] Fitting unified PCA on {original_dim}D data to project to {target_dim}D")
+    print(f"[PCA] Whitening: {whiten}")
     print(f"[PCA] Total points for PCA fitting: {len(combined_points)}")
     
     # Fit PCA on combined data
     try:
         from sklearn.decomposition import PCA
-        pca = PCA(n_components=target_dim)
+        pca = PCA(n_components=target_dim, whiten=whiten)
         pca.fit(combined_points)
         explained_variance_ratio = pca.explained_variance_ratio_
         print(f"[PCA] Unified PCA explained variance ratio: {explained_variance_ratio}")
@@ -226,15 +281,18 @@ def _fit_unified_pca(all_points: list[np.ndarray], target_dim: int = 2):
         eigenvalues = eigenvalues[sorted_indices]
         eigenvectors = eigenvectors[:, sorted_indices]
         
-        # Store transformation matrix
+        # Store transformation matrix with optional whitening
+        scale = np.sqrt(np.maximum(eigenvalues[:target_dim], 1e-12)) if whiten else np.ones(target_dim)
         pca_transformer = {
             'mean': mean,
             'eigenvectors': eigenvectors[:, :target_dim],
+            'scale': scale,
             'explained_variance_ratio': eigenvalues[:target_dim] / np.sum(eigenvalues)
         }
         
         print(f"[PCA] Manual PCA explained variance ratio: {pca_transformer['explained_variance_ratio']}")
         print(f"[PCA] Cumulative explained variance: {np.sum(pca_transformer['explained_variance_ratio']):.3f}")
+        print(f"[PCA] Whitening scale factors: {pca_transformer['scale']}")
         
         return pca_transformer
 
@@ -260,6 +318,9 @@ def _apply_fitted_pca(points: np.ndarray, pca_transformer, target_dim: int = 2) 
         eigenvectors = pca_transformer['eigenvectors']
         centered = points_flat - mean
         points_transformed = centered @ eigenvectors
+        # Apply whitening if scale factors are available
+        if 'scale' in pca_transformer:
+            points_transformed = points_transformed / pca_transformer['scale']
     
     # Reshape back to original shape but with target_dim as last dimension
     new_shape = list(original_shape[:-1]) + [target_dim]
@@ -412,8 +473,9 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     if original_dim > 2:
         print(f"[plot] Original latent dimension: {original_dim}D, applying unified PCA to project to 2D")
         
-        # Fit PCA on all data combined
-        pca_transformer = _fit_unified_pca(all_points, target_dim=2)
+        # Fit PCA on all data combined with whitening to prevent stretching
+        # Whitening ensures PC1 and PC2 have similar variance, preventing the plot from looking like a pancake
+        pca_transformer = _fit_unified_pca(all_points, target_dim=2, whiten=True)
         
         # Apply the same PCA transformation to all arrays
         if ga.pts is not None:
@@ -440,10 +502,21 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         return None, None
     
     XY = np.concatenate(pts_for_bounds, axis=0)
-    xlim, ylim = _nice_bounds(XY, pad=0.10)  # 10% padding for wider range
+    
+    # Fix the "pancake" look by squaring the view window
+    # This ensures PC1 and PC2 have similar visual impact even when PCA variance ratios are imbalanced
+    # Instead of letting PC1 dominate the span, we use the maximum range from both components
+    cx, cy = XY[:, 0].mean(), XY[:, 1].mean()
+    span = max(XY[:, 0].ptp(), XY[:, 1].ptp())  # ptp = max - min
+    pad = 0.10 * span
+    xlim = (cx - span/2 - pad, cx + span/2 + pad)
+    ylim = (cy - span/2 - pad, cy + span/2 + pad)
+    
+    print(f"[plot] View window: center=({cx:.3f}, {cy:.3f}), span={span:.3f}, xlim={xlim}, ylim={ylim}")
 
     # collect samples for the soft heatmap
     bgP, bgV = [], []
+    
     # GA path values
     if ga.pts is not None and ga.vals is not None:
         # Flatten GA points to 2D and ensure vals match
@@ -453,6 +526,10 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             print(f"[plot] GA data: pts={ga_pts_flat.shape}, vals={ga_vals_flat.shape}")
             bgP.append(ga_pts_flat)
             bgV.append(ga_vals_flat)
+        else:
+            print(f"[plot] GA data mismatch: pts={ga_pts_flat.shape}, vals={ga_vals_flat.shape}")
+    else:
+        print(f"[plot] GA data missing: pts={ga.pts is not None}, vals={ga.vals is not None}")
     
     # ES population values
     if es.pop_pts is not None and es.pop_vals is not None:
@@ -463,9 +540,21 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             print(f"[plot] ES data: pts={es_pop_pts_flat.shape}, vals={es_pop_vals_flat.shape}")
             bgP.append(es_pop_pts_flat)
             bgV.append(es_pop_vals_flat)
+        else:
+            print(f"[plot] ES data mismatch: pts={es_pop_pts_flat.shape}, vals={es_pop_vals_flat.shape}")
+    else:
+        print(f"[plot] ES data missing: pts={es.pop_pts is not None}, vals={es.pop_vals is not None}")
     
     # if nothing, background stays white
     have_field = len(bgP) > 0
+    print(f"[plot] Background field available: {have_field} (bgP={len(bgP)}, bgV={len(bgV)})")
+    
+    # Debug: show what we're working with
+    if have_field:
+        for i, (pts, vals) in enumerate(zip(bgP, bgV)):
+            print(f"[plot] Background {i}: pts={pts.shape}, vals={vals.shape}")
+            if len(pts) != len(vals):
+                print(f"[plot] WARNING: Background {i} has mismatched lengths!")
 
     def orient(v: np.ndarray) -> np.ndarray:
         return -v if field_name.lower() == "score" else v
@@ -492,7 +581,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     title = f"Latent search: GA and ES (Z_dim = {original_dim})"
     ax.set_title(title)
     ax.set_xlabel("z1"); ax.set_ylabel("z2")
-    ax.set_aspect("equal")
+    ax.set_aspect("equal")  # With whitened PCA, this will look balanced
     ax.grid(True, alpha=0.25)
     ax.set_xlim(*xlim); ax.set_ylim(*ylim)
 
@@ -596,13 +685,17 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     plt.close(fig)
     
     # Generate loss curves plot
-    loss_plot_path = plot_loss_curves(ga, es, out_dir, original_dim)
+    loss_plot_path = plot_loss_curves(ga, es, out_dir, original_dim, 
+                                      ga_steps=ga_steps, 
+                                      es_population=pop, 
+                                      es_generations=gens)
     
     return png, loss_plot_path
 
 
-def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2) -> Optional[str]:
-    """Generate a plot comparing loss curves for GA and ES methods."""
+def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2, 
+                     ga_steps: int = None, es_population: int = None, es_generations: int = None) -> Optional[str]:
+    """Generate a plot comparing loss curves for GA and ES methods with budget on x-axis."""
     try:
         import matplotlib.pyplot as plt
     except Exception as e:
@@ -627,21 +720,41 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2) 
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     title = f"Optimization Progress: Gradient Ascent vs Evolutionary Search (Z_dim = {original_dim})"
     ax.set_title(title)
-    ax.set_xlabel("Step/Generation")
+    ax.set_xlabel("Budget (2×steps for GA, pop×gen for ES)")
     ax.set_ylabel("Loss (lower is better)")
     ax.grid(True, alpha=0.3)
     
-    # Plot GA loss curve
+    # Plot GA loss curve with budget on x-axis
     if has_ga_loss:
-        ga_steps = np.arange(len(ga.vals))
-        ax.plot(ga_steps, ga.vals, color="#e91e63", linewidth=2.5, marker='o', 
-                markersize=6, label="Gradient Ascent", zorder=3)
+        if ga_steps is not None:
+            # Use actual budget: 2 × steps
+            ga_budget = 2 * np.arange(len(ga.vals))
+            ax.plot(ga_budget, ga.vals, color="#e91e63", linewidth=2.5, marker='o', 
+                    markersize=6, label=f"Gradient Ascent (2×{ga_steps} steps)", zorder=3)
+        else:
+            # Fallback to step indices if budget info not available
+            ga_steps_indices = np.arange(len(ga.vals))
+            ax.plot(ga_steps_indices, ga.vals, color="#e91e63", linewidth=2.5, marker='o', 
+                    markersize=6, label="Gradient Ascent", zorder=3)
     
-    # Plot ES loss curve
+    # Plot ES loss curve with budget on x-axis
     if has_es_loss:
-        es_steps = np.arange(len(es.vals))
-        ax.plot(es_steps, es.vals, color="#ff7f0e", linewidth=2.5, marker='s', 
-                markersize=6, label="Evolutionary Search", zorder=3)
+        if es_population is not None and es_generations is not None:
+            # Use actual budget: population × generations
+            es_budget = np.arange(es_generations + 1) * es_population  # +1 to include initial
+            if len(es_budget) == len(es.vals):
+                ax.plot(es_budget, es.vals, color="#ff7f0e", linewidth=2.5, marker='s', 
+                        markersize=6, label=f"Evolutionary Search ({es_population}×{es_generations})", zorder=3)
+            else:
+                # Fallback if budget doesn't match values length
+                es_steps_indices = np.arange(len(es.vals))
+                ax.plot(es_steps_indices, es.vals, color="#ff7f0e", linewidth=2.5, marker='s', 
+                        markersize=6, label="Evolutionary Search", zorder=3)
+        else:
+            # Fallback to generation indices if budget info not available
+            es_steps_indices = np.arange(len(es.vals))
+            ax.plot(es_steps_indices, es.vals, color="#ff7f0e", linewidth=2.5, marker='s', 
+                    markersize=6, label="Evolutionary Search", zorder=3)
     else:
         # Fallback: try to reconstruct ES curve from available data
         print(f"[loss] ES loss data missing - attempting to reconstruct from available data")

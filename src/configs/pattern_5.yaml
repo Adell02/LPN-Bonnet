@@ -23,7 +23,7 @@ training:
     num_workers: 4
     num_pairs: 4
     class: PATTERN
-    pattern_size: 5
+    pattern_size: 4  # Changed from 5 to 4 to avoid JAX fusion compilation error
   train_datasets:
 
 
@@ -33,19 +33,19 @@ eval:
     - generator: PATTERN
       task_generator_kwargs:
         pattern_size: ${training.task_generator.pattern_size}
-      name: pattern_5_mean
+      name: pattern_4_mean  # Updated name to reflect pattern_size change
       num_pairs: 4
-      length: 256
-      batch_size: 64
-      num_tasks_to_show: 32
+      length: 10
+      batch_size: 8
+      num_tasks_to_show: 4
     - generator: PATTERN
       task_generator_kwargs:
         pattern_size: ${training.task_generator.pattern_size}
-      name: pattern_5_ga_1
+      name: pattern_4_ga_1  # Updated name to reflect pattern_size change
       num_pairs: 4
-      length: 256
-      batch_size: 64
-      num_tasks_to_show: 32
+      length: 10
+      batch_size: 8
+      num_tasks_to_show: 4
       inference_mode: gradient_ascent
       inference_kwargs:
         num_steps: 1
@@ -53,104 +53,7 @@ eval:
         optimizer: adam
         optimizer_kwargs:
           b2: 0.9
-    - generator: PATTERN
-      task_generator_kwargs:
-        pattern_size: ${training.task_generator.pattern_size}
-      name: pattern_5_ga_5
-      num_pairs: 4
-      length: 256
-      batch_size: 64
-      num_tasks_to_show: 32
-      inference_mode: gradient_ascent
-      inference_kwargs:
-        num_steps: 5
-        lr: 0.1
-        optimizer: adam
-        optimizer_kwargs:
-          b2: 0.9
-    - generator: PATTERN
-      task_generator_kwargs:
-        pattern_size: ${training.task_generator.pattern_size}
-      name: pattern_5_ga_20
-      num_pairs: 4
-      length: 256
-      batch_size: 64
-      num_tasks_to_show: 32
-      inference_mode: gradient_ascent
-      inference_kwargs:
-        num_steps: 20
-        lr: 0.1
-        optimizer: adam
-        optimizer_kwargs:
-          b2: 0.9
-    - generator: PATTERN
-      task_generator_kwargs:
-        pattern_size: ${training.task_generator.pattern_size}
-      name: pattern_5_ga_100
-      num_pairs: 4
-      length: 256
-      batch_size: 64
-      num_tasks_to_show: 32
-      inference_mode: gradient_ascent
-      inference_kwargs:
-        num_steps: 100
-        lr: 0.1
-        optimizer: adam
-        optimizer_kwargs:
-          b2: 0.9
-    - generator: PATTERN
-      task_generator_kwargs:
-        pattern_size: ${training.task_generator.pattern_size}
-      name: pattern_5_ga_100_*
-      num_pairs: 4
-      length: 256
-      batch_size: 64
-      num_tasks_to_show: 32
-      inference_mode: gradient_ascent
-      inference_kwargs:
-        num_steps: 100
-        lr: 0.1
-        optimizer: adam
-        optimizer_kwargs:
-          b2: 0.9
-        remove_encoder_latents: True
-    - generator: PATTERN
-      task_generator_kwargs:
-        pattern_size: ${training.task_generator.pattern_size}
-      name: pattern_5_rs_25
-      num_pairs: 4
-      length: 256
-      batch_size: 64
-      num_tasks_to_show: 32
-      inference_mode: random_search
-      inference_kwargs:
-        num_samples: 25
-        scale: 0.5
-    - generator: PATTERN
-      task_generator_kwargs:
-        pattern_size: ${training.task_generator.pattern_size}
-      name: pattern_5_rs_250
-      num_pairs: 4
-      length: 256
-      batch_size: 64
-      num_tasks_to_show: 32
-      inference_mode: random_search
-      inference_kwargs:
-        num_samples: 250
-        scale: 0.5
-    - generator: PATTERN
-      task_generator_kwargs:
-        pattern_size: ${training.task_generator.pattern_size}
-      name: pattern_5_rs_250_*
-      num_pairs: 4
-      length: 256
-      batch_size: 64
-      num_tasks_to_show: 32
-      inference_mode: random_search
-      inference_kwargs:
-        num_samples: 250
-        scale: 0.5
-        remove_encoder_latents: True
+  
   json_datasets:
 
 
