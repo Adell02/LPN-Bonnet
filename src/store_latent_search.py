@@ -981,7 +981,9 @@ def main() -> None:
         description="Store and plot latent search trajectories (GA & ES). "
         "Both methods start from the same mean latent for fair comparison. "
         "Automatically applies PCA to reduce latent dimensions > 2 to 2D for visualization. "
-        "Use --ga_steps, --es_population, --es_generations to override automatic budget-based calculations."
+        "Use --ga_steps, --es_population, --es_generations to override automatic budget-based calculations. "
+        "Use --n_samples to run multiple experiments with different seeds for statistical analysis. "
+        "Use --dataset_length to control the number of samples evaluated from the dataset."
     )
     parser.add_argument("--wandb_artifact_path", required=True, type=str)
     parser.add_argument("--budget", required=True, type=int)
@@ -1007,10 +1009,11 @@ def main() -> None:
     parser.add_argument("--json_challenges", type=str, default=None)
     parser.add_argument("--json_solutions", type=str, default=None)
     parser.add_argument("--dataset_folder", type=str, default=None)
-    parser.add_argument("--dataset_length", type=int, default=None)
+    parser.add_argument("--dataset_length", type=int, default=None, help="Number of samples in the dataset to evaluate")
     parser.add_argument("--dataset_batch_size", type=int, default=None)
     parser.add_argument("--dataset_use_hf", type=str, default="true")
     parser.add_argument("--dataset_seed", type=int, default=0)
+    parser.add_argument("--n_samples", type=int, default=1, help="Number of times to run the script with different random seeds (for statistical analysis)")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -1064,22 +1067,25 @@ def main() -> None:
     es_rc = subprocess.run(es_cmd, check=False).returncode
     print(f"ES return code: {es_rc}")
 
-    # Handle multiple runs when dataset_length > 1
-    if args.dataset_length and args.dataset_length > 1:
-        print(f"🧪 Running {args.dataset_length} experiments with different seeds...")
+    # Handle multiple runs when n_samples > 1
+    # NOTE: n_samples controls how many times to run the script with different seeds
+    # dataset_length controls how many samples from the dataset to evaluate in each run
+    if args.n_samples > 1:
+        print(f"🧪 Running {args.n_samples} experiments with different seeds...")
         
         # Create a group name for W&B
-        group_name = f"latent-search-b{args.budget}-d{args.dataset_length}-{int(time.time())}"
+        group_name = f"latent-search-b{args.budget}-n{args.n_samples}-{int(time.time())}"
         
-        for run_idx in range(args.dataset_length):
+        for run_idx in range(args.n_samples):
             seed = args.dataset_seed + run_idx
-            print(f"\n🔬 Run {run_idx + 1}/{args.dataset_length} with seed {seed}")
+            print(f"\n🔬 Run {run_idx + 1}/{args.n_samples} with seed {seed}")
             
             # Build the correct arguments manually to avoid parsing issues
+            # Each run uses the same dataset_length but different seeds
             run_src_args = [
                 "-d", args.dataset_folder,
-                "--dataset-length", "1",
-                "--dataset-batch-size", str(args.dataset_batch_size),
+                "--dataset-length", str(args.dataset_length) if args.dataset_length else "1",
+                "--dataset-batch-size", str(args.dataset_batch_size) if args.dataset_batch_size else "1",
                 "--dataset-use-hf", args.dataset_use_hf,
                 "--dataset-seed", str(seed)
             ]
@@ -1162,14 +1168,15 @@ def main() -> None:
                 "es_return_code": es_rc,
                 "run_idx": run_idx,
                 "dataset_seed": seed,
-                "dataset_length": 1,  # Individual runs always have length 1
+                "n_samples": args.n_samples,
+                "dataset_length": args.dataset_length,
             }
             try:
                 upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, group_name)
             except Exception as e:
                 print(f"Failed to upload to wandb: {e}")
         
-        print(f"\n✅ Completed {args.dataset_length} runs in group: {group_name}")
+        print(f"\n✅ Completed {args.n_samples} runs in group: {group_name}")
         
     else:
         # Single run (original behavior)
