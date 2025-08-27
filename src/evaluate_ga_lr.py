@@ -97,9 +97,20 @@ def run_store_latent_search(
             return True, total_loss, execution_time
         else:
             print(f"❌ store_latent_search failed with return code {result.returncode}")
+            
+            # Try to extract loss from stderr even when evaluation fails
+            total_loss = None
             if result.stderr.strip():
                 print(f"Error output:\n{result.stderr}")
-            return False, None, execution_time
+                total_loss = extract_loss_from_stderr(result.stderr)
+            
+            # Also try to extract from NPZ file if it exists (partial success)
+            if total_loss is None:
+                ga_npz_path = os.path.join(run_out_dir, "ga_latents.npz")
+                total_loss = extract_total_loss(ga_npz_path)
+            
+            # Return False for success but include any loss we found
+            return False, total_loss, execution_time
             
     except Exception as e:
         print(f"❌ Error running store_latent_search: {e}")
@@ -131,6 +142,37 @@ def extract_total_loss(npz_path: str) -> Optional[float]:
         
     except Exception as e:
         print(f"⚠️  Failed to extract loss from {npz_path}: {e}")
+        return None
+
+
+def extract_loss_from_stderr(stderr: str) -> Optional[float]:
+    """Try to extract loss information from stderr output when evaluation fails."""
+    try:
+        # Look for any loss-like patterns in the error output
+        import re
+        
+        # Common loss patterns in error messages
+        loss_patterns = [
+            r'loss[:\s]*([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)',
+            r'Loss[:\s]*([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)',
+            r'final[:\s]*([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)',
+        ]
+        
+        for pattern in loss_patterns:
+            matches = re.findall(pattern, stderr, re.IGNORECASE)
+            if matches:
+                # Convert to float and return the first match
+                try:
+                    loss_value = float(matches[0])
+                    print(f"📊 Extracted loss from stderr: {loss_value:.6f}")
+                    return loss_value
+                except ValueError:
+                    continue
+        
+        return None
+        
+    except Exception as e:
+        print(f"⚠️  Failed to extract loss from stderr: {e}")
         return None
 
 
@@ -254,7 +296,7 @@ def main():
     with open(csv_path, 'w', newline='') as f_csv:
         writer = csv.writer(f_csv)
         writer.writerow([
-            "timestamp", "artifact_name", "lr", "budget", "total_loss", "execution_time", "success"
+            "timestamp", "artifact_name", "lr", "budget", "total_loss", "execution_time", "success", "status"
         ])
         
         for i, lr in enumerate(lrs):
@@ -273,15 +315,18 @@ def main():
                     out_dir=str(out_dir)
                 )
                 
-                # Store results
-                if success and total_loss is not None:
+                # Store results - include partial results even when evaluation fails
+                if total_loss is not None:
                     results_matrix[i, j] = total_loss
                     execution_times[i, j] = exec_time
-                    successful_evals += 1
-                    print(f"✅ Success: lr={lr:.6f}, budget={budget}, loss={total_loss:.6f}, time={exec_time:.2f}s")
+                    if success:
+                        successful_evals += 1
+                        print(f"✅ Success: lr={lr:.6f}, budget={budget}, loss={total_loss:.6f}, time={exec_time:.2f}s")
+                    else:
+                        print(f"⚠️  Partial success: lr={lr:.6f}, budget={budget}, loss={total_loss:.6f}, time={exec_time:.2f}s (evaluation failed but loss extracted)")
                 else:
                     failed_evals += 1
-                    print(f"❌ Failed: lr={lr:.6f}, budget={budget}")
+                    print(f"❌ Failed: lr={lr:.6f}, budget={budget} (no loss data available)")
                 
                 # Write to CSV
                 writer.writerow([
@@ -291,7 +336,8 @@ def main():
                     budget,
                     total_loss if total_loss is not None else "",
                     exec_time,
-                    success
+                    success,
+                    "partial" if not success and total_loss is not None else "complete" if success else "failed"
                 ])
     
     # Create heatmap
