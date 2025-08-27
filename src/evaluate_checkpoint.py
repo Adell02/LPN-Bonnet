@@ -726,19 +726,62 @@ def evaluate_custom_dataset(
                         info0_batch = jax.device_get(info0_batch)
                     except Exception:
                         pass
-                    # GA per-sample losses per step
+                    # GA per-sample losses per step (reduce over candidate axis, keep steps axis)
                     if isinstance(info0_batch, dict) and "optimization_trajectory" in info0_batch and info0_batch["optimization_trajectory"]:
                         t = info0_batch["optimization_trajectory"]
                         if isinstance(t, dict) and "log_probs" in t:
-                            lp = np.array(t["log_probs"])  # (B, N, S, C) or similar
-                            # Move to (B, S, C) best candidate reduction
+                            lp = np.array(t["log_probs"])  # expected shape like (B, ..., steps and candidates axes)
+                            # Try to infer steps axis using latents when available
+                            steps_from_latents = None
+                            try:
+                                if "latents" in t:
+                                    lat_arr = np.array(t["latents"])  # (..., steps, H) or (B, steps, C, H)
+                                    if lat_arr.ndim >= 3:
+                                        steps_from_latents = lat_arr.shape[-2]
+                            except Exception:
+                                steps_from_latents = None
+
+                            # Squeeze any leading batch/device axes except keep one batch axis if present
                             while lp.ndim > 3:
                                 lp = lp[0]
-                            # If shape is (S, C) assume B==1, add batch axis
                             if lp.ndim == 2:
+                                # (X, Y) -> treat as (1, X, Y)
                                 lp = lp[None, ...]
-                            # Reduce over candidate axis (last) to best score per step
-                            ga_scores_bs = lp.max(axis=-1)  # (B, S)
+
+                            # At this point lp is (B, A, B2). One of A or B2 is steps, the other is candidates.
+                            # Identify steps axis robustly, preferring match with latents-derived steps length.
+                            steps_axis = None
+                            cand_axis = None
+                            if steps_from_latents is not None:
+                                if lp.shape[-1] == steps_from_latents:
+                                    steps_axis, cand_axis = -1, -2
+                                elif lp.shape[-2] == steps_from_latents:
+                                    steps_axis, cand_axis = -2, -1
+                            # Fallback: if one axis equals 1, that is candidates
+                            if steps_axis is None:
+                                if lp.shape[-2] == 1 and lp.shape[-1] > 1:
+                                    steps_axis, cand_axis = -1, -2
+                                elif lp.shape[-1] == 1 and lp.shape[-2] > 1:
+                                    steps_axis, cand_axis = -2, -1
+                            # Last fallback: choose larger axis as steps
+                            if steps_axis is None:
+                                if lp.shape[-2] >= lp.shape[-1]:
+                                    steps_axis, cand_axis = -2, -1
+                                else:
+                                    steps_axis, cand_axis = -1, -2
+
+                            # If steps are on the last axis, reduce over the other; else transpose to (B, steps, cand)
+                            if steps_axis == -1:
+                                # lp: (B, cand, steps) assumed -> transpose to (B, steps, cand)
+                                lp_bc = np.swapaxes(lp, -1, -2)
+                            elif steps_axis == -2:
+                                # lp: (B, steps, cand) already
+                                lp_bc = lp
+                            else:
+                                lp_bc = lp
+
+                            # Reduce over candidates (last axis) to best score per step
+                            ga_scores_bs = lp_bc.max(axis=-1)  # (B, steps)
                             ga_losses_bs = -ga_scores_bs
                             if ga_steps_len is None:
                                 ga_steps_len = ga_losses_bs.shape[-1]
