@@ -381,21 +381,43 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     original_dim = max(original_dims) if original_dims else 2
     print(f"[plot] Original latent dimension: {original_dim}D, projected to 2D using PCA")
 
-    # unified bounds
-    pts_for_bounds = [p for p in [ga.pts, es.pts, es.pop_pts, es.best_per_gen] if p is not None]
+    # unified bounds - flatten all arrays to 2D before concatenation
+    pts_for_bounds = []
+    for p in [ga.pts, es.pts, es.pop_pts, es.best_per_gen]:
+        if p is not None:
+            # Flatten to 2D: (..., 2) -> (N, 2)
+            p_flat = p.reshape(-1, 2)
+            pts_for_bounds.append(p_flat)
+    
+    if not pts_for_bounds:
+        print("No valid points found for bounds calculation")
+        return None, None
+    
     XY = np.concatenate(pts_for_bounds, axis=0)
-    xlim, ylim = _nice_bounds(XY)
+    xlim, ylim = _nice_bounds(XY, pad=0.10)  # 10% padding for wider range
 
     # collect samples for the soft heatmap
     bgP, bgV = [], []
     # GA path values
-    if ga.pts is not None and ga.vals is not None and len(ga.pts) == len(ga.vals):
-        print(f"[plot] GA data: pts={ga.pts.shape}, vals={ga.vals.shape}")
-        bgP.append(ga.pts); bgV.append(np.asarray(ga.vals))
+    if ga.pts is not None and ga.vals is not None:
+        # Flatten GA points to 2D and ensure vals match
+        ga_pts_flat = ga.pts.reshape(-1, 2)
+        ga_vals_flat = ga.vals.reshape(-1)
+        if len(ga_pts_flat) == len(ga_vals_flat):
+            print(f"[plot] GA data: pts={ga_pts_flat.shape}, vals={ga_vals_flat.shape}")
+            bgP.append(ga_pts_flat)
+            bgV.append(ga_vals_flat)
+    
     # ES population values
-    if es.pop_pts is not None and es.pop_vals is not None and len(es.pop_pts) == len(es.pop_vals):
-        print(f"[plot] ES data: pts={es.pop_pts.shape}, vals={es.pop_vals.shape}")
-        bgP.append(es.pop_pts); bgV.append(np.asarray(es.pop_vals))
+    if es.pop_pts is not None and es.pop_vals is not None:
+        # Flatten ES population points to 2D and ensure vals match
+        es_pop_pts_flat = es.pop_pts.reshape(-1, 2)
+        es_pop_vals_flat = es.pop_vals.reshape(-1)
+        if len(es_pop_pts_flat) == len(es_pop_vals_flat):
+            print(f"[plot] ES data: pts={es_pop_pts_flat.shape}, vals={es_pop_vals_flat.shape}")
+            bgP.append(es_pop_pts_flat)
+            bgV.append(es_pop_vals_flat)
+    
     # if nothing, background stays white
     have_field = len(bgP) > 0
 
@@ -420,7 +442,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     cmap = "viridis"
 
     # figure
-    fig, ax = plt.subplots(1, 1, figsize=(14, 16))
+    fig, ax = plt.subplots(1, 1, figsize=(16, 14))
     title = f"Latent search: GA and ES (Z_dim = {original_dim})"
     ax.set_title(title)
     ax.set_xlabel("z1"); ax.set_ylabel("z2")
@@ -448,8 +470,11 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
 
     # ES population: show all samples in orange with full alpha + translucent generation circles
     if es.pop_pts is not None:
+        # Flatten ES population points for plotting
+        es_pop_pts_flat = es.pop_pts.reshape(-1, 2)
+        
         # Plot ALL ES samples in orange with full alpha
-        ax.scatter(es.pop_pts[:, 0], es.pop_pts[:, 1], s=20, alpha=1.0,
+        ax.scatter(es_pop_pts_flat[:, 0], es_pop_pts_flat[:, 1], s=20, alpha=1.0,
                    color="#ff7f0e", linewidths=0, zorder=1, label="ES population (all samples)")
         
         # Then add translucent circles to cluster samples from the same generation
@@ -460,7 +485,8 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             
             for gen in unique_gens:
                 mask = es.gen_idx == gen
-                gen_pts = es.pop_pts[mask]
+                # Apply the same mask to flattened points
+                gen_pts = es_pop_pts_flat[mask]
                 color = generation_colors[gen % len(generation_colors)]
                 
                 # Calculate generation cluster center and radius
@@ -480,11 +506,15 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # ES selected path (best per generation if present, otherwise es.pts)
     es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
     if es_sel is not None and len(es_sel) > 1:
-        _plot_traj(ax, es_sel, color="#ff7f0e", label="ES selected", alpha=1.0)
+        # Flatten ES selected path for plotting
+        es_sel_flat = es_sel.reshape(-1, 2)
+        _plot_traj(ax, es_sel_flat, color="#ff7f0e", label="ES selected", alpha=1.0)
 
     # GA path
     if ga.pts is not None and len(ga.pts) > 1:
-        _plot_traj(ax, ga.pts, color="#e91e63", label="GA path", alpha=1.0)
+        # Flatten GA path for plotting
+        ga_pts_flat = ga.pts.reshape(-1, 2)
+        _plot_traj(ax, ga_pts_flat, color="#e91e63", label="GA path", alpha=1.0)
 
     # Create comprehensive legend with all elements
     legend_elements = []
