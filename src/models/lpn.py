@@ -1042,7 +1042,7 @@ class LPN(nn.Module):
             best_fitness = jnp.max(fitness, axis=-1)  # (*B,) - best fitness per batch
             
             if elitism:
-                print(f"         🏆 Generation {_+1}: Best fitness = {best_fitness.mean():.4f} (elite preserved)")
+                print(f"         🏆 Generation: Best fitness = {best_fitness.mean():.4f} (elite preserved)")
                 
                 # Create proper gather index for the best individual
                 if population.ndim == 4:
@@ -1062,7 +1062,7 @@ class LPN(nn.Module):
                 num_survivors = (population_size - 1) // 2  # Reserve 1 slot for elite
                 idx = jnp.argsort(fitness, axis=-1, descending=True)[..., 1:num_survivors+1]   # (*B, S) - skip best (elite)
             else:
-                print(f"         🏆 Generation {_+1}: Best fitness = {best_fitness.mean():.4f} (elitism disabled)")
+                print(f"         🏆 Generation: Best fitness = {best_fitness.mean():.4f} (elitism disabled)")
                 elite = None
                 
                 # Select top half per batch (no elite preservation)
