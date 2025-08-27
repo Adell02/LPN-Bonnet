@@ -909,10 +909,12 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # Use the maximum of all padding strategies
     pad = max(base_padding, circle_padding, min_padding)
     
-    # Apply padding to create final bounds using the larger range for both axes
-    # This ensures the loss landscape is fully visible in both dimensions
-    xlim = (xmin - pad, xmax + pad)
-    ylim = (ymin - pad, ymax + pad)
+    # Center the content and create a symmetric square box using the larger range
+    cx = 0.5 * (xmin + xmax)
+    cy = 0.5 * (ymin + ymax)
+    half_final = 0.5 * max_range + pad
+    xlim = (cx - half_final, cx + half_final)
+    ylim = (cy - half_final, cy + half_final)
     
     # Enhanced debugging information
     print(f"[bounds] COMPREHENSIVE BOUNDS CALCULATION:")
@@ -924,6 +926,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     print(f"[bounds]   - Circle padding (20%): {circle_padding:.3f}")
     print(f"[bounds]   - Minimum padding (10%): {min_padding:.3f}")
     print(f"[bounds]   - Final padding: {pad:.3f}")
+    print(f"[bounds] Final centered bounds: center=({cx:.3f},{cy:.3f}), half_final={half_final:.3f}")
     print(f"[bounds] Final bounds: xlim={xlim}, ylim={ylim}")
     print(f"[bounds] Coverage: This ensures ALL elements are visible:")
     print(f"[bounds]   ✅ GA trajectory points")
@@ -1479,7 +1482,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     if 'shape' in ga_accuracies:
                         ga_note += f"Shape={ga_accuracies['shape']:.3f} "
                     if 'grid' in ga_accuracies:
-                        ga_note += f"Grid={ga_accuracies['grid']:.3f}"
+                        ga_note += f"Pixel={ga_accuracies['grid']:.3f}"
                     
                     # Position note in upper left
                     ax.text(0.02, 0.98, ga_note, transform=ax.transAxes, 
@@ -1517,7 +1520,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     if 'shape' in es_accuracies:
                         es_note += f"Shape={es_accuracies['shape']:.3f} "
                     if 'grid' in es_accuracies:
-                        es_note += f"Grid={es_accuracies['grid']:.3f}"
+                        es_note += f"Pixel={es_accuracies['grid']:.3f}"
                     
                     # Position note below GA note
                     ax.text(0.02, 0.92, es_note, transform=ax.transAxes, 
