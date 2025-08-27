@@ -709,7 +709,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     min_span = 0.5  # Minimum span to ensure trajectories are visible
     span = max(span, min_span)
     
-    pad = 0.10 * span
+    pad = 0.05 * span  # Reduced from 0.10 to 0.05 for tighter axes range
     xlim = (cx - span/2 - pad, cx + span/2 + pad)
     ylim = (cy - span/2 - pad, cy + span/2 + pad)
     
@@ -718,25 +718,42 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
 
     # Background data has already been collected above, before PCA projection
 
-    def orient(v: np.ndarray) -> np.ndarray:
-        return -v if field_name.lower() == "score" else v
-
-    # normalization across everything we will color
+    # normalization across everything we will color (use original values, not oriented ones)
     all_for_norm = []
     if have_field:
-        all_for_norm.append(orient(np.concatenate(bgV_original)))
+        all_for_norm.append(np.concatenate(bgV_original))
     if ga.vals is not None:
-        all_for_norm.append(orient(np.asarray(ga.vals)))
+        all_for_norm.append(np.asarray(ga.vals))
     if es.pop_vals is not None:
-        all_for_norm.append(orient(np.asarray(es.pop_vals)))
-    vmin, vmax = 0.0, 1.0
-    if len(all_for_norm) > 0:
-        vv = np.concatenate(all_for_norm)
-        vmin, vmax = float(np.nanmin(vv)), float(np.nanmax(vv))
-        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
-            vmin, vmax = 0.0, 1.0
+        all_for_norm.append(np.asarray(es.pop_vals))
+    
+    # Set normalization based on the field type
+    if field_name.lower() == "score":
+        # For scores: higher is better, use original range
+        vmin, vmax = 0.0, 1.0
+        if len(all_for_norm) > 0:
+            vv = np.concatenate(all_for_norm)
+            vmin, vmax = float(np.nanmin(vv)), float(np.nanmax(vv))
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+                vmin, vmax = 0.0, 1.0
+    else:
+        # For losses: lower is better, use original range (log likelihoods are negative)
+        vmin, vmax = 0.0, 1.0
+        if len(all_for_norm) > 0:
+            vv = np.concatenate(all_for_norm)
+            vmin, vmax = float(np.nanmin(vv)), float(np.nanmax(vv))
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+                vmin, vmax = 0.0, 1.0
+    
     norm = colors.Normalize(vmin=vmin, vmax=vmax)
     cmap = "viridis"
+    
+    def orient(v: np.ndarray) -> np.ndarray:
+        """Orient values for visualization: scores stay positive, losses stay negative (log likelihoods)"""
+        if field_name.lower() == "score":
+            return v  # Scores: higher is better, keep positive
+        else:
+            return v  # Losses: lower is better, keep negative (log likelihoods are naturally negative)
 
     # figure
     fig, ax = plt.subplots(1, 1, figsize=(16, 14))
@@ -776,7 +793,17 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         # Display the background
         im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.7)
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_label(field_name)
+        
+        # Set appropriate colorbar label based on field type
+        if field_name.lower() == "loss":
+            cbar.set_label("Loss (log likelihood, lower is better)")
+        elif field_name.lower() == "score":
+            cbar.set_label("Score (higher is better)")
+        else:
+            cbar.set_label(field_name)
+        
+        # Set unexplored areas to white by setting the background color
+        ax.set_facecolor("white")
     else:
         ax.set_facecolor("white")
 
@@ -1143,6 +1170,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
     
     # Log comprehensive metrics from both methods
     try:
+        print("[metrics] Extracting metrics from NPZ files...")
         # Load GA metrics
         if os.path.exists(ga_npz):
             with np.load(ga_npz, allow_pickle=True) as f:
@@ -1216,7 +1244,14 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                 
                 if 'es_final_best_fitness' in f:
                     final_fitness = np.array(f['es_final_best_fitness'])
-                    es_metrics['es_final_best_fitness'] = float(final_fitness) if final_fitness.size > 0 else None
+                    # Handle arrays that might have multiple elements
+                    if final_fitness.size == 1:
+                        es_metrics['es_final_best_fitness'] = float(final_fitness)
+                    elif final_fitness.size > 1:
+                        es_metrics['es_final_best_fitness'] = float(final_fitness[0])  # Take first element
+                        print(f"[metrics] Note: es_final_best_fitness had {final_fitness.size} elements, using first: {final_fitness[0]}")
+                    else:
+                        es_metrics['es_final_best_fitness'] = None
                 
                 # Log ES metrics
                 for key, value in es_metrics.items():
@@ -1339,8 +1374,11 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                 # Clean up temporary CSV
                 os.remove(summary_csv_path)
                 
+                print("[metrics] Successfully extracted and logged all metrics")
+                
     except Exception as e:
         print(f"Warning: Failed to extract metrics from NPZ files: {e}")
+        print(f"[metrics] Error details: {type(e).__name__}: {str(e)}")
     
     # Only finish the run if we created it (not if using existing_run)
     if existing_run is None:
