@@ -1349,7 +1349,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
         pad = np.full(len(x) - len(c), c[0]) if len(c) > 0 else np.array([])
         return np.concatenate([pad, c])
 
-    # Plot GA per-sample traces if available in NPZ
+    # Plot GA envelope (min/max) with mean line if available in NPZ
     ga_budget = None
     did_ga_overlay = False
     if ga_npz_path and os.path.exists(ga_npz_path):
@@ -1357,14 +1357,15 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             with np.load(ga_npz_path, allow_pickle=True) as f:
                 if 'ga_budget' in f:
                     ga_budget = np.array(f['ga_budget']).reshape(-1)
-                if dataset_length and dataset_length > 1 and 'ga_losses_per_sample' in f:
+                if 'ga_losses_per_sample' in f:
                     L = np.array(f['ga_losses_per_sample'])  # (N, S)
                     x = ga_budget if ga_budget is not None and len(ga_budget) == L.shape[1] else np.arange(L.shape[1])
-                    for row in L:
-                        ax.plot(x, row, color="#e91e63", alpha=0.5, linewidth=1.5, label=None, zorder=2)
-                    mean_curve = L.mean(axis=0)
-                    mean_ma = _moving_average(mean_curve, k=max(3, L.shape[1]//10))
-                    ax.plot(x, mean_ma, color="#e91e63", linewidth=3.0, label=f"GA mean", zorder=4)
+                    ga_min = np.min(L, axis=0)
+                    ga_max = np.max(L, axis=0)
+                    ga_mean = np.mean(L, axis=0)
+                    ax.fill_between(x, ga_min, ga_max, color="#e91e63", alpha=0.25, label="GA range", zorder=2)
+                    ga_mean_ma = _moving_average(ga_mean, k=max(3, L.shape[1]//10))
+                    ax.plot(x, ga_mean_ma, color="#e91e63", linewidth=3.0, label=f"GA mean", zorder=4)
                     did_ga_overlay = True
         except Exception as _ge:
             print(f"[loss] Failed GA per-sample plotting: {_ge}")
@@ -1381,7 +1382,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             ax.plot(ga_steps_indices, ga.vals, color="#e91e63", linewidth=3.0, marker='o', 
                     markersize=6, label="Gradient Ascent", zorder=3)
     
-    # Plot ES per-sample traces if available
+    # Plot ES envelope (min/max) with mean line if available
     es_budget = None
     did_es_overlay = False
     if es_npz_path and os.path.exists(es_npz_path):
@@ -1389,14 +1390,15 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             with np.load(es_npz_path, allow_pickle=True) as f:
                 if 'es_budget' in f:
                     es_budget = np.array(f['es_budget']).reshape(-1)
-                if dataset_length and dataset_length > 1 and 'es_generation_losses_per_sample' in f:
+                if 'es_generation_losses_per_sample' in f:
                     L = np.array(f['es_generation_losses_per_sample'])  # (N, G)
                     x = es_budget if es_budget is not None and len(es_budget) == L.shape[1] else np.arange(1, L.shape[1]+1)
-                    for row in L:
-                        ax.plot(x, row, color="#ff7f0e", alpha=0.5, linewidth=1.5, label=None, zorder=2)
-                    mean_curve = L.mean(axis=0)
-                    mean_ma = _moving_average(mean_curve, k=max(3, L.shape[1]//4))
-                    ax.plot(x, mean_ma, color="#ff7f0e", linewidth=3.0, label=f"ES mean", zorder=4)
+                    es_min = np.min(L, axis=0)
+                    es_max = np.max(L, axis=0)
+                    es_mean = np.mean(L, axis=0)
+                    ax.fill_between(x, es_min, es_max, color="#ff7f0e", alpha=0.25, label="ES range", zorder=2)
+                    es_mean_ma = _moving_average(es_mean, k=max(3, L.shape[1]//4))
+                    ax.plot(x, es_mean_ma, color="#ff7f0e", linewidth=3.0, label=f"ES mean", zorder=4)
                     did_es_overlay = True
         except Exception as _ee:
             print(f"[loss] Failed ES per-sample plotting: {_ee}")
