@@ -41,6 +41,13 @@ python src/store_latent_search.py \
     --ga_step_length 0.5 \
     --track_progress
 
+# With custom run name:
+python src/store_latent_search.py \
+    --wandb_artifact_path "entity/project/artifact:v0" \
+    --budget 100 \
+    --run_name "pattern4_experiment" \
+    --n_samples 5
+
 # For small-scale searches with smooth background:
 python src/store_latent_search.py \
     --wandb_artifact_path "entity/project/artifact:v0" \
@@ -615,26 +622,64 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     else:
         print(f"[plot] GA background missing: pts={ga.pts is not None}, vals={ga.vals is not None}")
     
-    # ES population values
-    if es.pop_pts is not None and es.pop_vals is not None:
+    # ES population values - IMPORTANT: Use the same value extraction method as loss curves
+    # This ensures consistency between background landscape and loss curves plot
+    if es.pop_pts is not None:
         es_pop_pts_original = es.pop_pts.reshape(-1, es.pop_pts.shape[-1])  # (N, D) where D is original dim
-        es_pop_vals_flat = es.pop_vals.reshape(-1)
-        if len(es_pop_pts_original) == len(es_pop_vals_flat):
-            print(f"[plot] ES background: pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
-            print(f"[plot] ES values range: [{es_pop_vals_flat.min():.4f}, {es_pop_vals_flat.max():.4f}]")
-            bgP_original.append(es_pop_pts_original)
-            bgV_original.append(es_pop_vals_flat)
+        
+        # Use the same values that will be plotted in loss curves (es.vals) for consistency
+        if es.vals is not None:
+            # For ES, we need to expand the trajectory values to match population points
+            # This ensures the background uses the same loss values as the loss curves
+            es_trajectory_vals = es.vals.reshape(-1)
+            print(f"[plot] ES trajectory values: {es_trajectory_vals.shape}, range: [{es_trajectory_vals.min():.4f}, {es_trajectory_vals.max():.4f}]")
+            
+            # Calculate how many population points per generation
+            num_generations = len(es_trajectory_vals)
+            population_per_gen = len(es_pop_pts_original) // num_generations
+            print(f"[plot] ES expansion: {num_generations} generations × {population_per_gen} population = {len(es_pop_pts_original)} total points")
+            
+            # Expand trajectory values to match population points
+            es_pop_vals_flat = np.repeat(es_trajectory_vals, population_per_gen)
+            
+            # Ensure we have the right number of values
+            if len(es_pop_vals_flat) == len(es_pop_pts_original):
+                print(f"[plot] ES background: pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
+                print(f"[plot] ES values range: [{es_pop_vals_flat.min():.4f}, {es_pop_vals_flat.max():.4f}]")
+                print(f"[plot] ES using trajectory values for background consistency")
+                bgP_original.append(es_pop_pts_original)
+                bgV_original.append(es_pop_vals_flat)
+            else:
+                print(f"[plot] ES background value expansion failed: expected {len(es_pop_pts_original)}, got {len(es_pop_vals_flat)}")
+                print(f"[plot] ES fallback: using original pop_vals if available")
+                if es.pop_vals is not None:
+                    es_pop_vals_fallback = es.pop_vals.reshape(-1)
+                    if len(es_pop_vals_fallback) == len(es_pop_pts_original):
+                        print(f"[plot] ES fallback successful: using pop_vals")
+                        bgP_original.append(es_pop_pts_original)
+                        bgV_original.append(es_pop_vals_fallback)
+                    else:
+                        print(f"[plot] ES fallback failed: pop_vals length mismatch")
         else:
-            print(f"[plot] ES background mismatch: pts={es_pop_pts_original.shape}, vals={es_pop_vals_flat.shape}")
-            print(f"[plot] ES mismatch details: pts length {len(es_pop_pts_original)}, vals length {es_pop_vals_flat.shape}")
+            print(f"[plot] ES trajectory values missing, trying fallback to pop_vals")
+            if es.pop_vals is not None:
+                es_pop_vals_fallback = es.pop_vals.reshape(-1)
+                if len(es_pop_vals_fallback) == len(es_pop_pts_original):
+                    print(f"[plot] ES fallback: using pop_vals for background")
+                    bgP_original.append(es_pop_pts_original)
+                    bgV_original.append(es_pop_vals_fallback)
+                else:
+                    print(f"[plot] ES fallback failed: pop_vals length mismatch")
+            else:
+                print(f"[plot] ES trajectory values missing, cannot create consistent background")
     else:
-        print(f"[plot] ES background missing: pts={es.pop_pts is not None}, vals={es.pop_vals is not None}")
+        print(f"[plot] ES background missing: pts={es.pop_pts is not None}")
     
-    # Check for value consistency between GA and ES
-    if ga.vals is not None and es.pop_vals is not None:
+    # Check for value consistency between GA and ES (now using same extraction method)
+    if ga.vals is not None and es.vals is not None:
         ga_range = (ga.vals.min(), ga.vals.max())
-        es_range = (es.pop_vals.min(), es.pop_vals.max())
-        print(f"[plot] Value consistency check:")
+        es_range = (es.vals.min(), es.vals.max())
+        print(f"[plot] Value consistency check (using trajectory values):")
         print(f"  GA range: [{ga_range[0]:.4f}, {ga_range[1]:.4f}]")
         print(f"  ES range: [{es_range[0]:.4f}, {es_range[1]:.4f}]")
         if abs(ga_range[0] - es_range[0]) < 1e-3 and abs(ga_range[1] - es_range[1]) < 1e-3:
@@ -729,18 +774,39 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         print(f"[plot] Original latent dimension: {original_dim}D, no PCA needed")
 
     # unified bounds - flatten all arrays to 2D before concatenation
+    # CRITICAL: Include ALL points that will be plotted to ensure complete coverage
     pts_for_bounds = []
+    
+    # 1. Trajectory points (GA and ES paths)
     for p in [ga.pts, es.pts, es.pop_pts, es.best_per_gen]:
         if p is not None:
             # Flatten to 2D: (..., 2) -> (N, 2)
             p_flat = p.reshape(-1, 2)
             pts_for_bounds.append(p_flat)
     
+    # 2. Background loss landscape points (CRITICAL for complete coverage)
+    if have_field and bgP_original:
+        # Project background points to 2D for bounds calculation
+        P_original = np.concatenate(bgP_original, axis=0)  # (N, D) where D is original dim
+        if original_dim > 2 and pca_transformer is not None:
+            print(f"[bounds] Including background points in bounds calculation: {P_original.shape}")
+            # Project original high-dimensional points to 2D for bounds
+            P_2d = _apply_fitted_pca(P_original, pca_transformer, target_dim=2)
+            print(f"[bounds] Background bounds: {P_original.shape} -> {P_2d.shape}")
+        else:
+            print(f"[bounds] Background already 2D: {P_original.shape}")
+            P_2d = P_original
+        
+        # Add background points to bounds calculation
+        pts_for_bounds.append(P_2d)
+        print(f"[bounds] Added {len(P_2d)} background points to bounds calculation")
+    
     if not pts_for_bounds:
         print("No valid points found for bounds calculation")
         return None, None
     
     XY = np.concatenate(pts_for_bounds, axis=0)
+    print(f"[bounds] Total points for bounds: {len(XY)} (trajectories + background)")
     
     # Fix the "pancake" look by squaring the view window
     # This ensures PC1 and PC2 have similar visual impact even when PCA variance ratios are imbalanced
@@ -752,23 +818,82 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     min_span = 0.5  # Minimum span to ensure trajectories are visible
     span = max(span, min_span)
     
-    pad = 0.05 * span  # Reduced from 0.10 to 0.05 for tighter axes range
-    xlim = (cx - span/2 - pad, cx + span/2 + pad)
-    ylim = (cy - span/2 - pad, cy + span/2 + pad)
+    # 🎯 COMPREHENSIVE BOUNDS CALCULATION: GUARANTEE COMPLETE VISIBILITY
+    # This ensures ALL plot elements are fully visible:
+    # ✅ GA trajectory points (gradient ascent path)
+    # ✅ ES trajectory points (evolutionary search path) 
+    # ✅ ES population points (all samples across generations)
+    # ✅ ES generation circles (clustering visualization)
+    # ✅ Loss landscape background (complete coverage)
+    # ✅ Proper padding for visual clarity and aesthetics
     
-    print(f"[plot] View window: center=({cx:.3f}, {cy:.3f}), span={span:.3f}, xlim={xlim}, ylim={ylim}")
-    print(f"[plot] Note: Using minimum span {min_span} to ensure trajectory visibility")
+    # Start with comprehensive bounds from all points
+    xmin, xmax = XY[:, 0].min(), XY[:, 0].max()
+    ymin, ymax = XY[:, 1].min(), XY[:, 1].max()
+    
+    # Calculate ranges and ensure balanced coverage
+    x_range = xmax - xmin
+    y_range = ymax - ymin
+    
+    # Use the larger range to ensure square-ish plot and prevent "pancake" appearance
+    max_range = max(x_range, y_range, span)
+    
+    # COMPREHENSIVE PADDING STRATEGY:
+    # 1. Base padding: 5% of the maximum range
+    # 2. Circle padding: 20% extra for generation circles and population spread
+    # 3. Background padding: Ensure loss landscape is fully visible
+    # 4. Minimum padding: Prevent extremely tight bounds
+    
+    base_padding = 0.05 * max_range
+    circle_padding = 0.20 * max_range  # Increased from span to max_range for better coverage
+    min_padding = 0.10 * max_range  # Minimum padding to prevent tight bounds
+    
+    # Use the maximum of all padding strategies
+    pad = max(base_padding, circle_padding, min_padding)
+    
+    # Apply padding to create final bounds
+    xlim = (xmin - pad, xmax + pad)
+    ylim = (ymin - pad, ymax + pad)
+    
+    # Enhanced debugging information
+    print(f"[bounds] COMPREHENSIVE BOUNDS CALCULATION:")
+    print(f"[bounds] All points bounds: x[{xmin:.3f}, {xmax:.3f}], y[{ymin:.3f}, {ymax:.3f}]")
+    print(f"[bounds] Ranges: x_range={x_range:.3f}, y_range={y_range:.3f}")
+    print(f"[bounds] Overall span: {span:.3f}, max_range: {max_range:.3f}")
+    print(f"[bounds] Padding strategy:")
+    print(f"[bounds]   - Base padding (5%): {base_padding:.3f}")
+    print(f"[bounds]   - Circle padding (20%): {circle_padding:.3f}")
+    print(f"[bounds]   - Minimum padding (10%): {min_padding:.3f}")
+    print(f"[bounds]   - Final padding: {pad:.3f}")
+    print(f"[bounds] Final bounds: xlim={xlim}, ylim={ylim}")
+    print(f"[bounds] Coverage: This ensures ALL elements are visible:")
+    print(f"[bounds]   ✅ GA trajectory points")
+    print(f"[bounds]   ✅ ES trajectory points") 
+    print(f"[bounds]   ✅ ES population points")
+    print(f"[bounds]   ✅ ES generation circles")
+    print(f"[bounds]   ✅ Loss landscape background")
+    print(f"[bounds]   ✅ Proper padding for visual clarity")
 
     # Background data has already been collected above, before PCA projection
 
     # normalization across everything we will color (use original values, not oriented ones)
     all_for_norm = []
+    print(f"[normalization] Field type: {field_name}, have_field: {have_field}")
     if have_field:
-        all_for_norm.append(np.concatenate(bgV_original))
+        if bgV_original:
+            bg_vals = np.concatenate(bgV_original)
+            print(f"[normalization] Background values: {bg_vals.shape}, range: [{bg_vals.min():.4f}, {bg_vals.max():.4f}]")
+            all_for_norm.append(bg_vals)
+        else:
+            print(f"[normalization] Warning: have_field=True but no background values available")
     if ga.vals is not None:
+        print(f"[normalization] GA values: {ga.vals.shape}, range: [{ga.vals.min():.4f}, {ga.vals.max():.4f}]")
         all_for_norm.append(np.asarray(ga.vals))
     if es.pop_vals is not None:
+        print(f"[normalization] ES pop values: {es.pop_vals.shape}, range: [{es.pop_vals.min():.4f}, {es.pop_vals.max():.4f}]")
         all_for_norm.append(np.asarray(es.pop_vals))
+    
+    print(f"[normalization] Total arrays for normalization: {len(all_for_norm)}")
     
     # Set normalization based on the field type
     if field_name.lower() == "score":
@@ -811,6 +936,10 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     ax.set_aspect("equal")  # With whitened PCA, this will look balanced
     ax.set_xlim(*xlim); ax.set_ylim(*ylim)
 
+    # Initialize background variables to avoid UnboundLocalError
+    XX, YY, ZZ = None, None, None
+    bg_xmin, bg_xmax, bg_ymin, bg_ymax = None, None, None, None
+
     # soft heatmap background by splatting losses if available
     if have_field:
         # KEY IMPROVEMENT: Create background using original high-dimensional points and their loss values
@@ -828,8 +957,22 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             P_2d = P_original  # Already 2D
             
         # Create the background heatmap using the projected points with their original loss values
-            XX, YY, ZZ = _splat_background(
-                P_2d, V_original, xlim, ylim, 
+        # Verify that background points are within the calculated bounds
+        bg_xmin, bg_xmax = P_2d[:, 0].min(), P_2d[:, 0].max()
+        bg_ymin, bg_ymax = P_2d[:, 1].min(), P_2d[:, 1].max()
+        print(f"[background] Background points bounds: x[{bg_xmin:.3f}, {bg_xmax:.3f}], y[{bg_ymin:.3f}, {bg_ymax:.3f}]")
+        print(f"[background] Plot bounds: xlim={xlim}, ylim={ylim}")
+        
+        # Check if background points extend beyond plot bounds
+        if bg_xmin < xlim[0] or bg_xmax > xlim[1] or bg_ymin < ylim[0] or bg_ymax > ylim[1]:
+            print(f"[background] ⚠️  WARNING: Background points extend beyond plot bounds!")
+            print(f"[background]   Background x: [{bg_xmin:.3f}, {bg_xmax:.3f}] vs Plot x: {xlim}")
+            print(f"[background]   Background y: [{bg_ymin:.3f}, {bg_ymax:.3f}] vs Plot y: {ylim}")
+        else:
+            print(f"[background] ✅ Background points fully within plot bounds")
+        
+        XX, YY, ZZ = _splat_background(
+            P_2d, V_original, xlim, ylim,
                 n=background_resolution, 
                 enable_smoothing=background_smoothing,
                 knn_k=background_knn,
@@ -879,6 +1022,14 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 # Calculate generation cluster center and radius
                 gen_center = np.mean(gen_pts, axis=0)
                 gen_radius = np.max(np.linalg.norm(gen_pts - gen_center, axis=1)) * 1.2  # 20% padding
+                
+                # Debug: show generation circle bounds
+                circle_xmin = gen_center[0] - gen_radius
+                circle_xmax = gen_center[0] + gen_radius
+                circle_ymin = gen_center[1] - gen_radius
+                circle_ymax = gen_center[1] + gen_radius
+                print(f"[plot] Gen {gen} circle: center=({gen_center[0]:.3f}, {gen_center[1]:.3f}), radius={gen_radius:.3f}")
+                print(f"[plot] Gen {gen} bounds: x[{circle_xmin:.3f}, {circle_xmax:.3f}], y[{circle_ymin:.3f}, {circle_ymax:.3f}]")
                 
                 # Draw translucent circle for this generation
                 circle = plt.Circle(gen_center, gen_radius, fill=True, linewidth=2, 
@@ -960,6 +1111,61 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     ax.legend(handles=legend_elements, loc="upper right", frameon=True, fontsize=9)
     plt.tight_layout()
 
+    # FINAL VERIFICATION: Ensure all elements are within plot bounds
+    print(f"\n[verification] FINAL PLOT BOUNDS VERIFICATION:")
+    print(f"[verification] Plot xlim: {xlim}, ylim: {ylim}")
+    
+    # Check GA trajectory bounds
+    if ga.pts is not None:
+        ga_flat = ga.pts.reshape(-1, 2)
+        ga_xmin, ga_xmax = ga_flat[:, 0].min(), ga_flat[:, 0].max()
+        ga_ymin, ga_ymax = ga_flat[:, 1].min(), ga_flat[:, 1].max()
+        ga_visible = (ga_xmin >= xlim[0] and ga_xmax <= xlim[1] and ga_ymin >= ylim[0] and ga_ymax <= ylim[1])
+        print(f"[verification] GA trajectory: x[{ga_xmin:.3f}, {ga_xmax:.3f}], y[{ga_ymin:.3f}, {ga_ymax:.3f}] - {'✅ VISIBLE' if ga_visible else '❌ OUT OF BOUNDS'}")
+    
+    # Check ES trajectory bounds
+    if es.pts is not None:
+        es_flat = es.pts.reshape(-1, 2)
+        es_xmin, es_xmax = es_flat[:, 0].min(), es_flat[:, 0].max()
+        es_ymin, es_ymax = es_flat[:, 1].min(), es_flat[:, 1].max()
+        es_visible = (es_xmin >= xlim[0] and es_xmax <= xlim[1] and es_ymin >= ylim[0] and es_ymax <= ylim[1])
+        print(f"[verification] ES trajectory: x[{es_xmin:.3f}, {es_xmax:.3f}], y[{es_ymin:.3f}, {es_ymax:.3f}] - {'✅ VISIBLE' if es_visible else '❌ OUT OF BOUNDS'}")
+    
+    # Check ES population bounds
+    if es.pop_pts is not None:
+        es_pop_flat = es.pop_pts.reshape(-1, 2)
+        es_pop_xmin, es_pop_xmax = es_pop_flat[:, 0].min(), es_pop_flat[:, 0].max()
+        es_pop_ymin, es_pop_ymax = es_pop_flat[:, 1].min(), es_pop_flat[:, 1].max()
+        es_pop_visible = (es_pop_xmin >= xlim[0] and es_pop_xmax <= xlim[1] and es_pop_ymin >= ylim[0] and es_pop_ymax <= ylim[1])
+        print(f"[verification] ES population: x[{es_pop_xmin:.3f}, {es_pop_xmax:.3f}], y[{es_pop_ymin:.3f}, {es_pop_ymax:.3f}] - {'✅ VISIBLE' if es_pop_visible else '❌ OUT OF BOUNDS'}")
+    
+    # Check background bounds
+    if have_field and bg_xmin is not None:
+        bg_visible = (bg_xmin >= xlim[0] and bg_xmax <= xlim[1] and bg_ymin >= ylim[0] and bg_ymax <= ylim[1])
+        print(f"[verification] Background landscape: x[{bg_xmin:.3f}, {bg_xmax:.3f}], y[{bg_ymin:.3f}, {bg_ymax:.3f}] - {'✅ VISIBLE' if bg_visible else '❌ OUT OF BOUNDS'}")
+    elif have_field:
+        print(f"[verification] Background landscape: No background data available")
+        bg_visible = False
+    else:
+        print(f"[verification] Background landscape: No background field requested")
+        bg_visible = True  # No background to check
+    
+    # Overall coverage summary
+    all_visible = all([
+        ga.pts is None or ga_visible,
+        es.pts is None or es_visible,
+        es.pop_pts is None or es_pop_visible,
+        not have_field or bg_visible
+    ])
+    
+    if all_visible:
+        print(f"[verification] 🎉 SUCCESS: All plot elements are fully visible within bounds!")
+    else:
+        print(f"[verification] ⚠️  WARNING: Some elements may extend beyond plot bounds!")
+    
+    print(f"[verification] Plot dimensions: {xlim[1] - xlim[0]:.3f} × {ylim[1] - ylim[0]:.3f}")
+    print(f"[verification] Aspect ratio: {(xlim[1] - xlim[0]) / (ylim[1] - ylim[0]):.3f}")
+
     os.makedirs(out_dir, exist_ok=True)
     png = os.path.join(out_dir, "search_trajectories.png")
     svg = os.path.join(out_dir, "search_trajectories.svg")
@@ -969,6 +1175,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     
     # Generate loss curves plot
     loss_plot_path = plot_loss_curves(ga, es, out_dir, original_dim, 
+                                      ga_npz_path, es_npz_path,
                                       ga_steps=ga_steps, 
                                       es_population=es_population, 
                                       es_generations=es_generations)
@@ -977,6 +1184,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
 
 
 def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2, 
+                     ga_npz_path: str = None, es_npz_path: str = None,
                      ga_steps: int = None, es_population: int = None, es_generations: int = None) -> Optional[str]:
     """
     Generate a plot comparing loss curves for GA and ES methods with budget on x-axis.
@@ -987,6 +1195,8 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     - ES: Cumulative evaluations at each generation
       Example: 4 generations × 5 population → [0, 5, 10, 15, 20] budget points
       Note: Generation 0: 0 evaluations, Generation 1: pop evaluations, Generation 2: 2*pop evaluations, etc.
+    
+    Also includes final accuracy metrics (accuracy, shape_accuracy, grid_accuracy) as notes.
     """
     try:
         import matplotlib.pyplot as plt
@@ -1115,6 +1325,83 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     
     # Add legend
     ax.legend(loc="upper right", frameon=True, fontsize=10)
+    
+    # Add accuracy metrics as notes
+    if ga_npz_path and os.path.exists(ga_npz_path):
+        try:
+            with np.load(ga_npz_path, allow_pickle=True) as f:
+                ga_accuracies = {}
+                # Try different possible accuracy key names
+                for key in ['ga_overall_accuracy', 'overall_accuracy', 'ga_accuracy']:
+                    if key in f:
+                        ga_accuracies['overall'] = safe_array_to_scalar(np.array(f[key]))
+                        break
+                
+                for key in ['ga_top_1_shape_accuracy', 'top_1_shape_accuracy', 'ga_shape_accuracy']:
+                    if key in f:
+                        ga_accuracies['shape'] = safe_array_to_scalar(np.array(f[key]))
+                        break
+                
+                for key in ['ga_top_1_accuracy', 'top_1_accuracy', 'ga_grid_accuracy']:
+                    if key in f:
+                        ga_accuracies['grid'] = safe_array_to_scalar(np.array(f[key]))
+                        break
+                
+                # Add GA accuracy note
+                if ga_accuracies:
+                    ga_note = "GA Final: "
+                    if 'overall' in ga_accuracies:
+                        ga_note += f"Acc={ga_accuracies['overall']:.3f} "
+                    if 'shape' in ga_accuracies:
+                        ga_note += f"Shape={ga_accuracies['shape']:.3f} "
+                    if 'grid' in ga_accuracies:
+                        ga_note += f"Grid={ga_accuracies['grid']:.3f}"
+                    
+                    # Position note in upper left
+                    ax.text(0.02, 0.98, ga_note, transform=ax.transAxes, 
+                           fontsize=9, verticalalignment='top',
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor='#e91e63', alpha=0.8, color='white'))
+                    print(f"[loss] GA accuracy note added: {ga_note}")
+        except Exception as e:
+            print(f"[loss] Failed to extract GA accuracy metrics: {e}")
+    
+    if es_npz_path and os.path.exists(es_npz_path):
+        try:
+            with np.load(es_npz_path, allow_pickle=True) as f:
+                es_accuracies = {}
+                # Try different possible accuracy key names
+                for key in ['es_overall_accuracy', 'overall_accuracy', 'es_accuracy']:
+                    if key in f:
+                        es_accuracies['overall'] = safe_array_to_scalar(np.array(f[key]))
+                        break
+                
+                for key in ['es_top_1_shape_accuracy', 'top_1_shape_accuracy', 'es_shape_accuracy']:
+                    if key in f:
+                        es_accuracies['shape'] = safe_array_to_scalar(np.array(f[key]))
+                        break
+                
+                for key in ['es_top_1_accuracy', 'top_1_accuracy', 'es_grid_accuracy']:
+                    if key in f:
+                        es_accuracies['grid'] = safe_array_to_scalar(np.array(f[key]))
+                        break
+                
+                # Add ES accuracy note
+                if es_accuracies:
+                    es_note = "ES Final: "
+                    if 'overall' in es_accuracies:
+                        es_note += f"Acc={es_accuracies['overall']:.3f} "
+                    if 'shape' in es_accuracies:
+                        es_note += f"Shape={es_accuracies['shape']:.3f} "
+                    if 'grid' in es_accuracies:
+                        es_note += f"Grid={es_accuracies['grid']:.3f}"
+                    
+                    # Position note below GA note
+                    ax.text(0.02, 0.92, es_note, transform=ax.transAxes, 
+                           fontsize=9, verticalalignment='top',
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor='#ff7f0e', alpha=0.8, color='white'))
+                    print(f"[loss] ES accuracy note added: {es_note}")
+        except Exception as e:
+            print(f"[loss] Failed to extract ES accuracy metrics: {e}")
     
     # Tight layout and save
     plt.tight_layout()
@@ -1511,7 +1798,8 @@ def main() -> None:
         "Automatically applies PCA to reduce latent dimensions > 2 to 2D for visualization. "
         "Use --ga_steps, --es_population, --es_generations to override automatic budget-based calculations. "
         "Use --n_samples to run multiple experiments with different seeds for statistical analysis. "
-        "Use --dataset_length to control the number of samples evaluated from the dataset."
+        "Use --dataset_length to control the number of samples evaluated from the dataset. "
+        "Use --run_name to set a custom name for W&B runs."
     )
     parser.add_argument("--wandb_artifact_path", required=True, type=str)
     parser.add_argument("--budget", required=True, type=int)
@@ -1534,6 +1822,7 @@ def main() -> None:
     parser.add_argument("--out_dir", type=str, default="results/latent_traces")
     parser.add_argument("--wandb_project", type=str, default="latent-search-analysis")
     parser.add_argument("--wandb_entity", type=str, default=None)
+    parser.add_argument("--run_name", type=str, default=None, help="Custom name for the W&B run (overrides default naming)")
     # Data source
     parser.add_argument("--json_challenges", type=str, default=None)
     parser.add_argument("--json_solutions", type=str, default=None)
@@ -1620,7 +1909,10 @@ def main() -> None:
         print(f"🧪 Running {args.n_samples} experiments with different seeds...")
         
         # Create a group name for W&B
-        group_name = f"latent-search-b{args.budget}-n{args.n_samples}-{int(time.time())}"
+        if args.run_name:
+            group_name = f"{args.run_name}-n{args.n_samples}-{int(time.time())}"
+        else:
+            group_name = f"latent-search-b{args.budget}-n{args.n_samples}-{int(time.time())}"
         
         for run_idx in range(args.n_samples):
             seed = args.dataset_seed + run_idx
@@ -1647,6 +1939,7 @@ def main() -> None:
                 "background_bandwidth_scale": args.background_bandwidth_scale,
                 "background_global_mix": args.background_global_mix,
                 "run_idx": run_idx,
+                "run_name": args.run_name,  # Custom run name if provided
                 "dataset_seed": seed,
                 "n_samples": args.n_samples,
                 "dataset_length": args.dataset_length,
@@ -1657,20 +1950,29 @@ def main() -> None:
             try:
                 # Initialize W&B run at the start
                 import wandb
+                
+                # Use custom run name if provided, otherwise use default naming
+                if args.run_name:
+                    run_name = f"{args.run_name}-s{run_idx}" if args.n_samples > 1 else args.run_name
+                else:
+                    run_name = f"latent-search-b{args.budget}-s{run_idx}"
+                
                 run_kwargs = {
                     "project": args.wandb_project,
                     "entity": args.wandb_entity,
-                    "name": f"latent-search-b{args.budget}-s{run_idx}",
+                    "name": run_name,
                     "config": cfg,
                     "group": group_name
                 }
                 run = wandb.init(**run_kwargs)
                 print(f"[wandb] Started run {run_idx + 1}/{args.n_samples} in group: {group_name}")
+                print(f"[wandb] Run name: {run_name}")
                 
                 # Log run start with dataset info
                 wandb.log({
                     "run_status": "started", 
                     "run_index": run_idx,
+                    "run_name": run_name,
                     "dataset_folder": args.dataset_folder,
                     "dataset_length": args.dataset_length
                 })
@@ -1813,6 +2115,7 @@ def main() -> None:
             "background_knn": args.background_knn,
             "background_bandwidth_scale": args.background_bandwidth_scale,
             "background_global_mix": args.background_global_mix,
+            "run_name": args.run_name,  # Custom run name if provided
             "dataset_folder": args.dataset_folder,  # Dataset folder name
             "latent_dimension": None,  # Will be updated after plotting
         }
@@ -1820,17 +2123,26 @@ def main() -> None:
         try:
             # Initialize W&B run at the start
             import wandb
+            
+            # Use custom run name if provided, otherwise use default naming
+            if args.run_name:
+                run_name = args.run_name
+            else:
+                run_name = f"latent-search-b{args.budget}"
+            
             run = wandb.init(
                 project=args.wandb_project,
                 entity=args.wandb_entity,
-                name=f"latent-search-b{args.budget}",
+                name=run_name,
                 config=cfg
             )
             print(f"[wandb] Started single run")
+            print(f"[wandb] Run name: {run_name}")
             
             # Log run start with dataset info
             wandb.log({
                 "run_status": "started",
+                "run_name": run_name,
                 "dataset_folder": args.dataset_folder,
                 "dataset_length": args.dataset_length
             })
