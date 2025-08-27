@@ -47,6 +47,7 @@ import math
 import os
 import sys
 import subprocess
+import time
 from typing import Optional, Tuple
 
 import numpy as np
@@ -859,13 +860,27 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
 
 
 def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str, es_npz: str, 
-                    trajectory_plot: Optional[str], loss_plot: Optional[str]) -> None:
+                    trajectory_plot: Optional[str], loss_plot: Optional[str], group_name: str = None) -> None:
     try:
         import wandb
     except Exception as e:
         print(f"wandb not available: {e}")
         return
-    run = wandb.init(project=project, entity=entity, name=f"latent-search-b{cfg.get('budget')}", config=cfg)
+    
+    # Create run with optional group for dataset_length > 1
+    run_kwargs = {
+        "project": project,
+        "entity": entity,
+        "name": f"latent-search-b{cfg.get('budget')}",
+        "config": cfg
+    }
+    
+    if group_name:
+        run_kwargs["group"] = group_name
+        print(f"[wandb] Creating grouped run: {group_name}")
+    
+    run = wandb.init(**run_kwargs)
+    
     if os.path.exists(ga_npz):
         ga_art = wandb.Artifact(name=f"ga_latents_b{cfg.get('budget')}", type="latent_trajectories")
         ga_art.add_file(ga_npz)
@@ -969,45 +984,151 @@ def main() -> None:
     es_rc = subprocess.run(es_cmd, check=False).returncode
     print(f"ES return code: {es_rc}")
 
-    # Plot (with automatic PCA if latent dimension > 2)
-    trajectory_plot, loss_plot = plot_and_save(ga_out, es_out, args.out_dir, 
-                                              background_resolution=args.background_resolution,
-                                              background_smoothing=args.background_smoothing,
-                                              background_knn=args.background_knn,
-                                              background_bandwidth_scale=args.background_bandwidth_scale,
-                                              background_global_mix=args.background_global_mix,
-                                              ga_steps=ga_steps, es_population=pop, es_generations=gens)
-    if trajectory_plot:
-        print(f"Saved trajectory plot to {trajectory_plot}")
-    if loss_plot:
-        print(f"Saved loss curves plot to {loss_plot}")
+    # Handle multiple runs when dataset_length > 1
+    if args.dataset_length and args.dataset_length > 1:
+        print(f"🧪 Running {args.dataset_length} experiments with different seeds...")
+        
+        # Create a group name for W&B
+        group_name = f"latent-search-b{args.budget}-d{args.dataset_length}-{int(time.time())}"
+        
+        for run_idx in range(args.dataset_length):
+            seed = args.dataset_seed + run_idx
+            print(f"\n🔬 Run {run_idx + 1}/{args.dataset_length} with seed {seed}")
+            
+            # Update dataset args for this run
+            run_src_args = build_dataset_args(args)
+            # Replace the seed in the args
+            run_src_args = [arg for arg in run_src_args if not arg.startswith("--dataset-seed")]
+            run_src_args.extend(["--dataset-seed", str(seed)])
+            # Force dataset_length to 1 for individual runs
+            run_src_args = [arg for arg in run_src_args if not arg.startswith("--dataset-length")]
+            run_src_args.extend(["--dataset-length", "1"])
+            
+            # Run GA for this seed
+            ga_cmd = [
+                sys.executable, "src/evaluate_checkpoint.py",
+                "-w", args.wandb_artifact_path,
+                "-i", "gradient_ascent",
+                "--num-steps", str(ga_steps),
+                "--lr", str(args.ga_lr),
+                "--no-wandb-run", "true",
+                "--store-latents", ga_out,
+            ]
+            if args.track_progress:
+                ga_cmd.append("--track-progress")
+            ga_cmd += run_src_args
+            print("Running GA:", " ".join(ga_cmd))
+            ga_rc = subprocess.run(ga_cmd, check=False).returncode
+            print(f"GA return code: {ga_rc}")
+            
+            # Run ES for this seed
+            es_cmd = [
+                sys.executable, "src/evaluate_checkpoint.py",
+                "-w", args.wandb_artifact_path,
+                "-i", "evolutionary_search",
+                "--population-size", str(pop),
+                "--num-generations", str(gens),
+                "--mutation-std", str(args.es_mutation_std),
+                "--no-wandb-run", "true",
+                "--store-latents", es_out,
+            ]
+            if args.track_progress:
+                es_cmd.append("--track-progress")
+            es_cmd += run_src_args
+            if args.use_subspace_mutation:
+                es_cmd += ["--use-subspace-mutation", "--subspace-dim", str(args.subspace_dim), "--ga-step-length", str(args.ga_step_length)]
+                if args.trust_region_radius is not None:
+                    es_cmd += ["--trust-region-radius", str(args.trust_region_radius)]
+            print("Running ES:", " ".join(es_cmd))
+            es_rc = subprocess.run(es_cmd, check=False).returncode
+            print(f"ES return code: {es_rc}")
+            
+            # Plot for this run
+            trajectory_plot, loss_plot = plot_and_save(ga_out, es_out, args.out_dir, 
+                                                      background_resolution=args.background_resolution,
+                                                      background_smoothing=args.background_smoothing,
+                                                      background_knn=args.background_knn,
+                                                      background_bandwidth_scale=args.background_bandwidth_scale,
+                                                      background_global_mix=args.background_global_mix,
+                                                      ga_steps=ga_steps, es_population=pop, es_generations=gens)
+            if trajectory_plot:
+                print(f"Saved trajectory plot to {trajectory_plot}")
+            if loss_plot:
+                print(f"Saved loss curves plot to {loss_plot}")
+            
+            # Upload to W&B with group name
+            cfg = {
+                "artifact_path": args.wandb_artifact_path,
+                "budget": args.budget,
+                "ga_steps": ga_steps,
+                "ga_lr": args.ga_lr,
+                "es_population": pop,
+                "es_generations": gens,
+                "es_mutation_std": args.es_mutation_std,
+                "use_subspace_mutation": args.use_subspace_mutation,
+                "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
+                "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
+                "trust_region_radius": args.trust_region_radius,
+                "track_progress": args.track_progress,
+                "background_resolution": args.background_resolution,
+                "background_smoothing": args.background_smoothing,
+                "background_knn": args.background_knn,
+                "background_bandwidth_scale": args.background_bandwidth_scale,
+                "background_global_mix": args.background_global_mix,
+                "ga_return_code": ga_rc,
+                "es_return_code": es_rc,
+                "run_idx": run_idx,
+                "dataset_seed": seed,
+                "dataset_length": 1,  # Individual runs always have length 1
+            }
+            try:
+                upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot, group_name)
+            except Exception as e:
+                print(f"Failed to upload to wandb: {e}")
+        
+        print(f"\n✅ Completed {args.dataset_length} runs in group: {group_name}")
+        
+    else:
+        # Single run (original behavior)
+        # Plot (with automatic PCA if latent dimension > 2)
+        trajectory_plot, loss_plot = plot_and_save(ga_out, es_out, args.out_dir, 
+                                                  background_resolution=args.background_resolution,
+                                                  background_smoothing=args.background_smoothing,
+                                                  background_knn=args.background_knn,
+                                                  background_bandwidth_scale=args.background_bandwidth_scale,
+                                                  background_global_mix=args.background_global_mix,
+                                                  ga_steps=ga_steps, es_population=pop, es_generations=gens)
+        if trajectory_plot:
+            print(f"Saved trajectory plot to {trajectory_plot}")
+        if loss_plot:
+            print(f"Saved loss curves plot to {loss_plot}")
 
-    # Upload to W&B
-    cfg = {
-        "artifact_path": args.wandb_artifact_path,
-        "budget": args.budget,
-        "ga_steps": ga_steps,
-        "ga_lr": args.ga_lr,
-        "es_population": pop,
-        "es_generations": gens,
-        "es_mutation_std": args.es_mutation_std,
-        "use_subspace_mutation": args.use_subspace_mutation,
-        "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
-        "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
-        "trust_region_radius": args.trust_region_radius,
-        "track_progress": args.track_progress,
-        "background_resolution": args.background_resolution,
-        "background_smoothing": args.background_smoothing,
-        "background_knn": args.background_knn,
-        "background_bandwidth_scale": args.background_bandwidth_scale,
-        "background_global_mix": args.background_global_mix,
-        "ga_return_code": ga_rc,
-        "es_return_code": es_rc,
-    }
-    try:
-        upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot)
-    except Exception as e:
-        print(f"Failed to upload to wandb: {e}")
+        # Upload to W&B
+        cfg = {
+            "artifact_path": args.wandb_artifact_path,
+            "budget": args.budget,
+            "ga_steps": ga_steps,
+            "ga_lr": args.ga_lr,
+            "es_population": pop,
+            "es_generations": gens,
+            "es_mutation_std": args.es_mutation_std,
+            "use_subspace_mutation": args.use_subspace_mutation,
+            "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
+            "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
+            "trust_region_radius": args.trust_region_radius,
+            "track_progress": args.track_progress,
+            "background_resolution": args.background_resolution,
+            "background_smoothing": args.background_smoothing,
+            "background_knn": args.background_knn,
+            "background_bandwidth_scale": args.background_bandwidth_scale,
+            "background_global_mix": args.background_global_mix,
+            "ga_return_code": ga_rc,
+            "es_return_code": es_rc,
+        }
+        try:
+            upload_to_wandb(args.wandb_project, args.wandb_entity, cfg, ga_out, es_out, trajectory_plot, loss_plot)
+        except Exception as e:
+            print(f"Failed to upload to wandb: {e}")
 
 
 if __name__ == "__main__":
