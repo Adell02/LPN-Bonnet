@@ -67,7 +67,7 @@ def run_store_latent_search(
         "--ga_lr", str(lr),
         "--dataset_folder", dataset_folder,
         "--out_dir", run_out_dir,
-        "--no-wandb-run", "true",  # Disable W&B for this sweep
+        "--wandb_project", "none",  # Use "none" to disable W&B
     ]
     
     if dataset_length:
