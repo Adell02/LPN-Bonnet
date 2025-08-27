@@ -1486,20 +1486,22 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
     if existing_run is not None:
         run = existing_run
         print(f"[wandb] Using existing run: {run.name}")
+        # Skip the rest of the function since we're using an existing run
+        return
     else:
         # Create run with optional group for n_samples > 1
         run_kwargs = {
             "project": project,
             "entity": entity,
-                "name": f"latent-search-b{cfg.get('budget')}-s{cfg.get('run_idx', 0)}",
+            "name": f"latent-search-b{cfg.get('budget')}-s{cfg.get('run_idx', 0)}",
             "config": cfg
         }
-    
-    if group_name:
-        run_kwargs["group"] = group_name
-        print(f"[wandb] Creating grouped run: {group_name}")
-    
-    run = wandb.init(**run_kwargs)
+        
+        if group_name:
+            run_kwargs["group"] = group_name
+            print(f"[wandb] Creating grouped run: {group_name}")
+        
+        run = wandb.init(**run_kwargs)
     
     # Log artifacts (NPZ files with latent trajectories)
     if os.path.exists(ga_npz):
@@ -2175,8 +2177,8 @@ def main() -> None:
             if run is not None:
                 # Add return codes and latent dimension to config for final upload
                 cfg.update({
-            "ga_return_code": ga_rc,
-            "es_return_code": es_rc,
+                    "ga_return_code": ga_rc,
+                    "es_return_code": es_rc,
                     "latent_dimension": latent_dim,  # Latent space dimension
                 })
                 # Upload artifacts and final metrics
