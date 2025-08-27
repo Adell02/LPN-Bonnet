@@ -117,6 +117,84 @@ def run_store_latent_search(
         return False, None, 0.0
 
 
+def run_store_latent_search_single(
+    artifact_path: str,
+    lr: float,
+    max_budget: int,
+    dataset_folder: str,
+    dataset_length: Optional[int] = None,
+    dataset_batch_size: Optional[int] = None,
+    dataset_use_hf: str = "true",
+    dataset_seed: int = 0,
+    out_dir: str = "results/ga_lr_budget_sweep"
+) -> Tuple[bool, Dict[int, float], float]:
+    """Run store_latent_search.py once with max_budget and extract intermediate results."""
+    
+    # Create unique output directory for this run
+    run_out_dir = os.path.join(out_dir, f"lr_{lr:.6f}_budget_{max_budget}")
+    os.makedirs(run_out_dir, exist_ok=True)
+    
+    # Build command with maximum budget
+    cmd = [
+        sys.executable, "src/store_latent_search.py",
+        "--wandb_artifact_path", artifact_path,
+        "--budget", str(max_budget),
+        "--ga_lr", str(lr),
+        "--dataset_folder", dataset_folder,
+        "--out_dir", run_out_dir,
+        "--wandb_project", "none",  # Use "none" to disable W&B
+    ]
+    
+    if dataset_length:
+        cmd.extend(["--dataset_length", str(dataset_length)])
+    if dataset_batch_size:
+        cmd.extend(["--dataset_batch_size", str(dataset_batch_size)])
+    
+    cmd.extend([
+        "--dataset_use_hf", dataset_use_hf,
+        "--dataset_seed", str(dataset_seed),
+    ])
+    
+    print(f"\nRunning: {' '.join(cmd)}")
+    
+    try:
+        start_time = time.time()
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd())
+        execution_time = time.time() - start_time
+        
+        if result.returncode == 0:
+            print(f"✅ store_latent_search completed successfully in {execution_time:.2f}s")
+            
+            # Extract intermediate losses at different budget checkpoints
+            ga_npz_path = os.path.join(run_out_dir, "ga_latents.npz")
+            intermediate_losses = extract_intermediate_losses(ga_npz_path, max_budget)
+            
+            return True, intermediate_losses, execution_time
+        else:
+            print(f"❌ store_latent_search failed with return code {result.returncode}")
+            
+            # Try to extract any available loss data
+            intermediate_losses = {}
+            if result.stderr.strip():
+                print(f"Error output:\n{result.stderr}")
+                # Try to extract final loss from stderr
+                final_loss = extract_loss_from_stderr(result.stderr)
+                if final_loss is not None:
+                    intermediate_losses[max_budget] = final_loss
+            
+            # Also try to extract from NPZ file if it exists (partial success)
+            if not intermediate_losses:
+                ga_npz_path = os.path.join(run_out_dir, "ga_latents.npz")
+                intermediate_losses = extract_intermediate_losses(ga_npz_path, max_budget)
+            
+            # Return False for success but include any loss data we found
+            return False, intermediate_losses, execution_time
+            
+    except Exception as e:
+        print(f"❌ Error running store_latent_search: {e}")
+        return False, {}, 0.0
+
+
 def extract_total_loss(npz_path: str) -> Optional[float]:
     """Extract total final loss from GA NPZ file."""
     try:
@@ -143,6 +221,55 @@ def extract_total_loss(npz_path: str) -> Optional[float]:
     except Exception as e:
         print(f"⚠️  Failed to extract loss from {npz_path}: {e}")
         return None
+
+
+def extract_intermediate_losses(npz_path: str, max_budget: int) -> Dict[int, float]:
+    """Extract intermediate losses at different budget checkpoints from GA NPZ file."""
+    try:
+        if not os.path.exists(npz_path):
+            print(f"⚠️  NPZ file not found: {npz_path}")
+            return {}
+            
+        data = np.load(npz_path, allow_pickle=True)
+        
+        # Try to find loss trajectory
+        losses = None
+        for key in ['ga_losses', 'total_final_loss', 'final_loss']:
+            if key in data:
+                losses = np.array(data[key])
+                if losses.size > 0:
+                    print(f"📊 Found {key} with {losses.size} steps")
+                    break
+        
+        if losses is None:
+            print(f"⚠️  No loss data found in NPZ. Available keys: {list(data.keys())}")
+            return {}
+        
+        # Reshape to 1D array
+        losses = losses.reshape(-1)
+        
+        # Calculate budget checkpoints (every 10% of max_budget, plus final)
+        checkpoints = []
+        step_size = max(1, max_budget // 10)  # At least 1 step
+        for i in range(step_size, max_budget + 1, step_size):
+            checkpoints.append(i)
+        if max_budget not in checkpoints:
+            checkpoints.append(max_budget)
+        
+        # Extract losses at each checkpoint
+        intermediate_losses = {}
+        for budget in checkpoints:
+            # Map budget to step index (assuming 2 evaluations per step for GA)
+            step_idx = min(budget // 2, len(losses) - 1)
+            if step_idx < len(losses):
+                intermediate_losses[budget] = float(losses[step_idx])
+                print(f"📊 Budget {budget} → Step {step_idx} → Loss {intermediate_losses[budget]:.6f}")
+        
+        return intermediate_losses
+        
+    except Exception as e:
+        print(f"⚠️  Failed to extract intermediate losses from {npz_path}: {e}")
+        return {}
 
 
 def extract_loss_from_stderr(stderr: str) -> Optional[float]:
@@ -300,44 +427,49 @@ def main():
         ])
         
         for i, lr in enumerate(lrs):
-            for j, budget in enumerate(budgets):
-                print(f"\n🔬 Testing lr = {lr:.6f}, budget = {budget} ({i*len(budgets) + j + 1}/{len(lrs) * len(budgets)})")
+            print(f"\n🔬 Testing lr = {lr:.6f} ({i+1}/{len(lrs)})")
+            
+            # Run with maximum budget to get intermediate results
+            success, intermediate_losses, exec_time = run_store_latent_search_single(
+                artifact_path=artifact_path,
+                lr=lr,
+                max_budget=args.budget_end,
+                dataset_folder=args.dataset_folder,
+                dataset_length=args.dataset_length,
+                dataset_batch_size=args.dataset_batch_size,
+                dataset_use_hf=args.dataset_use_hf,
+                dataset_seed=args.dataset_seed,
+                out_dir=str(out_dir)
+            )
+            
+            # Store results for each budget checkpoint
+            if intermediate_losses:
+                for budget, loss in intermediate_losses.items():
+                    # Find the closest budget index in our budget array
+                    budget_idx = np.argmin(np.abs(np.array(budgets) - budget))
+                    results_matrix[i, budget_idx] = loss
+                    execution_times[i, budget_idx] = exec_time
                 
-                success, total_loss, exec_time = run_store_latent_search(
-                    artifact_path=artifact_path,
-                    lr=lr,
-                    budget=budget,
-                    dataset_folder=args.dataset_folder,
-                    dataset_length=args.dataset_length,
-                    dataset_batch_size=args.dataset_batch_size,
-                    dataset_use_hf=args.dataset_use_hf,
-                    dataset_seed=args.dataset_seed,
-                    out_dir=str(out_dir)
-                )
-                
-                # Store results - include partial results even when evaluation fails
-                if total_loss is not None:
-                    results_matrix[i, j] = total_loss
-                    execution_times[i, j] = exec_time
-                    if success:
-                        successful_evals += 1
-                        print(f"✅ Success: lr={lr:.6f}, budget={budget}, loss={total_loss:.6f}, time={exec_time:.2f}s")
-                    else:
-                        print(f"⚠️  Partial success: lr={lr:.6f}, budget={budget}, loss={total_loss:.6f}, time={exec_time:.2f}s (evaluation failed but loss extracted)")
+                if success:
+                    successful_evals += 1
+                    print(f"✅ Success: lr={lr:.6f}, extracted {len(intermediate_losses)} budget points, time={exec_time:.2f}s")
                 else:
-                    failed_evals += 1
-                    print(f"❌ Failed: lr={lr:.6f}, budget={budget} (no loss data available)")
-                
-                # Write to CSV
+                    print(f"⚠️  Partial success: lr={lr:.6f}, extracted {len(intermediate_losses)} budget points, time={exec_time:.2f}s (evaluation failed but losses extracted)")
+            else:
+                failed_evals += 1
+                print(f"❌ Failed: lr={lr:.6f} (no loss data available)")
+            
+            # Write to CSV for each budget point
+            for budget, loss in intermediate_losses.items():
                 writer.writerow([
                     time.strftime("%Y-%m-%d %H:%M:%S"),
                     artifact_name,
                     lr,
                     budget,
-                    total_loss if total_loss is not None else "",
+                    loss,
                     exec_time,
                     success,
-                    "partial" if not success and total_loss is not None else "complete" if success else "failed"
+                    "partial" if not success else "complete"
                 ])
     
     # Create heatmap
@@ -356,7 +488,7 @@ def main():
     print(f"Artifact: {args.artifact_path}")
     print(f"Successful evaluations: {successful_evals}")
     print(f"Failed evaluations: {failed_evals}")
-    print(f"Total evaluations: {len(lrs) * len(budgets)}")
+    print(f"Total evaluations: {len(lrs)} (one per learning rate with intermediate budget extraction)")
     print(f"LR range: {args.lr_start} to {args.lr_end}")
     print(f"Budget range: {args.budget_start} to {args.budget_end}")
     print(f"\n📊 CSV saved to: {csv_path}")
