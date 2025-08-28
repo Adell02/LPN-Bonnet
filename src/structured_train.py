@@ -454,8 +454,6 @@ class StructuredTrainer:
         all_output_shapes = []
         all_info = []
         
-        logging.info(f"Processing {num_batches} batches for evaluation...")
-        
         for i in range(num_batches):
             start_idx = i * batch_size
             end_idx = start_idx + batch_size
@@ -466,27 +464,26 @@ class StructuredTrainer:
             
             key = jax.random.PRNGKey(i)  # Different key per batch
             
-            # DEBUG: Log input shapes
-            logging.info(f"Batch {i}: pairs={batch_pairs.shape}, shapes={batch_shapes.shape}")
-            logging.info(f"Batch {i}: leave_one_out_pairs={batch_leave_one_out_pairs.shape}, leave_one_out_shapes={batch_leave_one_out_shapes.shape}")
-            
+            # Generate output using leave_one_out approach (like train.py)
             try:
-                # Generate output using leave_one_out approach (like train.py)
+                # DEBUG: Log what we're about to pass
+                prior_kl = cfg.training.get("prior_kl_coeff")
+                pairwise_kl = self.cfg.training.get("pairwise_kl_coeff")
+                logging.info(f"Batch {i} - prior_kl_coeff: {prior_kl}, pairwise_kl_coeff: {pairwise_kl}")
+                
+                # SIMPLIFIED: Pass only essential parameters to avoid conflicts
                 batch_output_grids, batch_output_shapes, batch_info = self.model.apply(
                     {"params": state.params},
                     batch_leave_one_out_pairs,  # Use leave_one_out pairs as support
                     batch_leave_one_out_shapes, # Use leave_one_out shapes as support
                     batch_pairs[:, 0, ..., 0],  # Query: first pair
                     batch_shapes[:, 0, ..., 0], # Query: first shape
-                    key,
-                    True,  # dropout_eval
-                    cfg.eval.inference_mode,
-                    False,  # return_two_best
-                    method=self.model.generate_output,
+                    True,  # dropout_eval (positional argument)
+                    cfg.eval.inference_mode,  # mode (positional argument)
                     poe_alphas=alphas,
                     encoder_params_list=enc_params_list,
                     decoder_params=state.params,
-                    **(cfg.eval.get("inference_kwargs") or {}),
+                    rngs={"dropout": key, "latents": key},
                 )
                 
                 # DEBUG: Log output shapes
@@ -511,80 +508,26 @@ class StructuredTrainer:
         
         logging.info(f"Successfully processed {len(all_output_grids)} batches")
         
-        # ROBUST SOLUTION: Handle shape mismatches during concatenation
+        # Concatenate batch results
         try:
-            # Check for shape consistency
-            grid_shapes = [g.shape for g in all_output_grids]
-            shape_shapes = [s.shape for s in all_output_shapes]
-            
-            logging.info(f"Grid shapes: {grid_shapes}")
-            logging.info(f"Shape shapes: {shape_shapes}")
-            
-            # Find the most common shape for grids
-            from collections import Counter
-            grid_shape_counts = Counter(grid_shapes)
-            most_common_grid_shape = grid_shape_counts.most_common(1)[0][0]
-            logging.info(f"Most common grid shape: {most_common_grid_shape}")
-            
-            # Filter batches with consistent shapes
-            consistent_batches = []
-            for i, (grids, shapes) in enumerate(zip(all_output_grids, all_output_shapes)):
-                if grids.shape == most_common_grid_shape:
-                    consistent_batches.append(i)
-                else:
-                    logging.warning(f"Batch {i} has inconsistent grid shape: {grids.shape} vs expected {most_common_grid_shape}")
-            
-            logging.info(f"Using {len(consistent_batches)} consistent batches out of {len(all_output_grids)}")
-            
-            # Use only consistent batches
-            consistent_output_grids = [all_output_grids[i] for i in consistent_batches]
-            consistent_output_shapes = [all_output_shapes[i] for i in consistent_batches]
-            consistent_info = [all_info[i] for i in consistent_batches]
-            
-            # Now concatenate consistent shapes
-            output_grids = jnp.concatenate(consistent_output_grids, axis=0)
-            output_shapes = jnp.concatenate(consistent_output_shapes, axis=0)
-            
+            output_grids = jnp.concatenate(all_output_grids, axis=0)
+            output_shapes = jnp.concatenate(all_output_shapes, axis=0)
             logging.info(f"Final concatenated shapes: grids={output_grids.shape}, shapes={output_shapes.shape}")
-            
         except Exception as e:
             logging.error(f"Failed to concatenate outputs: {e}")
             logging.error(f"Output shapes: {[g.shape for g in all_output_grids]}")
             return {}
-        
-        # Merge info dictionaries safely
+
+        # Merge info dictionaries
         info = {}
-        if consistent_info:
-            for key in consistent_info[0].keys():
-                try:
-                    if key == "context":
-                        # Concatenate contexts
-                        contexts = [inf[key] for inf in consistent_info if key in inf and inf[key] is not None]
-                        if contexts:
-                            # Check context shapes before concatenation
-                            context_shapes = [c.shape for c in contexts]
-                            logging.info(f"Context shapes: {context_shapes}")
-                            
-                            # Find most common context shape
-                            context_shape_counts = Counter(context_shapes)
-                            most_common_context_shape = context_shape_counts.most_common(1)[0][0]
-                            
-                            # Filter consistent contexts
-                            consistent_contexts = [c for c in contexts if c.shape == most_common_context_shape]
-                            if consistent_contexts:
-                                info[key] = jnp.concatenate(consistent_contexts, axis=0)
-                                logging.info(f"Concatenated context shape: {info[key].shape}")
-                            else:
-                                info[key] = None
-                                logging.warning("No consistent contexts found")
-                        else:
-                            info[key] = None
-                    else:
-                        # For other info, just take the first batch
-                        info[key] = consistent_info[0][key]
-                except Exception as e:
-                    logging.warning(f"Failed to merge info key '{key}': {e}")
-                    info[key] = None
+        for key in all_info[0].keys():
+            if key == "context":
+                # Concatenate contexts
+                contexts = [inf[key] for inf in all_info]
+                info[key] = jnp.concatenate(contexts, axis=0)
+            else:
+                # For other info, just take the first batch
+                info[key] = all_info[0][key]
 
         # Move tensors to host (CPU) and convert to numpy for lightweight eval
         pairs_np = np.array(jax.device_get(pairs))
