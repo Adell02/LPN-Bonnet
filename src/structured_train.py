@@ -439,6 +439,15 @@ class StructuredTrainer:
         leave_one_out_pairs = make_leave_one_out(self.eval_grids, axis=-4)
         leave_one_out_shapes = make_leave_one_out(self.eval_shapes, axis=-3)
         
+        # DEBUG: Log the leave_one_out data shapes to ensure consistency
+        logging.info(f"Original eval_grids shape: {self.eval_grids.shape}")
+        logging.info(f"Original eval_shapes shape: {self.eval_shapes.shape}")
+        logging.info(f"Leave_one_out_pairs shape: {leave_one_out_pairs.shape}")
+        logging.info(f"Leave_one_out_shapes shape: {leave_one_out_shapes.shape}")
+        
+        # Ensure the leave_one_out data has consistent shapes
+        assert leave_one_out_pairs.shape[:-4] == leave_one_out_shapes.shape[:-3], f"Leave-one-out shape mismatch: pairs={leave_one_out_pairs.shape}, shapes={leave_one_out_shapes.shape}"
+        
         # 2. IMPLEMENT PROPER BATCH PROCESSING: Handle batches like train.py
         batch_size = cfg.eval.get("batch_size", len(self.eval_grids))
         num_batches = len(self.eval_grids) // batch_size
@@ -448,6 +457,16 @@ class StructuredTrainer:
             shapes = self.eval_shapes[:num_batches * batch_size]
             leave_one_out_pairs = leave_one_out_pairs[:num_batches * batch_size]
             leave_one_out_shapes = leave_one_out_shapes[:num_batches * batch_size]
+            
+            # DEBUG: Log the batched data shapes to ensure consistency
+            logging.info(f"Batched pairs shape: {pairs.shape}")
+            logging.info(f"Batched shapes shape: {shapes.shape}")
+            logging.info(f"Batched leave_one_out_pairs shape: {leave_one_out_pairs.shape}")
+            logging.info(f"Batched leave_one_out_shapes shape: {leave_one_out_shapes.shape}")
+            
+            # Ensure all batched data has consistent shapes
+            assert pairs.shape[:-4] == shapes.shape[:-3], f"Batched shape mismatch: pairs={pairs.shape}, shapes={shapes.shape}"
+            assert leave_one_out_pairs.shape[:-4] == leave_one_out_shapes.shape[:-3], f"Batched leave_one_out shape mismatch: pairs={leave_one_out_pairs.shape}, shapes={leave_one_out_shapes.shape}"
         
         # Process in batches
         all_output_grids = []
@@ -462,6 +481,16 @@ class StructuredTrainer:
             batch_leave_one_out_pairs = leave_one_out_pairs[start_idx:end_idx]
             batch_leave_one_out_shapes = leave_one_out_shapes[start_idx:end_idx]
             
+            # DEBUG: Log the individual batch data shapes to ensure consistency
+            logging.info(f"Batch {i} - batch_pairs shape: {batch_pairs.shape}")
+            logging.info(f"Batch {i} - batch_shapes shape: {batch_shapes.shape}")
+            logging.info(f"Batch {i} - batch_leave_one_out_pairs shape: {batch_leave_one_out_pairs.shape}")
+            logging.info(f"Batch {i} - batch_leave_one_out_shapes shape: {batch_leave_one_out_shapes.shape}")
+            
+            # Ensure all batch data has consistent shapes
+            assert batch_pairs.shape[:-4] == batch_shapes.shape[:-3], f"Batch {i} shape mismatch: pairs={batch_pairs.shape}, shapes={batch_shapes.shape}"
+            assert batch_leave_one_out_pairs.shape[:-4] == batch_leave_one_out_shapes.shape[:-3], f"Batch {i} leave_one_out shape mismatch: pairs={batch_leave_one_out_pairs.shape}, shapes={batch_leave_one_out_shapes.shape}"
+            
             key = jax.random.PRNGKey(i)  # Different key per batch
             
             # Generate output using leave_one_out approach (like train.py)
@@ -472,6 +501,17 @@ class StructuredTrainer:
                 logging.info(f"Batch {i} - prior_kl_coeff: {prior_kl}, pairwise_kl_coeff: {pairwise_kl}")
                 logging.info(f"Batch {i} - inference_mode: {cfg.eval.inference_mode}, type: {type(cfg.eval.inference_mode)}")
                 logging.info(f"Batch {i} - input shapes: pairs={batch_pairs[:, 0, ..., 0].shape}, shapes={batch_shapes[:, 0, ..., 0].shape}")
+                
+                # DEBUG: Log the exact shapes being passed to generate_output to ensure consistency
+                logging.info(f"Batch {i} - support pairs shape: {batch_leave_one_out_pairs.shape}")
+                logging.info(f"Batch {i} - support shapes shape: {batch_leave_one_out_shapes.shape}")
+                logging.info(f"Batch {i} - query input shape: {batch_pairs[:, 0, ..., 0].shape}")
+                logging.info(f"Batch {i} - query shape shape: {batch_shapes[:, 0, ..., 0].shape}")
+                
+                # Ensure all encoders receive exactly the same input data with the same shapes
+                # The support pairs and shapes should be consistent across all encoders
+                assert batch_leave_one_out_pairs.shape == batch_leave_one_out_shapes.shape[:-1] + (5, 5, 2), f"Support pairs shape mismatch: {batch_leave_one_out_pairs.shape}"
+                assert batch_leave_one_out_shapes.shape == batch_shapes.shape, f"Support shapes shape mismatch: {batch_leave_one_out_shapes.shape}"
                 
                 # Use generate_output method for evaluation (like train.py does)
                 # Use apply with method parameter and pass all arguments as keyword arguments
