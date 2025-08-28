@@ -2526,11 +2526,26 @@ def main() -> None:
             if base_loss is not None and "ga_losses" in data:
                 data["ga_losses"] = np.concatenate([[base_loss], np.array(data["ga_losses"]).reshape(-1)])
             if base_acc is not None:
-                data.setdefault("ga_accuracy", []).insert(0, base_acc)
+                # Convert to list if it's a numpy array, then insert
+                if "ga_accuracy" not in data:
+                    data["ga_accuracy"] = []
+                if isinstance(data["ga_accuracy"], np.ndarray):
+                    data["ga_accuracy"] = data["ga_accuracy"].tolist()
+                data["ga_accuracy"].insert(0, base_acc)
             if base_shape is not None:
-                data.setdefault("ga_shape_correctness", []).insert(0, base_shape)
+                # Convert to list if it's a numpy array, then insert
+                if "ga_shape_correctness" not in data:
+                    data["ga_shape_correctness"] = []
+                if isinstance(data["ga_shape_correctness"], np.ndarray):
+                    data["ga_shape_correctness"] = data["ga_shape_correctness"].tolist()
+                data["ga_shape_correctness"].insert(0, base_shape)
             if base_pixel is not None:
-                data.setdefault("ga_pixel_correctness", []).insert(0, base_pixel)
+                # Convert to list if it's a numpy array, then insert
+                if "ga_pixel_correctness" not in data:
+                    data["ga_pixel_correctness"] = []
+                if isinstance(data["ga_pixel_correctness"], np.ndarray):
+                    data["ga_pixel_correctness"] = data["ga_pixel_correctness"].tolist()
+                data["ga_pixel_correctness"].insert(0, base_pixel)
         elif prefix == "es_":
             if base_latent is not None and "es_best_latents_per_generation" in data:
                 data["es_best_latents_per_generation"] = np.concatenate([
@@ -2540,11 +2555,26 @@ def main() -> None:
             if base_loss is not None and "es_generation_losses" in data:
                 data["es_generation_losses"] = np.concatenate([[base_loss], np.array(data["es_generation_losses"]).reshape(-1)])
             if base_acc is not None:
-                data.setdefault("es_accuracy", []).insert(0, base_acc)
+                # Convert to list if it's a numpy array, then insert
+                if "es_accuracy" not in data:
+                    data["es_accuracy"] = []
+                if isinstance(data["es_accuracy"], np.ndarray):
+                    data["es_accuracy"] = data["es_accuracy"].tolist()
+                data["es_accuracy"].insert(0, base_acc)
             if base_shape is not None:
-                data.setdefault("es_shape_correctness", []).insert(0, base_shape)
+                # Convert to list if it's a numpy array, then insert
+                if "es_shape_correctness" not in data:
+                    data["es_shape_correctness"] = []
+                if isinstance(data["es_shape_correctness"], np.ndarray):
+                    data["es_shape_correctness"] = data["es_shape_correctness"].tolist()
+                data["es_shape_correctness"].insert(0, base_shape)
             if base_pixel is not None:
-                data.setdefault("es_pixel_correctness", []).insert(0, base_pixel)
+                # Convert to list if it's a numpy array, then insert
+                if "es_pixel_correctness" not in data:
+                    data["es_pixel_correctness"] = []
+                if isinstance(data["es_pixel_correctness"], np.ndarray):
+                    data["es_pixel_correctness"] = data["es_pixel_correctness"].tolist()
+                data["es_pixel_correctness"].insert(0, base_pixel)
 
         np.savez_compressed(target_npz, **data)
 

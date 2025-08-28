@@ -250,12 +250,9 @@ class StructuredTrainer:
     def _iterate_batches(self, key: chex.PRNGKey, log_every_n_steps: int):
         shuffle_key, aug_key = jax.random.split(key)
         grids, shapes = shuffle_dataset_into_batches(self.train_grids, self.train_shapes, self.batch_size, shuffle_key)
-        num_logs = grids.shape[0] // log_every_n_steps
-        grids = grids[: num_logs * log_every_n_steps]
-        shapes = shapes[: num_logs * log_every_n_steps]
         if self.cfg.training.online_data_augmentation:
             grids, shapes = data_augmentation_fn(grids, shapes, aug_key)
-        # Yield individual batches, not chunks of log_every_n_steps
+        # Yield individual batches
         for i in range(0, grids.shape[0], self.batch_size):
             yield grids[i : i + self.batch_size], shapes[i : i + self.batch_size]
 
@@ -298,11 +295,8 @@ class StructuredTrainer:
         logging.info("Starting training loop...")
         pbar = trange(num_steps, disable=False)
         while step < num_steps:
-            logging.info(f"Training loop iteration: step={step}, epoch={epoch}")
             key, epoch_key = jax.random.split(key)
-            logging.info("Starting batch iteration...")
             for batch_idx, (batch_pairs, batch_shapes) in enumerate(self._iterate_batches(epoch_key, log_every)):
-                logging.info(f"Processing batch {batch_idx}, batch shape: {batch_pairs.shape}")
                 # Grad over decoder params only; encoder params are fed through kwargs and not part of state.params
                 def loss_fn(decoder_params, batch_pairs, batch_shapes, rng):
                     loss, metrics = self.model.apply(

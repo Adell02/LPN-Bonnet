@@ -628,12 +628,12 @@ def create_heatmap(
     ax.set_ylabel('Learning Rate', fontsize=14)
     ax.set_title('GA Learning Rate vs Budget: Total Loss Heatmap', fontsize=16, fontweight='bold')
     
-    # Keep linear axes
+    # Use linear scaling for both axes
     # Ensure ticks reflect the actual lr and budget values we used
     ax.set_xticks(list(budgets))
     ax.set_yticks(list(lrs))
-    # Format y ticks (learning rate) for readability
-    ax.set_yticklabels([f"{v:.3g}" for v in lrs])
+    # Format y ticks (learning rate) for readability - now with linear spacing
+    ax.set_yticklabels([f"{v:.3f}" for v in lrs])
 
     # Add grid
     ax.grid(True, alpha=0.3)
@@ -688,7 +688,7 @@ def main():
     args = parser.parse_args()
     
     # Generate LR and budget values
-    lrs = np.logspace(np.log10(args.lr_start), np.log10(args.lr_end), args.lr_steps)
+    lrs = np.linspace(args.lr_start, args.lr_end, args.lr_steps)  # Linear spacing for learning rates
     budgets = np.logspace(np.log10(args.budget_start), np.log10(args.budget_end), args.budget_steps).astype(int)
     
     print(f"🔬 Learning Rate Sweep Configuration:")

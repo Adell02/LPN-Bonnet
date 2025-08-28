@@ -915,8 +915,11 @@ class LPN(nn.Module):
             fitness = -losses.mean(axis=-2) if losses.ndim >= 3 else -losses
             idx = jnp.argsort(fitness, axis=-1, descending=True)
             best_idx = idx[..., :mu]
-            x_sel = jnp.take_along_axis(x, best_idx[..., None], axis=-2)
-            z_sel = jnp.take_along_axis(z, best_idx[..., None], axis=-2)
+            # Ensure best_idx has the right shape for take_along_axis
+            # best_idx should have shape (..., mu) and we need (..., mu, 1) for axis=-2
+            best_idx_expanded = best_idx[..., None] if best_idx.ndim < x.ndim else best_idx
+            x_sel = jnp.take_along_axis(x, best_idx_expanded, axis=-2)
+            z_sel = jnp.take_along_axis(z, best_idx_expanded, axis=-2)
             mean_old = mean
             mean = jnp.sum(x_sel * weights[..., None], axis=-2)
             y = (x_sel - mean_old[..., None, :]) / sigma
