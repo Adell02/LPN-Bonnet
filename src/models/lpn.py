@@ -1013,8 +1013,16 @@ class LPN(nn.Module):
 
         final_pop = jnp.concatenate([x, mean[..., None, :]], axis=-2)
         final_losses = _eval_candidates(final_pop)
+
+        # ``_select_best_and_second_best_latents`` expects log-probabilities where
+        # higher is better. ``_eval_candidates`` returns losses, so we negate them
+        # to convert to log-probabilities such that the lowest loss corresponds to
+        # the highest log-probability.
+
+        final_log_probs = -final_losses
+
         best_context, second_best_context = self._select_best_and_second_best_latents(
-            final_losses, final_pop
+            final_log_probs, final_pop
         )
 
         if track_progress:
