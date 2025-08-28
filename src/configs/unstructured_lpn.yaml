@@ -14,12 +14,17 @@ training:
   pairwise_kl_coeff: null
   mixed_precision: False  # if True, uses bfloat16 activations
   online_data_augmentation: False
-  # Use three pre-generated structured pattern datasets (balanced)
+  # Use on-the-fly generator mixing the three struct patterns
   task_generator:
+    class: STRUCT_PATTERN
+    num_workers: 4
+    num_pairs: 4
+    # Mix all three patterns by sampling per pair (pattern: 0)
+    pattern: 0
+    num_rows: 5
+    num_cols: 5
   train_datasets:
-    - struct_pattern_1
-    - struct_pattern_2
-    - struct_pattern_3
+  
   use_hf: False
 
 eval:

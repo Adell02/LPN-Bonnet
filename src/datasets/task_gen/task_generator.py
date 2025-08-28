@@ -81,13 +81,14 @@ class StructPatternTaskGenerator(IterableDataset):
         self,
         num_pairs: int,
         seed: Optional[int] = None,
-        pattern: Literal[1, 2, 3] = 1,  # 1=O, 2=T, 3=L
+        pattern: Optional[int] = 1,  # 1=O, 2=T, 3=L; 0 or None=mix randomly
         num_rows: int = 5,
         num_cols: int = 5,
         **_: Any,
     ):
         self.num_pairs = num_pairs
         self.seed = seed
+        # pattern: 1,2,3 fixed; 0/None => mix randomly per pair
         self.pattern = pattern
         # Allow overriding grid size from configs; default 5x5
         self.num_rows = int(num_rows)
@@ -116,18 +117,21 @@ class StructPatternTaskGenerator(IterableDataset):
         input_grid = np.zeros((self.num_rows, self.num_cols), dtype=int)
         output_grid = np.zeros((self.num_rows, self.num_cols), dtype=int)
 
+        # Choose pattern per pair if mixing requested
+        pat = self.pattern if self.pattern not in (0, None) else random.choice((1, 2, 3))
+
         # Define relative offsets and bounding box per pattern (top-left anchored), 0-based
-        if self.pattern == 1:  # O tetromino (2x2)
+        if pat == 1:  # O tetromino (2x2)
             offsets = [(0, 0), (0, 1), (1, 0), (1, 1)]
             box_h, box_w = 2, 2
-        elif self.pattern == 2:  # Centered T (2x3 box)
+        elif pat == 2:  # Centered T (2x3 box)
             offsets = [(0, 0), (0, 1), (0, 2), (1, 1)]
             box_h, box_w = 2, 3
-        elif self.pattern == 3:  # Corner L (3x2 box)
+        elif pat == 3:  # Corner L (3x2 box)
             offsets = [(0, 0), (1, 0), (2, 0), (2, 1)]
             box_h, box_w = 3, 2
         else:
-            raise ValueError(f"Invalid struct pattern id: {self.pattern}")
+            raise ValueError(f"Invalid struct pattern id: {pat}")
 
         max_row = self.num_rows - box_h
         max_col = self.num_cols - box_w
