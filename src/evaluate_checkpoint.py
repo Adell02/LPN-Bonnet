@@ -236,10 +236,8 @@ def instantiate_model(cfg: omegaconf.DictConfig, mixed_precision: bool) -> LPN:
 
 def instantiate_train_state(lpn: LPN) -> TrainState:
     """Create a minimal train state that will be replaced by checkpoint loading."""
-    # Create a dummy train state - the actual state will come from the checkpoint
-    # We don't need to initialize the model since we're loading from checkpoint
-    dummy_params = {}  # Will be replaced by checkpoint loading
-    
+    # We need to create a proper train state structure, but the actual parameters
+    # will come from the checkpoint loading
     learning_rate, linear_warmup_steps = 0, 0
     linear_warmup_scheduler = optax.warmup_exponential_decay_schedule(
         init_value=learning_rate / (linear_warmup_steps + 1),
@@ -251,6 +249,14 @@ def instantiate_train_state(lpn: LPN) -> TrainState:
     )
     optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(linear_warmup_scheduler))
     optimizer = optax.MultiSteps(optimizer, every_k_schedule=1)
+    
+    # The key insight: we need to create a proper train state structure
+    # but we can't initialize the model parameters since they might not match
+    # So we'll create a minimal state and let the checkpoint loading handle the rest
+    # We need to create a dummy params structure that can be replaced by checkpoint loading
+    # The checkpoint loading will replace this with the actual parameters
+    # Let's create a proper structure that matches what the checkpoint expects
+    dummy_params = {"encoder": {}, "decoder": {}}  # Will be replaced by checkpoint loading
     train_state = TrainState.create(apply_fn=lpn.apply, tx=optimizer, params=dummy_params)
     return train_state
 
