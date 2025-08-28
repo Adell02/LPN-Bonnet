@@ -20,40 +20,20 @@ from models.utils import EncoderTransformerConfig, DecoderTransformerConfig
 from data_utils import make_leave_one_out
 
 """
-LPN Model with Enhanced Evolutionary Search
+LPN Model with CMA-ES Evolutionary Search
 
-The evolutionary search now supports subspace mutation for better performance in high-dimensional latent spaces:
+The evolutionary search procedure is implemented using the Covariance Matrix Adaptation
+Evolution Strategy (CMA-ES). The initial search distribution is centred on the mean of the
+available latents and is iteratively adapted by sampling, evaluating and recombining
+candidate latents. At each generation the mean, global step size and covariance matrix are
+updated using standard CMA-ES rules (weighted recombination, cumulative step-size
+adaptation and rank-μ / rank-one covariance updates).
 
-1. **Subspace Mutation**: Instead of mutating in all 1024 dimensions, we build a low-dimensional 
-   basis (typically 16-64D) and mutate within that subspace. This dramatically improves 
-   exploration efficiency.
-
-2. **Automatic Sigma Scaling**: The mutation standard deviation is automatically scaled to match 
-   the expected step length of gradient ascent, ensuring fair comparison between methods.
-
-3. **Antithetic Sampling**: For every random direction ε, we also test -ε, reducing variance 
-   and improving selection signal.
-
-4. **Trust Region**: Optional constraint to keep offspring within a ball around the mean latent.
-
-Usage:
-    # Enable subspace mutation (disabled by default)
+Usage example:
     mode_kwargs = {
         "population_size": 16,
         "num_generations": 2,
-        "mutation_std": 0.1,  # Will be overridden by ga_step_length when subspace is enabled
-        "use_subspace_mutation": True,  # Enable subspace mutation
-        "subspace_dim": 32,
-        "ga_step_length": 0.5,  # Target GA step size
-        "trust_region_radius": 2.0,  # Optional
-    }
-    
-    # Standard ES (default behavior)
-    mode_kwargs = {
-        "population_size": 16,
-        "num_generations": 2,
-        "mutation_std": 0.5,  # Standard isotropic mutation
-        "use_subspace_mutation": False,  # Default: disabled
+        "mutation_std": 0.5,  # Initial sigma
     }
 """
 
@@ -179,23 +159,17 @@ class LPN(nn.Module):
             leave_one_out_pairs = make_leave_one_out(pairs, axis=-4)
             leave_one_out_grid_shapes = make_leave_one_out(grid_shapes, axis=-3)
             
-            # Extract subspace mutation parameters with defaults
-            use_subspace = mode_kwargs.get("use_subspace_mutation", False)
-            subspace_dim = mode_kwargs.get("subspace_dim", 32)
-            ga_step_length = mode_kwargs.get("ga_step_length", 0.5)
-            trust_radius = mode_kwargs.get("trust_region_radius", None)
-            
             if mode_kwargs.get("track_progress", False):
                 context, _, _ = self._get_evolutionary_search_context(
                     leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes,
-                    key, 
-                    **mode_kwargs
+                    key,
+                    **mode_kwargs,
                 )
             else:
                 context, _ = self._get_evolutionary_search_context(
                     leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes,
-                    key, 
-                    **mode_kwargs
+                    key,
+                    **mode_kwargs,
                 )
             
             loss, metrics = self._loss_from_pair_and_context(context, pairs, grid_shapes, dropout_eval)
@@ -455,22 +429,16 @@ class LPN(nn.Module):
             for arg in ["population_size", "num_generations", "mutation_std"]:
                 assert arg in mode_kwargs, f"'{arg}' argument required for 'evolutionary_search' inference mode."
             
-            # Extract subspace mutation parameters with defaults
-            use_subspace = mode_kwargs.get("use_subspace_mutation", False)
-            subspace_dim = mode_kwargs.get("subspace_dim", 32)
-            ga_step_length = mode_kwargs.get("ga_step_length", 0.5)
-            trust_radius = mode_kwargs.get("trust_region_radius", None)
-            
             if mode_kwargs.get("track_progress", False):
                 first_context, second_context, traj = self._get_evolutionary_search_context(
                     latents, pairs, grid_shapes, key,
-                    **mode_kwargs
+                    **mode_kwargs,
                 )
                 info = {"context": first_context, "evolutionary_trajectory": traj}
             else:
                 first_context, second_context = self._get_evolutionary_search_context(
                     latents, pairs, grid_shapes, key,
-                    **mode_kwargs
+                    **mode_kwargs,
                 )
                 info = {"context": first_context}
         else:
@@ -871,33 +839,17 @@ class LPN(nn.Module):
             track_progress: bool = False,
             **kwargs,
         ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:
-        """Evolutionary search for optimal latent context with optional subspace mutation."""
-
-        # ----- helper: evaluate candidates EXACTLY like random search -----
+        """Evolutionary search using CMA-ES."""
         def _eval_candidates(cand_latents: chex.Array) -> chex.Array:
-            """
-            Args:
-            cand_latents: (*B, C, H) — candidate contexts per task/batch
-            Returns:
-            losses:        (*B, P, C) — per-pair loss for each candidate (lower is better)
-            """
-            # Flatten input/output for decoding likelihood (identical to random search)
             input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
-
-            # Use the same latent for all pairs of the same task (identical to random search).
-            # cand_latents: (*B, C, H) -> (*B, P, C, H)
             lat_for_decode = cand_latents[..., None, :, :].repeat(output_seq.shape[-2], axis=-3)
-
-            # Decode the output sequence in batches (identical to random search).
-            batch_size = scan_batch_size or lat_for_decode.shape[-2]  # batch over candidates axis
+            batch_size = scan_batch_size or lat_for_decode.shape[-2]
             num_batches = lat_for_decode.shape[-2] // batch_size
             batched = jnp.reshape(
                 lat_for_decode[..., : num_batches * batch_size, :],
                 (*lat_for_decode.shape[:-2], num_batches, batch_size, lat_for_decode.shape[-1]),
             )
-            dropout_eval = True  # no dropout during decoder inference
-
-            # One lifted scan over decoder; inside we vmap over the batch of candidates (identical to random).
+            dropout_eval = True
             _, (row_logits, col_logits, grid_logits) = nn.scan(
                 lambda decoder, _, lat_batch: (
                     None,
@@ -910,14 +862,10 @@ class LPN(nn.Module):
                 in_axes=-3,
                 out_axes=-3,
             )(self.decoder, None, batched)
-
-            # Collapse (num_batches, batch_size) -> candidates (identical to random).
             row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
                 lambda x: x.reshape(*x.shape[:-3], -1, x.shape[-1]),
                 (row_logits, col_logits, grid_logits),
             )
-
-            # Remainder candidates (identical to random).
             if num_batches * batch_size < lat_for_decode.shape[-2]:
                 remaining = lat_for_decode[..., num_batches * batch_size :, :]
                 r_row, r_col, r_grid = jax.vmap(
@@ -928,284 +876,88 @@ class LPN(nn.Module):
                     (row_logits, col_logits, grid_logits),
                     (r_row, r_col, r_grid),
                 )
-
-            # Compute output sequence log probabilities (identical to random search)
             log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
                 row_logits, col_logits, grid_logits, output_seq
-            )  # shape: (*B, P, C)
-
-            # Convert log probabilities to losses (minimizing loss like GA)
-            # -log_prob = loss (lower is better)
-            losses = -log_probs  # shape: (*B, P, C)
-
+            )
+            losses = -log_probs
             return losses
 
-        # ----- initialize population around prepared latents -----
-        base = self._prepare_latents_before_search(include_mean_latent, include_all_latents, latents)
-        
-        # Build subspace basis and compute sigma if using subspace mutation
-        use_subspace_mutation = kwargs.get("use_subspace_mutation", False)
-        subspace_dim = kwargs.get("subspace_dim", 32)
-        ga_step_length = kwargs.get("ga_step_length", 0.5)
-        trust_region_radius = kwargs.get("trust_region_radius", None)
-        
-        if use_subspace_mutation:
-            key, basis_key = jax.random.split(key)
-            U = self._make_subspace_basis(base, subspace_dim, basis_key)
-            # Compute sigma to match GA step length using actual subspace dimension
-            actual_subspace_dim = U.shape[-1]
-            sigma = self._sigma_for_ga_step(ga_step_length, actual_subspace_dim)
-            print(f"         🔬 Subspace ES: m={actual_subspace_dim}, σ={sigma:.4f} (targeting GA step {ga_step_length})")
-        else:
-            U = None
-            sigma = mutation_std
-            print(f"         🔬 Standard ES: σ={sigma:.4f}")
-        
-        # Cap or fill to population_size
-        C0 = base.shape[-2]
-        if C0 >= population_size:
-            # If we have more than needed, take the first population_size
-            population = base[..., :population_size, :]                       # (*B, C, H)
-        else:
-            # Start from mean latent (same as GA) and expand population around it
-            mean_latent = base.mean(axis=-2, keepdims=True)                   # (*B, 1, H)
-            print(f"         🎯 ES starting from mean latent (same as GA)")
-            need = population_size - 1  # We only need to add (population_size - 1) since we start from mean
-            key, nk = jax.random.split(key)
-            if use_subspace_mutation and U is not None:
-                # Use subspace mutation for initial population expansion
-                actual_subspace_dim = U.shape[-1]  # Get actual subspace dimension from U
-                noise = jax.random.normal(nk, (*base.shape[:-2], need, actual_subspace_dim))
-                step = jnp.einsum('...nm,...hm->...nh', noise, jnp.swapaxes(U, -2, -1))
-                # Start from mean, add noise around it
-                population = jnp.concatenate([mean_latent, mean_latent + sigma * step], axis=-2)
-            else:
-                # Standard isotropic noise
-                noise = jax.random.normal(nk, (*base.shape[:-2], need, base.shape[-1]))
-                # Start from mean, add noise around it
-                population = jnp.concatenate([mean_latent, mean_latent + sigma * noise], axis=-2)
+        mean = latents.mean(axis=-2)
+        dim = mean.shape[-1]
+        sigma = mutation_std
+        C = jnp.tile(jnp.eye(dim), (*mean.shape[:-1], 1, 1))
+        B = jnp.tile(jnp.eye(dim), (*mean.shape[:-1], 1, 1))
+        D = jnp.ones((*mean.shape[:-1], dim))
+        p_sigma = jnp.zeros_like(mean)
+        p_c = jnp.zeros_like(mean)
 
-        # Optional tracking
+        lam = population_size
+        mu = lam // 2
+        weights = jnp.log(mu + 0.5) - jnp.log(jnp.arange(1, mu + 1))
+        weights = weights / weights.sum()
+        mu_eff = 1.0 / jnp.sum(weights**2)
+        c_sigma = (mu_eff + 2) / (dim + mu_eff + 3)
+        d_sigma = 1 + c_sigma + 2 * jnp.maximum(0.0, jnp.sqrt((mu_eff - 1) / (dim + 1)) - 1)
+        c_c = (4 + mu_eff / dim) / (dim + 4 + 2 * mu_eff / dim)
+        c1 = 2 / ((dim + 1.3) ** 2 + mu_eff)
+        c_mu = jnp.minimum(1 - c1, 2 * (mu_eff - 2 + 1 / mu_eff) / ((dim + 2) ** 2 + mu_eff))
+        chi_n = jnp.sqrt(dim) * (1 - 1 / (4 * dim) + 1 / (21 * dim**2))
+
         if track_progress:
-            gen_bests = []
-            gen_best_latents = []
-            gen_populations = []
-            gen_fitnesses = []
-            best_so_far = -jnp.inf
+            gen_fitness = []
 
-        # ----- main evolutionary loop (plain Python, no extra JAX transform) -----
-        for _ in range(num_generations):
-            # Score current population exactly like random search
-            losses = _eval_candidates(population)                     # (*B, P, C) or (*B, C) if P=1 folded inside impl
-            # Reduce over pairs to get a fitness per candidate (keep batch dims)
-            # Note: lower losses are better, so we negate to get fitness (higher is better)
-            fitness = -losses.mean(axis=-2) if losses.ndim >= 3 else -losses  # (*B, C)
-
-            # Track
-            if track_progress:
-                # Per-batch best fitness and corresponding best latent this generation
-                gen_best = fitness.max(axis=-1)                       # (*B,)
-                best_so_far = jnp.maximum(best_so_far, gen_best.max())
-                gen_bests.append(gen_best)
-
-                # Indices of best per batch, gather latent
-                best_idx = jnp.argmax(fitness, axis=-1)              # (*B,)
-                if population.ndim == 4:
-                    # population: (*B, P, C, H) -> take first pair axis for representative
-                    rep = population[..., 0, :, :]                    # (*B, C, H)
-                else:
-                    rep = population                                  # (*B, C, H)
-                best_lat = jnp.take_along_axis(
-                    rep, best_idx[..., None, None], axis=-2
-                ).squeeze(axis=-2)                                    # (*B, H)
-                gen_best_latents.append(best_lat)
-                # Store full population and losses for this generation (representative per batch)
-                gen_populations.append(rep)
-                # Store only the best loss per generation (not all population losses)
-                gen_losses = losses.mean(axis=-2) if losses.ndim >= 3 else losses  # (*B, C)
-                best_loss_this_gen = jnp.take_along_axis(
-                    gen_losses, best_idx[..., None], axis=-1
-                ).squeeze(axis=-1)  # (*B,) - only the best loss this generation
-                gen_fitnesses.append(best_loss_this_gen)
-
-            # Select top half per batch (ensure at least 1 survivor)
-            num_survivors = max(1, population_size // 2)
-            idx = jnp.argsort(fitness, axis=-1, descending=True)[..., :num_survivors]   # (*B, S)
-            
-            # Debug: print shapes to understand the dimension mismatch
-            print(f"         🔍 Debug shapes: fitness={fitness.shape}, population={population.shape}, idx={idx.shape}")
-            
-            # Create proper gather index that matches population dimensions
-            # population shape is (*B, P, C, H) where P=pairs, C=candidates, H=latent_dim
-            # We need to gather along the candidates axis (-2), and index shape must broadcast to population
-            if population.ndim == 4:
-                # idx: (*B, S) -> (*B, 1, S, 1) for proper broadcasting
-                P = population.shape[-3]
-                Hdim = population.shape[-1]
-                base_idx = idx[..., None, :, None]  # (*B, 1, S, 1)
-                survivors = jnp.take_along_axis(population, base_idx, axis=-2)  # (*B, P, S, H)
-            else:
-                # population has standard shape: (*B, C, H)
-                # idx: (*B, S) -> (*B, S, H)
-                Hdim = population.shape[-1]
-                gather_idx = jnp.repeat(idx[..., None], Hdim, axis=-1)  # (*B, S, H)
-                survivors = jnp.take_along_axis(population, gather_idx, axis=-2)  # (*B, S, H)
-
-            # Refill to pop size: repeat survivors and add mutation
-            need = population_size - num_survivors
-            reps = (need + num_survivors - 1) // num_survivors  # ceil(need / S)
-            
-            # Handle both 3D and 4D cases for survivors
-            if survivors.ndim == 4:
-                # survivors: (*B, P, S, H) -> parents: (*B, P, need, H)
-                parents = jnp.repeat(survivors, reps, axis=-2)[..., :need, :]
-            else:
-                # survivors: (*B, S, H) -> parents: (*B, need, H)
-                parents = jnp.repeat(survivors, reps, axis=-2)[..., :need, :]
+        for g in range(num_generations):
             key, nk = jax.random.split(key)
-            
-            if use_subspace_mutation and U is not None:
-                # Use subspace mutation with antithetic sampling
-                offspring = self._mutate_in_subspace(parents, U, sigma, nk, need)
-                
-                # Optional trust region around base mean
-                if trust_region_radius is not None:
-                    mean0 = base.mean(axis=-2, keepdims=True)
-                    delta = offspring - mean0
-                    R = trust_region_radius
-                    scale = jnp.minimum(1.0, R / (jnp.linalg.norm(delta, axis=-1, keepdims=True) + 1e-8))
-                    offspring = mean0 + scale * delta
-            else:
-                # Standard isotropic mutation
-                offspring = parents + sigma * jax.random.normal(nk, parents.shape)
+            z = jax.random.normal(nk, (*mean.shape[:-1], lam, dim))
+            BD = B * D[..., None, :]
+            x = mean[..., None, :] + sigma * jnp.einsum("...ij,...kj->...ki", BD, z)
+            losses = _eval_candidates(x)
+            fitness = -losses.mean(axis=-2) if losses.ndim >= 3 else -losses
+            idx = jnp.argsort(fitness, axis=-1, descending=True)
+            best_idx = idx[..., :mu]
+            x_sel = jnp.take_along_axis(x, best_idx[..., None], axis=-2)
+            z_sel = jnp.take_along_axis(z, best_idx[..., None], axis=-2)
+            mean_old = mean
+            mean = jnp.sum(x_sel * weights[..., None], axis=-2)
+            y = (x_sel - mean_old[..., None, :]) / sigma
+            z_w = jnp.sum(z_sel * weights[..., None], axis=-2)
+            y_w = jnp.sum(y * weights[..., None], axis=-2)
 
-            # Concatenate survivors and offspring, handling dimension mismatch
-            if survivors.ndim == 4 and offspring.ndim == 3:
-                # survivors: (*B, P, S, H), offspring: (*B, need, H)
-                # Expand offspring to match survivors: (*B, P, need, H)
-                offspring = jnp.expand_dims(offspring, -3).repeat(survivors.shape[-3], axis=-3)
-            elif survivors.ndim == 3 and offspring.ndim == 4:
-                # survivors: (*B, S, H), offspring: (*B, P, need, H)
-                # Expand survivors to match offspring: (*B, P, need, H)
-                survivors = jnp.expand_dims(survivors, -3).repeat(offspring.shape[-3], axis=-3)
-            
-            # Concatenate: [survivors, offspring]
-            population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, P, C, H) or (*B, C, H)
+            BDinv_z = jnp.einsum("...ij,...j->...i", B, z_w / D)
+            p_sigma = (1 - c_sigma) * p_sigma + jnp.sqrt(c_sigma * (2 - c_sigma) * mu_eff) * BDinv_z
 
-        # ----- final selection like random search -----
-        final_losses = _eval_candidates(population)              # (*B, P, C)
-        # Remove the duplication of latents over pairs for selection (identical to random)
-        latents_for_pick = population                             # (*B, C, H)
+            norm_ps = jnp.linalg.norm(p_sigma, axis=-1)
+            h_sigma_cond = norm_ps / (jnp.sqrt(1 - (1 - c_sigma) ** (2 * (g + 1))) * chi_n)
+            h_sigma = (h_sigma_cond < (1.4 + 2 / (dim + 1))).astype(mean.dtype)
+            p_c = (1 - c_c) * p_c + h_sigma[..., None] * jnp.sqrt(c_c * (2 - c_c) * mu_eff) * y_w
 
+            rank_one = jnp.einsum("...i,...j->...ij", p_c, p_c)
+            rank_mu = jnp.sum(weights[..., None, None] * jnp.einsum("...i,...j->...ij", y, y), axis=-3)
+            C = (1 - c1 - c_mu) * C + c1 * rank_one + c_mu * rank_mu
+
+            sigma = sigma * jnp.exp((c_sigma / d_sigma) * (norm_ps / chi_n - 1))
+
+            evals, evecs = jnp.linalg.eigh(C)
+            D = jnp.sqrt(jnp.maximum(evals, 1e-30))
+            B = evecs
+
+            if track_progress:
+                gen_fitness.append(fitness.max(axis=-1))
+
+        final_pop = jnp.concatenate([x, mean[..., None, :]], axis=-2)
+        final_losses = _eval_candidates(final_pop)
         best_context, second_best_context = self._select_best_and_second_best_latents(
-            final_losses, latents_for_pick
+            final_losses, final_pop
         )
 
         if track_progress:
-            # Stack as (*B, G, H) for latents and (*B, G) for metrics
-            gen_best_latents_arr = jnp.stack(gen_best_latents, axis=-2) if len(gen_best_latents) > 0 else None
             traj = {
-                # Save best fitness per generation under clear name (fitness = -loss)
-                "generation_fitness": jnp.stack(gen_bests),
-                "final_best_fitness": best_so_far,
-                "best_latents_per_generation": gen_best_latents_arr,
+                "generation_fitness": jnp.stack(gen_fitness),
+                "final_best_fitness": gen_fitness[-1] if len(gen_fitness) > 0 else None,
             }
-            if len(gen_populations) > 0:
-                # populations: list of (*B, C, H) -> (*B, G, C, H)
-                traj["populations_per_generation"] = jnp.stack(gen_populations, axis=-3)
-            if len(gen_fitnesses) > 0:
-                # best loss per generation (positive, lower is better)
-                per_gen_best_loss = jnp.stack(gen_fitnesses, axis=-1)  # (*B, G)
-                traj["losses_per_generation"] = per_gen_best_loss
-                # final best loss across generations
-                traj["final_best_loss"] = jnp.min(per_gen_best_loss, axis=-1)
             return best_context, second_best_context, traj
 
         return best_context, second_best_context
-    
-
-
-    @classmethod
-    def _make_subspace_basis(cls, latents: chex.Array, m: int, key: chex.PRNGKey) -> chex.Array:
-        """
-        Build a subspace basis for low-dimensional mutation.
-        
-        Args:
-            latents: (*B, C0, H) or (*B, N, H) - use whatever you seeded ES with
-            m: dimension of the subspace (typically 16-64)
-            key: random key for generating random directions
-            
-        Returns:
-            U: (*B, H, m) with orthonormal columns spanning the mutation subspace
-        """
-        H = latents.shape[-1]
-        
-        # Ensure subspace dimension doesn't exceed latent space dimension
-        actual_m = min(m, H)
-        if actual_m < m:
-            print(f"         ⚠️  Subspace dimension reduced from {m} to {actual_m} (latent dim: {H})")
-        
-        # Center available latents around their mean
-        L = latents - latents.mean(axis=-2, keepdims=True)  # (*B, C0, H)
-        
-        # Start with random directions
-        key, kr = jax.random.split(key)
-        R = jax.random.normal(kr, (*latents.shape[:-2], H, actual_m))
-        
-        # Inject data span directions (if any) by concatenating random + L^T
-        # Make a skinny matrix [R | L^T] then QR
-        M = jnp.concatenate([R, L.swapaxes(-2, -1)], axis=-1)  # (*B, H, actual_m + C0)
-        
-        # Batched QR gives orthonormal columns
-        Q, _ = jnp.linalg.qr(M, mode='reduced')                # (*B, H, min(H, actual_m+C0))
-        
-        # Take first actual_m columns
-        U = Q[..., :actual_m]                                  # (*B, H, actual_m)
-        return U
-
-    @classmethod
-    def _mutate_in_subspace(cls, centers: chex.Array, U: chex.Array, sigma: float,
-                            key: chex.PRNGKey, num_needed: int) -> chex.Array:
-        """
-        Mutate in the low-dimensional subspace with antithetic sampling.
-        
-        Args:
-            centers: (*B, S, H) - survivor latents to mutate from
-            U: (*B, H, m) - subspace basis
-            sigma: mutation standard deviation in the subspace
-            key: random key
-            num_needed: number of offspring to generate
-            
-        Returns:
-            offspring: (*B, num_needed, H) - mutated latents
-        """
-        *B, S, H = centers.shape
-        m = U.shape[-1]
-        half = (num_needed + 1) // 2
-        
-        key, k_eps = jax.random.split(key)
-        eps = jax.random.normal(k_eps, (*B, half, m))
-        
-        # Project to H: step = eps @ U^T
-        step = jnp.einsum('...sm,...hm->...sh', eps, jnp.swapaxes(U, -2, -1))
-        
-        # Generate antithetic pairs: +eps and -eps
-        pos = centers[..., :half, :] + sigma * step
-        neg = centers[..., :half, :] - sigma * step
-        
-        # Concatenate and take exactly num_needed
-        offs = jnp.concatenate([pos, neg], axis=-2)[..., :num_needed, :]
-        return offs
-
-    @classmethod
-    def _sigma_for_ga_step(cls, ga_step_len: float, m: int) -> float:
-        """
-        Compute sigma to match expected ES step length with GA step length.
-        
-        Expected ES step length in subspace: E[||Δz||₂] ≈ σ√m
-        To match GA step length: σ = ga_step_len / √m
-        """
-        return ga_step_len / math.sqrt(m)
 
     @classmethod
     def _prepare_latents_before_search(

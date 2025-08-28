@@ -59,9 +59,9 @@ training:
   prior_kl_coeff: null
   pairwise_kl_coeff: null
   total_num_steps: 5000
-  log_every_n_steps: 1
-  eval_every_n_logs: 10        # null to disable
-  save_checkpoint_every_n_logs: 10  # null to disable
+  log_every_n_steps: 100
+  eval_every_n_logs: 100       # null to disable
+  save_checkpoint_every_n_logs: 100  # null to disable
   resume_from_checkpoint: null
   # Option B: balanced structured tetromino patterns (O, T, L)
   struct_patterns_balanced: true
