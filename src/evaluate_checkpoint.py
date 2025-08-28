@@ -235,12 +235,26 @@ def instantiate_model(cfg: omegaconf.DictConfig, mixed_precision: bool) -> LPN:
 
 
 def instantiate_train_state(lpn: LPN) -> TrainState:
-    """Create a minimal train state that will be replaced by checkpoint loading."""
-    # The key insight: we CANNOT initialize the model because there's a fundamental
-    # mismatch between what the model expects during initialization (256D) and what
-    # the checkpoint actually has (2D). The checkpoint loading will provide everything.
-    
-    # Create the optimizer
+    """Create a proper train state that can be loaded from checkpoint."""
+    # This was the original working function - we need to restore it
+    key = jax.random.PRNGKey(0)
+    decoder = lpn.decoder
+    grids = jax.random.randint(
+        key,
+        (1, 3, decoder.config.max_rows, decoder.config.max_cols, 2),
+        minval=0,
+        maxval=decoder.config.vocab_size,
+    )
+    shapes = jax.random.randint(
+        key,
+        (1, 3, 2, 2),
+        minval=1,
+        maxval=min(decoder.config.max_rows, decoder.config.max_cols) + 1,
+    )
+    variables = lpn.init(
+        key, grids, shapes, dropout_eval=False, prior_kl_coeff=0.0, pairwise_kl_coeff=0.0, mode="mean"
+    )
+
     learning_rate, linear_warmup_steps = 0, 0
     linear_warmup_scheduler = optax.warmup_exponential_decay_schedule(
         init_value=learning_rate / (linear_warmup_steps + 1),
@@ -252,12 +266,7 @@ def instantiate_train_state(lpn: LPN) -> TrainState:
     )
     optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(linear_warmup_scheduler))
     optimizer = optax.MultiSteps(optimizer, every_k_schedule=1)
-    
-    # Create a minimal train state with empty parameters
-    # The checkpoint loading will provide the complete parameter structure
-    # This avoids the dimension mismatch during initialization
-    empty_params = {}  # Will be replaced by checkpoint loading
-    train_state = TrainState.create(apply_fn=lpn.apply, tx=optimizer, params=empty_params)
+    train_state = TrainState.create(apply_fn=lpn.apply, tx=optimizer, params=variables["params"])
     return train_state
 
 
@@ -927,7 +936,12 @@ def main(
     omegaconf.OmegaConf.save(config=cfg, f=os.path.join(artifact_dir, "config.yaml"))
 
     print("Instantiating the model and the train state...")
+    print(f"   - Config type: {type(cfg)}")
+    print(f"   - Encoder config: {cfg.encoder_transformer}")
+    print(f"   - Decoder config: {cfg.decoder_transformer}")
     lpn = instantiate_model(cfg, mixed_precision)
+    print(f"   - Model created with encoder config: {lpn.encoder.config}")
+    print(f"   - Model created with decoder config: {lpn.decoder.config}")
     train_state = instantiate_train_state(lpn)
     evaluator = Evaluator(
         lpn,
