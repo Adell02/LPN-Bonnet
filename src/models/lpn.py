@@ -969,21 +969,10 @@ class LPN(nn.Module):
             batch_dims = x.shape[:-2]  # Everything except (population, latent_dim)
             
             # Expand best_idx to match x's leading dimensions
-            best_idx_expanded = best_idx
-            for i, dim_size in enumerate(batch_dims[1:], 1):  # Skip first dimension (batch)
-                best_idx_expanded = best_idx_expanded[..., None, :]
-            
-            print(f"         🔍 Gen {g}: expanded best_idx shape: {best_idx_expanded.shape}")
-            
-            # Verify the shapes are compatible for take_along_axis
-            if best_idx_expanded.shape[:-1] != x.shape[:-2]:
-                print(f"         ⚠️  Shape mismatch: best_idx_expanded {best_idx_expanded.shape[:-1]} vs x {x.shape[:-2]}")
-                # Force the correct shape by broadcasting
-                best_idx_expanded = best_idx_expanded.reshape(*x.shape[:-2], -1)
-                print(f"         🔧 Fixed best_idx_expanded shape: {best_idx_expanded.shape}")
-            
+            best_idx_expanded = best_idx[:, None, :, None]  # (batch, 1, μ, 1) → broadcasts to (batch, pairs, μ, latent_dim)
             x_sel = jnp.take_along_axis(x, best_idx_expanded, axis=-2)
             z_sel = jnp.take_along_axis(z, best_idx_expanded, axis=-2)
+
             mean_old = mean
             mean = jnp.sum(x_sel * weights[..., None], axis=-2)
             y = (x_sel - mean_old[..., None, :]) / sigma
