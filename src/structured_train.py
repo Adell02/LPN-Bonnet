@@ -336,40 +336,46 @@ class StructuredTrainer:
             **(cfg.eval.get("inference_kwargs") or {}),
         )
 
+        # Move tensors to host (CPU) and convert to numpy for lightweight eval
+        pairs_np = np.array(jax.device_get(pairs))
+        shapes_np = np.array(jax.device_get(shapes))
+        out_grids_np = np.array(jax.device_get(output_grids))
+        out_shapes_np = np.array(jax.device_get(output_shapes))
+
         # Naming aligned with Trainer: use a test_name and log under test/<name>/...
         test_name = "structured_mean" if cfg.eval.get("inference_mode", "mean") == "mean" else f"structured_{cfg.eval.inference_mode}"
 
         # Metrics aligned with original train: correctness, pixel_correctness, accuracy
-        gt_shapes = shapes[:, 0, ..., 1]                 # (L, 2)
-        correct_shapes = jnp.all(output_shapes == gt_shapes, axis=-1)  # (L,)
-        R, C = pairs.shape[-3], pairs.shape[-2]
-        rows = jnp.arange(R)[None, :, None]               # (1, R, 1)
-        cols = jnp.arange(C)[None, None, :]               # (1, 1, C)
+        gt_shapes = shapes_np[:, 0, ..., 1]                 # (L, 2)
+        correct_shapes = np.all(out_shapes_np == gt_shapes, axis=-1)  # (L,)
+        R, C = pairs_np.shape[-3], pairs_np.shape[-2]
+        rows = np.arange(R)[None, :, None]                  # (1, R, 1)
+        cols = np.arange(C)[None, None, :]                  # (1, 1, C)
         mask = (rows < gt_shapes[:, 0:1, None]) & (cols < gt_shapes[:, 1:2, None])  # (L, R, C)
-        eq = (output_grids == pairs[:, 0, ..., 1])        # (L, R, C)
-        pixels_equal = jnp.where(mask, eq, False)
-        num_valid = (gt_shapes[:, 0] * gt_shapes[:, 1])   # (L,)
+        eq = (out_grids_np == pairs_np[:, 0, ..., 1])       # (L, R, C)
+        pixels_equal = np.where(mask, eq, False)
+        num_valid = (gt_shapes[:, 0] * gt_shapes[:, 1])     # (L,)
         pixel_correctness = pixels_equal.sum(axis=(1, 2)) / (num_valid + 1e-5)
         accuracy = pixels_equal.sum(axis=(1, 2)) == num_valid
         metrics = {
-            f"test/{test_name}/correct_shapes": float(jnp.mean(correct_shapes)),
-            f"test/{test_name}/pixel_correctness": float(jnp.mean(pixel_correctness)),
-            f"test/{test_name}/accuracy": float(jnp.mean(accuracy)),
+            f"test/{test_name}/correct_shapes": float(np.mean(correct_shapes)),
+            f"test/{test_name}/pixel_correctness": float(np.mean(pixel_correctness)),
+            f"test/{test_name}/accuracy": float(np.mean(accuracy)),
         }
 
         # Figures
         fig_heatmap = visualize_heatmap(
             (pixels_equal.sum(axis=(0)) / (mask.sum(axis=(0)) + 1e-5)),
-            (mask.sum(axis=(0)) / (jnp.sum(mask) + 1e-5)),
+            (mask.sum(axis=(0)) / (mask.sum() + 1e-5)),
         )
         # Limit number of tasks shown for memory efficiency
         num_show = int(cfg.eval.get("num_tasks_to_show", 5))
-        num_show = max(1, min(num_show, int(pairs.shape[0])))
+        num_show = max(1, min(num_show, int(pairs_np.shape[0])))
         # Visualization expects predicted grids/shapes with per-pair axis; tile our single prediction across pairs
-        num_pairs = int(shapes.shape[1])
-        pred_grids_vis = jnp.repeat(output_grids[:num_show, None, ...], num_pairs, axis=1)
-        pred_shapes_vis = jnp.repeat(output_shapes[:num_show, None, :], num_pairs, axis=1)
-        fig_gen = visualize_dataset_generation(pairs[:num_show], shapes[:num_show], pred_grids_vis, pred_shapes_vis, num_show)
+        num_pairs = int(shapes_np.shape[1])
+        pred_grids_vis = np.repeat(out_grids_np[:num_show, None, ...], num_pairs, axis=1)
+        pred_shapes_vis = np.repeat(out_shapes_np[:num_show, None, :], num_pairs, axis=1)
+        fig_gen = visualize_dataset_generation(pairs_np[:num_show], shapes_np[:num_show], pred_grids_vis, pred_shapes_vis, num_show)
 
         # Latent t-SNE: per-encoder and PoE overlay
         # Color-code tasks; marker encodes source (encoders vs PoE)
