@@ -1,6 +1,6 @@
 import functools
 import random
-from typing import Any, Optional
+from typing import Any, Optional, Literal
 
 import networkx as nx
 import numpy as np
@@ -67,6 +67,73 @@ class PatternTaskGenerator(IterableDataset):
             pattern_loc_row : pattern_loc_row + self.pattern_size,
             pattern_loc_col : pattern_loc_col + self.pattern_size,
         ] = pattern
+        return {"input": input_grid, "output": output_grid}
+
+
+class StructPatternTaskGenerator(IterableDataset):
+    """Generates 5x5 grids with fixed tetromino patterns (O, T, L) placed at random locations.
+
+    Input: single 1 at the chosen top-left anchor of the pattern's bounding box.
+    Output: the tetromino cells set to 1; all else 0. Always exactly 4 active pixels.
+    """
+
+    def __init__(
+        self,
+        num_pairs: int,
+        seed: Optional[int] = None,
+        pattern: Literal[1, 2, 3] = 1,  # 1=O, 2=T, 3=L
+    ):
+        self.num_pairs = num_pairs
+        self.seed = seed
+        self.pattern = pattern
+        self.num_rows = 5
+        self.num_cols = 5
+
+    def __iter__(self):
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is not None:
+            worker_seed = self.seed + worker_info.id if self.seed is not None else None
+        else:
+            worker_seed = self.seed
+        if worker_seed is not None:
+            random.seed(worker_seed)
+        return self
+
+    def __next__(self) -> tuple[list[dict[str, tuple]], dict[str, Any]]:
+        task = []
+        for _ in range(self.num_pairs):
+            task.append(self.generate_pair())
+        info = {"num_attempts_generate_task": 1}
+        return task, info
+
+    def generate_pair(self) -> dict[str, np.ndarray]:
+        input_grid = np.zeros((self.num_rows, self.num_cols), dtype=int)
+        output_grid = np.zeros((self.num_rows, self.num_cols), dtype=int)
+
+        # Define relative offsets and bounding box per pattern (top-left anchored), 0-based
+        if self.pattern == 1:  # O tetromino (2x2)
+            offsets = [(0, 0), (0, 1), (1, 0), (1, 1)]
+            box_h, box_w = 2, 2
+        elif self.pattern == 2:  # Centered T (2x3 box)
+            offsets = [(0, 0), (0, 1), (0, 2), (1, 1)]
+            box_h, box_w = 2, 3
+        elif self.pattern == 3:  # Corner L (3x2 box)
+            offsets = [(0, 0), (1, 0), (2, 0), (2, 1)]
+            box_h, box_w = 3, 2
+        else:
+            raise ValueError(f"Invalid struct pattern id: {self.pattern}")
+
+        max_row = self.num_rows - box_h
+        max_col = self.num_cols - box_w
+        top = random.randint(0, max_row)
+        left = random.randint(0, max_col)
+
+        # Mark anchor in input
+        input_grid[top, left] = 1
+        # Draw tetromino in output
+        for dr, dc in offsets:
+            output_grid[top + dr, left + dc] = 1
+
         return {"input": input_grid, "output": output_grid}
 
 

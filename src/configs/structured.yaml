@@ -1,0 +1,59 @@
+wandb:
+  entity: ga624-imperial-college-london
+  project: LPN-ARC-Structured
+
+encoder_transformer:
+  _target_: models.utils.EncoderTransformerConfig
+  vocab_size: 10
+  max_rows: 30
+  max_cols: 30
+  transformer_layer:
+    _target_: models.utils.TransformerLayerConfig
+    dropout_rate: 0.05
+
+decoder_transformer:
+  _target_: models.utils.DecoderTransformerConfig
+  vocab_size: 10
+  max_rows: 30
+  max_cols: 30
+  transformer_layer:
+    _target_: models.utils.TransformerLayerConfig
+    dropout_rate: 0.05
+
+structured:
+  artifacts:
+    models: []   # list of WandB artifacts for full LPN checkpoints (encoder+decoder)
+  alphas: []     # list of weights per model/encoder (sum <= 1 recommended); if empty -> uniform
+
+training:
+  seed: 0
+  mixed_precision: false
+  batch_size: 16
+  gradient_accumulation_steps: 1
+  learning_rate: 1e-3
+  linear_warmup_steps: 99
+  # Option A: use HF/local datasets
+  train_datasets: ""  # leave empty when using struct patterns
+  use_hf: true
+  online_data_augmentation: false
+  inference_mode: "mean"  # mean/all/random_search/gradient_ascent/evolutionary_search
+  inference_kwargs: {}
+  prior_kl_coeff: null
+  pairwise_kl_coeff: null
+  total_num_steps: 1000
+  log_every_n_steps: 50
+  # Option B: balanced structured tetromino patterns (O, T, L)
+  struct_patterns_balanced: true
+  struct_num_pairs: 2
+  struct_length_per_pattern: 1024
+
+eval:
+  dataset:
+    folder: ""  # optional; when empty, can evaluate on a small balanced struct sample
+    use_hf: true
+  inference_mode: "mean"
+  inference_kwargs: {}
+  num_tasks_to_show: 5
+  tsne_max_points: 2000
+
+

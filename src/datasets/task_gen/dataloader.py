@@ -8,7 +8,7 @@ import numpy as np
 import jax.numpy as jnp
 from tqdm.auto import trange
 
-from  datasets.task_gen.task_generator import PatternTaskGenerator, ArcTrainTaskGenerator
+from  datasets.task_gen.task_generator import PatternTaskGenerator, ArcTrainTaskGenerator, StructPatternTaskGenerator
 from  data_utils import data_augmentation_fn
 
 
@@ -127,7 +127,7 @@ def make_task_gen_dataloader(
     batch_size: int,
     log_every_n_steps: int,
     num_workers: int,
-    task_generator_class: Literal["PATTERN", "ARC"],
+    task_generator_class: Literal["PATTERN", "ARC", "STRUCT_PATTERN"],
     num_pairs: int,
     worker_timeout: int = 0,
     num_devices: Optional[int] = None,
@@ -142,6 +142,9 @@ def make_task_gen_dataloader(
         max_rows, max_cols = task_generator.num_rows, task_generator.num_cols
     elif task_generator_class == "ARC":
         task_generator = ArcTrainTaskGenerator(num_pairs=num_pairs, seed=seed, **task_generator_kwargs)
+    elif task_generator_class == "STRUCT_PATTERN":
+        task_generator = StructPatternTaskGenerator(num_pairs=num_pairs, seed=seed, **task_generator_kwargs)
+        max_rows, max_cols = task_generator.num_rows, task_generator.num_cols
     else:
         raise ValueError(f"Invalid task_generator_class: {task_generator_class}")
     jax_dataloader = JAXDataLoader(
