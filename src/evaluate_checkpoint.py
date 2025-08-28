@@ -223,13 +223,21 @@ from  train import Trainer, load_datasets, instantiate_config_for_mpt
 from  data_utils import make_leave_one_out, DATASETS_BASE_PATH
 
 
-def instantiate_model(cfg: omegaconf.DictConfig, mixed_precision: bool) -> LPN:
+def instantiate_model(cfg: omegaconf.DictConfig, mixed_precision: bool, latent_dim_override: Optional[int] = None) -> LPN:
     if mixed_precision:
-        encoder = EncoderTransformer(instantiate_config_for_mpt(cfg.encoder_transformer))
-        decoder = DecoderTransformer(instantiate_config_for_mpt(cfg.decoder_transformer))
+        encoder_config = instantiate_config_for_mpt(cfg.encoder_transformer)
+        decoder_config = instantiate_config_for_mpt(cfg.decoder_transformer)
     else:
-        encoder = EncoderTransformer(hydra.utils.instantiate(cfg.encoder_transformer))
-        decoder = DecoderTransformer(hydra.utils.instantiate(cfg.decoder_transformer))
+        encoder_config = hydra.utils.instantiate(cfg.encoder_transformer)
+        decoder_config = hydra.utils.instantiate(cfg.decoder_transformer)
+    
+    # Override latent dimension if specified
+    if latent_dim_override is not None:
+        print(f"   🔧 Overriding latent dimension from {encoder_config.latent_dim} to {latent_dim_override}")
+        encoder_config = encoder_config.replace(latent_dim=latent_dim_override)
+    
+    encoder = EncoderTransformer(encoder_config)
+    decoder = DecoderTransformer(decoder_config)
     lpn = LPN(encoder=encoder, decoder=decoder)
     return lpn
 
@@ -1021,6 +1029,7 @@ def main(
     random_search_seed: int,
     mixed_precision: bool,
     no_wandb_run: bool = False,
+    latent_dim_override: Optional[int] = None,
 ) -> None:
     print("Downloading the model artifact...")
     # Download the artifact and save the config file without creating separate W&B runs if requested
@@ -1040,7 +1049,9 @@ def main(
     print(f"   - Config type: {type(cfg)}")
     print(f"   - Encoder config: {cfg.encoder_transformer}")
     print(f"   - Decoder config: {cfg.decoder_transformer}")
-    lpn = instantiate_model(cfg, mixed_precision)
+    if latent_dim_override is not None:
+        print(f"   - Latent dimension override: {latent_dim_override}")
+    lpn = instantiate_model(cfg, mixed_precision, latent_dim_override)
     print(f"   - Model created with encoder config: {lpn.encoder.config}")
     print(f"   - Model created with decoder config: {lpn.decoder.config}")
     train_state = instantiate_train_state(lpn)
@@ -1376,6 +1387,15 @@ if __name__ == "__main__":
         default=None,
         help="Trust region radius for evolutionary search (default: None).",
     )
+    
+    # Model configuration override
+    parser.add_argument(
+        "--latent-dim",
+        type=int,
+        required=False,
+        default=None,
+        help="Override the latent dimension from the checkpoint config. Use this when the checkpoint has a different latent dimension than expected.",
+    )
 
     args = parser.parse_args()
     if (
@@ -1459,4 +1479,5 @@ if __name__ == "__main__":
         random_search_seed=args.random_search_seed,
         mixed_precision=args.mixed_precision,
         no_wandb_run=args.no_wandb_run,
+        latent_dim_override=args.latent_dim,
     )
