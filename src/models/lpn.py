@@ -842,44 +842,74 @@ class LPN(nn.Module):
         """Evolutionary search using CMA-ES."""
         def _eval_candidates(cand_latents: chex.Array) -> chex.Array:
             input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
-            lat_for_decode = cand_latents[..., None, :, :].repeat(output_seq.shape[-2], axis=-3)
-            batch_size = scan_batch_size or lat_for_decode.shape[-2]
-            num_batches = lat_for_decode.shape[-2] // batch_size
-            batched = jnp.reshape(
-                lat_for_decode[..., : num_batches * batch_size, :],
-                (*lat_for_decode.shape[:-2], num_batches, batch_size, lat_for_decode.shape[-1]),
-            )
-            dropout_eval = True
-            _, (row_logits, col_logits, grid_logits) = nn.scan(
-                lambda decoder, _, lat_batch: (
-                    None,
-                    jax.vmap(decoder, in_axes=(None, None, -2, None), out_axes=-2)(
-                        input_seq, output_seq, lat_batch, dropout_eval
-                    ),
-                ),
-                variable_broadcast="params",
-                split_rngs={"params": False},
-                in_axes=-3,
-                out_axes=-3,
-            )(self.decoder, None, batched)
-            row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
-                lambda x: x.reshape(*x.shape[:-3], -1, x.shape[-1]),
-                (row_logits, col_logits, grid_logits),
-            )
-            if num_batches * batch_size < lat_for_decode.shape[-2]:
-                remaining = lat_for_decode[..., num_batches * batch_size :, :]
-                r_row, r_col, r_grid = jax.vmap(
-                    self.decoder, in_axes=(None, None, -2, None), out_axes=-2
-                )(input_seq, output_seq, remaining, dropout_eval)
-                row_logits, col_logits, grid_logits = jax.tree_util.tree_map(
-                    lambda x, y: jnp.concatenate([x, y], axis=-2),
-                    (row_logits, col_logits, grid_logits),
-                    (r_row, r_col, r_grid),
+            
+            # Debug: print input shapes
+            print(f"         🔍 _eval_candidates: cand_latents shape: {cand_latents.shape}")
+            print(f"         🔍 _eval_candidates: input_seq shape: {input_seq.shape}")
+            print(f"         🔍 _eval_candidates: output_seq shape: {output_seq.shape}")
+            
+            # Fix dimension handling: cand_latents shape is (..., population_size, latent_dim)
+            # We need to expand to match the number of pairs for evaluation
+            # output_seq has shape (..., num_pairs, seq_len)
+            num_pairs = output_seq.shape[-2]
+            
+            # Expand latents to match pairs: (..., pop_size, num_pairs, latent_dim)
+            expanded_latents = cand_latents[..., None, :, :].repeat(num_pairs, axis=-3)
+            print(f"         🔍 _eval_candidates: expanded_latents shape: {expanded_latents.shape}")
+            
+            # Use scan for batching if needed
+            batch_size = scan_batch_size or expanded_latents.shape[-3]  # population size
+            num_batches = max(1, expanded_latents.shape[-3] // batch_size)
+            
+            if num_batches > 1:
+                # Reshape for batching: (..., num_batches, batch_size, num_pairs, latent_dim)
+                batched_latents = jnp.reshape(
+                    expanded_latents[..., :num_batches * batch_size, :, :],
+                    (*expanded_latents.shape[:-3], num_batches, batch_size, *expanded_latents.shape[-2:])
                 )
-            log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
-                row_logits, col_logits, grid_logits, output_seq
-            )
+                
+                # Process batches with scan
+                def process_batch(batch_latents):
+                    row_logits, col_logits, grid_logits = jax.vmap(
+                        self.decoder, in_axes=(None, None, -2, None), out_axes=-2
+                    )(input_seq, output_seq, batch_latents, True)  # dropout_eval=True
+                    
+                    # Compute log probabilities: reduce over pairs to get per-candidate scores
+                    log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
+                        row_logits, col_logits, grid_logits, output_seq
+                    )
+                    return log_probs
+                
+                # Apply scan over batches
+                _, batch_log_probs = nn.scan(
+                    lambda _, batch_latents: (None, process_batch(batch_latents)),
+                    variable_broadcast="params",
+                    split_rngs={"params": False},
+                    in_axes=-3,
+                    out_axes=-1,
+                )(None, batched_latents)
+                
+                # Reshape back: (..., total_pop_size)
+                log_probs = batch_log_probs.reshape(*expanded_latents.shape[:-3], -1)
+                
+                # Handle remaining latents if any
+                if expanded_latents.shape[-3] > num_batches * batch_size:
+                    remaining_latents = expanded_latents[..., num_batches * batch_size:, :, :]
+                    remaining_log_probs = process_batch(remaining_latents)
+                    log_probs = jnp.concatenate([log_probs, remaining_log_probs], axis=-1)
+            else:
+                # No batching needed, process directly
+                row_logits, col_logits, grid_logits = jax.vmap(
+                    self.decoder, in_axes=(None, None, -2, None), out_axes=-2
+                )(input_seq, output_seq, expanded_latents, True)  # dropout_eval=True
+                
+                # Compute log probabilities: reduce over pairs to get per-candidate scores
+                log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
+                    row_logits, col_logits, grid_logits, output_seq
+                )
+            
             losses = -log_probs
+            print(f"         🔍 _eval_candidates: final losses shape: {losses.shape}")
             return losses
 
         mean = latents.mean(axis=-2)
@@ -911,13 +941,33 @@ class LPN(nn.Module):
             z = jax.random.normal(nk, (*mean.shape[:-1], lam, dim))
             BD = B * D[..., None, :]
             x = mean[..., None, :] + sigma * jnp.einsum("...ij,...kj->...ki", BD, z)
+            
+            # Debug: print shapes to understand dimension handling
+            print(f"         🔍 Gen {g}: x shape: {x.shape}, mean shape: {mean.shape}")
+            
             losses = _eval_candidates(x)
+            print(f"         🔍 Gen {g}: losses shape: {losses.shape}")
+            
             fitness = -losses.mean(axis=-2) if losses.ndim >= 3 else -losses
+            print(f"         🔍 Gen {g}: fitness shape: {fitness.shape}")
+            
             idx = jnp.argsort(fitness, axis=-1, descending=True)
             best_idx = idx[..., :mu]
-            # Ensure best_idx has the right shape for take_along_axis
-            # best_idx should have shape (..., mu) and we need (..., mu, 1) for axis=-2
-            best_idx_expanded = best_idx[..., None] if best_idx.ndim < x.ndim else best_idx
+            print(f"         🔍 Gen {g}: best_idx shape: {best_idx.shape}")
+            
+            # Fix dimension mismatch for take_along_axis
+            # x has shape (..., lam, dim) where lam is the population size
+            # best_idx has shape (..., mu) where mu is the number of best candidates
+            # We need to expand best_idx to match x's dimensions for axis=-2
+            if best_idx.ndim < x.ndim:
+                # Add missing dimensions to match x
+                best_idx_expanded = best_idx[..., None]
+                print(f"         🔍 Gen {g}: expanded best_idx shape: {best_idx_expanded.shape}")
+            else:
+                # Ensure best_idx has the right shape for take_along_axis on axis=-2
+                best_idx_expanded = best_idx
+                print(f"         🔍 Gen {g}: using original best_idx shape: {best_idx_expanded.shape}")
+            
             x_sel = jnp.take_along_axis(x, best_idx_expanded, axis=-2)
             z_sel = jnp.take_along_axis(z, best_idx_expanded, axis=-2)
             mean_old = mean

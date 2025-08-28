@@ -618,7 +618,7 @@ def evaluate_custom_dataset(
                         return x[0]
                     except Exception:
                         return x
-                info0 = jax.tree_map(_first_device, info_tree)
+                info0 = jax.tree_util.tree_map(_first_device, info_tree)
                 # Bring to host (avoid device-backed arrays in payload)
                 try:
                     info0 = jax.device_get(info0)
@@ -778,7 +778,7 @@ def evaluate_custom_dataset(
                             return x[0]
                         except Exception:
                             return x
-                    info0_batch = jax.tree_map(_first_device, info_tree)
+                    info0_batch = jax.tree_util.tree_map(_first_device, info_tree)
                     try:
                         info0_batch = jax.device_get(info0_batch)
                     except Exception:
