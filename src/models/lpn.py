@@ -941,12 +941,14 @@ class LPN(nn.Module):
             z = jax.random.normal(nk, (*mean.shape[:-1], lam, dim))
             BD = B * D[..., None, :]
             
-            # sigma has shape (..., pairs) after the first generation. Add
-            # two singleton axes so it broadcasts over the population and latent
-            # dimensions produced by the einsum above.
-            x = mean[..., None, :] + sigma[..., None, None] * jnp.einsum(
+            # Convert sigma to array and expand for broadcasting
+            sigma_array = jnp.asarray(sigma)
+            sigma_expanded = sigma_array[..., None, None]
+            
+            # Generate population samples
+            x = mean[..., None, :] + sigma_expanded * jnp.einsum(
                 "...ij,...kj->...ki", BD, z
-            )            
+            )
             # Debug: print shapes to understand dimension handling
             print(f"         🔍 Gen {g}: x shape: {x.shape}, mean shape: {mean.shape}")
             
