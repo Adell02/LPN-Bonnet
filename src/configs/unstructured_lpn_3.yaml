@@ -57,8 +57,8 @@ eval:
 
 encoder_transformer:
   _target_:  models.utils.EncoderTransformerConfig
-  max_rows: 4
-  max_cols: 4
+  max_rows: 5
+  max_cols: 5
   num_layers: 2
   transformer_layer:
     _target_:  models.utils.TransformerLayerConfig
@@ -74,8 +74,8 @@ encoder_transformer:
 
 decoder_transformer:
   _target_:  models.utils.DecoderTransformerConfig
-  max_rows: 4
-  max_cols: 4
+  max_rows: 5
+  max_cols: 5
   num_layers: 2
   transformer_layer:
     _target_:  models.utils.TransformerLayerConfig
