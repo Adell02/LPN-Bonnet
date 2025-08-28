@@ -371,12 +371,13 @@ class StructuredTrainer:
         pred_shapes_vis = jnp.repeat(output_shapes[:num_show, None, :], num_pairs, axis=1)
         fig_gen = visualize_dataset_generation(pairs[:num_show], shapes[:num_show], pred_grids_vis, pred_shapes_vis, num_show)
 
-        # Latent t-SNE: per-encoder and PoE overlay using marker shapes
-        # Compute per-encoder latents once and reuse for PoE
+        # Latent t-SNE: per-encoder and PoE overlay
+        # Color-code tasks; marker encodes source (encoders vs PoE)
         enc_mus = []
         enc_logvars = []
         all_latents = []
-        source_ids = []
+        source_ids = []  # 0..E-1 for encoders, E for PoE
+        task_ids_list = []  # task indices per point for color
         for enc_idx, enc_params in enumerate(enc_params_list):
             mu_i, logvar_i = self.encoders[enc_idx].apply({"params": enc_params}, pairs, shapes, True, mutable=False)
             enc_mus.append(mu_i)
@@ -385,6 +386,7 @@ class StructuredTrainer:
             lat_np = np.array(lat).reshape(-1, lat.shape[-1])
             all_latents.append(lat_np)
             source_ids.extend([enc_idx] * lat_np.shape[0])
+            task_ids_list.append(np.arange(lat_np.shape[0]))
         mus = jnp.stack(enc_mus, axis=0)
         logvars = jnp.stack(enc_logvars, axis=0)
         alphas = jnp.asarray(cfg.structured.alphas, dtype=jnp.float32)
@@ -394,9 +396,11 @@ class StructuredTrainer:
         poe_np = np.array(poe_lat).reshape(-1, poe_lat.shape[-1])
         all_latents.append(poe_np)
         source_ids.extend([len(enc_params_list)] * poe_np.shape[0])
+        task_ids_list.append(np.arange(poe_np.shape[0]))
 
         latents_concat = np.concatenate(all_latents, axis=0)
         source_ids_np = np.array(source_ids)
+        task_ids_concat = np.concatenate(task_ids_list, axis=0)
 
         # Downsample points for t-SNE to be memory efficient
         max_points = int(cfg.eval.get("tsne_max_points", 2000))
@@ -404,19 +408,28 @@ class StructuredTrainer:
             idx = np.random.RandomState(42).choice(latents_concat.shape[0], size=max_points, replace=False)
             latents_concat = latents_concat[idx]
             source_ids_np = source_ids_np[idx]
+            task_ids_concat = task_ids_concat[idx]
 
         # Compute t-SNE
         from sklearn.manifold import TSNE
         emb = TSNE(n_components=2, perplexity=2, max_iter=1000, random_state=42).fit_transform(latents_concat.astype(float))
-        # Plot with different markers per source (encoders + poe)
+        # Plot: color by task id, marker by source
         import matplotlib.pyplot as plt
+        from visualization import arc_cmap, arc_norm
         marker_list = ['o', 's', '^', 'P', 'X', 'D', 'v', '<', '>', '*']
         fig_tsne, ax = plt.subplots(figsize=(10, 8))
         for src in sorted(set(source_ids_np.tolist())):
             mask = source_ids_np == src
-            ax.scatter(emb[mask, 0], emb[mask, 1], marker=marker_list[src % len(marker_list)], label=(f"enc{src}" if src < len(enc_params_list) else "poe"), alpha=0.75, s=40)
-        ax.legend()
-        ax.set_title("t-SNE of latents: per-encoder vs PoE (markers)")
+            mk = marker_list[src % len(marker_list)]
+            lbl = f"enc{src}" if src < len(enc_params_list) else "poe"
+            sc = ax.scatter(
+                emb[mask, 0], emb[mask, 1],
+                c=task_ids_concat[mask] % 10, cmap=arc_cmap, norm=arc_norm,
+                marker=mk, alpha=0.8, s=40, label=lbl,
+                edgecolors='none'
+            )
+        ax.legend(title="Source")
+        ax.set_title("t-SNE: tasks colored, source as marker")
 
         wandb.log({
             f"test/{test_name}/pixel_accuracy": wandb.Image(fig_heatmap),
