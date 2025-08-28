@@ -244,6 +244,21 @@ class StructuredTrainer:
 
             # Log
             wandb.log({"train/loss": float(loss), **{f"train/{k}": float(v) for k, v in metrics.items()}}, step=step)
+
+            # Periodic eval and checkpointing parity with unstructured
+            if cfg.training.get("eval_every_n_logs") and (step // log_every) % cfg.training.eval_every_n_logs == 0:
+                try:
+                    self.evaluate(state, enc_params_list)
+                except Exception as e:
+                    logging.warning(f"Eval failed: {e}")
+            if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
+                try:
+                    from flax.serialization import msgpack_serialize, to_state_dict
+                    with open("state.msgpack", "wb") as outfile:
+                        outfile.write(msgpack_serialize(to_state_dict(state)))
+                    wandb.save("state.msgpack")
+                except Exception as e:
+                    logging.warning(f"Checkpoint save failed: {e}")
             step += log_every
             if step >= num_steps:
                 break
@@ -383,6 +398,17 @@ def run(cfg: omegaconf.DictConfig):
     trainer = StructuredTrainer(cfg, model, encoders, decoder)
     key = jax.random.PRNGKey(cfg.training.seed)
     state = trainer.init_state(key, enc_params_list, avg_decoder_params)
+    # Resume logic if desired
+    if cfg.training.get("resume_from_checkpoint"):
+        try:
+            import os
+            from flax.serialization import from_bytes
+            from flax.training.train_state import TrainState
+            with open(cfg.training.resume_from_checkpoint, "rb") as f:
+                data = f.read()
+            state = from_bytes(state, data)
+        except Exception as e:
+            logging.warning(f"Resume failed: {e}")
     state = trainer.train(state, enc_params_list)
     trainer.evaluate(state, enc_params_list)
 

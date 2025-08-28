@@ -82,12 +82,16 @@ class StructPatternTaskGenerator(IterableDataset):
         num_pairs: int,
         seed: Optional[int] = None,
         pattern: Literal[1, 2, 3] = 1,  # 1=O, 2=T, 3=L
+        num_rows: int = 5,
+        num_cols: int = 5,
+        **_: Any,
     ):
         self.num_pairs = num_pairs
         self.seed = seed
         self.pattern = pattern
-        self.num_rows = 5
-        self.num_cols = 5
+        # Allow overriding grid size from configs; default 5x5
+        self.num_rows = int(num_rows)
+        self.num_cols = int(num_cols)
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
