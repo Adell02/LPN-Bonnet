@@ -337,16 +337,17 @@ class StructuredTrainer:
         )
 
         # Metrics aligned with original train: correctness, pixel_correctness, accuracy
-        correct_shapes = jnp.all(output_shapes == shapes[:, 0, ..., 1], axis=-1)
-        batch_ndims = len(pairs.shape[:-2])
-        row_arange_broadcast = jnp.arange(pairs.shape[-2]).reshape((*batch_ndims * (1,), pairs.shape[-2]))
-        col_arange_broadcast = jnp.arange(pairs.shape[-1]).reshape((*batch_ndims * (1,), pairs.shape[-1]))
-        input_row_mask = row_arange_broadcast < shapes[:, 0, ..., 1:2]
-        input_col_mask = col_arange_broadcast < shapes[:, 0, ..., 1:2]
-        input_mask = input_row_mask[..., None] & input_col_mask[..., None, :]
-        pixels_equal = jnp.where(input_mask & correct_shapes[..., None, None], (output_grids == pairs[:, 0, ..., 1]), False)
-        pixel_correctness = pixels_equal.sum(axis=(-1, -2)) / shapes[:, 0, ..., 1:].prod(axis=(-1))
-        accuracy = pixels_equal.sum(axis=(-1, -2)) == shapes[:, 0, ..., 1:].prod(axis=(-1))
+        gt_shapes = shapes[:, 0, ..., 1]                 # (L, 2)
+        correct_shapes = jnp.all(output_shapes == gt_shapes, axis=-1)  # (L,)
+        R, C = pairs.shape[-3], pairs.shape[-2]
+        rows = jnp.arange(R)[None, :, None]               # (1, R, 1)
+        cols = jnp.arange(C)[None, None, :]               # (1, 1, C)
+        mask = (rows < gt_shapes[:, 0:1, None]) & (cols < gt_shapes[:, 1:2, None])  # (L, R, C)
+        eq = (output_grids == pairs[:, 0, ..., 1])        # (L, R, C)
+        pixels_equal = jnp.where(mask, eq, False)
+        num_valid = (gt_shapes[:, 0] * gt_shapes[:, 1])   # (L,)
+        pixel_correctness = pixels_equal.sum(axis=(1, 2)) / (num_valid + 1e-5)
+        accuracy = pixels_equal.sum(axis=(1, 2)) == num_valid
         metrics = {
             "eval/correct_shapes": float(jnp.mean(correct_shapes)),
             "eval/pixel_correctness": float(jnp.mean(pixel_correctness)),
@@ -355,8 +356,8 @@ class StructuredTrainer:
 
         # Figures
         fig_heatmap = visualize_heatmap(
-            (pixels_equal.sum(axis=(0)) / (input_mask.sum(axis=(0)) + 1e-5)),
-            (input_mask.sum(axis=(0)) / (jnp.sum(input_mask) + 1e-5)),
+            (pixels_equal.sum(axis=(0)) / (mask.sum(axis=(0)) + 1e-5)),
+            (mask.sum(axis=(0)) / (jnp.sum(mask) + 1e-5)),
         )
         # Limit number of tasks shown for memory efficiency
         num_show = int(cfg.eval.get("num_tasks_to_show", 5))
