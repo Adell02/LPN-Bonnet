@@ -14,6 +14,7 @@ import omegaconf
 import wandb
 from flax.training.train_state import TrainState
 from jax.tree_util import tree_map
+from tqdm.auto import trange
 
 from models.transformer import EncoderTransformer, DecoderTransformer
 from models.utils import DecoderTransformerConfig, EncoderTransformerConfig
@@ -266,6 +267,8 @@ class StructuredTrainer:
         step = 0
         epoch = 0
         key = jax.random.PRNGKey(cfg.training.seed)
+        logging.info("Starting structured training...")
+        pbar = trange(num_steps, disable=False)
         while step < num_steps:
             key, epoch_key = jax.random.split(key)
             for batches, shapes in self._iterate_batches(epoch_key, log_every):
@@ -294,6 +297,7 @@ class StructuredTrainer:
 
                 # Log
                 wandb.log({"train/loss": float(loss), **{f"train/{k}": float(v) for k, v in metrics.items()}}, step=step)
+                pbar.set_postfix(loss=float(loss))
 
                 # Periodic eval and checkpointing parity with unstructured (skip step 0)
                 if cfg.training.get("eval_every_n_logs") and step > 0 and (step // log_every) % cfg.training.eval_every_n_logs == 0:
@@ -310,9 +314,11 @@ class StructuredTrainer:
                     except Exception as e:
                         logging.warning(f"Checkpoint save failed: {e}")
                 step += log_every
+                pbar.update(log_every)
                 if step >= num_steps:
                     break
             epoch += 1
+        pbar.close()
 
         return state
 
