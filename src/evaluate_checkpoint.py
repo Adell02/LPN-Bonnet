@@ -237,6 +237,10 @@ def instantiate_model(cfg: omegaconf.DictConfig, mixed_precision: bool) -> LPN:
 def instantiate_train_state(lpn: LPN) -> TrainState:
     """Create a proper train state that can be loaded from checkpoint."""
     # This was the original working function - we need to restore it
+    print(f"   🔍 instantiate_train_state: Starting model initialization...")
+    print(f"   🔍 instantiate_train_state: lpn.encoder.config.latent_dim = {lpn.encoder.config.latent_dim}")
+    print(f"   🔍 instantiate_train_state: lpn.decoder.config = {lpn.decoder.config}")
+    
     key = jax.random.PRNGKey(0)
     decoder = lpn.decoder
     grids = jax.random.randint(
@@ -251,9 +255,37 @@ def instantiate_train_state(lpn: LPN) -> TrainState:
         minval=1,
         maxval=min(decoder.config.max_rows, decoder.config.max_cols) + 1,
     )
-    variables = lpn.init(
-        key, grids, shapes, dropout_eval=False, prior_kl_coeff=0.0, pairwise_kl_coeff=0.0, mode="mean"
-    )
+    
+    print(f"   🔍 instantiate_train_state: About to call lpn.init with:")
+    print(f"   🔍 instantiate_train_state: - grids shape: {grids.shape}")
+    print(f"   🔍 instantiate_train_state: - shapes shape: {shapes.shape}")
+    print(f"   🔍 instantiate_train_state: - lpn.encoder.config.latent_dim: {lpn.encoder.config.latent_dim}")
+    
+    try:
+        variables = lpn.init(
+            key, grids, shapes, dropout_eval=False, prior_kl_coeff=0.0, pairwise_kl_coeff=0.0, mode="mean"
+        )
+        print(f"   ✅ instantiate_train_state: lpn.init completed successfully")
+        print(f"   🔍 instantiate_train_state: variables keys: {list(variables.keys())}")
+        print(f"   🔍 instantiate_train_state: params keys: {list(variables['params'].keys())}")
+        
+        # Check the encoder parameters specifically
+        if 'encoder' in variables['params']:
+            encoder_params = variables['params']['encoder']
+            print(f"   🔍 instantiate_train_state: encoder params keys: {list(encoder_params.keys())}")
+            if 'Dense_0' in encoder_params:
+                dense_params = encoder_params['Dense_0']
+                print(f"   🔍 instantiate_train_state: Dense_0 params keys: {list(dense_params.keys())}")
+                if 'kernel' in dense_params:
+                    kernel_shape = dense_params['kernel'].shape
+                    print(f"   🔍 instantiate_train_state: Dense_0 kernel shape: {kernel_shape}")
+        
+    except Exception as e:
+        print(f"   ❌ instantiate_train_state: lpn.init failed with error: {e}")
+        print(f"   🔍 instantiate_train_state: Error type: {type(e)}")
+        import traceback
+        traceback.print_exc()
+        raise
 
     learning_rate, linear_warmup_steps = 0, 0
     linear_warmup_scheduler = optax.warmup_exponential_decay_schedule(
@@ -267,6 +299,7 @@ def instantiate_train_state(lpn: LPN) -> TrainState:
     optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(linear_warmup_scheduler))
     optimizer = optax.MultiSteps(optimizer, every_k_schedule=1)
     train_state = TrainState.create(apply_fn=lpn.apply, tx=optimizer, params=variables["params"])
+    print(f"   ✅ instantiate_train_state: TrainState created successfully")
     return train_state
 
 
