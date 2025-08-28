@@ -104,13 +104,15 @@ class StructPatternTaskGenerator(IterableDataset):
         return self
 
     def __next__(self) -> tuple[list[dict[str, tuple]], dict[str, Any]]:
+        # Sample a 4-color pattern once per task (colors 1..9)
+        self._task_colors = [random.randint(1, 9) for _ in range(4)]
         task = []
         for _ in range(self.num_pairs):
-            task.append(self.generate_pair())
+            task.append(self.generate_pair(self._task_colors))
         info = {"num_attempts_generate_task": 1}
         return task, info
 
-    def generate_pair(self) -> dict[str, np.ndarray]:
+    def generate_pair(self, colors: Optional[list[int]] = None) -> dict[str, np.ndarray]:
         input_grid = np.zeros((self.num_rows, self.num_cols), dtype=int)
         output_grid = np.zeros((self.num_rows, self.num_cols), dtype=int)
 
@@ -134,9 +136,11 @@ class StructPatternTaskGenerator(IterableDataset):
 
         # Mark anchor in input
         input_grid[top, left] = 1
-        # Draw tetromino in output
-        for dr, dc in offsets:
-            output_grid[top + dr, left + dc] = 1
+        # Draw tetromino in output with a consistent 4-color pattern per task
+        if colors is None:
+            colors = [1, 2, 3, 4]
+        for k, (dr, dc) in enumerate(offsets):
+            output_grid[top + dr, left + dc] = int(colors[k % len(colors)])
 
         return {"input": input_grid, "output": output_grid}
 
