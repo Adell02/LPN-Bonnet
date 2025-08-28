@@ -572,20 +572,20 @@ def _splat_background(
 
 def _plot_traj(ax, pts: np.ndarray, color: str, label: str, arrow_every: int = 6, alpha: float = 1.0):
     print(f"[_plot_traj] Plotting {label}: {pts.shape}, color={color}, alpha={alpha}")
-    ax.plot(pts[:, 0], pts[:, 1], color=color, linewidth=5.0, alpha=alpha, label=label, zorder=5)
+    ax.plot(pts[:, 0], pts[:, 1], color=color, linewidth=7.0, alpha=alpha, label=label, zorder=5)
     
     # Add small markers for every step
-    ax.scatter(pts[:, 0], pts[:, 1], s=40, color=color, alpha=alpha, zorder=4)
+    ax.scatter(pts[:, 0], pts[:, 1], s=80, color=color, alpha=alpha, zorder=4)
     
     # Add arrows between steps
     for i in range(0, len(pts) - 1, max(1, arrow_every)):
         ax.annotate("", xy=pts[i+1], xytext=pts[i],
-                    arrowprops=dict(arrowstyle="->", lw=4.0, color=color, shrinkA=0, shrinkB=0))
+                    arrowprops=dict(arrowstyle="->", lw=6.0, color=color, shrinkA=0, shrinkB=0))
     
     # Special markers for start and end points
-    ax.scatter([pts[0, 0]], [pts[0, 1]], s=150, marker="o", edgecolors="black", linewidths=2.0,
+    ax.scatter([pts[0, 0]], [pts[0, 1]], s=200, marker="o", edgecolors="black", linewidths=2.0,
                color=color, zorder=6, alpha=alpha)
-    ax.scatter([pts[-1, 0]], [pts[-1, 1]], s=150, marker="s", edgecolors="black", linewidths=2.0,
+    ax.scatter([pts[-1, 0]], [pts[-1, 1]], s=200, marker="s", edgecolors="black", linewidths=2.0,
                color=color, zorder=6, alpha=alpha)
     print(f"[_plot_traj] Completed plotting {label}")
 
@@ -1060,9 +1060,9 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         
         # Set appropriate colorbar label based on field type
         if field_name.lower() == "loss":
-            cbar.set_label("Loss (log likelihood, lower is better)", fontsize=14)
+            cbar.set_label("Loss", fontsize=14)
         elif field_name.lower() == "score":
-            cbar.set_label("Score (higher is better)", fontsize=14)
+            cbar.set_label("Score", fontsize=14)
         else:
             cbar.set_label(field_name, fontsize=14)
         
@@ -1077,7 +1077,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         es_pop_pts_flat = es.pop_pts.reshape(-1, 2)
         
         # Plot ALL ES samples with custom color
-        ax.scatter(es_pop_pts_flat[:, 0], es_pop_pts_flat[:, 1], s=50, alpha=1.0,
+        ax.scatter(es_pop_pts_flat[:, 0], es_pop_pts_flat[:, 1], s=80, alpha=1.0,
                    color="#DB74DB", linewidths=0, zorder=1, label="ES population (all samples)")
         
         # Then add translucent circles to cluster samples from the same generation
@@ -1123,7 +1123,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                     print(f"[plot] Gen {gen} circle: center=({gen_center[0]:.3f}, {gen_center[1]:.3f}), radius={gen_radius:.3f}")
                     print(f"[plot] Gen {gen} bounds: x[{circle_xmin:.3f}, {circle_xmax:.3f}], y[{circle_ymin:.3f}, {circle_ymax:.3f}]")
                     # Draw translucent circle for this generation
-                    circle = plt.Circle(gen_center, gen_radius, fill=True, linewidth=3, 
+                    circle = plt.Circle(gen_center, gen_radius, fill=True, linewidth=4, 
                                       edgecolor=color, facecolor=color, alpha=0.15)
                     ax.add_patch(circle)
                     # Generation labels removed as requested
