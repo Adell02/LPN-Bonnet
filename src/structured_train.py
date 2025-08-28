@@ -318,9 +318,7 @@ class StructuredTrainer:
         alphas = jnp.asarray(cfg.structured.alphas, dtype=jnp.float32)
         pairs, shapes = self.eval_grids, self.eval_shapes
         key = jax.random.PRNGKey(0)
-        # Generate output using PoE latents
-        from models.lpn import LPN
-        # Reuse StructuredLPN decoding path by calling generate_output from the core via method apply
+        # Generate output using PoE latents via StructuredLPN.generate_output
         output_grids, output_shapes, info = self.model.apply(
             {"params": state.params},
             pairs,
@@ -331,7 +329,7 @@ class StructuredTrainer:
             True,
             cfg.eval.inference_mode,
             False,
-            method=LPN.generate_output,
+            method=self.model.generate_output,
             poe_alphas=alphas,
             encoder_params_list=enc_params_list,
             decoder_params=state.params,
