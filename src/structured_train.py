@@ -292,11 +292,22 @@ class StructuredTrainer:
 
                 batch_pairs, batch_shapes = batches, shapes
                 rng = jax.random.PRNGKey(step)
+                import time
+                t0 = time.time()
                 (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params, batch_pairs, batch_shapes, rng)
                 state = state.apply_gradients(grads=grads)
+                t1 = time.time()
 
-                # Log
-                wandb.log({"train/loss": float(loss), **{f"train/{k}": float(v) for k, v in metrics.items()}}, step=step)
+                # Align logs with train.py: include grad_norm and timing
+                grad_norm = float(optax.global_norm(grads))
+                throughput = (log_every * self.batch_size) / max(t1 - t0, 1e-8)
+                to_log = {k: float(v) for k, v in metrics.items()}
+                to_log.update({
+                    "grad_norm": grad_norm,
+                    "timing/train_time": t1 - t0,
+                    "timing/train_num_samples_per_second": throughput,
+                })
+                wandb.log(to_log, step=step)
                 pbar.set_postfix(loss=float(loss))
 
                 # Periodic eval and checkpointing parity with unstructured (skip step 0)
