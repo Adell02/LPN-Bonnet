@@ -44,13 +44,50 @@ def instantiate_config_for_mpt(transformer_cfg: omegaconf.DictConfig) -> Decoder
 
 
 def build_model_from_cfg(cfg: omegaconf.DictConfig) -> tuple[StructuredLPN, list[EncoderTransformer], DecoderTransformer]:
-    # Instantiate module classes sharing hyperparams with loaded checkpoints
-    if cfg.training.get("mixed_precision", False):
-        enc = EncoderTransformer(instantiate_config_for_mpt(cfg.encoder_transformer))
-        dec = DecoderTransformer(instantiate_config_for_mpt(cfg.decoder_transformer))
+    # Prefer structured.model_config if provided to match artifact shapes
+    mc = getattr(cfg.structured, "model_config", None)
+    if mc is not None:
+        enc_cfg = omegaconf.OmegaConf.create({
+            "_target_": "models.utils.EncoderTransformerConfig",
+            "max_rows": mc.max_rows,
+            "max_cols": mc.max_cols,
+            "num_layers": mc.num_layers,
+            "transformer_layer": {
+                "_target_": "models.utils.TransformerLayerConfig",
+                "num_heads": mc.num_heads,
+                "emb_dim_per_head": mc.emb_dim_per_head,
+                "mlp_dim_factor": mc.mlp_dim_factor,
+                "dropout_rate": mc.dropout_rate,
+                "attention_dropout_rate": mc.attention_dropout_rate,
+            },
+            "latent_dim": mc.latent_dim,
+            "variational": mc.variational,
+            "latent_projection_bias": mc.latent_projection_bias,
+        })
+        dec_cfg = omegaconf.OmegaConf.create({
+            "_target_": "models.utils.DecoderTransformerConfig",
+            "max_rows": mc.max_rows,
+            "max_cols": mc.max_cols,
+            "num_layers": mc.num_layers,
+            "transformer_layer": {
+                "_target_": "models.utils.TransformerLayerConfig",
+                "num_heads": mc.num_heads,
+                "emb_dim_per_head": mc.emb_dim_per_head,
+                "mlp_dim_factor": mc.mlp_dim_factor,
+                "dropout_rate": mc.dropout_rate,
+                "attention_dropout_rate": mc.attention_dropout_rate,
+            },
+        })
+        enc = EncoderTransformer(hydra.utils.instantiate(enc_cfg))
+        dec = DecoderTransformer(hydra.utils.instantiate(dec_cfg))
     else:
-        enc = EncoderTransformer(hydra.utils.instantiate(cfg.encoder_transformer))
-        dec = DecoderTransformer(hydra.utils.instantiate(cfg.decoder_transformer))
+        # Fallback to explicit encoder/decoder configs
+        if cfg.training.get("mixed_precision", False):
+            enc = EncoderTransformer(instantiate_config_for_mpt(cfg.encoder_transformer))
+            dec = DecoderTransformer(instantiate_config_for_mpt(cfg.decoder_transformer))
+        else:
+            enc = EncoderTransformer(hydra.utils.instantiate(cfg.encoder_transformer))
+            dec = DecoderTransformer(hydra.utils.instantiate(cfg.decoder_transformer))
 
     # Replicate encoder module K times (params will differ per artifact)
     num_models = len(cfg.structured.artifacts.models)

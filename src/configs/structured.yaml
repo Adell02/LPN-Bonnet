@@ -27,6 +27,21 @@ structured:
       - "ga624-imperial-college-london/LPN-ARC/revived-grass-259--checkpoint:latest"
       - "ga624-imperial-college-london/LPN-ARC/wobbly-rain-258--checkpoint:latest"  
   alphas: []     # list of weights per model/encoder (sum <= 1 recommended); if empty -> uniform
+  # Optional: configuration describing the model architecture of the loaded checkpoints.
+  # If provided, StructuredTrainer will instantiate enc/dec with these hyperparameters
+  # to ensure parameter shapes match the artifacts.
+  model_config:
+    max_rows: 5
+    max_cols: 5
+    num_layers: 2
+    num_heads: 6
+    emb_dim_per_head: 12   # total emb dim = num_heads * emb_dim_per_head
+    mlp_dim_factor: 4.0
+    dropout_rate: 0.0
+    attention_dropout_rate: 0.0
+    latent_dim: 32
+    variational: true
+    latent_projection_bias: false
 
 training:
   seed: 0
