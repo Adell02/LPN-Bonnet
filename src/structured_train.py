@@ -470,20 +470,25 @@ class StructuredTrainer:
                 prior_kl = cfg.training.get("prior_kl_coeff")
                 pairwise_kl = self.cfg.training.get("pairwise_kl_coeff")
                 logging.info(f"Batch {i} - prior_kl_coeff: {prior_kl}, pairwise_kl_coeff: {pairwise_kl}")
+                logging.info(f"Batch {i} - inference_mode: {cfg.eval.inference_mode}, type: {type(cfg.eval.inference_mode)}")
+                logging.info(f"Batch {i} - input shapes: pairs={batch_pairs[:, 0, ..., 0].shape}, shapes={batch_shapes[:, 0, ..., 0].shape}")
                 
-                # SIMPLIFIED: Pass only essential parameters to avoid conflicts
+                # Use generate_output method for evaluation (like train.py does)
+                # Pass arguments in the correct order as positional arguments
                 batch_output_grids, batch_output_shapes, batch_info = self.model.apply(
                     {"params": state.params},
-                    batch_leave_one_out_pairs,  # Use leave_one_out pairs as support
-                    batch_leave_one_out_shapes, # Use leave_one_out shapes as support
-                    batch_pairs[:, 0, ..., 0],  # Query: first pair
-                    batch_shapes[:, 0, ..., 0], # Query: first shape
-                    True,  # dropout_eval (positional argument)
-                    cfg.eval.inference_mode,  # mode (positional argument)
-                    poe_alphas=alphas,
-                    encoder_params_list=enc_params_list,
-                    decoder_params=state.params,
-                    rngs={"dropout": key, "latents": key},
+                    method=self.model.generate_output,
+                    batch_leave_one_out_pairs,  # pairs: support pairs
+                    batch_leave_one_out_shapes, # grid_shapes: support shapes
+                    batch_pairs[:, 0, ..., 0],  # input: query pair
+                    batch_shapes[:, 0, ..., 0], # input_grid_shape: query shape
+                    key,  # key: RNG key
+                    True,  # dropout_eval
+                    cfg.eval.inference_mode,  # mode
+                    False,  # return_two_best
+                    alphas,  # poe_alphas
+                    enc_params_list,  # encoder_params_list
+                    state.params,  # decoder_params
                 )
                 
                 # DEBUG: Log output shapes
