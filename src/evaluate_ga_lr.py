@@ -325,7 +325,25 @@ def extract_intermediate_losses(npz_path: str, max_budget: int) -> Dict[int, flo
             
         data = np.load(npz_path, allow_pickle=True)
         
-        # Try to find loss trajectory
+        # Prefer per-sample trajectories when available for correct per-budget averaging
+        if 'ga_losses_per_sample' in data and 'ga_budget' in data:
+            per_sample = np.array(data['ga_losses_per_sample'])  # (N, S)
+            ga_budget = np.array(data['ga_budget']).reshape(-1)  # (S,)
+            if per_sample.size > 0 and ga_budget.size > 0:
+                print(f"📊 Using per-sample losses: {per_sample.shape}, ga_budget: {ga_budget.shape}")
+                # Map each available budget in ga_budget to the mean loss across samples
+                intermediate_losses = {}
+                S = min(per_sample.shape[1], ga_budget.shape[0])
+                for s in range(S):
+                    b = int(ga_budget[s])
+                    if b <= max_budget:
+                        mean_loss = float(np.mean(per_sample[:, s]))
+                        intermediate_losses[b] = mean_loss
+                        print(f"📊 Budget {b} → Mean loss over {per_sample.shape[0]} samples: {mean_loss:.6f}")
+                if intermediate_losses:
+                    return intermediate_losses
+        
+        # Fallback to representative single trajectory if per-sample not present
         losses = None
         for key in ['ga_losses', 'total_final_loss', 'final_loss']:
             if key in data:
@@ -333,24 +351,14 @@ def extract_intermediate_losses(npz_path: str, max_budget: int) -> Dict[int, flo
                 if losses.size > 0:
                     print(f"📊 Found {key} with {losses.size} steps")
                     break
-        
         if losses is None:
             print(f"⚠️  No loss data found in NPZ. Available keys: {list(data.keys())}")
             return {}
-        
-        # Reshape to 1D array
         losses = losses.reshape(-1)
-        
-        # Compute exact GA budgets: 2 evaluations per step
-        # GA steps are max_budget//2 when we pass --ga_steps accordingly
         checkpoints = list(2 * np.arange(1, len(losses) + 1))
-        # Only keep checkpoints <= max_budget
         checkpoints = [int(b) for b in checkpoints if b <= max_budget]
-        
-        # Extract losses at each checkpoint
         intermediate_losses = {}
         for budget in checkpoints:
-            # budget = 2 * (step_idx + 1) → step_idx = budget/2 - 1
             step_idx = min(max(0, budget // 2 - 1), len(losses) - 1)
             intermediate_losses[budget] = float(losses[step_idx])
             print(f"📊 Budget {budget} → Step {step_idx} → Loss {intermediate_losses[budget]:.6f}")
@@ -574,28 +582,24 @@ def create_heatmap(
                    extent=[budgets[0], budgets[-1], lrs[0], lrs[-1]],
                    origin='lower')
     
-    # Add colorbar
-    cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label('Total Final Loss (lower is better)', fontsize=12)
+    # No colorbar and no cell labels per request
     
-    # Set labels and title
+    # Set labels and title (no cell labels)
     ax.set_xlabel('Search Budget', fontsize=14)
     ax.set_ylabel('Learning Rate', fontsize=14)
     ax.set_title('GA Learning Rate vs Budget: Total Loss Heatmap', fontsize=16, fontweight='bold')
     
     # Keep linear axes
-    
+    # Ensure ticks reflect the actual lr and budget values we used
+    ax.set_xticks(list(budgets))
+    ax.set_yticks(list(lrs))
+    # Format y ticks (learning rate) for readability
+    ax.set_yticklabels([f"{v:.3g}" for v in lrs])
+
     # Add grid
     ax.grid(True, alpha=0.3)
     
-    # Add text annotations for each cell
-    for i, lr in enumerate(lrs):
-        for j, budget in enumerate(budgets):
-            loss_val = results_matrix[i, j]
-            if not np.isnan(loss_val):
-                ax.text(budget, lr, f'{loss_val:.3f}', 
-                       ha='center', va='center', fontsize=8, color='white',
-                       bbox=dict(boxstyle="round,pad=0.2", facecolor='black', alpha=0.7))
+    # No per-cell text annotations
     
     plt.tight_layout()
     
@@ -769,6 +773,25 @@ def main():
                     except Exception as _wl:
                         print(f"⚠️  Failed to log to W&B: {_wl}")
     
+    # Forward-fill missing cells per LR to avoid empty spots (e.g., budgets below first available)
+    try:
+        for i in range(results_matrix.shape[0]):
+            row = results_matrix[i]
+            mask = ~np.isnan(row)
+            if not np.any(mask):
+                continue
+            first_idx = int(np.where(mask)[0][0])
+            # Backfill leading NaNs with first available value
+            if first_idx > 0:
+                row[:first_idx] = row[first_idx]
+            # Forward-fill subsequent NaNs
+            for j in range(first_idx + 1, row.shape[0]):
+                if np.isnan(row[j]):
+                    row[j] = row[j - 1]
+            results_matrix[i] = row
+    except Exception as _ff:
+        print(f"⚠️  Forward-fill failed: {_ff}")
+
     # Create heatmap
     if successful_evals > 0:
         print(f"\n📊 Creating heatmap with {successful_evals} successful evaluations...")
