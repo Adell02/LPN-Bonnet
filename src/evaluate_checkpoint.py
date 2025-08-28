@@ -250,9 +250,10 @@ def instantiate_train_state(lpn: LPN) -> TrainState:
     vocab_size = lpn.decoder.config.vocab_size
     
     # Create minimal dummy inputs that match the expected shapes
+    # LPN requires at least 2 pairs (N > 1) for leave-one-out evaluation
     # This ensures the model can initialize without dimension mismatches
-    dummy_grids = jnp.zeros((1, 1, max_rows, max_cols, 2), dtype=jnp.int32)
-    dummy_shapes = jnp.ones((1, 1, 2, 2), dtype=jnp.int32)
+    dummy_grids = jnp.zeros((1, 2, max_rows, max_cols, 2), dtype=jnp.int32)
+    dummy_shapes = jnp.ones((1, 2, 2, 2), dtype=jnp.int32)
     
     # Initialize the model with these dummy inputs
     # This creates the proper parameter structure that the checkpoint can load into
