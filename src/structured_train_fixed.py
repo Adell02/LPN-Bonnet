@@ -190,10 +190,10 @@ class StructuredTrainer:
             dummy_grids, dummy_shapes, _ = make_dataset(
                 length=dummy_length,
                 num_pairs=self.task_generator_kwargs["num_pairs"],
-                    num_workers=0,
+                num_workers=0,
                 task_generator_class=self.task_generator_kwargs["class"],
-                    online_data_augmentation=False,
-                    seed=cfg.training.seed,
+                online_data_augmentation=False,
+                seed=cfg.training.seed,
                 pattern=self.task_generator_kwargs["pattern"],
                 num_rows=self.task_generator_kwargs["num_rows"],
                 num_cols=self.task_generator_kwargs["num_cols"],
@@ -312,21 +312,15 @@ class StructuredTrainer:
             # Reshape to (log_every_n_steps, batch_size, num_pairs, ...)
             # The data comes as (total_samples, num_pairs, ...) and we need (log_every_n_steps, batch_size, num_pairs, ...)
             # total_samples = log_every_n_steps * batch_size = 100 * 128 = 12800
+            expected_shape = (log_every_n_steps, self.batch_size) + grids.shape[1:]
+            logging.info(f"Reshaping from {grids.shape} to {expected_shape}")
             
-            # Handle grids and shapes separately since they have different dimensions
-            grids_expected_shape = (log_every_n_steps, self.batch_size) + grids.shape[1:]  # (100, 128, 4, 5, 5, 2)
-            shapes_expected_shape = (log_every_n_steps, self.batch_size) + shapes.shape[1:]  # (100, 128, 4, 2, 2)
-            
-            logging.info(f"Reshaping grids from {grids.shape} to {grids_expected_shape}")
-            logging.info(f"Reshaping shapes from {shapes.shape} to {shapes_expected_shape}")
-            
-            grids = grids.reshape(grids_expected_shape)
-            shapes = shapes.reshape(shapes_expected_shape)
+            grids = grids.reshape(expected_shape)
+            shapes = shapes.reshape(expected_shape)
             
             # The data structure should be:
             # grids: (100, 128, 4, 5, 5, 2) - (log_every_n_steps, batch_size, num_pairs, rows, cols, channels)
             # shapes: (100, 128, 4, 2, 2) - (log_every_n_steps, batch_size, num_pairs, pair_dim, shape_dim)
-            # Note: shapes don't have rows/cols dimensions, only (num_pairs, pair_dim, shape_dim)
             
             # But the training loop expects:
             # When we zip(grids, shapes), each batch should be (batch_size, num_pairs, ...)
@@ -339,26 +333,26 @@ class StructuredTrainer:
             # 4. When zip() creates batches: each batch is (100, 4, 5, 5, 2) = (log_every_n_steps, num_pairs, rows, cols, channels)
             # 5. train_n_steps expects: batches[0].shape[0] = 100 (log_every_n_steps)
             grids = grids.transpose(1, 0, 2, 3, 4, 5)  # (128, 100, 4, 5, 5, 2)
-            shapes = shapes.transpose(1, 0, 2, 3, 4)   # (128, 100, 4, 2, 2) - shapes have 5 dims after reshape
+            shapes = shapes.transpose(1, 0, 2, 3, 4)   # (128, 100, 4, 2, 2)
             
             logging.info(f"Generated data shapes: grids={grids.shape}, shapes={shapes.shape}")
             logging.info(f"After transpose: grids={grids.shape}, shapes={shapes.shape}")
             return grids, shapes
         else:
             # Use fixed dataset (original behavior)
-        shuffle_key, augmentation_key = jax.random.split(key)
-        grids, shapes = shuffle_dataset_into_batches(self.train_grids, self.train_shapes, self.batch_size, shuffle_key)
-        num_logs = grids.shape[0] // log_every_n_steps
-        grids = grids[: num_logs * log_every_n_steps]
-        shapes = shapes[: num_logs * log_every_n_steps]
-        
-        if self.cfg.training.online_data_augmentation:
-            grids, shapes = data_augmentation_fn(grids, shapes, augmentation_key)
-        
-        # Reshape to (num_logs, log_every_n_steps, batch_size, *)
-        grids = grids.reshape(num_logs, log_every_n_steps, self.batch_size, *grids.shape[2:])
-        shapes = shapes.reshape(num_logs, log_every_n_steps, self.batch_size, *shapes.shape[2:])
-        return grids, shapes
+            shuffle_key, augmentation_key = jax.random.split(key)
+            grids, shapes = shuffle_dataset_into_batches(self.train_grids, self.train_shapes, self.batch_size, shuffle_key)
+            num_logs = grids.shape[0] // log_every_n_steps
+            grids = grids[: num_logs * log_every_n_steps]
+            shapes = shapes[: num_logs * log_every_n_steps]
+            
+            if self.cfg.training.online_data_augmentation:
+                grids, shapes = data_augmentation_fn(grids, shapes, augmentation_key)
+            
+            # Reshape to (num_logs, log_every_n_steps, batch_size, *)
+            grids = grids.reshape(num_logs, log_every_n_steps, self.batch_size, *grids.shape[2:])
+            shapes = shapes.reshape(num_logs, log_every_n_steps, self.batch_size, *shapes.shape[2:])
+            return grids, shapes
 
     def train_n_steps(self, state: TrainState, batches: tuple[chex.Array, chex.Array], key: chex.PRNGKey) -> tuple[TrainState, dict]:
         """Process log_every_n_steps batches and return updated state and metrics."""
