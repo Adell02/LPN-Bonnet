@@ -235,9 +235,41 @@ def instantiate_model(cfg: omegaconf.DictConfig, mixed_precision: bool) -> LPN:
 
 
 def instantiate_train_state(lpn: LPN) -> TrainState:
-    """Create a minimal train state that will be replaced by checkpoint loading."""
-    # We need to create a proper train state structure, but the actual parameters
-    # will come from the checkpoint loading
+    """Create a proper train state that can be loaded from checkpoint."""
+    # We need to create a proper train state structure that matches the checkpoint
+    # The key insight: we need to initialize the model with the correct architecture
+    # but we can't use random data that might not match the checkpoint's dimensions
+    
+    # Create a minimal input that matches the expected dimensions
+    # We'll use the model's config to determine the right dimensions
+    key = jax.random.PRNGKey(0)
+    
+    # Get the expected dimensions from the model config
+    max_rows = lpn.decoder.config.max_rows
+    max_cols = lpn.decoder.config.max_cols
+    vocab_size = lpn.decoder.config.vocab_size
+    
+    # Create minimal dummy inputs that match the expected shapes
+    # This ensures the model can initialize without dimension mismatches
+    dummy_grids = jnp.zeros((1, 1, max_rows, max_cols, 2), dtype=jnp.int32)
+    dummy_shapes = jnp.ones((1, 1, 2, 2), dtype=jnp.int32)
+    
+    # Initialize the model with these dummy inputs
+    # This creates the proper parameter structure that the checkpoint can load into
+    variables = lpn.init(
+        key, 
+        dummy_grids, 
+        dummy_shapes, 
+        dropout_eval=False, 
+        prior_kl_coeff=0.0, 
+        pairwise_kl_coeff=0.0, 
+        mode="mean"
+    )
+    
+    # Extract the parameters from the initialized variables
+    params = variables["params"]
+    
+    # Create the optimizer
     learning_rate, linear_warmup_steps = 0, 0
     linear_warmup_scheduler = optax.warmup_exponential_decay_schedule(
         init_value=learning_rate / (linear_warmup_steps + 1),
@@ -250,14 +282,9 @@ def instantiate_train_state(lpn: LPN) -> TrainState:
     optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(linear_warmup_scheduler))
     optimizer = optax.MultiSteps(optimizer, every_k_schedule=1)
     
-    # The key insight: we need to create a proper train state structure
-    # but we can't initialize the model parameters since they might not match
-    # So we'll create a minimal state and let the checkpoint loading handle the rest
-    # We need to create a dummy params structure that can be replaced by checkpoint loading
-    # The checkpoint loading will replace this with the actual parameters
-    # Let's create a proper structure that matches what the checkpoint expects
-    dummy_params = {"encoder": {}, "decoder": {}}  # Will be replaced by checkpoint loading
-    train_state = TrainState.create(apply_fn=lpn.apply, tx=optimizer, params=dummy_params)
+    # Create the train state with the initialized parameters
+    # The checkpoint loading will replace these with the actual trained parameters
+    train_state = TrainState.create(apply_fn=lpn.apply, tx=optimizer, params=params)
     return train_state
 
 
