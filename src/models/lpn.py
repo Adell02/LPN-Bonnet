@@ -949,6 +949,7 @@ class LPN(nn.Module):
             x = mean[..., None, :] + sigma_expanded * jnp.einsum(
                 "...ij,...kj->...ki", BD, z
             )
+            
             # Debug: print shapes to understand dimension handling
             print(f"         🔍 Gen {g}: x shape: {x.shape}, mean shape: {mean.shape}")
             
@@ -963,15 +964,8 @@ class LPN(nn.Module):
             print(f"         🔍 Gen {g}: best_idx shape: {best_idx.shape}")
             
             # Fix dimension mismatch for take_along_axis
-            # x has shape (..., lam, dim) where lam is the population size
-            # best_idx has shape (..., mu) where mu is the number of best candidates
-            # We need to expand best_idx to match x's dimensions for axis=-2
             print(f"         🔍 Gen {g}: x shape: {x.shape}, best_idx shape: {best_idx.shape}")
             
-            # x has shape (batch, pairs, population, latent_dim)
-            # best_idx has shape (batch, top_candidates)
-            
-            # Get the batch and pairs dimensions from x
             # We expand best_idx to (batch, 1, μ, 1) so it broadcasts across
             # the pair and latent dimensions when selecting.
             best_idx_expanded = best_idx[:, None, :, None]
@@ -981,7 +975,8 @@ class LPN(nn.Module):
 
             mean_old = mean
             mean = jnp.sum(x_sel * weights[..., None], axis=-2)
-            y = (x_sel - mean_old[..., None, :]) / sigma[..., None, None]
+            # Use sigma_expanded here, not sigma[..., None, None]
+            y = (x_sel - mean_old[..., None, :]) / sigma_expanded
             z_w = jnp.sum(z_sel * weights[..., None], axis=-2)
             y_w = jnp.sum(y * weights[..., None], axis=-2)
 
