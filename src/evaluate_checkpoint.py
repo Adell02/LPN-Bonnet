@@ -235,41 +235,10 @@ def instantiate_model(cfg: omegaconf.DictConfig, mixed_precision: bool) -> LPN:
 
 
 def instantiate_train_state(lpn: LPN) -> TrainState:
-    """Create a proper train state that can be loaded from checkpoint."""
-    # The key insight: we MUST initialize the model to create the proper parameter structure
-    # But we need to ensure we're using the checkpoint's exact configuration
-    # The model was already created with the checkpoint's config, so initialization should work
-    
-    # Create a minimal input that matches the expected dimensions
-    # We'll use the model's config to determine the right dimensions
-    key = jax.random.PRNGKey(0)
-    
-    # Get the expected dimensions from the model config
-    max_rows = lpn.decoder.config.max_rows
-    max_cols = lpn.decoder.config.max_cols
-    vocab_size = lpn.decoder.config.vocab_size
-    
-    # Create minimal dummy inputs that match the expected shapes
-    # LPN requires at least 2 pairs (N > 1) for leave-one-out evaluation
-    # This ensures the model can initialize without dimension mismatches
-    dummy_grids = jnp.zeros((1, 2, max_rows, max_cols, 2), dtype=jnp.int32)
-    dummy_shapes = jnp.ones((1, 2, 2, 2), dtype=jnp.int32)
-    
-    # Initialize the model with these dummy inputs
-    # This creates the proper parameter structure that the checkpoint can load into
-    # Since the model was created with the checkpoint's config, this should work
-    variables = lpn.init(
-        key, 
-        dummy_grids, 
-        dummy_shapes, 
-        dropout_eval=False, 
-        prior_kl_coeff=0.0, 
-        pairwise_kl_coeff=0.0, 
-        mode="mean"
-    )
-    
-    # Extract the parameters from the initialized variables
-    params = variables["params"]
+    """Create a minimal train state that will be replaced by checkpoint loading."""
+    # The key insight: we CANNOT initialize the model because there's a fundamental
+    # mismatch between what the model expects during initialization (256D) and what
+    # the checkpoint actually has (2D). The checkpoint loading will provide everything.
     
     # Create the optimizer
     learning_rate, linear_warmup_steps = 0, 0
@@ -284,9 +253,11 @@ def instantiate_train_state(lpn: LPN) -> TrainState:
     optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(linear_warmup_scheduler))
     optimizer = optax.MultiSteps(optimizer, every_k_schedule=1)
     
-    # Create the train state with the initialized parameters
-    # The checkpoint loading will replace these with the actual trained parameters
-    train_state = TrainState.create(apply_fn=lpn.apply, tx=optimizer, params=params)
+    # Create a minimal train state with empty parameters
+    # The checkpoint loading will provide the complete parameter structure
+    # This avoids the dimension mismatch during initialization
+    empty_params = {}  # Will be replaced by checkpoint loading
+    train_state = TrainState.create(apply_fn=lpn.apply, tx=optimizer, params=empty_params)
     return train_state
 
 
