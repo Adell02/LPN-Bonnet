@@ -247,21 +247,67 @@ class StructuredTrainer:
         # TrainState holds only decoder params for updates
         return TrainState.create(apply_fn=self.model.apply, tx=tx, params=avg_decoder_params)
 
-    def _iterate_batches(self, key: chex.PRNGKey, log_every_n_steps: int):
-        shuffle_key, aug_key = jax.random.split(key)
+    def prepare_train_dataset_for_epoch(self, key: chex.PRNGKey, log_every_n_steps: int) -> tuple[chex.Array, chex.Array]:
+        """Shuffle the dataset and reshape it to (num_logs, log_every_n_steps, batch_size, *)."""
+        shuffle_key, augmentation_key = jax.random.split(key)
         grids, shapes = shuffle_dataset_into_batches(self.train_grids, self.train_shapes, self.batch_size, shuffle_key)
+        num_logs = grids.shape[0] // log_every_n_steps
+        grids = grids[: num_logs * log_every_n_steps]
+        shapes = shapes[: num_logs * log_every_n_steps]
+        
         if self.cfg.training.online_data_augmentation:
-            grids, shapes = data_augmentation_fn(grids, shapes, aug_key)
-        # Yield individual batches
-        for i in range(0, grids.shape[0], self.batch_size):
-            yield grids[i : i + self.batch_size], shapes[i : i + self.batch_size]
+            grids, shapes = data_augmentation_fn(grids, shapes, augmentation_key)
+        
+        # Reshape to (num_logs, log_every_n_steps, batch_size, *)
+        grids = grids.reshape(num_logs, log_every_n_steps, self.batch_size, *grids.shape[2:])
+        shapes = shapes.reshape(num_logs, log_every_n_steps, self.batch_size, *shapes.shape[2:])
+        return grids, shapes
+
+    def train_n_steps(self, state: TrainState, batches: tuple[chex.Array, chex.Array], key: chex.PRNGKey) -> tuple[TrainState, dict]:
+        """Process log_every_n_steps batches and return updated state and metrics."""
+        num_steps = batches[0].shape[0]  # Should be log_every_n_steps
+        keys = jax.random.split(key, num_steps)
+        
+        # Process each batch sequentially (since we don't have pmap)
+        all_metrics = []
+        for i in range(num_steps):
+            batch_pairs, batch_shapes = batches[0][i], batches[1][i]
+            rng = keys[i]
+            
+            def loss_fn(decoder_params, batch_pairs, batch_shapes, rng):
+                loss, metrics = self.model.apply(
+                    {"params": decoder_params},
+                    batch_pairs,
+                    batch_shapes,
+                    dropout_eval=False,
+                    mode=self.cfg.training.inference_mode,
+                    poe_alphas=jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32),
+                    encoder_params_list=self.enc_params_list,
+                    decoder_params=decoder_params,
+                    rngs={"dropout": rng, "latents": rng},
+                    prior_kl_coeff=self.cfg.training.get("prior_kl_coeff"),
+                    pairwise_kl_coeff=self.cfg.training.get("pairwise_kl_coeff"),
+                    **(self.cfg.training.get("inference_kwargs") or {}),
+                )
+                return loss, metrics
+            
+            (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params, batch_pairs, batch_shapes, rng)
+            state = state.apply_gradients(grads=grads)
+            all_metrics.append(metrics)
+        
+        # Average metrics over all steps
+        avg_metrics = {}
+        for key in all_metrics[0].keys():
+            avg_metrics[key] = jnp.mean(jnp.stack([m[key] for m in all_metrics]))
+        
+        return state, avg_metrics
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
         num_steps = cfg.training.total_num_steps
         log_every = cfg.training.log_every_n_steps
-        alphas = jnp.asarray(cfg.structured.alphas, dtype=jnp.float32)
-
+        self.enc_params_list = enc_params_list  # Store for train_n_steps
+        
         step = 0
         epoch = 0
         key = jax.random.PRNGKey(cfg.training.seed)
@@ -279,7 +325,7 @@ class StructuredTrainer:
                 *test_batch,
                 dropout_eval=False,
                 mode=cfg.training.inference_mode,
-                poe_alphas=alphas,
+                poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32),
                 encoder_params_list=enc_params_list,
                 decoder_params=state.params,
                 rngs={"dropout": key, "latents": key},
@@ -294,70 +340,60 @@ class StructuredTrainer:
         
         logging.info("Starting training loop...")
         pbar = trange(num_steps, disable=False)
+        
         while step < num_steps:
             key, epoch_key = jax.random.split(key)
-            for batch_idx, (batch_pairs, batch_shapes) in enumerate(self._iterate_batches(epoch_key, log_every)):
-                # Grad over decoder params only; encoder params are fed through kwargs and not part of state.params
-                def loss_fn(decoder_params, batch_pairs, batch_shapes, rng):
-                    loss, metrics = self.model.apply(
-                        {"params": decoder_params},
-                        batch_pairs,
-                        batch_shapes,
-                        dropout_eval=False,
-                        mode=cfg.training.inference_mode,
-                        poe_alphas=alphas,
-                        encoder_params_list=enc_params_list,
-                        decoder_params=decoder_params,
-                        rngs={"dropout": rng, "latents": rng},
-                        prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
-                        pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
-                        **(cfg.training.get("inference_kwargs") or {}),
-                    )
-                    return loss, metrics
+            # Prepare dataset for this epoch
+            grids, shapes = self.prepare_train_dataset_for_epoch(epoch_key, log_every)
+            dataloader = zip(grids, shapes)
+            
+            dataloading_time = time.time()
+            for batches in dataloader:
+                wandb.log({"timing/dataloading_time": time.time() - dataloading_time})
+                
+                # Training - process log_every_n_steps batches at once
+                key, train_key = jax.random.split(key)
+                start = time.time()
+                state, metrics = self.train_n_steps(state, batches, train_key)
+                end = time.time()
+                
+                pbar.update(log_every)
+                step += log_every
+                throughput = log_every * self.batch_size / (end - start)
+                metrics.update({
+                    "timing/train_time": end - start,
+                    "timing/train_num_samples_per_second": throughput
+                })
+                wandb.log(metrics, step=step)
 
-                rng = jax.random.PRNGKey(step)
-                import time
-                t0 = time.time()
-                (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params, batch_pairs, batch_shapes, rng)
-                state = state.apply_gradients(grads=grads)
-                t1 = time.time()
-
-                # Log every log_every steps
-                if step % log_every == 0:
-                    # Align logs with train.py: include grad_norm and timing
-                    grad_norm = float(optax.global_norm(grads))
-                    throughput = self.batch_size / max(t1 - t0, 1e-8)
-                    to_log = {k: float(v) for k, v in metrics.items()}
-                    to_log.update({
-                        "grad_norm": grad_norm,
-                        "timing/train_time": t1 - t0,
-                        "timing/train_num_samples_per_second": throughput,
-                    })
-                    wandb.log(to_log, step=step)
-                    pbar.set_postfix(loss=float(loss))
-
-                # Periodic eval and checkpointing parity with unstructured (skip step 0)
-                if cfg.training.get("eval_every_n_logs") and step > 0 and (step // log_every) % cfg.training.eval_every_n_logs == 0:
+                # Save checkpoint
+                if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
                     try:
-                        self.evaluate(state, enc_params_list)
-                    except Exception as e:
-                        logging.warning(f"Eval failed: {e}")
-                if cfg.training.get("save_checkpoint_every_n_logs") and step > 0 and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
-                    try:
+                        logging.info(f"Saving checkpoint at step {step}")
                         from flax.serialization import msgpack_serialize, to_state_dict
                         with open("state.msgpack", "wb") as outfile:
                             outfile.write(msgpack_serialize(to_state_dict(state)))
                         wandb.save("state.msgpack")
                     except Exception as e:
                         logging.warning(f"Checkpoint save failed: {e}")
-                
-                step += 1
-                pbar.update(1)
+
+                # Evaluation
+                if cfg.training.get("eval_every_n_logs") and (step // log_every) % cfg.training.eval_every_n_logs == 0:
+                    try:
+                        logging.info(f"Running evaluation at step {step}")
+                        self.evaluate(state, enc_params_list)
+                    except Exception as e:
+                        logging.warning(f"Eval failed: {e}")
+
+                # Exit if the total number of steps is reached
                 if step >= num_steps:
                     break
+                
+                dataloading_time = time.time()
+            
             epoch += 1
+        
         pbar.close()
-
         return state
 
     def evaluate(self, state: TrainState, enc_params_list: list[dict]) -> dict:
