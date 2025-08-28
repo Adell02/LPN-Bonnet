@@ -149,6 +149,117 @@ class StructuredLPN(nn.Module):
         )
         return loss, metrics
 
+    def generate_output(
+        self,
+        pairs: chex.Array,
+        grid_shapes: chex.Array,
+        input: chex.Array,
+        input_grid_shape: chex.Array,
+        key: Optional[chex.PRNGKey],
+        dropout_eval: bool,
+        mode: str,
+        return_two_best: bool = False,
+        poe_alphas: Optional[chex.Array] = None,
+        encoder_params_list: Optional[Sequence[dict]] = None,
+        decoder_params: Optional[dict] = None,
+        **mode_kwargs,
+    ) -> tuple:
+        """Generate outputs using PoE latents and the core LPN decoder.
+
+        Mirrors LPN.generate_output but sources latents from encoders via PoE and
+        uses the single decoder.
+        """
+        # 1) run all encoders
+        enc_outputs = []
+        for i, enc in enumerate(self.encoders):
+            params = None if encoder_params_list is None else encoder_params_list[i]
+            mu_i, logvar_i = enc.apply(
+                {"params": params} if params is not None else None,
+                pairs,
+                grid_shapes,
+                dropout_eval,
+                mutable=False,
+            )
+            enc_outputs.append((mu_i, logvar_i))
+        mus, logvars = self._stack_encoder_outputs(enc_outputs)
+        E = mus.shape[0]
+        if poe_alphas is None or (hasattr(poe_alphas, "size") and int(poe_alphas.size) == 0):
+            poe_alphas = jnp.ones((E,), dtype=mus.dtype) / max(E, 1)
+        mu_poe, logvar_poe = poe_diag_gaussians(mus, logvars, poe_alphas)
+
+        # 2) sample if variational
+        assert key is not None, "'key' is required for stochastic generation"
+        key, key_lat = jax.random.split(key)
+        latents = mu_poe + jnp.exp(0.5 * logvar_poe) * jax.random.normal(key_lat, mu_poe.shape)
+
+        # 3) optionally replace latents
+        if mode_kwargs.get("remove_encoder_latents", False):
+            key, key_init = jax.random.split(key)
+            latents = jax.random.normal(key_init, latents.shape)
+
+        info = {}
+        # 4) select context like in LPN, using core helpers
+        if mode == "mean":
+            first_context = latents.mean(axis=-2)
+            second_context = first_context
+            info = {"context": first_context}
+        elif mode == "first":
+            first_context = latents[..., 0, :]
+            second_context = first_context
+            info = {"context": first_context}
+        elif mode == "random_search":
+            assert key is not None
+            for arg in ["num_samples", "scale"]:
+                assert arg in mode_kwargs
+            key, k = jax.random.split(key)
+            first_context, second_context = self._core._get_random_search_context(
+                latents, pairs, grid_shapes, k, **mode_kwargs
+            )
+            info = {"context": first_context}
+        elif mode == "gradient_ascent":
+            for arg in ["num_steps", "lr"]:
+                assert arg in mode_kwargs
+            key, k = jax.random.split(key)
+            first_context, second_context = self._core._get_gradient_ascent_context(
+                latents, pairs, grid_shapes, k, **mode_kwargs
+            )
+            info = {"context": first_context}
+        elif mode == "evolutionary_search":
+            for arg in ["population_size", "num_generations", "mutation_std"]:
+                assert arg in mode_kwargs
+            key, k = jax.random.split(key)
+            first_context, second_context = self._core._get_evolutionary_search_context(
+                latents, pairs, grid_shapes, k, **mode_kwargs
+            )
+            info = {"context": first_context}
+        else:
+            raise ValueError(f"Unsupported mode: {mode}")
+
+        # 5) decode using core's generator with the provided decoder params
+        scoped_params = None
+        if decoder_params is not None:
+            scoped_params = {"params": {"decoder": decoder_params}}
+        output_grids, output_shapes = self._core.apply(
+            scoped_params,
+            method=self._core._generate_output_from_context,
+            context=first_context,
+            input=input,
+            input_grid_shape=input_grid_shape,
+            dropout_eval=dropout_eval,
+        )
+        if return_two_best:
+            second_output_grids, second_output_shapes = self._core.apply(
+                scoped_params,
+                method=self._core._generate_output_from_context,
+                context=second_context,
+                input=input,
+                input_grid_shape=input_grid_shape,
+                dropout_eval=dropout_eval,
+            )
+            return output_grids, output_shapes, second_output_grids, second_output_shapes, info
+        else:
+            return output_grids, output_shapes, info
+
     @staticmethod
     def _core_forward_with_fixed_latents(
         self_lpn: LPN,
