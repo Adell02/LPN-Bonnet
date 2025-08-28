@@ -22,7 +22,7 @@ decoder_transformer:
 
 structured:
   artifacts:
-  models:
+    models:
       - "ga624-imperial-college-london/LPN-ARC/sparkling-wood-255--checkpoint:latest"
       - "ga624-imperial-college-london/LPN-ARC/revived-grass-259--checkpoint:latest"
       - "ga624-imperial-college-london/LPN-ARC/wobbly-rain-258--checkpoint:latest"  
