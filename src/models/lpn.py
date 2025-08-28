@@ -941,13 +941,12 @@ class LPN(nn.Module):
             z = jax.random.normal(nk, (*mean.shape[:-1], lam, dim))
             BD = B * D[..., None, :]
             
-            # Fix broadcasting issue: ensure mean has the right shape for population dimension
-            # mean has shape (..., pairs, latent_dim) -> need (..., pairs, population, latent_dim)
-            mean_expanded = mean[..., None, :]  # Add population dimension
-            
-            # Generate population samples
-            x = mean_expanded + sigma * jnp.einsum("...ij,...kj->...ki", BD, z)
-            
+            # sigma has shape (..., pairs) after the first generation. Add
+            # two singleton axes so it broadcasts over the population and latent
+            # dimensions produced by the einsum above.
+            x = mean[..., None, :] + sigma[..., None, None] * jnp.einsum(
+                "...ij,...kj->...ki", BD, z
+            )            
             # Debug: print shapes to understand dimension handling
             print(f"         🔍 Gen {g}: x shape: {x.shape}, mean shape: {mean.shape}")
             
@@ -969,19 +968,18 @@ class LPN(nn.Module):
             
             # x has shape (batch, pairs, population, latent_dim)
             # best_idx has shape (batch, top_candidates)
-            # We need to expand best_idx to (batch, pairs, 1, top_candidates) for take_along_axis
             
             # Get the batch and pairs dimensions from x
-            batch_dims = x.shape[:-2]  # Everything except (population, latent_dim)
-            
-            # Expand best_idx to match x's leading dimensions
-            best_idx_expanded = best_idx[:, None, :, None]  # (batch, 1, μ, 1) → broadcasts to (batch, pairs, μ, latent_dim)
+            # We expand best_idx to (batch, 1, μ, 1) so it broadcasts across
+            # the pair and latent dimensions when selecting.
+            best_idx_expanded = best_idx[:, None, :, None]
+
             x_sel = jnp.take_along_axis(x, best_idx_expanded, axis=-2)
             z_sel = jnp.take_along_axis(z, best_idx_expanded, axis=-2)
 
             mean_old = mean
             mean = jnp.sum(x_sel * weights[..., None], axis=-2)
-            y = (x_sel - mean_old[..., None, :]) / sigma
+            y = (x_sel - mean_old[..., None, :]) / sigma[..., None, None]
             z_w = jnp.sum(z_sel * weights[..., None], axis=-2)
             y_w = jnp.sum(y * weights[..., None], axis=-2)
 
