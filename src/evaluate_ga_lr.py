@@ -41,6 +41,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 
+try:
+    import wandb  # Optional: used for logging results
+    _WANDB_AVAILABLE = True
+except Exception:
+    _WANDB_AVAILABLE = False
+
 
 def run_store_latent_search(
     artifact_path: str,
@@ -558,8 +564,13 @@ def create_heatmap(
     
     fig, ax = plt.subplots(figsize=(12, 8))
     
+    # Create custom colormap to match store_latent_search
+    from matplotlib.colors import LinearSegmentedColormap
+    custom_colors = ['#FBB998', '#DB74DB', '#5361E5', '#96DCF8']
+    custom_cmap = LinearSegmentedColormap.from_list('custom_palette', custom_colors, N=256)
+
     # Create the heatmap
-    im = ax.imshow(results_matrix, cmap='viridis_r', aspect='auto', 
+    im = ax.imshow(results_matrix, cmap=custom_cmap, aspect='auto', 
                    extent=[budgets[0], budgets[-1], lrs[0], lrs[-1]],
                    origin='lower')
     
@@ -572,9 +583,7 @@ def create_heatmap(
     ax.set_ylabel('Learning Rate', fontsize=14)
     ax.set_title('GA Learning Rate vs Budget: Total Loss Heatmap', fontsize=16, fontweight='bold')
     
-    # Set axis scales
-    ax.set_xscale('log')
-    ax.set_yscale('log')
+    # Keep linear axes
     
     # Add grid
     ax.grid(True, alpha=0.3)
@@ -628,6 +637,11 @@ def main():
     
     # Performance options
     parser.add_argument("--no_files", action="store_true", help="Disable file generation and plotting (faster, just return values)")
+
+    # W&B logging
+    parser.add_argument("--wandb_project", type=str, default="GA_LR_SWEEP", help="Weights & Biases project to log results")
+    parser.add_argument("--wandb_entity", type=str, default=None, help="Weights & Biases entity (team/user)")
+    parser.add_argument("--no_wandb", action="store_true", help="Disable W&B logging even if available")
     
     args = parser.parse_args()
     
@@ -664,6 +678,29 @@ def main():
     artifact_name = args.artifact_path.split('/')[-1]
     csv_path = out_dir / f"ga_lr_budget_sweep_{artifact_name}_{timestamp}.csv"
     
+    # Initialize W&B run
+    run = None
+    if not args.no_wandb and _WANDB_AVAILABLE:
+        run_name = f"ga_lr_sweep_{artifact_name}_{timestamp}"
+        try:
+            run = wandb.init(project=args.wandb_project, entity=args.wandb_entity, name=run_name, config={
+                "artifact_path": args.artifact_path,
+                "dataset_folder": args.dataset_folder,
+                "dataset_length": args.dataset_length,
+                "dataset_batch_size": args.dataset_batch_size,
+                "dataset_use_hf": args.dataset_use_hf,
+                "dataset_seed": args.dataset_seed,
+                "lr_start": args.lr_start,
+                "lr_end": args.lr_end,
+                "lr_steps": args.lr_steps,
+                "budget_start": args.budget_start,
+                "budget_end": args.budget_end,
+                "budget_steps": args.budget_steps,
+            })
+        except Exception as _we:
+            print(f"⚠️  Failed to initialize W&B: {_we}")
+            run = None
+
     # Run evaluations
     successful_evals = 0
     failed_evals = 0
@@ -719,12 +756,30 @@ def main():
                     success,
                     "partial" if not success else "complete"
                 ])
+
+                # Log per-point result to W&B
+                if run is not None:
+                    try:
+                        wandb.log({
+                            "lr": float(lr),
+                            "budget": int(budget),
+                            "loss": float(loss),
+                            "success": bool(success),
+                        })
+                    except Exception as _wl:
+                        print(f"⚠️  Failed to log to W&B: {_wl}")
     
     # Create heatmap
     if successful_evals > 0:
         print(f"\n📊 Creating heatmap with {successful_evals} successful evaluations...")
         heatmap_path = create_heatmap(lrs, budgets, results_matrix, str(out_dir))
         print(f"📊 Heatmap saved to: {heatmap_path}")
+        # Log heatmap to W&B
+        if run is not None:
+            try:
+                wandb.log({"heatmap": wandb.Image(heatmap_path)})
+            except Exception as _wl2:
+                print(f"⚠️  Failed to log heatmap to W&B: {_wl2}")
     else:
         print(f"\n❌ No successful evaluations to create heatmap")
         heatmap_path = None
@@ -755,6 +810,31 @@ def main():
         print(f"   Learning Rate: {best_lr:.6f}")
         print(f"   Budget: {best_budget}")
         print(f"   Total Loss: {best_loss:.6f}")
+        if run is not None:
+            try:
+                wandb.log({
+                    "best/lr": float(best_lr),
+                    "best/budget": int(best_budget),
+                    "best/loss": float(best_loss),
+                })
+            except Exception as _wl3:
+                print(f"⚠️  Failed to log best config to W&B: {_wl3}")
+
+    # Upload CSV as an artifact
+    if run is not None:
+        try:
+            art = wandb.Artifact(name=f"ga_lr_budget_sweep_{artifact_name}_{timestamp}", type="ga_lr_sweep")
+            art.add_file(str(csv_path))
+            run.log_artifact(art)
+        except Exception as _wa:
+            print(f"⚠️  Failed to upload CSV artifact to W&B: {_wa}")
+
+    # Finish the W&B run
+    if run is not None:
+        try:
+            run.finish()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
