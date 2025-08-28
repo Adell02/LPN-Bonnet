@@ -1,5 +1,6 @@
+import os
 import numpy as np
-from datasets.task_gen.dataloader import make_dataset
+from src.datasets.task_gen.dataloader import make_dataset
 
 
 def generate_struct_pattern(pattern_id: int, L: int = 96, N: int = 2, seed: int = 0):
@@ -12,9 +13,11 @@ def generate_struct_pattern(pattern_id: int, L: int = 96, N: int = 2, seed: int 
         seed=seed,
         pattern=pattern_id,
     )
-    np.save(f"src/datasets/struct_pattern_{pattern_id}/grids.npy", grids)
-    np.save(f"src/datasets/struct_pattern_{pattern_id}/shapes.npy", shapes)
-    np.save(f"src/datasets/struct_pattern_{pattern_id}/program_ids.npy", program_ids)
+    out_dir = f"src/datasets/struct_pattern_{pattern_id}"
+    os.makedirs(out_dir, exist_ok=True)
+    np.save(os.path.join(out_dir, "grids.npy"), grids)
+    np.save(os.path.join(out_dir, "shapes.npy"), shapes)
+    np.save(os.path.join(out_dir, "program_ids.npy"), program_ids)
 
 
 if __name__ == "__main__":

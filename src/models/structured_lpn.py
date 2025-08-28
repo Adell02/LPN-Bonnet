@@ -107,8 +107,9 @@ class StructuredLPN(nn.Module):
 
         mus, logvars = self._stack_encoder_outputs(enc_outputs)
         E = mus.shape[0]
-        if poe_alphas is None:
-            poe_alphas = jnp.ones((E,), dtype=mus.dtype) / E
+        # Accept None or empty alphas → use uniform across encoders
+        if poe_alphas is None or (hasattr(poe_alphas, "size") and int(poe_alphas.size) == 0):
+            poe_alphas = jnp.ones((E,), dtype=mus.dtype) / max(E, 1)
         mu_poe, logvar_poe = poe_diag_gaussians(mus, logvars, poe_alphas)
 
         # Sample if variational
