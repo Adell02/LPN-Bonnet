@@ -967,7 +967,17 @@ def main(
 
     # Load the model weights
     print("Loading the model weights...")
-    train_state = load_model_weights(train_state, artifact_dir)
+    try:
+        train_state = load_model_weights(train_state, artifact_dir)
+        print(f"✅ Checkpoint loaded successfully")
+        print(f"   - Checkpoint path: {artifact_dir}")
+        print(f"   - Model config: latent_dim={cfg.encoder_transformer.get('latent_dim', 'N/A')}")
+        print(f"   - Params structure: {list(train_state.params.keys()) if hasattr(train_state, 'params') else 'No params'}")
+    except Exception as e:
+        print(f"❌ Failed to load checkpoint: {e}")
+        print(f"   - Checkpoint path: {artifact_dir}")
+        print(f"   - Available files: {os.listdir(artifact_dir) if os.path.exists(artifact_dir) else 'Directory not found'}")
+        raise
 
     # Put the train state on the device(s)
     train_state = jax.device_put_replicated(train_state, evaluator.devices)
