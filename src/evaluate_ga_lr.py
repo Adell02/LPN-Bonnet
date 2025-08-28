@@ -229,6 +229,59 @@ def run_store_latent_search_single(
         return False, {}, 0.0
 
 
+def run_ga_only_single(
+    artifact_path: str,
+    lr: float,
+    max_budget: int,
+    dataset_folder: str,
+    dataset_length: Optional[int] = None,
+    dataset_batch_size: Optional[int] = None,
+    dataset_use_hf: str = "true",
+    dataset_seed: int = 0,
+    out_dir: str = "results/ga_lr_budget_sweep",
+) -> Tuple[bool, Dict[int, float], float]:
+    """Run evaluate_checkpoint.py in GA mode only and extract intermediate losses."""
+    run_out_dir = os.path.join(out_dir, f"ga_only_lr_{lr:.6f}_budget_{max_budget}")
+    os.makedirs(run_out_dir, exist_ok=True)
+
+    ga_steps = max(1, max_budget // 2)
+    ga_npz_path = os.path.join(run_out_dir, "ga_latents.npz")
+
+    cmd = [
+        sys.executable, "src/evaluate_checkpoint.py",
+        "-w", artifact_path,
+        "-i", "gradient_ascent",
+        "--num-steps", str(ga_steps),
+        "--lr", str(lr),
+        "--no-wandb-run", "true",
+        "--store-latents", ga_npz_path,
+        "-d", dataset_folder,
+    ]
+    if dataset_length is not None:
+        cmd += ["--dataset-length", str(dataset_length)]
+    if dataset_batch_size is not None:
+        cmd += ["--dataset-batch-size", str(dataset_batch_size)]
+    cmd += ["--dataset-use-hf", dataset_use_hf, "--dataset-seed", str(dataset_seed)]
+
+    print(f"\n[GA-ONLY] Running: {' '.join(cmd)}")
+    try:
+        start_time = time.time()
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd())
+        execution_time = time.time() - start_time
+        if result.returncode != 0:
+            print(f"[GA-ONLY] ❌ evaluate_checkpoint failed (rc={result.returncode})")
+            if result.stderr.strip():
+                print(f"[GA-ONLY] stderr:\n{result.stderr}")
+            if result.stdout.strip():
+                print(f"[GA-ONLY] stdout:\n{result.stdout}")
+
+        # Extract intermediate losses directly from the GA NPZ file
+        intermediate_losses = extract_intermediate_losses(ga_npz_path, max_budget)
+        return result.returncode == 0 and bool(intermediate_losses), intermediate_losses, execution_time
+    except Exception as e:
+        print(f"[GA-ONLY] ❌ Error: {e}")
+        return False, {}, 0.0
+
 def extract_total_loss(npz_path: str) -> Optional[float]:
     """Extract total final loss from GA NPZ file."""
     try:
@@ -624,8 +677,8 @@ def main():
         for i, lr in enumerate(lrs):
             print(f"\n🔬 Testing lr = {lr:.6f} ({i+1}/{len(lrs)})")
             
-            # Run with maximum budget to get intermediate results
-            success, intermediate_losses, exec_time = run_store_latent_search_single(
+            # Run GA-only with maximum budget to get intermediate results (avoid ES path)
+            success, intermediate_losses, exec_time = run_ga_only_single(
                 artifact_path=artifact_path,
                 lr=lr,
                 max_budget=args.budget_end,
@@ -635,7 +688,6 @@ def main():
                 dataset_use_hf=args.dataset_use_hf,
                 dataset_seed=args.dataset_seed,
                 out_dir=str(out_dir),
-                no_files=True
             )
             
             # Store results for each budget checkpoint
