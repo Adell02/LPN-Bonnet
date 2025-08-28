@@ -472,8 +472,19 @@ def evaluate_custom_dataset(
         )
         for i in trange(grids.shape[1], desc="Generating solutions")
     ]
-    # Aggregate the metrics over the devices and the batches.
-    metrics = {k: jnp.stack([m[k] for m in metrics_list]).mean() for k in metrics_list[0].keys()}
+    # Aggregate the metrics over the devices and the batches (robust to None values)
+    metrics = {}
+    for k in metrics_list[0].keys():
+        vals = [m[k] for m in metrics_list if m.get(k) is not None]
+        if len(vals) == 0:
+            # No valid values; set to NaN to keep key presence without crashing
+            try:
+                import jax.numpy as jnp
+                metrics[k] = jnp.nan
+            except Exception:
+                metrics[k] = float('nan')
+        else:
+            metrics[k] = jnp.stack(vals).mean()
 
     # If storing latents, also collect per-sample metrics across the whole evaluated dataset
     per_sample_shape_acc = None

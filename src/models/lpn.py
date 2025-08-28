@@ -1028,8 +1028,8 @@ class LPN(nn.Module):
                 ).squeeze(axis=-1)  # (*B,) - only the best loss this generation
                 gen_fitnesses.append(best_loss_this_gen)
 
-            # Select top half per batch
-            num_survivors = population_size // 2
+            # Select top half per batch (ensure at least 1 survivor)
+            num_survivors = max(1, population_size // 2)
             idx = jnp.argsort(fitness, axis=-1, descending=True)[..., :num_survivors]   # (*B, S)
             
             # Debug: print shapes to understand the dimension mismatch
