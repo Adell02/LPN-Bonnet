@@ -123,8 +123,12 @@ class StructuredLPN(nn.Module):
 
         # Delegate rest to core LPN: build leave-one-out and follow same modes
         # Note: pass through decoder_params so decoding uses the averaged decoder weights
+        # Provide params under the correct scope expected by LPN (i.e., {'decoder': ...})
+        scoped_params = None
+        if decoder_params is not None:
+            scoped_params = {"params": {"decoder": decoder_params}}
         loss, metrics = self._core.apply(
-            {"params": decoder_params} if decoder_params is not None else None,
+            scoped_params,
             method=StructuredLPN._core_forward_with_fixed_latents,
             latents=latents,
             pairs=pairs,
