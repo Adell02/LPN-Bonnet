@@ -173,19 +173,19 @@ def run_store_latent_search_single(
         cmd.extend(["--dataset_length", str(dataset_length)])
     if dataset_batch_size:
         cmd.extend(["--dataset_batch_size", str(dataset_batch_size)])
-    
+
     cmd.extend([
         "--dataset_use_hf", dataset_use_hf,
         "--dataset_seed", str(dataset_seed),
     ])
     
     print(f"\nRunning: {' '.join(cmd)}")
-    
+
     try:
         start_time = time.time()
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd())
         execution_time = time.time() - start_time
-        
+
         if result.returncode == 0:
             print(f"✅ store_latent_search completed successfully in {execution_time:.2f}s")
             
@@ -481,7 +481,7 @@ def extract_loss_from_evaluation_output(stdout: str, stderr: str) -> Dict[int, f
             print(f"📊 Extracted final loss from stdout: {stdout_loss:.6f}")
     
     # Try to extract from stderr as fallback
-    if stderr.strip():
+            if stderr.strip():
         stderr_loss = extract_loss_from_stderr(stderr)
         if stderr_loss is not None:
             # Use stderr loss if no stdout loss found
@@ -671,7 +671,7 @@ def main():
     parser.add_argument("--dataset_batch_size", type=int, default=None, help="Batch size for dataset eval")
     parser.add_argument("--dataset_use_hf", type=str, default="true", help="Use HF hub (true/false)")
     parser.add_argument("--dataset_seed", type=int, default=0, help="Seed for dataset subsampling")
-    
+
     # W&B parameters
     parser.add_argument("--project", type=str, default="LPN-ARC", help="W&B project name")
     parser.add_argument("--entity", type=str, default="ga624-imperial-college-london", help="W&B entity")
@@ -684,13 +684,13 @@ def main():
     parser.add_argument("--wandb_project", type=str, default="GA_LR_SWEEP", help="Weights & Biases project to log results")
     parser.add_argument("--wandb_entity", type=str, default=None, help="Weights & Biases entity (team/user)")
     parser.add_argument("--no_wandb", action="store_true", help="Disable W&B logging even if available")
-    
+
     args = parser.parse_args()
-    
+
     # Generate LR and budget values
     lrs = np.linspace(args.lr_start, args.lr_end, args.lr_steps)  # Linear spacing for learning rates
     budgets = np.logspace(np.log10(args.budget_start), np.log10(args.budget_end), args.budget_steps).astype(int)
-    
+
     print(f"🔬 Learning Rate Sweep Configuration:")
     print(f"   - Start: {args.lr_start}")
     print(f"   - End: {args.lr_end}")
@@ -716,7 +716,7 @@ def main():
     shape_accuracy_matrix = np.full((len(lrs), len(budgets)), np.nan)  # Shape accuracy matrix
     pixel_correctness_matrix = np.full((len(lrs), len(budgets)), np.nan)  # Pixel correctness matrix
     execution_times = np.full((len(lrs), len(budgets)), np.nan)
-    
+
     # CSV logging
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     # Extract a name from the artifact path for the CSV filename
@@ -758,10 +758,10 @@ def main():
     # Run evaluations
     successful_evals = 0
     failed_evals = 0
-    
+
     with open(csv_path, 'w', newline='') as f_csv:
         writer = csv.writer(f_csv)
-        writer.writerow([
+            writer.writerow([
             "timestamp", "artifact_name", "lr", "budget", "total_loss", "accuracy", "shape_accuracy", "pixel_correctness", "execution_time", "success", "status"
         ])
         
@@ -798,7 +798,7 @@ def main():
                         pixel_correctness_matrix[i, budget_idx] = accuracy_metrics['pixel_correctness']
                 
                 if success:
-                    successful_evals += 1
+                successful_evals += 1
                     print(f"✅ Success: lr={lr:.6f}, extracted {len(intermediate_losses)} budget points, time={exec_time:.2f}s")
                 else:
                     print(f"⚠️  Partial success: lr={lr:.6f}, extracted {len(intermediate_losses)} budget points, time={exec_time:.2f}s (evaluation failed but losses extracted)")
@@ -812,8 +812,8 @@ def main():
                 accuracy = accuracy_metrics.get('accuracy', float('nan'))
                 shape_accuracy = accuracy_metrics.get('shape_accuracy', float('nan'))
                 pixel_correctness = accuracy_metrics.get('pixel_correctness', float('nan'))
-                
-                writer.writerow([
+
+            writer.writerow([
                     time.strftime("%Y-%m-%d %H:%M:%S"),
                     artifact_name,
                     lr,
@@ -890,7 +890,7 @@ def main():
                 _WANDB_MODULE.log({"heatmap": _WANDB_MODULE.Image(heatmap_path)})
             except Exception as _wl2:
                 print(f"⚠️  Failed to log heatmap to W&B: {_wl2}")
-    else:
+        else:
         print(f"\n❌ No successful evaluations to create heatmap")
         heatmap_path = None
     
@@ -1001,10 +1001,10 @@ def main():
 
     # Finish the W&B run
     if run is not None:
-        try:
-            run.finish()
-        except Exception:
-            pass
+    try:
+        run.finish()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

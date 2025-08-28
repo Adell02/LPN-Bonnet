@@ -223,21 +223,13 @@ from  train import Trainer, load_datasets, instantiate_config_for_mpt
 from  data_utils import make_leave_one_out, DATASETS_BASE_PATH
 
 
-def instantiate_model(cfg: omegaconf.DictConfig, mixed_precision: bool, latent_dim_override: Optional[int] = None) -> LPN:
+def instantiate_model(cfg: omegaconf.DictConfig, mixed_precision: bool) -> LPN:
     if mixed_precision:
-        encoder_config = instantiate_config_for_mpt(cfg.encoder_transformer)
-        decoder_config = instantiate_config_for_mpt(cfg.decoder_transformer)
+        encoder = EncoderTransformer(instantiate_config_for_mpt(cfg.encoder_transformer))
+        decoder = DecoderTransformer(instantiate_config_for_mpt(cfg.decoder_transformer))
     else:
-        encoder_config = hydra.utils.instantiate(cfg.encoder_transformer)
-        decoder_config = hydra.utils.instantiate(cfg.decoder_transformer)
-    
-    # Override latent dimension if specified
-    if latent_dim_override is not None:
-        print(f"   🔧 Overriding latent dimension from {encoder_config.latent_dim} to {latent_dim_override}")
-        encoder_config = encoder_config.replace(latent_dim=latent_dim_override)
-    
-    encoder = EncoderTransformer(encoder_config)
-    decoder = DecoderTransformer(decoder_config)
+        encoder = EncoderTransformer(hydra.utils.instantiate(cfg.encoder_transformer))
+        decoder = DecoderTransformer(hydra.utils.instantiate(cfg.decoder_transformer))
     lpn = LPN(encoder=encoder, decoder=decoder)
     return lpn
 
@@ -326,57 +318,31 @@ def load_model_weights(
             with open(checkpoint_path, "rb") as data_file:
                 byte_data = data_file.read()
             
-            print(f"   🔍 load_model_weights: About to inspect checkpoint structure...")
+            # Create a temporary state to inspect the checkpoint structure
+            temp_state = train_state
+            temp_state = temp_state.replace(params={})  # Empty params to avoid shape conflicts
             
-            # Create a minimal state structure to inspect the checkpoint
-            from flax.training.train_state import TrainState
-            import optax
+            print(f"   🔍 load_model_weights: About to call from_bytes...")
+            loaded_state = from_bytes(temp_state, byte_data)
             
-            # Create a dummy model with the same structure but empty params
-            dummy_lpn = train_state.apply_fn
-            dummy_optimizer = optax.sgd(0.0)
-            dummy_state = TrainState.create(
-                apply_fn=dummy_lpn,
-                tx=dummy_optimizer,
-                params={}  # Empty params
-            )
-            
-            # Try to load just the structure
-            try:
-                loaded_dummy = from_bytes(dummy_state, byte_data)
-                print(f"   🔍 load_model_weights: Successfully loaded checkpoint structure")
-                
-                # Inspect the loaded structure
-                if hasattr(loaded_dummy, 'params') and loaded_dummy.params:
-                    print(f"   🔍 load_model_weights: Checkpoint contains params with keys: {list(loaded_dummy.params.keys())}")
-                    if 'encoder' in loaded_dummy.params:
-                        encoder_params = loaded_dummy.params['encoder']
-                        print(f"   🔍 load_model_weights: Encoder params keys: {list(encoder_params.keys())}")
-                        if 'Dense_0' in encoder_params:
-                            dense_params = encoder_params['Dense_0']
-                            if 'kernel' in dense_params:
-                                kernel_shape = dense_params['kernel'].shape
-                                print(f"   🔍 load_model_weights: Checkpoint Dense_0 kernel shape: {kernel_shape}")
-                                print(f"   🔍 load_model_weights: Expected Dense_0 kernel shape: (96, 2)")
-                                if kernel_shape != (96, 2):
-                                    print(f"   ⚠️  SHAPE MISMATCH: Checkpoint has {kernel_shape}, but model expects (96, 2)")
-                                    print(f"   ⚠️  This checkpoint was trained with {kernel_shape[1]}-dimensional latents!")
-                                    print(f"   ⚠️  SOLUTION: Use a checkpoint with 2D latents or modify model to accept {kernel_shape[1]}D latents")
-                            else:
-                                print(f"   🔍 load_model_weights: Dense_0 has no kernel parameter")
-                        else:
-                            print(f"   🔍 load_model_weights: No Dense_0 in encoder params")
-                    else:
-                        print(f"   🔍 load_model_weights: No encoder in params")
-                else:
-                    print(f"   🔍 load_model_weights: No params found in checkpoint")
-                    
-            except Exception as inspect_e:
-                print(f"   ❌ load_model_weights: Failed to inspect checkpoint structure: {inspect_e}")
-                print(f"   🔍 load_model_weights: This suggests the checkpoint format is incompatible")
+            # Inspect the loaded structure
+            if hasattr(loaded_state, 'params') and loaded_state.params:
+                print(f"   🔍 load_model_weights: Checkpoint contains params with keys: {list(loaded_state.params.keys())}")
+                if 'encoder' in loaded_state.params:
+                    encoder_params = loaded_state.params['encoder']
+                    print(f"   🔍 load_model_weights: Encoder params keys: {list(encoder_params.keys())}")
+                    if 'Dense_0' in encoder_params:
+                        dense_params = encoder_params['Dense_0']
+                        if 'kernel' in dense_params:
+                            kernel_shape = dense_params['kernel'].shape
+                            print(f"   🔍 load_model_weights: Checkpoint Dense_0 kernel shape: {kernel_shape}")
+                            print(f"   🔍 load_model_weights: Expected Dense_0 kernel shape: (96, 2)")
+                            if kernel_shape != (96, 2):
+                                print(f"   ⚠️  SHAPE MISMATCH: Checkpoint has {kernel_shape}, but model expects (96, 2)")
+                                print(f"   ⚠️  This checkpoint was trained with {kernel_shape[1]}-dimensional latents!")
             
         except Exception as e:
-            print(f"   ❌ load_model_weights: Failed to read checkpoint file: {e}")
+            print(f"   ❌ load_model_weights: Failed to inspect checkpoint structure: {e}")
     
     # Now load into the actual train state
     with open(checkpoint_path, "rb") as data_file:
@@ -1029,7 +995,6 @@ def main(
     random_search_seed: int,
     mixed_precision: bool,
     no_wandb_run: bool = False,
-    latent_dim_override: Optional[int] = None,
 ) -> None:
     print("Downloading the model artifact...")
     # Download the artifact and save the config file without creating separate W&B runs if requested
@@ -1049,9 +1014,7 @@ def main(
     print(f"   - Config type: {type(cfg)}")
     print(f"   - Encoder config: {cfg.encoder_transformer}")
     print(f"   - Decoder config: {cfg.decoder_transformer}")
-    if latent_dim_override is not None:
-        print(f"   - Latent dimension override: {latent_dim_override}")
-    lpn = instantiate_model(cfg, mixed_precision, latent_dim_override)
+    lpn = instantiate_model(cfg, mixed_precision)
     print(f"   - Model created with encoder config: {lpn.encoder.config}")
     print(f"   - Model created with decoder config: {lpn.decoder.config}")
     train_state = instantiate_train_state(lpn)
@@ -1387,15 +1350,6 @@ if __name__ == "__main__":
         default=None,
         help="Trust region radius for evolutionary search (default: None).",
     )
-    
-    # Model configuration override
-    parser.add_argument(
-        "--latent-dim",
-        type=int,
-        required=False,
-        default=None,
-        help="Override the latent dimension from the checkpoint config. Use this when the checkpoint has a different latent dimension than expected.",
-    )
 
     args = parser.parse_args()
     if (
@@ -1479,5 +1433,4 @@ if __name__ == "__main__":
         random_search_seed=args.random_search_seed,
         mixed_precision=args.mixed_precision,
         no_wandb_run=args.no_wandb_run,
-        latent_dim_override=args.latent_dim,
     )

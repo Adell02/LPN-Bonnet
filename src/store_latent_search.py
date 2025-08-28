@@ -212,7 +212,7 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
     # Prefer per-individual losses for exact pairing; then robust fallbacks
     if pts is not None:
         N = int(pts.reshape(-1, pts.shape[-1]).shape[0])
-    else:
+        else:
         N = None
 
     # Helper to try adopt array if it matches N
@@ -233,7 +233,7 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
         flat = lp.reshape(-1)
         if N is not None and flat.size == N:
             vals = flat
-            print(f"[plot] Using {prefix}losses_per_generation: {lp.shape} -> {vals.shape}")
+        print(f"[plot] Using {prefix}losses_per_generation: {lp.shape} -> {vals.shape}")
 
     # 2) Map per-generation losses to individuals via generation_idx
     if vals is None and gens is not None:
@@ -282,7 +282,7 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
                 elif vals.size < n_pts:
                     reps = int(np.ceil(n_pts / vals.size))
                     vals = np.tile(vals, reps)[:n_pts]
-                else:
+                    else:
                     vals = vals[:n_pts]
                 print(f"[plot] ES values aligned to points: {vals.shape}")
     
@@ -690,11 +690,11 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                         es_pop_vals_reconstructed = np.repeat(es_trajectory_vals, population_per_gen)
                         if len(es_pop_vals_reconstructed) == len(es_pop_pts_original):
                             print(f"[plot] ES reconstruction successful: {num_generations} gens × {population_per_gen} pop")
-                            bgP_original.append(es_pop_pts_original)
+                        bgP_original.append(es_pop_pts_original)
                             bgV_original.append(es_pop_vals_reconstructed)
-                        else:
-                            print(f"[plot] ES reconstruction failed: expected {len(es_pop_pts_original)}, got {len(es_pop_vals_reconstructed)}")
                     else:
+                            print(f"[plot] ES reconstruction failed: expected {len(es_pop_pts_original)}, got {len(es_pop_vals_reconstructed)}")
+        else:
                         print(f"[plot] ES reconstruction failed: invalid generation/population counts")
                 else:
                     print(f"[plot] ES trajectory values missing, cannot reconstruct population losses")
@@ -709,11 +709,11 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                     es_pop_vals_reconstructed = np.repeat(es_trajectory_vals, population_per_gen)
                     if len(es_pop_vals_reconstructed) == len(es_pop_pts_original):
                         print(f"[plot] ES reconstruction successful: {num_generations} gens × {population_per_gen} pop")
-                        bgP_original.append(es_pop_pts_original)
+                    bgP_original.append(es_pop_pts_original)
                         bgV_original.append(es_pop_vals_reconstructed)
-                    else:
-                        print(f"[plot] ES reconstruction failed: expected {len(es_pop_pts_original)}, got {len(es_pop_vals_reconstructed)}")
                 else:
+                        print(f"[plot] ES reconstruction failed: expected {len(es_pop_pts_original)}, got {len(es_pop_vals_reconstructed)}")
+            else:
                     print(f"[plot] ES reconstruction failed: invalid generation/population counts")
             else:
                 print(f"[plot] ES trajectory values missing, cannot create background")
@@ -1084,7 +1084,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         if es.gen_idx is not None or es.vals is not None:
             # Try to build a generation index aligned to flattened population
             effective_gen_idx = None
-            if es.gen_idx is not None:
+        if es.gen_idx is not None:
                 candidate = es.gen_idx.reshape(-1)
                 if len(candidate) == len(es_pop_pts_flat):
                     effective_gen_idx = candidate
@@ -1103,29 +1103,29 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 unique_gens = np.unique(effective_gen_idx)
                 # Use custom color palette for generation clusters
                 generation_colors = ['#FBB998', '#DB74DB', '#5361E5', '#96DCF8']
-                for gen in unique_gens:
+            for gen in unique_gens:
                     mask = (effective_gen_idx == gen)
                     if mask.shape[0] != es_pop_pts_flat.shape[0]:
                         print(f"[plot] Skipping gen {gen}: mask/pop mismatch {mask.shape[0]} vs {es_pop_pts_flat.shape[0]}")
                         continue
-                    gen_pts = es_pop_pts_flat[mask]
+                gen_pts = es_pop_pts_flat[mask]
                     if gen_pts.size == 0:
                         continue
                     color = generation_colors[int(gen) % len(generation_colors)]
-                    # Calculate generation cluster center and radius
-                    gen_center = np.mean(gen_pts, axis=0)
-                    gen_radius = np.max(np.linalg.norm(gen_pts - gen_center, axis=1)) * 1.2  # 20% padding
-                    # Debug: show generation circle bounds
-                    circle_xmin = gen_center[0] - gen_radius
-                    circle_xmax = gen_center[0] + gen_radius
-                    circle_ymin = gen_center[1] - gen_radius
-                    circle_ymax = gen_center[1] + gen_radius
-                    print(f"[plot] Gen {gen} circle: center=({gen_center[0]:.3f}, {gen_center[1]:.3f}), radius={gen_radius:.3f}")
-                    print(f"[plot] Gen {gen} bounds: x[{circle_xmin:.3f}, {circle_xmax:.3f}], y[{circle_ymin:.3f}, {circle_ymax:.3f}]")
-                    # Draw translucent circle for this generation
+                # Calculate generation cluster center and radius
+                gen_center = np.mean(gen_pts, axis=0)
+                gen_radius = np.max(np.linalg.norm(gen_pts - gen_center, axis=1)) * 1.2  # 20% padding
+                # Debug: show generation circle bounds
+                circle_xmin = gen_center[0] - gen_radius
+                circle_xmax = gen_center[0] + gen_radius
+                circle_ymin = gen_center[1] - gen_radius
+                circle_ymax = gen_center[1] + gen_radius
+                print(f"[plot] Gen {gen} circle: center=({gen_center[0]:.3f}, {gen_center[1]:.3f}), radius={gen_radius:.3f}")
+                print(f"[plot] Gen {gen} bounds: x[{circle_xmin:.3f}, {circle_xmax:.3f}], y[{circle_ymin:.3f}, {circle_ymax:.3f}]")
+                # Draw translucent circle for this generation
                     circle = plt.Circle(gen_center, gen_radius, fill=True, linewidth=4, 
-                                      edgecolor=color, facecolor=color, alpha=0.15)
-                    ax.add_patch(circle)
+                                  edgecolor=color, facecolor=color, alpha=0.15)
+                ax.add_patch(circle)
                     # Generation labels removed as requested
             else:
                 print(f"[plot] Skipping generation circles due to unavailable/mismatched generation index")
@@ -2052,7 +2052,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                                 run.log({f"{wandb_key}_std": float(np.std(arr))})
                             except Exception as _we:
                                 print(f"[metrics] Failed to log GA histogram {wandb_key}: {_we}")
-
+                
                 # Create GA metrics CSV for download
                 ga_csv_path = f"ga_metrics_run_{cfg.get('run_idx', 0)}.csv"
                 
@@ -2161,7 +2161,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                                 run.log({f"{wandb_key}_std": float(np.std(arr))})
                             except Exception as _we:
                                 print(f"[metrics] Failed to log ES histogram {wandb_key}: {_we}")
-
+                
                 # Log ES metrics
                 for key, value in es_metrics.items():
                     if value is not None:
@@ -2596,7 +2596,7 @@ def main() -> None:
         # Optional aggregators for cross-run statistics
         ga_agg_acc, ga_agg_shape, ga_agg_pixel, ga_agg_best_loss = [], [], [], []
         es_agg_acc, es_agg_shape, es_agg_pixel, es_agg_best_loss = [], [], [], []
-
+        
         for run_idx in range(args.n_samples):
             seed = args.dataset_seed + run_idx
             print(f"\n🔬 Run {run_idx + 1}/{args.n_samples} with seed {seed}")
@@ -2751,16 +2751,16 @@ def main() -> None:
                     print(f"⚠️  Could not extract latent dimension: {e}")
             else:
                 trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
-                                                          background_resolution=args.background_resolution,
-                                                          background_smoothing=args.background_smoothing,
-                                                          background_knn=args.background_knn,
-                                                          background_bandwidth_scale=args.background_bandwidth_scale,
-                                                          background_global_mix=args.background_global_mix,
+                                                      background_resolution=args.background_resolution,
+                                                      background_smoothing=args.background_smoothing,
+                                                      background_knn=args.background_knn,
+                                                      background_bandwidth_scale=args.background_bandwidth_scale,
+                                                      background_global_mix=args.background_global_mix,
                                                           ga_steps=ga_steps, es_population=pop, es_generations=gens, dataset_length=args.dataset_length)
-                if trajectory_plot:
-                    print(f"Saved trajectory plot to {trajectory_plot}")
-                if loss_plot:
-                    print(f"Saved loss curves plot to {loss_plot}")
+            if trajectory_plot:
+                print(f"Saved trajectory plot to {trajectory_plot}")
+            if loss_plot:
+                print(f"Saved loss curves plot to {loss_plot}")
                 if stats_plot:
                     print(f"Saved statistical histograms to {stats_plot}")
                 else:
@@ -2797,11 +2797,11 @@ def main() -> None:
             except Exception as e:
                 print(f"Failed to upload to wandb: {e}")
             
-                        # Finish the W&B run
+            # Finish the W&B run
             if run is not None:
                 run.finish()
                 print(f"[wandb] Finished run {run_idx + 1}/{args.n_samples}")
-
+        
             # Aggregate per-sample metrics across runs (if requested later)
             try:
                 # Load GA per-sample metrics from NPZ
@@ -3058,16 +3058,16 @@ def main() -> None:
                 print(f"⚠️  Could not extract latent dimension: {e}")
         else:
             trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
-                                                      background_resolution=args.background_resolution,
-                                                      background_smoothing=args.background_smoothing,
-                                                      background_knn=args.background_knn,
-                                                      background_bandwidth_scale=args.background_bandwidth_scale,
-                                                      background_global_mix=args.background_global_mix,
+                                                  background_resolution=args.background_resolution,
+                                                  background_smoothing=args.background_smoothing,
+                                                  background_knn=args.background_knn,
+                                                  background_bandwidth_scale=args.background_bandwidth_scale,
+                                                  background_global_mix=args.background_global_mix,
                                                       ga_steps=ga_steps, es_population=pop, es_generations=gens, dataset_length=args.dataset_length)
-            if trajectory_plot:
-                print(f"Saved trajectory plot to {trajectory_plot}")
-            if loss_plot:
-                print(f"Saved loss curves plot to {loss_plot}")
+        if trajectory_plot:
+            print(f"Saved trajectory plot to {trajectory_plot}")
+        if loss_plot:
+            print(f"Saved loss curves plot to {loss_plot}")
             if stats_plot:
                 print(f"Saved statistical histograms to {stats_plot}")
             else:

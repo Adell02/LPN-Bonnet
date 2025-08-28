@@ -162,13 +162,13 @@ class LPN(nn.Module):
             if mode_kwargs.get("track_progress", False):
                 context, _, _ = self._get_evolutionary_search_context(
                     leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes,
-                    key,
+                    key, 
                     **mode_kwargs,
                 )
             else:
                 context, _ = self._get_evolutionary_search_context(
                     leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes,
-                    key,
+                    key, 
                     **mode_kwargs,
                 )
             
@@ -842,7 +842,7 @@ class LPN(nn.Module):
         """Evolutionary search using CMA-ES."""
         def _eval_candidates(cand_latents: chex.Array) -> chex.Array:
             input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
-            
+
             # Debug: print input shapes
             print(f"         🔍 _eval_candidates: cand_latents shape: {cand_latents.shape}")
             print(f"         🔍 _eval_candidates: input_seq shape: {input_seq.shape}")
@@ -883,9 +883,9 @@ class LPN(nn.Module):
                 # Apply scan over batches
                 _, batch_log_probs = nn.scan(
                     lambda _, batch_latents: (None, process_batch(batch_latents)),
-                    variable_broadcast="params",
-                    split_rngs={"params": False},
-                    in_axes=-3,
+                variable_broadcast="params",
+                split_rngs={"params": False},
+                in_axes=-3,
                     out_axes=-1,
                 )(None, batched_latents)
                 
@@ -904,8 +904,8 @@ class LPN(nn.Module):
                 )(input_seq, output_seq, expanded_latents, True)  # dropout_eval=True
                 
                 # Compute log probabilities: reduce over pairs to get per-candidate scores
-                log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
-                    row_logits, col_logits, grid_logits, output_seq
+            log_probs = jax.vmap(self._compute_log_probs, in_axes=(-2, -2, -2, None), out_axes=-1)(
+                row_logits, col_logits, grid_logits, output_seq
                 )
             
             losses = -log_probs
