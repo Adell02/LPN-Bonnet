@@ -235,24 +235,11 @@ def instantiate_model(cfg: omegaconf.DictConfig, mixed_precision: bool) -> LPN:
 
 
 def instantiate_train_state(lpn: LPN) -> TrainState:
-    key = jax.random.PRNGKey(0)
-    decoder = lpn.decoder
-    grids = jax.random.randint(
-        key,
-        (1, 3, decoder.config.max_rows, decoder.config.max_cols, 2),
-        minval=0,
-        maxval=decoder.config.vocab_size,
-    )
-    shapes = jax.random.randint(
-        key,
-        (1, 3, 2, 2),
-        minval=1,
-        maxval=min(decoder.config.max_rows, decoder.config.max_cols) + 1,
-    )
-    variables = lpn.init(
-        key, grids, shapes, dropout_eval=False, prior_kl_coeff=0.0, pairwise_kl_coeff=0.0, mode="mean"
-    )
-
+    """Create a minimal train state that will be replaced by checkpoint loading."""
+    # Create a dummy train state - the actual state will come from the checkpoint
+    # We don't need to initialize the model since we're loading from checkpoint
+    dummy_params = {}  # Will be replaced by checkpoint loading
+    
     learning_rate, linear_warmup_steps = 0, 0
     linear_warmup_scheduler = optax.warmup_exponential_decay_schedule(
         init_value=learning_rate / (linear_warmup_steps + 1),
@@ -264,7 +251,7 @@ def instantiate_train_state(lpn: LPN) -> TrainState:
     )
     optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(linear_warmup_scheduler))
     optimizer = optax.MultiSteps(optimizer, every_k_schedule=1)
-    train_state = TrainState.create(apply_fn=lpn.apply, tx=optimizer, params=variables["params"])
+    train_state = TrainState.create(apply_fn=lpn.apply, tx=optimizer, params=dummy_params)
     return train_state
 
 
