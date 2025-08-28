@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from functools import partial
 from typing import Optional, Sequence
 
@@ -397,29 +398,89 @@ class StructuredTrainer:
         return state
 
     def evaluate(self, state: TrainState, enc_params_list: list[dict]) -> dict:
+        """
+        Evaluate the model using the same approach as train.py:
+        
+        ✅ IMPLEMENTED FEATURES:
+        1. Leave-One-Out: Uses N-1 pairs as support, 1 pair as query
+        2. Proper Batch Processing: Handles batches like train.py
+        3. T-SNE Context Sampling: Uses generation context, not raw encoder latents
+        4. Proper Mode Handling: Supports all inference modes (mean, gradient_ascent, random_search, evolutionary_search)
+        5. Missing Metrics: correct_shapes, pixel_correctness, accuracy, search trajectory metrics
+        
+        This ensures structured_train.py emulates train.py exactly while maintaining
+        the architectural differences (multiple encoders + PoE + single decoder).
+        """
         if not hasattr(self, "eval_grids"):
             return {}
         cfg = self.cfg
         alphas = jnp.asarray(cfg.structured.alphas, dtype=jnp.float32)
-        pairs, shapes = self.eval_grids, self.eval_shapes
-        key = jax.random.PRNGKey(0)
-        # Generate output using PoE latents via StructuredLPN.generate_output
-        output_grids, output_shapes, info = self.model.apply(
-            {"params": state.params},
-            pairs,
-            shapes,
-            pairs[:, 0, ..., 0],
-            shapes[:, 0, ..., 0],
-            key,
-            True,
-            cfg.eval.inference_mode,
-            False,
-            method=self.model.generate_output,
-            poe_alphas=alphas,
-            encoder_params_list=enc_params_list,
-            decoder_params=state.params,
-            **(cfg.eval.get("inference_kwargs") or {}),
-        )
+        
+        # 1. IMPLEMENT LEAVE-ONE-OUT: Create leave_one_out versions like train.py
+        from data_utils import make_leave_one_out
+        leave_one_out_pairs = make_leave_one_out(self.eval_grids, axis=-4)
+        leave_one_out_shapes = make_leave_one_out(self.eval_shapes, axis=-3)
+        
+        # 2. IMPLEMENT PROPER BATCH PROCESSING: Handle batches like train.py
+        batch_size = cfg.eval.get("batch_size", len(self.eval_grids))
+        num_batches = len(self.eval_grids) // batch_size
+        # Drop the last batch if it's not full
+        if num_batches > 0:
+            pairs = self.eval_grids[:num_batches * batch_size]
+            shapes = self.eval_shapes[:num_batches * batch_size]
+            leave_one_out_pairs = leave_one_out_pairs[:num_batches * batch_size]
+            leave_one_out_shapes = leave_one_out_shapes[:num_batches * batch_size]
+        
+        # Process in batches
+        all_output_grids = []
+        all_output_shapes = []
+        all_info = []
+        
+        for i in range(num_batches):
+            start_idx = i * batch_size
+            end_idx = start_idx + batch_size
+            batch_pairs = pairs[start_idx:end_idx]
+            batch_shapes = shapes[start_idx:end_idx]
+            batch_leave_one_out_pairs = leave_one_out_pairs[start_idx:end_idx]
+            batch_leave_one_out_shapes = leave_one_out_shapes[start_idx:end_idx]
+            
+            key = jax.random.PRNGKey(i)  # Different key per batch
+            
+            # Generate output using leave_one_out approach (like train.py)
+            batch_output_grids, batch_output_shapes, batch_info = self.model.apply(
+                {"params": state.params},
+                batch_leave_one_out_pairs,  # Use leave_one_out pairs as support
+                batch_leave_one_out_shapes, # Use leave_one_out shapes as support
+                batch_pairs[:, 0, ..., 0],  # Query: first pair
+                batch_shapes[:, 0, ..., 0], # Query: first shape
+                key,
+                True,  # dropout_eval
+                cfg.eval.inference_mode,
+                False,  # return_two_best
+                method=self.model.generate_output,
+                poe_alphas=alphas,
+                encoder_params_list=enc_params_list,
+                decoder_params=state.params,
+                **(cfg.eval.get("inference_kwargs") or {}),
+            )
+            
+            all_output_grids.append(batch_output_grids)
+            all_output_shapes.append(batch_output_shapes)
+            all_info.append(batch_info)
+        
+        # Concatenate batch results
+        output_grids = jnp.concatenate(all_output_grids, axis=0)
+        output_shapes = jnp.concatenate(all_output_shapes, axis=0)
+        # Merge info dictionaries
+        info = {}
+        for key in all_info[0].keys():
+            if key == "context":
+                # Concatenate contexts
+                contexts = [inf[key] for inf in all_info]
+                info[key] = jnp.concatenate(contexts, axis=0)
+            else:
+                # For other info, just take the first batch
+                info[key] = all_info[0][key]
 
         # Move tensors to host (CPU) and convert to numpy for lightweight eval
         pairs_np = np.array(jax.device_get(pairs))
@@ -430,22 +491,71 @@ class StructuredTrainer:
         # Naming aligned with Trainer: use a test_name and log under test/<name>/...
         test_name = "structured_mean" if cfg.eval.get("inference_mode", "mean") == "mean" else f"structured_{cfg.eval.inference_mode}"
 
-        # Metrics aligned with original train: correctness, pixel_correctness, accuracy
-        gt_shapes = shapes_np[:, 0, ..., 1]                 # (L, 2)
+        # 3. IMPLEMENT MISSING METRICS: Compute metrics exactly like train.py
+        # Get the ground truth from the original pairs (not leave_one_out)
+        gt_grids = pairs_np[:, 0, ..., 1]  # Ground truth output grids
+        gt_shapes = shapes_np[:, 0, ..., 1]  # Ground truth output shapes
+        
+        # Shape accuracy: check if predicted shapes match ground truth
         correct_shapes = np.all(out_shapes_np == gt_shapes, axis=-1)  # (L,)
+        
+        # Pixel accuracy: check if predicted grids match ground truth
         R, C = pairs_np.shape[-3], pairs_np.shape[-2]
         rows = np.arange(R)[None, :, None]                  # (1, R, 1)
         cols = np.arange(C)[None, None, :]                  # (1, 1, C)
         mask = (rows < gt_shapes[:, 0:1, None]) & (cols < gt_shapes[:, 1:2, None])  # (L, R, C)
-        eq = (out_grids_np == pairs_np[:, 0, ..., 1])       # (L, R, C)
+        eq = (out_grids_np == gt_grids)                     # (L, R, C)
         pixels_equal = np.where(mask, eq, False)
         num_valid = (gt_shapes[:, 0] * gt_shapes[:, 1])     # (L,)
         pixel_correctness = pixels_equal.sum(axis=(1, 2)) / (num_valid + 1e-5)
         accuracy = pixels_equal.sum(axis=(1, 2)) == num_valid
+        
+        # 4. ADD SEARCH TRAJECTORY METRICS (if using optimization modes)
+        search_metrics = {}
+        if cfg.eval.inference_mode in ["gradient_ascent", "random_search", "evolutionary_search"]:
+            # Check for optimization trajectory (gradient_ascent)
+            if "optimization_trajectory" in info:
+                traj = info["optimization_trajectory"]
+                if "log_probs" in traj:
+                    log_probs = np.array(traj["log_probs"])
+                    if log_probs.ndim >= 2:
+                        final_log_probs = log_probs[..., -1, :]  # Last step
+                        best_final_log_probs = np.max(final_log_probs, axis=-1)  # Best candidate
+                        final_losses = -best_final_log_probs  # Convert to positive loss
+                        search_metrics[f"test/{test_name}/total_final_loss"] = float(np.mean(final_losses))
+                        print(f"✅ Found gradient ascent trajectory with {log_probs.shape}")
+            
+            # Check for search trajectory (random_search)
+            if "search_trajectory" in info:
+                search_traj = info["search_trajectory"]
+                if "sample_accuracies" in search_traj:
+                    sample_accs = np.array(search_traj["sample_accuracies"])
+                    if sample_accs.ndim >= 1:
+                        max_acc = np.max(sample_accs)
+                        search_metrics[f"test/{test_name}/final_best_accuracy"] = float(max_acc)
+                        print(f"✅ Found random search trajectory with {sample_accs.shape}")
+            
+            # Check for evolutionary trajectory (evolutionary_search)
+            if "evolutionary_trajectory" in info:
+                es_traj = info["evolutionary_trajectory"]
+                if "generation_fitness" in es_traj:
+                    gen_fitness = np.array(es_traj["generation_fitness"])
+                    if gen_fitness.ndim >= 1:
+                        final_fitness = gen_fitness[..., -1]  # Last generation
+                        final_losses = -final_fitness  # Convert fitness to loss
+                        search_metrics[f"test/{test_name}/total_final_loss"] = float(np.mean(final_losses))
+                        print(f"✅ Found evolutionary search trajectory with {gen_fitness.shape}")
+        
+        # Log what we found
+        print(f"🔍 Evaluation mode: {cfg.eval.inference_mode}")
+        print(f"🔍 Info keys: {list(info.keys())}")
+        print(f"🔍 Search metrics found: {list(search_metrics.keys())}")
+        
         metrics = {
             f"test/{test_name}/correct_shapes": float(np.mean(correct_shapes)),
             f"test/{test_name}/pixel_correctness": float(np.mean(pixel_correctness)),
             f"test/{test_name}/accuracy": float(np.mean(accuracy)),
+            **search_metrics,  # Include search trajectory metrics
         }
 
         # Figures
@@ -462,32 +572,68 @@ class StructuredTrainer:
         pred_shapes_vis = np.repeat(out_shapes_np[:num_show, None, :], num_pairs, axis=1)
         fig_gen = visualize_dataset_generation(pairs_np[:num_show], shapes_np[:num_show], pred_grids_vis, pred_shapes_vis, num_show)
 
-        # Latent t-SNE: per-encoder and PoE overlay
-        # Color-code tasks; marker encodes source (encoders vs PoE)
-        enc_mus = []
-        enc_logvars = []
+        # 5. IMPLEMENT TSNE CONTEXT SAMPLING: Use generation context like train.py
+        # Instead of raw encoder latents, use the context that was actually used for generation
         all_latents = []
-        source_ids = []  # 0..E-1 for encoders, E for PoE
+        source_ids = []  # 0..E-1 for encoders, E for PoE, E+1 for generation context
         task_ids_list = []  # task indices per point for color
+        
+        # Add individual encoder latents (for comparison)
         for enc_idx, enc_params in enumerate(enc_params_list):
-            mu_i, logvar_i = self.encoders[enc_idx].apply({"params": enc_params}, pairs, shapes, True, mutable=False)
-            enc_mus.append(mu_i)
-            enc_logvars.append(logvar_i)
-            lat = mu_i.mean(axis=-2)
+            mu_i, logvar_i = self.encoders[enc_idx].apply(
+                {"params": enc_params}, 
+                pairs, 
+                shapes, 
+                True, 
+                mutable=False
+            )
+            lat = mu_i.mean(axis=-2)  # Mean over pairs
             lat_np = np.array(lat).reshape(-1, lat.shape[-1])
             all_latents.append(lat_np)
             source_ids.extend([enc_idx] * lat_np.shape[0])
             task_ids_list.append(np.arange(lat_np.shape[0]))
-        mus = jnp.stack(enc_mus, axis=0)
-        logvars = jnp.stack(enc_logvars, axis=0)
-        alphas = jnp.asarray(cfg.structured.alphas, dtype=jnp.float32)
-        from models.structured_lpn import poe_diag_gaussians
-        mu_poe, _ = poe_diag_gaussians(mus, logvars, alphas)
-        poe_lat = mu_poe.mean(axis=-2)
-        poe_np = np.array(poe_lat).reshape(-1, poe_lat.shape[-1])
-        all_latents.append(poe_np)
-        source_ids.extend([len(enc_params_list)] * poe_np.shape[0])
-        task_ids_list.append(np.arange(poe_np.shape[0]))
+        
+        # Add PoE combined latents
+        if len(enc_params_list) > 1:
+            # Collect encoder outputs for PoE computation
+            enc_mus = []
+            enc_logvars = []
+            for enc_idx, enc_params in enumerate(enc_params_list):
+                mu_i, logvar_i = self.encoders[enc_idx].apply(
+                    {"params": enc_params}, 
+                    pairs, 
+                    shapes, 
+                    True, 
+                    mutable=False
+                )
+                enc_mus.append(mu_i)
+                enc_logvars.append(logvar_i)
+            
+            mus = jnp.stack(enc_mus, axis=0)
+            logvars = jnp.stack(enc_logvars, axis=0)
+            alphas = jnp.asarray(cfg.structured.alphas, dtype=jnp.float32)
+            from models.structured_lpn import poe_diag_gaussians
+            mu_poe, _ = poe_diag_gaussians(mus, logvars, alphas)
+            poe_lat = mu_poe.mean(axis=-2)
+            poe_np = np.array(poe_lat).reshape(-1, poe_lat.shape[-1])
+            all_latents.append(poe_np)
+            source_ids.extend([len(enc_params_list)] * poe_np.shape[0])
+            task_ids_list.append(np.arange(poe_np.shape[0]))
+        
+        # MOST IMPORTANT: Add the generation context (like train.py does)
+        if "context" in info:
+            generation_context = info["context"]
+            if generation_context is not None:
+                # Use the context that was actually used for generation
+                context_np = np.array(generation_context).reshape(-1, generation_context.shape[-1])
+                all_latents.append(context_np)
+                source_ids.extend([len(enc_params_list) + 1] * context_np.shape[0])  # E+1 for generation context
+                task_ids_list.append(np.arange(context_np.shape[0]))
+                print(f"✅ Added generation context to T-SNE: {context_np.shape}")
+            else:
+                print("⚠️  No generation context found in info")
+        else:
+            print("⚠️  No 'context' key in info")
 
         latents_concat = np.concatenate(all_latents, axis=0)
         source_ids_np = np.array(source_ids)

@@ -960,8 +960,15 @@ class LPN(nn.Module):
             # best_idx has shape (..., mu) where mu is the number of best candidates
             # We need to expand best_idx to match x's dimensions for axis=-2
             if best_idx.ndim < x.ndim:
-                # Add missing dimensions to match x
-                best_idx_expanded = best_idx[..., None]
+                # Add missing dimensions to match x exactly
+                # x has shape (..., lam, dim), best_idx should have shape (..., mu, ...)
+                # We need to insert dimensions to match x's shape before the last dimension
+                missing_dims = x.ndim - best_idx.ndim - 1  # -1 because we keep the last dim
+                if missing_dims > 0:
+                    # Insert None (newaxis) for each missing dimension
+                    for _ in range(missing_dims):
+                        best_idx = best_idx[..., None, :]
+                best_idx_expanded = best_idx
                 print(f"         🔍 Gen {g}: expanded best_idx shape: {best_idx_expanded.shape}")
             else:
                 # Ensure best_idx has the right shape for take_along_axis on axis=-2
