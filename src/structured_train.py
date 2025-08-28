@@ -474,7 +474,7 @@ class StructuredTrainer:
                 logging.info(f"Batch {i} - input shapes: pairs={batch_pairs[:, 0, ..., 0].shape}, shapes={batch_shapes[:, 0, ..., 0].shape}")
                 
                 # Use generate_output method for evaluation (like train.py does)
-                # Pass arguments in the correct order as positional arguments
+                # Pass arguments in the correct order as expected by generate_output method
                 batch_output_grids, batch_output_shapes, batch_info = self.model.apply(
                     {"params": state.params},
                     method=self.model.generate_output,
