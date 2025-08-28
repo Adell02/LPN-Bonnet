@@ -318,31 +318,57 @@ def load_model_weights(
             with open(checkpoint_path, "rb") as data_file:
                 byte_data = data_file.read()
             
-            # Create a temporary state to inspect the checkpoint structure
-            temp_state = train_state
-            temp_state = temp_state.replace(params={})  # Empty params to avoid shape conflicts
+            print(f"   🔍 load_model_weights: About to inspect checkpoint structure...")
             
-            print(f"   🔍 load_model_weights: About to call from_bytes...")
-            loaded_state = from_bytes(temp_state, byte_data)
+            # Create a minimal state structure to inspect the checkpoint
+            from flax.training.train_state import TrainState
+            import optax
             
-            # Inspect the loaded structure
-            if hasattr(loaded_state, 'params') and loaded_state.params:
-                print(f"   🔍 load_model_weights: Checkpoint contains params with keys: {list(loaded_state.params.keys())}")
-                if 'encoder' in loaded_state.params:
-                    encoder_params = loaded_state.params['encoder']
-                    print(f"   🔍 load_model_weights: Encoder params keys: {list(encoder_params.keys())}")
-                    if 'Dense_0' in encoder_params:
-                        dense_params = encoder_params['Dense_0']
-                        if 'kernel' in dense_params:
-                            kernel_shape = dense_params['kernel'].shape
-                            print(f"   🔍 load_model_weights: Checkpoint Dense_0 kernel shape: {kernel_shape}")
-                            print(f"   🔍 load_model_weights: Expected Dense_0 kernel shape: (96, 2)")
-                            if kernel_shape != (96, 2):
-                                print(f"   ⚠️  SHAPE MISMATCH: Checkpoint has {kernel_shape}, but model expects (96, 2)")
-                                print(f"   ⚠️  This checkpoint was trained with {kernel_shape[1]}-dimensional latents!")
+            # Create a dummy model with the same structure but empty params
+            dummy_lpn = train_state.apply_fn
+            dummy_optimizer = optax.sgd(0.0)
+            dummy_state = TrainState.create(
+                apply_fn=dummy_lpn,
+                tx=dummy_optimizer,
+                params={}  # Empty params
+            )
+            
+            # Try to load just the structure
+            try:
+                loaded_dummy = from_bytes(dummy_state, byte_data)
+                print(f"   🔍 load_model_weights: Successfully loaded checkpoint structure")
+                
+                # Inspect the loaded structure
+                if hasattr(loaded_dummy, 'params') and loaded_dummy.params:
+                    print(f"   🔍 load_model_weights: Checkpoint contains params with keys: {list(loaded_dummy.params.keys())}")
+                    if 'encoder' in loaded_dummy.params:
+                        encoder_params = loaded_dummy.params['encoder']
+                        print(f"   🔍 load_model_weights: Encoder params keys: {list(encoder_params.keys())}")
+                        if 'Dense_0' in encoder_params:
+                            dense_params = encoder_params['Dense_0']
+                            if 'kernel' in dense_params:
+                                kernel_shape = dense_params['kernel'].shape
+                                print(f"   🔍 load_model_weights: Checkpoint Dense_0 kernel shape: {kernel_shape}")
+                                print(f"   🔍 load_model_weights: Expected Dense_0 kernel shape: (96, 2)")
+                                if kernel_shape != (96, 2):
+                                    print(f"   ⚠️  SHAPE MISMATCH: Checkpoint has {kernel_shape}, but model expects (96, 2)")
+                                    print(f"   ⚠️  This checkpoint was trained with {kernel_shape[1]}-dimensional latents!")
+                                    print(f"   ⚠️  SOLUTION: Use a checkpoint with 2D latents or modify model to accept {kernel_shape[1]}D latents")
+                            else:
+                                print(f"   🔍 load_model_weights: Dense_0 has no kernel parameter")
+                        else:
+                            print(f"   🔍 load_model_weights: No Dense_0 in encoder params")
+                    else:
+                        print(f"   🔍 load_model_weights: No encoder in params")
+                else:
+                    print(f"   🔍 load_model_weights: No params found in checkpoint")
+                    
+            except Exception as inspect_e:
+                print(f"   ❌ load_model_weights: Failed to inspect checkpoint structure: {inspect_e}")
+                print(f"   🔍 load_model_weights: This suggests the checkpoint format is incompatible")
             
         except Exception as e:
-            print(f"   ❌ load_model_weights: Failed to inspect checkpoint structure: {e}")
+            print(f"   ❌ load_model_weights: Failed to read checkpoint file: {e}")
     
     # Now load into the actual train state
     with open(checkpoint_path, "rb") as data_file:
