@@ -65,6 +65,12 @@ def run_store_latent_search(
         "--wandb_artifact_path", artifact_path,
         "--budget", str(budget),
         "--ga_lr", str(lr),
+        # Mirror the working invocation: explicit GA/ES decomposition and disable files/plots
+        "--ga_steps", str(max(1, budget // 2)),
+        "--es_population", "1",
+        "--es_generations", str(budget),
+        "--no_files",
+        "--background_resolution", "400",
         "--dataset_folder", dataset_folder,
         "--out_dir", run_out_dir,
         "--wandb_project", "none",  # Use "none" to disable W&B
@@ -141,6 +147,10 @@ def run_store_latent_search_single(
         "--wandb_artifact_path", artifact_path,
         "--budget", str(max_budget),
         "--ga_lr", str(lr),
+        # Ensure same GA/ES decomposition as the working command
+        "--ga_steps", str(max(1, max_budget // 2)),
+        "--es_population", "1",
+        "--es_generations", str(max_budget),
         "--dataset_folder", dataset_folder,
         "--out_dir", run_out_dir,
         "--wandb_project", "none",  # Use "none" to disable W&B
@@ -272,22 +282,19 @@ def extract_intermediate_losses(npz_path: str, max_budget: int) -> Dict[int, flo
         # Reshape to 1D array
         losses = losses.reshape(-1)
         
-        # Calculate budget checkpoints (every 10% of max_budget, plus final)
-        checkpoints = []
-        step_size = max(1, max_budget // 10)  # At least 1 step
-        for i in range(step_size, max_budget + 1, step_size):
-            checkpoints.append(i)
-        if max_budget not in checkpoints:
-            checkpoints.append(max_budget)
+        # Compute exact GA budgets: 2 evaluations per step
+        # GA steps are max_budget//2 when we pass --ga_steps accordingly
+        checkpoints = list(2 * np.arange(1, len(losses) + 1))
+        # Only keep checkpoints <= max_budget
+        checkpoints = [int(b) for b in checkpoints if b <= max_budget]
         
         # Extract losses at each checkpoint
         intermediate_losses = {}
         for budget in checkpoints:
-            # Map budget to step index (assuming 2 evaluations per step for GA)
-            step_idx = min(budget // 2, len(losses) - 1)
-            if step_idx < len(losses):
-                intermediate_losses[budget] = float(losses[step_idx])
-                print(f"📊 Budget {budget} → Step {step_idx} → Loss {intermediate_losses[budget]:.6f}")
+            # budget = 2 * (step_idx + 1) → step_idx = budget/2 - 1
+            step_idx = min(max(0, budget // 2 - 1), len(losses) - 1)
+            intermediate_losses[budget] = float(losses[step_idx])
+            print(f"📊 Budget {budget} → Step {step_idx} → Loss {intermediate_losses[budget]:.6f}")
         
         return intermediate_losses
         
@@ -594,7 +601,7 @@ def main():
     out_dir = Path("results/ga_lr_budget_sweep")
     out_dir.mkdir(parents=True, exist_ok=True)
     
-    # Results matrix: [lr_idx, budget_idx] -> total_loss
+    # Results matrix: [lr_idx, budget_idx] -> total_loss (budget-aligned)
     results_matrix = np.full((len(lrs), len(budgets)), np.nan)
     execution_times = np.full((len(lrs), len(budgets)), np.nan)
     
@@ -628,7 +635,7 @@ def main():
                 dataset_use_hf=args.dataset_use_hf,
                 dataset_seed=args.dataset_seed,
                 out_dir=str(out_dir),
-                no_files=args.no_files
+                no_files=True
             )
             
             # Store results for each budget checkpoint
