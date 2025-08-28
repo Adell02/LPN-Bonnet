@@ -336,6 +336,9 @@ class StructuredTrainer:
             **(cfg.eval.get("inference_kwargs") or {}),
         )
 
+        # Naming aligned with Trainer: use a test_name and log under test/<name>/...
+        test_name = "structured_mean" if cfg.eval.get("inference_mode", "mean") == "mean" else f"structured_{cfg.eval.inference_mode}"
+
         # Metrics aligned with original train: correctness, pixel_correctness, accuracy
         gt_shapes = shapes[:, 0, ..., 1]                 # (L, 2)
         correct_shapes = jnp.all(output_shapes == gt_shapes, axis=-1)  # (L,)
@@ -349,9 +352,9 @@ class StructuredTrainer:
         pixel_correctness = pixels_equal.sum(axis=(1, 2)) / (num_valid + 1e-5)
         accuracy = pixels_equal.sum(axis=(1, 2)) == num_valid
         metrics = {
-            "eval/correct_shapes": float(jnp.mean(correct_shapes)),
-            "eval/pixel_correctness": float(jnp.mean(pixel_correctness)),
-            "eval/accuracy": float(jnp.mean(accuracy)),
+            f"test/{test_name}/correct_shapes": float(jnp.mean(correct_shapes)),
+            f"test/{test_name}/pixel_correctness": float(jnp.mean(pixel_correctness)),
+            f"test/{test_name}/accuracy": float(jnp.mean(accuracy)),
         }
 
         # Figures
@@ -416,9 +419,9 @@ class StructuredTrainer:
         ax.set_title("t-SNE of latents: per-encoder vs PoE (markers)")
 
         wandb.log({
-            "eval/fig_heatmap": wandb.Image(fig_heatmap),
-            "eval/fig_generation": wandb.Image(fig_gen),
-            "eval/fig_tsne_sources": wandb.Image(fig_tsne),
+            f"test/{test_name}/pixel_accuracy": wandb.Image(fig_heatmap),
+            f"test/{test_name}/generation": wandb.Image(fig_gen),
+            f"test/{test_name}/latents": wandb.Image(fig_tsne),
             **metrics,
         })
 
