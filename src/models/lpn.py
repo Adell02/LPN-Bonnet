@@ -940,7 +940,13 @@ class LPN(nn.Module):
             key, nk = jax.random.split(key)
             z = jax.random.normal(nk, (*mean.shape[:-1], lam, dim))
             BD = B * D[..., None, :]
-            x = mean[..., None, :] + sigma * jnp.einsum("...ij,...kj->...ki", BD, z)
+            
+            # Fix broadcasting issue: ensure mean has the right shape for population dimension
+            # mean has shape (..., pairs, latent_dim) -> need (..., pairs, population, latent_dim)
+            mean_expanded = mean[..., None, :]  # Add population dimension
+            
+            # Generate population samples
+            x = mean_expanded + sigma * jnp.einsum("...ij,...kj->...ki", BD, z)
             
             # Debug: print shapes to understand dimension handling
             print(f"         🔍 Gen {g}: x shape: {x.shape}, mean shape: {mean.shape}")
