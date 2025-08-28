@@ -26,7 +26,7 @@ structured:
       - "ga624-imperial-college-london/LPN-ARC/sparkling-wood-255--checkpoint:latest"
       - "ga624-imperial-college-london/LPN-ARC/revived-grass-259--checkpoint:latest"
       - "ga624-imperial-college-london/LPN-ARC/wobbly-rain-258--checkpoint:latest"  
-  alphas: []     # list of weights per model/encoder (sum <= 1 recommended); if empty -> uniform
+  alphas: [0.3333333, 0.3333333, 0.3333333]     # uniform over 3 models
   # Optional: configuration describing the model architecture of the loaded checkpoints.
   # If provided, StructuredTrainer will instantiate enc/dec with these hyperparameters
   # to ensure parameter shapes match the artifacts.
