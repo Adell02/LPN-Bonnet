@@ -79,7 +79,8 @@ def load_artifact_params(artifact_ref: str, key: str = "params") -> dict:
 def build_params_from_artifacts(cfg: omegaconf.DictConfig, decoder_module: DecoderTransformer) -> tuple[list[dict], dict]:
     enc_params_list = []
     dec_params_list = []
-    for art in cfg.structured.artifacts.models:
+    model_artifacts = list(cfg.structured.artifacts.models or [])
+    for art in model_artifacts:
         full_params = load_artifact_params(art)
         # Expect top-level keys 'encoder' and 'decoder'
         enc_params = full_params["encoder"] if "encoder" in full_params else full_params
@@ -87,7 +88,15 @@ def build_params_from_artifacts(cfg: omegaconf.DictConfig, decoder_module: Decod
         enc_params_list.append(enc_params)
         dec_params_list.append(dec_params)
 
-    avg_decoder_params = average_params(dec_params_list)
+    if len(dec_params_list) == 0:
+        raise ValueError(
+            "No structured.artifacts.models provided. Populate structured.artifacts.models with one or more "
+            "W&B artifact references to LPN checkpoints (encoder+decoder)."
+        )
+    if len(dec_params_list) == 1:
+        avg_decoder_params = dec_params_list[0]
+    else:
+        avg_decoder_params = average_params(dec_params_list)
     return enc_params_list, avg_decoder_params
 
 

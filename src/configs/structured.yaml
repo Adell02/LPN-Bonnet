@@ -22,7 +22,10 @@ decoder_transformer:
 
 structured:
   artifacts:
-    models: [ga624-imperial-college-london/LPN-ARC/sparkling-wood-255--checkpoint:latest, ga624-imperial-college-london/LPN-ARC/revived-grass-259--checkpoint:latest, ga624-imperial-college-london/LPN-ARC/wobbly-rain-258--checkpoint:latest]   # list of WandB artifacts for full LPN checkpoints (encoder+decoder)
+  models:
+      - "ga624-imperial-college-london/LPN-ARC/sparkling-wood-255--checkpoint:latest"
+      - "ga624-imperial-college-london/LPN-ARC/revived-grass-259--checkpoint:latest"
+      - "ga624-imperial-college-london/LPN-ARC/wobbly-rain-258--checkpoint:latest"  
   alphas: []     # list of weights per model/encoder (sum <= 1 recommended); if empty -> uniform
 
 training:
