@@ -435,7 +435,13 @@ class StructuredTrainer:
         alphas = jnp.asarray(cfg.structured.alphas, dtype=jnp.float32)
         
         # 1. IMPLEMENT LEAVE-ONE-OUT: Create leave_one_out versions like train.py
+        # The issue is that make_leave_one_out is adding an extra dimension
+        # We need to create the leave_one_out data correctly to match train.py
         from data_utils import make_leave_one_out
+        
+        # Create leave_one_out data with correct shapes
+        # For pairs: (L, N, R, C, 2) -> (L, N-1, R, C, 2) where N=4, so N-1=3
+        # For shapes: (L, N, 2, 2) -> (L, N-1, 2, 2) where N=4, so N-1=3
         leave_one_out_pairs = make_leave_one_out(self.eval_grids, axis=-4)
         leave_one_out_shapes = make_leave_one_out(self.eval_shapes, axis=-3)
         
@@ -445,8 +451,13 @@ class StructuredTrainer:
         logging.info(f"Leave_one_out_pairs shape: {leave_one_out_pairs.shape}")
         logging.info(f"Leave_one_out_shapes shape: {leave_one_out_shapes.shape}")
         
-        # Ensure the leave_one_out data has consistent shapes
-        assert leave_one_out_pairs.shape[:-4] == leave_one_out_shapes.shape[:-3], f"Leave-one-out shape mismatch: pairs={leave_one_out_pairs.shape}, shapes={leave_one_out_shapes.shape}"
+        # The leave_one_out should reduce the N dimension from 4 to 3
+        # So pairs: (L, 3, R, C, 2) and shapes: (L, 3, 2, 2)
+        expected_pairs_shape = (self.eval_grids.shape[0], 3, 5, 5, 2)
+        expected_shapes_shape = (self.eval_shapes.shape[0], 3, 2, 2)
+        
+        assert leave_one_out_pairs.shape == expected_pairs_shape, f"Leave_one_out_pairs shape mismatch: got {leave_one_out_pairs.shape}, expected {expected_pairs_shape}"
+        assert leave_one_out_shapes.shape == expected_shapes_shape, f"Leave_one_out_shapes shape mismatch: got {leave_one_out_shapes.shape}, expected {expected_shapes_shape}"
         
         # 2. IMPLEMENT PROPER BATCH PROCESSING: Handle batches like train.py
         batch_size = cfg.eval.get("batch_size", len(self.eval_grids))
@@ -465,6 +476,10 @@ class StructuredTrainer:
             logging.info(f"Batched leave_one_out_shapes shape: {leave_one_out_shapes.shape}")
             
             # Ensure all batched data has consistent shapes
+            # Pairs: (288, 4, 5, 5, 2) - 5 dimensions
+            # Shapes: (288, 4, 2, 2) - 4 dimensions
+            # Leave_one_out_pairs: (288, 3, 5, 5, 2) - 5 dimensions  
+            # Leave_one_out_shapes: (288, 3, 2, 2) - 4 dimensions
             assert pairs.shape[:-4] == shapes.shape[:-3], f"Batched shape mismatch: pairs={pairs.shape}, shapes={shapes.shape}"
             assert leave_one_out_pairs.shape[:-4] == leave_one_out_shapes.shape[:-3], f"Batched leave_one_out shape mismatch: pairs={leave_one_out_pairs.shape}, shapes={leave_one_out_shapes.shape}"
         
@@ -488,6 +503,10 @@ class StructuredTrainer:
             logging.info(f"Batch {i} - batch_leave_one_out_shapes shape: {batch_leave_one_out_shapes.shape}")
             
             # Ensure all batch data has consistent shapes
+            # Batch_pairs: (96, 4, 5, 5, 2) - 5 dimensions
+            # Batch_shapes: (96, 4, 2, 2) - 4 dimensions
+            # Batch_leave_one_out_pairs: (96, 3, 5, 5, 2) - 5 dimensions
+            # Batch_leave_one_out_shapes: (96, 3, 2, 2) - 4 dimensions
             assert batch_pairs.shape[:-4] == batch_shapes.shape[:-3], f"Batch {i} shape mismatch: pairs={batch_pairs.shape}, shapes={batch_shapes.shape}"
             assert batch_leave_one_out_pairs.shape[:-4] == batch_leave_one_out_shapes.shape[:-3], f"Batch {i} leave_one_out shape mismatch: pairs={batch_leave_one_out_pairs.shape}, shapes={batch_leave_one_out_shapes.shape}"
             
@@ -510,8 +529,15 @@ class StructuredTrainer:
                 
                 # Ensure all encoders receive exactly the same input data with the same shapes
                 # The support pairs and shapes should be consistent across all encoders
-                assert batch_leave_one_out_pairs.shape == batch_leave_one_out_shapes.shape[:-1] + (5, 5, 2), f"Support pairs shape mismatch: {batch_leave_one_out_pairs.shape}"
-                assert batch_leave_one_out_shapes.shape == batch_shapes.shape, f"Support shapes shape mismatch: {batch_leave_one_out_shapes.shape}"
+                # Support pairs: (96, 3, 5, 5, 2) - 3 pairs for support (N-1)
+                # Support shapes: (96, 3, 2, 2) - 3 shapes for support (N-1)
+                # Query input: (96, 5, 5) - 1 pair for query
+                # Query shape: (96, 2) - 1 shape for query
+                expected_support_pairs_shape = (96, 3, 5, 5, 2)
+                expected_support_shapes_shape = (96, 3, 2, 2)
+                
+                assert batch_leave_one_out_pairs.shape == expected_support_pairs_shape, f"Support pairs shape mismatch: got {batch_leave_one_out_pairs.shape}, expected {expected_support_pairs_shape}"
+                assert batch_leave_one_out_shapes.shape == expected_support_shapes_shape, f"Support shapes shape mismatch: got {batch_leave_one_out_shapes.shape}, expected {expected_support_shapes_shape}"
                 
                 # Use generate_output method for evaluation (like train.py does)
                 # Use apply with method parameter and pass all arguments as keyword arguments
