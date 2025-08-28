@@ -17,9 +17,9 @@ training:
   # Use three pre-generated structured pattern datasets (balanced)
   task_generator:
   train_datasets:
-    - src/datasets/struct_pattern_1
-    - src/datasets/struct_pattern_2
-    - src/datasets/struct_pattern_3
+    - struct_pattern_1
+    - struct_pattern_2
+    - struct_pattern_3
   use_hf: False
 
 eval:
