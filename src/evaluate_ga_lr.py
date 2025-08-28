@@ -45,8 +45,10 @@ import pandas as pd
 try:
     import wandb  # Optional: used for logging results
     _WANDB_AVAILABLE = True
+    _WANDB_MODULE = wandb
 except Exception:
     _WANDB_AVAILABLE = False
+    _WANDB_MODULE = None
 
 
 def run_store_latent_search(
@@ -322,7 +324,7 @@ def extract_intermediate_losses(npz_path: str, max_budget: int) -> Tuple[Dict[in
     try:
         if not os.path.exists(npz_path):
             print(f"⚠️  NPZ file not found: {npz_path}")
-            return {}
+            return {}, {}
             
         data = np.load(npz_path, allow_pickle=True)
         
@@ -726,7 +728,8 @@ def main():
     if not args.no_wandb and _WANDB_AVAILABLE:
         run_name = f"ga_lr_sweep_{artifact_name}_{timestamp}"
         try:
-            run = wandb.init(project=args.wandb_project, entity=args.wandb_entity, name=run_name, config={
+            print(f"🔗 Initializing W&B run: {run_name}")
+            run = _WANDB_MODULE.init(project=args.wandb_project, entity=args.wandb_entity, name=run_name, config={
                 "artifact_path": args.artifact_path,
                 "dataset_folder": args.dataset_folder,
                 "dataset_length": args.dataset_length,
@@ -740,9 +743,17 @@ def main():
                 "budget_end": args.budget_end,
                 "budget_steps": args.budget_steps,
             })
+            print(f"✅ W&B run initialized successfully")
         except Exception as _we:
             print(f"⚠️  Failed to initialize W&B: {_we}")
+            print(f"⚠️  Continuing without W&B logging...")
             run = None
+    elif args.no_wandb:
+        print(f"ℹ️  W&B logging disabled by user")
+    elif not _WANDB_AVAILABLE:
+        print(f"ℹ️  W&B not available, continuing without logging")
+    else:
+        print(f"ℹ️  W&B logging enabled but not initialized")
 
     # Run evaluations
     successful_evals = 0
@@ -836,7 +847,7 @@ def main():
                             point_data["pixel_correctness"] = float(pixel_correctness)
                         
                         # Log immediately for real-time monitoring
-                        wandb.log(point_data)
+                        _WANDB_MODULE.log(point_data)
                     except Exception as _wl:
                         print(f"⚠️  Failed to log to W&B: {_wl}")
     
@@ -876,7 +887,7 @@ def main():
         # Log heatmap to W&B
         if run is not None:
             try:
-                wandb.log({"heatmap": wandb.Image(heatmap_path)})
+                _WANDB_MODULE.log({"heatmap": _WANDB_MODULE.Image(heatmap_path)})
             except Exception as _wl2:
                 print(f"⚠️  Failed to log heatmap to W&B: {_wl2}")
     else:
@@ -942,7 +953,7 @@ def main():
                 if not (isinstance(best_pixel_correctness, float) and math.isnan(best_pixel_correctness)):
                     log_data["best/pixel_correctness"] = float(best_pixel_correctness)
                 
-                wandb.log(log_data)
+                _WANDB_MODULE.log(log_data)
             except Exception as _wl3:
                 print(f"⚠️  Failed to log best config to W&B: {_wl3}")
 
@@ -978,9 +989,8 @@ def main():
                 
                 if summary_data:
                     # Log as wandb table for easy visualization
-                    import wandb
-                    table = wandb.Table(dataframe=pd.DataFrame(summary_data))
-                    wandb.log({"results_summary": table})
+                    table = _WANDB_MODULE.Table(dataframe=pd.DataFrame(summary_data))
+                    _WANDB_MODULE.log({"results_summary": table})
                     print(f"📊 Logged summary table with {len(summary_data)} configurations to W&B")
                     
             except Exception as _st:

@@ -293,10 +293,14 @@ class StructuredTrainer:
             logging.error(f"Forward pass test failed: {e}")
             raise
         
+        logging.info("Starting training loop...")
         pbar = trange(num_steps, disable=False)
         while step < num_steps:
+            logging.info(f"Training loop iteration: step={step}, epoch={epoch}")
             key, epoch_key = jax.random.split(key)
+            logging.info("Starting batch iteration...")
             for batch_idx, (batch_pairs, batch_shapes) in enumerate(self._iterate_batches(epoch_key, log_every)):
+                logging.info(f"Processing batch {batch_idx}, batch shape: {batch_pairs.shape}")
                 # Grad over decoder params only; encoder params are fed through kwargs and not part of state.params
                 def loss_fn(decoder_params, batch_pairs, batch_shapes, rng):
                     loss, metrics = self.model.apply(
