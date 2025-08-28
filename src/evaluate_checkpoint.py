@@ -478,11 +478,7 @@ def evaluate_custom_dataset(
         vals = [m[k] for m in metrics_list if m.get(k) is not None]
         if len(vals) == 0:
             # No valid values; set to NaN to keep key presence without crashing
-            try:
-                import jax.numpy as jnp
-                metrics[k] = jnp.nan
-            except Exception:
-                metrics[k] = float('nan')
+            metrics[k] = jnp.nan
         else:
             metrics[k] = jnp.stack(vals).mean()
 
