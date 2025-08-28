@@ -481,7 +481,7 @@ def extract_loss_from_evaluation_output(stdout: str, stderr: str) -> Dict[int, f
             print(f"📊 Extracted final loss from stdout: {stdout_loss:.6f}")
     
     # Try to extract from stderr as fallback
-            if stderr.strip():
+    if stderr.strip():
         stderr_loss = extract_loss_from_stderr(stderr)
         if stderr_loss is not None:
             # Use stderr loss if no stdout loss found
@@ -761,7 +761,7 @@ def main():
 
     with open(csv_path, 'w', newline='') as f_csv:
         writer = csv.writer(f_csv)
-            writer.writerow([
+        writer.writerow([
             "timestamp", "artifact_name", "lr", "budget", "total_loss", "accuracy", "shape_accuracy", "pixel_correctness", "execution_time", "success", "status"
         ])
         
@@ -798,7 +798,7 @@ def main():
                         pixel_correctness_matrix[i, budget_idx] = accuracy_metrics['pixel_correctness']
                 
                 if success:
-                successful_evals += 1
+                    successful_evals += 1
                     print(f"✅ Success: lr={lr:.6f}, extracted {len(intermediate_losses)} budget points, time={exec_time:.2f}s")
                 else:
                     print(f"⚠️  Partial success: lr={lr:.6f}, extracted {len(intermediate_losses)} budget points, time={exec_time:.2f}s (evaluation failed but losses extracted)")
@@ -813,7 +813,7 @@ def main():
                 shape_accuracy = accuracy_metrics.get('shape_accuracy', float('nan'))
                 pixel_correctness = accuracy_metrics.get('pixel_correctness', float('nan'))
 
-            writer.writerow([
+                writer.writerow([
                     time.strftime("%Y-%m-%d %H:%M:%S"),
                     artifact_name,
                     lr,
@@ -891,8 +891,8 @@ def main():
             except Exception as _wl2:
                 print(f"⚠️  Failed to log heatmap to W&B: {_wl2}")
         else:
-        print(f"\n❌ No successful evaluations to create heatmap")
-        heatmap_path = None
+            print(f"\n❌ No successful evaluations to create heatmap")
+            heatmap_path = None
     
     # Summary
     print("\n" + "=" * 60)
@@ -1001,10 +1001,10 @@ def main():
 
     # Finish the W&B run
     if run is not None:
-    try:
-        run.finish()
-    except Exception:
-        pass
+        try:
+            run.finish()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

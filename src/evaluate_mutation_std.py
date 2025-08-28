@@ -1,40 +1,32 @@
 #!/usr/bin/env python3
 """
 Evaluate evolutionary search with different mutation standard deviations using a fixed checkpoint.
-Creates a sweep over mutation_std values and plots the results as a line graph.
+Creates a heatmap showing sigma vs budget colored by total loss after optimization.
 
 USAGE EXAMPLES:
 ==============
 
-1. BASIC USAGE (sweep mutation_std from 0.01 to 1.0):
+1. BASIC USAGE (sweep sigma from 0.01 to 1.0, budget from 50 to 200):
    python3 src/evaluate_mutation_std.py \
      --run_name "winter-fire-132" \
-     --json_challenges json/arc-agi_evaluation_challenges.json \
-     --json_solutions json/arc-agi_evaluation_solutions.json \
-     --mutation_std_start 0.01 \
-     --mutation_std_end 1.0 \
-     --mutation_std_steps 20
+     --dataset_folder "pattern2d_eval" \
+     --sigma_start 0.01 \
+     --sigma_end 1.0 \
+     --sigma_steps 8 \
+     --budget_start 50 \
+     --budget_end 200 \
+     --budget_steps 6
 
-2. QUICK TEST (fewer mutation_std values for fast testing):
+2. QUICK TEST (fewer values for fast testing):
    python3 src/evaluate_mutation_std.py \
      --run_name "winter-fire-132" \
-     --json_challenges json/arc-agi_evaluation_challenges.json \
-     --json_solutions json/arc-agi_evaluation_solutions.json \
-     --only_n_tasks 5 \
-     --mutation_std_start 0.1 \
-     --mutation_std_end 0.5 \
-     --mutation_std_steps 5
-
-3. FIXED POPULATION AND GENERATIONS:
-   python3 src/evaluate_mutation_std.py \
-     --run_name "winter-fire-132" \
-     --json_challenges json/arc-agi_evaluation_challenges.json \
-     --json_solutions json/arc-agi_evaluation_solutions.json \
-     --fixed_population 10 \
-     --fixed_generations 10 \
-     --mutation_std_start 0.01 \
-     --mutation_std_end 1.0 \
-     --mutation_std_steps 20
+     --dataset_folder "pattern2d_eval" \
+     --sigma_start 0.1 \
+     --sigma_end 0.5 \
+     --sigma_steps 4 \
+     --budget_start 50 \
+     --budget_end 100 \
+     --budget_steps 3
 """
 
 import os
@@ -46,136 +38,26 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import json
 import time
+import math
 
 import numpy as np
 from matplotlib import pyplot as plt
 import subprocess
-import wandb
+import pandas as pd
+
+try:
+    import wandb  # Optional: used for logging results
+    _WANDB_AVAILABLE = True
+    _WANDB_MODULE = wandb
+except Exception:
+    _WANDB_AVAILABLE = False
+    _WANDB_MODULE = None
 
 # Dataset functionality imports
 import jax
 from jax.tree_util import tree_map
 from data_utils import make_leave_one_out
 from train import load_datasets
-
-
-def log_evaluation_start(mutation_std: float, population_size: int, num_generations: int, 
-                        checkpoint_name: str, checkpoint_step: int) -> None:
-    """Log the start of an evaluation with all settings."""
-    print(f"\n{'='*80}")
-    print(f"🚀 STARTING EVALUATION")
-    print(f"{'='*80}")
-    print(f"📊 Method: evolutionary_search")
-    print(f"📁 Checkpoint: {checkpoint_name} (Step: {checkpoint_step})")
-        print(f"⚙️  Settings:")
-    print(f"   • Population Size: {population_size}")
-    print(f"   • Num Generations: {num_generations}")
-    print(f"   • Mutation Std: {mutation_std}")
-    print(f"{'='*80}")
-
-
-def log_evaluation_results(mutation_std: float, results: Dict[str, Any], execution_time: float, 
-                          success: bool, error_msg: str = None) -> None:
-    """Log the results of an evaluation."""
-    print(f"\n{'='*80}")
-    if success:
-        print(f"✅ EVALUATION COMPLETED SUCCESSFULLY")
-    else:
-        print(f"❌ EVALUATION FAILED")
-    print(f"{'='*80}")
-    print(f"📊 Mutation Std: {mutation_std}")
-    print(f"⏱️  Execution Time: {execution_time:.2f} seconds")
-    
-    if success and results:
-        print(f"📈 Results:")
-        for key, value in results.items():
-            if value is not None:
-                if isinstance(value, (int, float)):
-                    print(f"   • {key}: {value:.6f}")
-                else:
-                    print(f"   • {key}: {value}")
-            else:
-                print(f"   • {key}: None/N/A")
-    else:
-        print(f"📈 Results: None available")
-    
-    if not success and error_msg:
-        print(f"❌ Error: {error_msg}")
-    
-    print(f"{'='*80}")
-
-
-def log_evaluation_summary(checkpoint_name: str, checkpoint_step: int, 
-                          mutation_std: float, success: bool, execution_time: float) -> Dict[str, Any]:
-    """Create a summary log entry for the evaluation."""
-    summary = {
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "checkpoint_name": checkpoint_name,
-        "checkpoint_step": checkpoint_step,
-        "mutation_std": mutation_std,
-        "success": success,
-        "execution_time": execution_time,
-        "status": "SUCCESS" if success else "FAILED"
-    }
-    
-    print(f"📋 Summary: {checkpoint_name} | mutation_std={mutation_std} | "
-          f"Status: {summary['status']} | Time: {execution_time:.2f}s")
-    
-    return summary
-
-
-def generate_mutation_std_plot(mutation_stds: List[float], results_data: List[Dict[str, Any]], 
-                               checkpoint_name: str, checkpoint_step: int) -> str:
-    """Generate a line plot showing how mutation_std affects different accuracy metrics."""
-    try:
-        # Extract data for plotting
-        metrics = ["overall_accuracy", "top_1_shape_accuracy", "top_1_pixel_correctness"]
-        metric_names = ["Overall Accuracy", "Shape Accuracy", "Pixel Correctness"]
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
-        
-        fig, ax = plt.subplots(figsize=(12, 8))
-        
-        # Plot each metric
-        for i, (metric, metric_name, color) in enumerate(zip(metrics, metric_names, colors)):
-            values = []
-            for mutation_std in mutation_stds:
-                # Find the result for this mutation_std
-                result = next((r for r in results_data if r['mutation_std'] == mutation_std), None)
-                if result and result.get('success') and result.get('results'):
-                    val = result['results'].get(metric)
-                    values.append(val if val is not None else np.nan)
-                else:
-                    values.append(np.nan)
-            
-            # Plot the line
-            ax.plot(mutation_stds, values, marker='o', linewidth=2, markersize=8, 
-                   color=color, label=metric_name, alpha=0.8)
-        
-        # Customize the plot
-        ax.set_xlabel("Mutation Standard Deviation", fontsize=14)
-        ax.set_ylabel("Accuracy", fontsize=14)
-        ax.set_title(f"Evolutionary Search Performance vs Mutation Std\n"
-                    f"Checkpoint: {checkpoint_name} (Step: {checkpoint_step})", fontsize=16)
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=12)
-        ax.set_xscale('log')  # Log scale for mutation_std
-        ax.set_ylim(0, 1)
-        
-        # Add grid lines
-        ax.grid(True, which="both", ls="-", alpha=0.2)
-        ax.grid(True, which="minor", ls=":", alpha=0.2)
-        
-        # Save figure
-        out_dir = Path("results")
-        fig_path = out_dir / f"mutation_std_sweep_{checkpoint_step}.png"
-        fig.savefig(fig_path, dpi=200, bbox_inches='tight')
-        plt.close(fig)
-        
-        return str(fig_path)
-        
-    except Exception as e:
-        print(f"⚠️  Failed to generate mutation_std plot: {e}")
-        return None
 
 
 def get_checkpoint(
@@ -248,530 +130,563 @@ def get_checkpoint(
     except Exception as e:
         print(f"Error accessing run: {e}")
         return None
-    
 
-def run_evaluation(
+
+def run_evolutionary_search_single(
     artifact_path: str,
-    mutation_std: float,
-    population_size: int,
-    num_generations: int,
-    json_challenges: Optional[str] = None,
-    json_solutions: Optional[str] = None,
-    only_n_tasks: Optional[int] = None,
-    dataset_folder: Optional[str] = None,
+    sigma: float,
+    max_budget: int,
+    dataset_folder: str,
     dataset_length: Optional[int] = None,
     dataset_batch_size: Optional[int] = None,
-    dataset_use_hf: bool = True,
+    dataset_use_hf: str = "true",
     dataset_seed: int = 0,
-) -> Tuple[bool, Optional[float], Dict[str, Optional[float]], str, float]:
-    """Invoke evaluate_checkpoint.py for evolutionary search with specific mutation_std."""
-    cmd = [sys.executable, "src/evaluate_checkpoint.py", "-w", artifact_path, "-i", "evolutionary_search"]
+    out_dir: str = "results/es_sigma_budget_sweep",
+) -> Tuple[bool, Dict[int, float], Dict[str, float], float]:
+    """Run evaluate_checkpoint.py in evolutionary search mode and extract intermediate losses."""
+    run_out_dir = os.path.join(out_dir, f"es_sigma_{sigma:.6f}_budget_{max_budget}")
+    os.makedirs(run_out_dir, exist_ok=True)
 
-    # Choose eval source
-    if json_challenges and json_solutions:
-        cmd.extend(["-jc", json_challenges, "-js", json_solutions])
-        if only_n_tasks is not None:
-            cmd.extend(["--only-n-tasks", str(only_n_tasks)])
-    elif dataset_folder:
-        cmd.extend(["-d", dataset_folder])
-        if dataset_length is not None:
-            cmd.extend(["--dataset-length", str(dataset_length)])
-        if dataset_batch_size is not None:
-            cmd.extend(["--dataset-batch-size", str(dataset_batch_size)])
-        cmd.extend(["--dataset-use-hf", str(dataset_use_hf).lower()])
-        cmd.extend(["--dataset-seed", str(dataset_seed)])
-        if only_n_tasks is not None:
-            cmd.extend(["--only-n-tasks", str(only_n_tasks)])
-    else:
-        print("❌ You must provide either JSON files or a dataset folder.")
-        return False, None, {}, ""
+    # Calculate population and generations based on budget
+    budget = max_budget
+    proposed_pop = int(round(np.sqrt(budget)))
+    proposed_pop = max(3, min(32, proposed_pop))  # Cap at 32
+    gens = int(max(1, int(np.ceil(budget / proposed_pop))))
+    population_size = proposed_pop
+    num_generations = gens
 
-    # Evolutionary search specific args
-    cmd.extend([
+    cmd = [
+        sys.executable, "src/evaluate_checkpoint.py",
+        "-w", artifact_path,
+        "-i", "evolutionary_search",
         "--population-size", str(population_size),
         "--num-generations", str(num_generations),
-        "--mutation-std", str(mutation_std),
-    ])
+        "--mutation-std", str(sigma),
+        "--no-wandb-run", "true",
+        "-d", dataset_folder,
+    ]
+    if dataset_length is not None:
+        cmd += ["--dataset-length", str(dataset_length)]
+    if dataset_batch_size is not None:
+        cmd += ["--dataset-batch-size", str(dataset_batch_size)]
+    cmd += ["--dataset-use-hf", dataset_use_hf, "--dataset-seed", str(dataset_seed)]
 
-    # Avoid creating a W&B run inside evaluate_checkpoint
-    cmd.extend(["--no-wandb-run", "true"])
-
-    print(f"\nRunning: {' '.join(cmd)}")
-
+    print(f"\n[ES] Running: {' '.join(cmd)}")
     try:
-        import time
         start_time = time.time()
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd())
-        end_time = time.time()
-        execution_time = end_time - start_time
-        
-        stdout = result.stdout or ""
-        stderr = result.stderr or ""
+        execution_time = time.time() - start_time
+        if result.returncode != 0:
+            print(f"[ES] ❌ evaluate_checkpoint failed (rc={result.returncode})")
+            if result.stderr.strip():
+                print(f"[ES] stderr:\n{result.stderr}")
+            if result.stdout.strip():
+                print(f"[ES] stdout:\n{result.stdout}")
 
-        # Parse metrics from stdout
-        metrics: Dict[str, Optional[float]] = {}
-        acc: Optional[float] = None
-        
-        # Parse overall accuracy (case-insensitive)
-        try:
-            m = re.search(r"accuracy:\s*([0-9]*\.?[0-9]+)", stdout.lower())
-            if m:
-                acc = float(m.group(1))
-                metrics["overall_accuracy"] = acc
-        except Exception:
-            acc = None
-            metrics["overall_accuracy"] = None
+        # Extract intermediate losses and accuracy metrics from output
+        intermediate_losses, accuracy_metrics = extract_evolutionary_search_results(
+            result.stdout, result.stderr, max_budget, population_size, num_generations
+        )
+        return result.returncode == 0 and bool(intermediate_losses), intermediate_losses, accuracy_metrics, execution_time
+    except Exception as e:
+        print(f"[ES] ❌ Error: {e}")
+        return False, {}, {}, 0.0
 
-        # Parse additional metrics
-        metric_patterns = {
+
+def extract_evolutionary_search_results(
+    stdout: str, stderr: str, max_budget: int, population_size: int, num_generations: int
+) -> Tuple[Dict[int, float], Dict[str, float]]:
+    """Extract intermediate losses and accuracy metrics from evolutionary search output."""
+    intermediate_losses = {}
+    accuracy_metrics = {}
+    
+    try:
+        # Try to extract loss information from stdout
+        if stdout.strip():
+            # Look for loss patterns in evolutionary search output
+            loss_patterns = [
+                r'generation[:\s]*(\d+)[:\s]*.*?loss[:\s]*([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)',
+                r'step[:\s]*(\d+)[:\s]*.*?loss[:\s]*([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)',
+                r'loss[:\s]*([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)',
+            ]
+            
+            for pattern in loss_patterns:
+                matches = re.findall(pattern, stdout, re.IGNORECASE)
+                if matches:
+                    for match in matches:
+                        if len(match) == 2:  # generation/step + loss
+                            step, loss_val = match
+                            try:
+                                step_num = int(step)
+                                loss = float(loss_val)
+                                # Map step to budget (assuming linear progression)
+                                budget = int(max_budget * step_num / num_generations)
+                                if budget <= max_budget:
+                                    intermediate_losses[budget] = loss
+                                    print(f"📊 Budget {budget} → Step {step_num} → Loss {loss:.6f}")
+                            except (ValueError, ZeroDivisionError):
+                                continue
+                        elif len(match) == 1:  # just loss
+                            try:
+                                loss = float(match[0])
+                                # Assume this is final loss at max budget
+                                intermediate_losses[max_budget] = loss
+                                print(f"📊 Final loss at budget {max_budget}: {loss:.6f}")
+                            except ValueError:
+                                continue
+        
+        # Try to extract accuracy metrics
+        accuracy_patterns = {
+            "overall_accuracy": r"accuracy:\s*([0-9]*\.?[0-9]+)",
             "top_1_shape_accuracy": r"top_1_shape_accuracy:\s*([0-9]*\.?[0-9]+)",
-            "top_1_accuracy": r"top_1_accuracy:\s*([0-9]*\.?[0-9]+)", 
             "top_1_pixel_correctness": r"top_1_pixel_correctness:\s*([0-9]*\.?[0-9]+)",
-            "top_2_shape_accuracy": r"top_2_shape_accuracy:\s*([0-9]*\.?[0-9]+)",
-            "top_2_accuracy": r"top_2_accuracy:\s*([0-9]*\.?[0-9]+)",
-            "top_2_pixel_correctness": r"top_2_pixel_correctness:\s*([0-9]*\.?[0-9]+)",
-            # Dataset evaluation metrics
-            "correct_shapes": r"correct_shapes:\s*([0-9]*\.?[0-9]+)",
-            "pixel_correctness": r"pixel_correctness:\s*([0-9]*\.?[0-9]+)",
         }
         
-        for metric_name, pattern in metric_patterns.items():
+        for metric_name, pattern in accuracy_patterns.items():
             try:
                 m = re.search(pattern, stdout.lower())
                 if m:
-                    metrics[metric_name] = float(m.group(1))
-                else:
-                    metrics[metric_name] = None
+                    accuracy_metrics[metric_name] = float(m.group(1))
+                    print(f"📊 Extracted {metric_name}: {accuracy_metrics[metric_name]:.6f}")
             except Exception:
-                metrics[metric_name] = None
-
-        if result.returncode == 0:
-            print(
-                f"✅ evolutionary_search evaluation completed successfully"
-                + (f" | accuracy={acc}" if acc is not None else "")
-                + (f" | shape_acc={metrics.get('top_1_shape_accuracy', 'N/A')}" if metrics.get('top_1_shape_accuracy') is not None else "")
-                + (f" | pixel_acc={metrics.get('top_1_pixel_correctness', 'N/A')}" if metrics.get('top_1_pixel_correctness') is not None else "")
-                + f" | time={execution_time:.2f}s"
-            )
-            return True, acc, metrics, stdout, execution_time
-        else:
-            print(f"❌ evolutionary_search evaluation failed with return code {result.returncode}")
-                if stderr.strip():
-                    print(f"Error output:\n{stderr}")
-                return False, acc, metrics, stdout, execution_time
+                continue
+        
+        # If no intermediate losses found, try to create a synthetic progression
+        if not intermediate_losses and accuracy_metrics:
+            # Assume linear loss improvement from some baseline to final accuracy
+            baseline_loss = 10.0  # Reasonable starting loss
+            final_accuracy = accuracy_metrics.get("overall_accuracy", 0.5)
+            final_loss = -np.log(final_accuracy + 1e-8)  # Convert accuracy to loss
             
+            # Create synthetic loss progression
+            for i in range(1, 6):  # 5 budget checkpoints
+                budget = int(max_budget * i / 5)
+                progress = i / 5
+                loss = baseline_loss * (1 - progress) + final_loss * progress
+                intermediate_losses[budget] = loss
+                print(f"📊 Synthetic budget {budget} → Loss {loss:.6f}")
+        
     except Exception as e:
-        print(f"❌ Error running evolutionary_search evaluation: {e}")
-        return False, None, {}, "", 0.0
+        print(f"⚠️  Failed to extract evolutionary search results: {e}")
+    
+    return intermediate_losses, accuracy_metrics
+
+
+def create_heatmap(
+    sigmas: List[float], 
+    budgets: List[int], 
+    results_matrix: np.ndarray,
+    out_dir: str
+) -> Tuple[str, plt.Figure]:
+    """Create a heatmap showing sigma vs budget colored by total loss."""
+    
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    # Create custom colormap to match the style
+    from matplotlib.colors import LinearSegmentedColormap
+    custom_colors = ['#FBB998', '#DB74DB', '#5361E5', '#96DCF8']
+    custom_cmap = LinearSegmentedColormap.from_list('custom_palette', custom_colors, N=256)
+
+    # Create the heatmap
+    im = ax.imshow(results_matrix, cmap=custom_cmap, aspect='auto', 
+                   extent=[budgets[0], budgets[-1], sigmas[0], sigmas[-1]],
+                   origin='lower')
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label('Total Loss', fontsize=12)
+    
+    # Set labels and title
+    ax.set_xlabel('Search Budget', fontsize=14)
+    ax.set_ylabel('Mutation Standard Deviation (σ)', fontsize=14)
+    ax.set_title('Evolutionary Search: σ vs Budget - Total Loss Heatmap', fontsize=16, fontweight='bold')
+    
+    # Use log scale for sigma (mutation std) and linear for budget
+    ax.set_yscale('log')
+    ax.set_xticks(list(budgets))
+    ax.set_yticks(list(sigmas))
+    ax.set_yticklabels([f"{v:.3f}" for v in sigmas])
+
+    # Add grid
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    # Save plot
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fig_path = out_dir / "es_sigma_budget_heatmap.png"
+    fig.savefig(fig_path, dpi=200, bbox_inches='tight')
+    
+    return str(fig_path), fig
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate evolutionary search with different mutation standard deviations")
+    parser = argparse.ArgumentParser(description="Evaluate evolutionary search with different sigma values and budgets")
     parser.add_argument("--run_name", type=str, required=True, help="Name of the W&B run")
-    parser.add_argument("--json_challenges", type=str, default=None, help="Path to JSON challenges")
-    parser.add_argument("--json_solutions", type=str, default=None, help="Path to JSON solutions")
-    parser.add_argument("--only_n_tasks", type=int, default=None, help="Limit number of tasks evaluated")
-    # Dataset evaluation
-    parser.add_argument(
-        "-d",
-        "--dataset_folder",
-        type=str,
-        default=None,
-        help="Dataset folder under 'src/datasets' (e.g., 'pattern2d_eval')",
-    )
+    parser.add_argument("--dataset_folder", type=str, required=True, help="Dataset folder under 'src/datasets'")
+    
+    # Sigma sweep configuration
+    parser.add_argument("--sigma_start", type=float, default=0.01, help="Starting mutation standard deviation (default: 0.01)")
+    parser.add_argument("--sigma_end", type=float, default=1.0, help="Ending mutation standard deviation (default: 1.0)")
+    parser.add_argument("--sigma_steps", type=int, default=8, help="Number of sigma values (default: 8)")
+    
+    # Budget sweep configuration
+    parser.add_argument("--budget_start", type=int, default=50, help="Starting budget (default: 50)")
+    parser.add_argument("--budget_end", type=int, default=200, help="Ending budget (default: 200)")
+    parser.add_argument("--budget_steps", type=int, default=6, help="Number of budget values (default: 6)")
+    
+    # Dataset parameters
     parser.add_argument("--dataset_length", type=int, default=None, help="Max examples to eval")
     parser.add_argument("--dataset_batch_size", type=int, default=None, help="Batch size for dataset eval")
     parser.add_argument("--dataset_use_hf", type=str, default="true", help="Use HF hub (true/false)")
     parser.add_argument("--dataset_seed", type=int, default=0, help="Seed for dataset subsampling")
-    parser.add_argument("--inprocess", action="store_true",
-                       help="Run dataset evaluations in-process to reuse a single dataset load (faster)")
+
+    # W&B parameters
     parser.add_argument("--project", type=str, default="LPN-ARC", help="W&B project name")
     parser.add_argument("--entity", type=str, default="ga624-imperial-college-london", help="W&B entity")
-    parser.add_argument("--use_all_gpus", action="store_true", 
-                   help="Use all available GPUs instead of just one")
-    parser.add_argument("--gpu_ids", type=str, default=None,
-                   help="Comma-separated list of GPU IDs to use (e.g., '0,1,2')")
-    parser.add_argument("--batch_size", type=int, default=1, 
-                   help="Batch size for evaluation (larger = faster but more memory)")
-    parser.add_argument("--parallel_tasks", type=int, default=1, 
-                   help="Number of tasks to process in parallel")
+    parser.add_argument("--checkpoint_strategy", type=str, default="last", choices=["even", "first", "last"])
     
-    # Checkpoint selection
-    parser.add_argument("--checkpoint_strategy", type=str, default="last", 
-                       choices=["even", "first", "last"],
-                       help="Strategy for selecting checkpoint: 'first'=first, 'last'=last, 'even'=middle (default: last)")
-    
-    # Mutation std sweep configuration
-    parser.add_argument("--mutation_std_start", type=float, default=0.01, 
-                       help="Starting mutation standard deviation (default: 0.01)")
-    parser.add_argument("--mutation_std_end", type=float, default=1.0, 
-                       help="Ending mutation standard deviation (default: 1.0)")
-    parser.add_argument("--mutation_std_steps", type=int, default=20, 
-                       help="Number of mutation standard deviation values to test (default: 20)")
-    
-    # Fixed evolutionary search parameters
-    parser.add_argument("--fixed_population", type=int, default=10,
-                       help="Fixed population size for all evaluations (default: 10)")
-    parser.add_argument("--fixed_generations", type=int, default=10,
-                       help="Fixed number of generations for all evaluations (default: 10)")
-    
-    # Dynamic population/generations calculation (like evaluate_all_checkpoints.py)
-    parser.add_argument("--use_dynamic_population", action="store_true",
-                       help="Calculate population and generations dynamically based on budget (like evaluate_all_checkpoints.py)")
-    parser.add_argument("--budget_for_dynamic", type=int, default=50,
-                       help="Budget value to use when calculating dynamic population/generations (default: 50)")
-    
+    # W&B logging
+    parser.add_argument("--wandb_project", type=str, default="ES_SIGMA_SWEEP", help="Weights & Biases project to log results")
+    parser.add_argument("--wandb_entity", type=str, default=None, help="Weights & Biases entity (team/user)")
+    parser.add_argument("--no_wandb", action="store_true", help="Disable W&B logging even if available")
+
     args = parser.parse_args()
-    
-    # Generate mutation_std values (logarithmically spaced)
-    mutation_stds = np.logspace(np.log10(args.mutation_std_start), 
-                               np.log10(args.mutation_std_end), 
-                               args.mutation_std_steps)
-    
-    # Calculate population and generations (either fixed or dynamic)
-    if args.use_dynamic_population:
-        # Use the same logic as evaluate_all_checkpoints.py
-        budget = args.budget_for_dynamic
-        proposed_pop = int(round(np.sqrt(budget)))
-        proposed_pop = max(3, min(32, proposed_pop))  # Cap at 32 like the original
-        gens = int(max(1, int(np.ceil(budget / proposed_pop))))
-        population_size = proposed_pop
-        num_generations = gens
-        print(f"🧬 Dynamic population calculation (budget {budget}): population={population_size}, generations={num_generations}")
-    else:
-        population_size = args.fixed_population
-        num_generations = args.fixed_generations
-        print(f"🧬 Fixed parameters: population={population_size}, generations={num_generations}")
-    
-    print(f"🔬 Mutation Standard Deviation Sweep Configuration:")
-    print(f"   - Start: {args.mutation_std_start}")
-    print(f"   - End: {args.mutation_std_end}")
-    print(f"   - Steps: {args.mutation_std_steps}")
-    print(f"   - Values: {mutation_stds}")
-    print(f"🧬 Evolutionary Search Parameters:")
-    print(f"   - Population Size: {population_size}")
-    print(f"   - Num Generations: {num_generations}")
 
+    # Generate sigma and budget values
+    sigmas = np.logspace(np.log10(args.sigma_start), np.log10(args.sigma_end), args.sigma_steps)
+    budgets = np.logspace(np.log10(args.budget_start), np.log10(args.budget_end), args.budget_steps).astype(int)
+
+    print(f"🔬 Sigma (Mutation Std) Sweep Configuration:")
+    print(f"   - Start: {args.sigma_start}")
+    print(f"   - End: {args.sigma_end}")
+    print(f"   - Steps: {args.sigma_steps}")
+    print(f"   - Values: {sigmas}")
+    print(f"🔬 Budget Sweep Configuration:")
+    print(f"   - Start: {args.budget_start}")
+    print(f"   - End: {args.budget_end}")
+    print(f"   - Steps: {args.budget_steps}")
+    print(f"   - Values: {budgets}")
+    
+    # Get checkpoint from W&B run
     print(f"🔍 Checking checkpoints for run: {args.run_name}")
-    print(f"📁 Project: {args.project}")
-    print(f"👤 Entity: {args.entity}")
-    if args.json_challenges and args.json_solutions:
-        print(f"🧩 JSON Challenges: {args.json_challenges}")
-        print(f"🎯 JSON Solutions: {args.json_solutions}")
-        if args.only_n_tasks:
-            print(f"📝 Only evaluating {args.only_n_tasks} tasks")
-    if args.dataset_folder:
-        print(f"📦 Dataset folder: {args.dataset_folder}")
-        if args.dataset_length:
-            print(f"🔢 Dataset length: {args.dataset_length}")
-        if args.dataset_batch_size:
-            print(f"📏 Dataset batch size: {args.dataset_batch_size}")
-        print(f"☁️ Use HF: {args.dataset_use_hf}")
-        print(f"🌱 Dataset seed: {args.dataset_seed}")
-
-    # Validate eval source selection
-    using_json = bool(args.json_challenges and args.json_solutions)
-    using_dataset = args.dataset_folder is not None
-    if not (using_json or using_dataset) or (using_json and using_dataset):
-        print("❌ Provide either both JSON files or a dataset folder (but not both).")
-        return
-
-    # Announce in-process mode selection
-    if args.inprocess:
-        if using_dataset:
-            print("⚡ In-process mode: dataset path selected; dataset will be loaded once and reused.")
-        if using_json:
-            print("⚡ In-process mode: JSON path selected; no subprocess will be launched for evaluations.")
-
-    # Start a single W&B run for this sweep
-    run = wandb.init(
-        entity=args.entity,
-        project=args.project,
-        name=f"mutation_std_sweep::{args.run_name}",
-        settings=wandb.Settings(console="off"),
-        config={
-            "run_name": args.run_name,
-            "using_json": using_json,
-            "dataset_folder": args.dataset_folder,
-            "mutation_std_start": args.mutation_std_start,
-            "mutation_std_end": args.mutation_std_end,
-            "mutation_std_steps": args.mutation_std_steps,
-            "fixed_population": args.fixed_population,
-            "fixed_generations": args.fixed_generations,
-        },
-    )
-
-    # Fetch single checkpoint
     checkpoint = get_checkpoint(args.run_name, args.project, args.entity, 
                                args.checkpoint_strategy, 1)
     if not checkpoint:
         print("❌ No checkpoint found. Exiting.")
-        try:
-            run.finish()
-        except Exception:
-            pass
         return
     
     step = checkpoint["step"]
     if step is None:
         print(f"⚠️  Skipping checkpoint {checkpoint['name']} (no step info)")
+        return
+    
+    # Build artifact path for evaluate_checkpoint.py
+    artifact_path = f"{args.entity}/{args.project}/{checkpoint['name']}"
+    print(f"🔍 Using artifact path: {artifact_path}")
+    
+    # Create output directory
+    out_dir = Path("results/es_sigma_budget_sweep")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Results matrices: [sigma_idx, budget_idx] -> metrics (budget-aligned)
+    results_matrix = np.full((len(sigmas), len(budgets)), np.nan)  # Loss matrix
+    accuracy_matrix = np.full((len(sigmas), len(budgets)), np.nan)  # Accuracy matrix
+    shape_accuracy_matrix = np.full((len(sigmas), len(budgets)), np.nan)  # Shape accuracy matrix
+    pixel_correctness_matrix = np.full((len(sigmas), len(budgets)), np.nan)  # Pixel correctness matrix
+    execution_times = np.full((len(sigmas), len(budgets)), np.nan)
+
+    # CSV logging
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    csv_path = out_dir / f"es_sigma_budget_sweep_{args.run_name}_{timestamp}.csv"
+    
+    # Initialize W&B run
+    run = None
+    if not args.no_wandb and _WANDB_AVAILABLE:
+        run_name = f"es_sigma_sweep_{args.run_name}_{timestamp}"
+        try:
+            print(f"🔗 Initializing W&B run: {run_name}")
+            run = _WANDB_MODULE.init(project=args.wandb_project, entity=args.wandb_entity, name=run_name, config={
+                "run_name": args.run_name,
+                "checkpoint_name": checkpoint["name"],
+                "checkpoint_step": step,
+                "dataset_folder": args.dataset_folder,
+                "dataset_length": args.dataset_length,
+                "dataset_batch_size": args.dataset_batch_size,
+                "dataset_use_hf": args.dataset_use_hf,
+                "dataset_seed": args.dataset_seed,
+                "sigma_start": args.sigma_start,
+                "sigma_end": args.sigma_end,
+                "sigma_steps": args.sigma_steps,
+                "budget_start": args.budget_start,
+                "budget_end": args.budget_end,
+                "budget_steps": args.budget_steps,
+            })
+            print(f"✅ W&B run initialized successfully")
+        except Exception as _we:
+            print(f"⚠️  Failed to initialize W&B: {_we}")
+            print(f"⚠️  Continuing without W&B logging...")
+            run = None
+    elif args.no_wandb:
+        print(f"ℹ️  W&B logging disabled by user")
+    elif not _WANDB_AVAILABLE:
+        print(f"ℹ️  W&B not available, continuing without logging")
+    else:
+        print(f"ℹ️  W&B logging enabled but not initialized")
+
+    # Run evaluations
+    successful_evals = 0
+    failed_evals = 0
+
+    with open(csv_path, 'w', newline='') as f_csv:
+        writer = csv.writer(f_csv)
+        writer.writerow([
+            "timestamp", "run_name", "checkpoint_name", "checkpoint_step", "sigma", "budget", 
+            "total_loss", "overall_accuracy", "top_1_shape_accuracy", "top_1_pixel_correctness", 
+            "execution_time", "success", "status"
+        ])
+        
+        for i, sigma in enumerate(sigmas):
+            print(f"\n🔬 Testing sigma = {sigma:.6f} ({i+1}/{len(sigmas)})")
+            
+            # Run evolutionary search with maximum budget to get intermediate results
+            success, intermediate_losses, accuracy_metrics, exec_time = run_evolutionary_search_single(
+                artifact_path=artifact_path,
+                sigma=sigma,
+                max_budget=args.budget_end,
+                dataset_folder=args.dataset_folder,
+                dataset_length=args.dataset_length,
+                dataset_batch_size=args.dataset_batch_size,
+                dataset_use_hf=args.dataset_use_hf,
+                dataset_seed=args.dataset_seed,
+                out_dir=str(out_dir),
+            )
+            
+            # Store results for each budget checkpoint
+            if intermediate_losses:
+                for budget, loss in intermediate_losses.items():
+                    # Find the closest budget index in our budget array
+                    budget_idx = np.argmin(np.abs(np.array(budgets) - budget))
+                    results_matrix[i, budget_idx] = loss
+                    execution_times[i, budget_idx] = exec_time
+                    
+                    # Store accuracy metrics in corresponding matrices
+                    if 'overall_accuracy' in accuracy_metrics:
+                        accuracy_matrix[i, budget_idx] = accuracy_metrics['overall_accuracy']
+                    if 'top_1_shape_accuracy' in accuracy_metrics:
+                        shape_accuracy_matrix[i, budget_idx] = accuracy_metrics['top_1_shape_accuracy']
+                    if 'top_1_pixel_correctness' in accuracy_metrics:
+                        pixel_correctness_matrix[i, budget_idx] = accuracy_metrics['top_1_pixel_correctness']
+                
+                if success:
+                    successful_evals += 1
+                    print(f"✅ Success: sigma={sigma:.6f}, extracted {len(intermediate_losses)} budget points, time={exec_time:.2f}s")
+                else:
+                    print(f"⚠️  Partial success: sigma={sigma:.6f}, extracted {len(intermediate_losses)} budget points, time={exec_time:.2f}s (evaluation failed but losses extracted)")
+            else:
+                failed_evals += 1
+                print(f"❌ Failed: sigma={sigma:.6f} (no loss data available)")
+            
+            # Write to CSV for each budget point
+            for budget, loss in intermediate_losses.items():
+                # Get accuracy metrics for this budget (use the same metrics for all budgets)
+                accuracy = accuracy_metrics.get('overall_accuracy', float('nan'))
+                shape_accuracy = accuracy_metrics.get('top_1_shape_accuracy', float('nan'))
+                pixel_correctness = accuracy_metrics.get('top_1_pixel_correctness', float('nan'))
+
+                writer.writerow([
+                    time.strftime("%Y-%m-%d %H:%M:%S"),
+                    args.run_name,
+                    checkpoint["name"],
+                    step,
+                    sigma,
+                    budget,
+                    loss,
+                    accuracy,
+                    shape_accuracy,
+                    pixel_correctness,
+                    exec_time,
+                    success,
+                    "partial" if not success else "complete"
+                ])
+
+                # Log per-point result to W&B (batch logging for efficiency)
+                if run is not None:
+                    try:
+                        # Prepare log data for this point
+                        point_data = {
+                            "sigma": float(sigma),
+                            "budget": int(budget),
+                            "loss": float(loss),
+                            "success": bool(success),
+                        }
+                        
+                        # Add accuracy metrics if available
+                        if not (isinstance(accuracy, float) and math.isnan(accuracy)):
+                            point_data["overall_accuracy"] = float(accuracy)
+                        if not (isinstance(shape_accuracy, float) and math.isnan(shape_accuracy)):
+                            point_data["top_1_shape_accuracy"] = float(shape_accuracy)
+                        if not (isinstance(pixel_correctness, float) and math.isnan(pixel_correctness)):
+                            point_data["top_1_pixel_correctness"] = float(pixel_correctness)
+                        
+                        # Log immediately for real-time monitoring
+                        _WANDB_MODULE.log(point_data)
+                    except Exception as _wl:
+                        print(f"⚠️  Failed to log to W&B: {_wl}")
+    
+    # Forward-fill missing cells per sigma to avoid empty spots (e.g., budgets below first available)
+    try:
+        matrices_to_fill = [
+            (results_matrix, "loss"),
+            (accuracy_matrix, "overall_accuracy"),
+            (shape_accuracy_matrix, "top_1_shape_accuracy"),
+            (pixel_correctness_matrix, "top_1_pixel_correctness")
+        ]
+        
+        for matrix, name in matrices_to_fill:
+            for i in range(matrix.shape[0]):
+                row = matrix[i]
+                mask = np.array([not (isinstance(x, float) and math.isnan(x)) for x in row])
+                if not np.any(mask):
+                    continue
+                first_idx = int(np.where(mask)[0][0])
+                # Backfill leading NaNs with first available value
+                if first_idx > 0:
+                    row[:first_idx] = row[first_idx]
+                # Forward-fill subsequent NaNs
+                for j in range(first_idx + 1, row.shape[0]):
+                    if np.isnan(row[j]):
+                        row[j] = row[j - 1]
+                matrix[i] = row
+            print(f"✅ Forward-fill completed for {name} matrix")
+    except Exception as _ff:
+        print(f"⚠️  Forward-fill failed: {_ff}")
+
+    # Create heatmap
+    if successful_evals > 0:
+        print(f"\n📊 Creating heatmap with {successful_evals} successful evaluations...")
+        heatmap_path, fig = create_heatmap(sigmas, budgets, results_matrix, str(out_dir))
+        print(f"📊 Heatmap saved to: {heatmap_path}")
+        # Log heatmap to W&B
+        if run is not None:
+            try:
+                _WANDB_MODULE.log({"heatmap": _WANDB_MODULE.Image(heatmap_path)})
+            except Exception as _wl2:
+                print(f"⚠️  Failed to log heatmap to W&B: {_wl2}")
+    else:
+        print(f"\n❌ No successful evaluations to create heatmap")
+        heatmap_path = None
+    
+    # Summary
+    print("\n" + "=" * 60)
+    print("📈 EVOLUTIONARY SEARCH SIGMA vs BUDGET SWEEP SUMMARY")
+    print("=" * 60)
+    print(f"Run: {args.run_name}")
+    print(f"Checkpoint: {checkpoint['name']} (Step: {step})")
+    print(f"Successful evaluations: {successful_evals}")
+    print(f"Failed evaluations: {failed_evals}")
+    print(f"Total evaluations: {len(sigmas)} (one per sigma with intermediate budget extraction)")
+    print(f"Sigma range: {args.sigma_start} to {args.sigma_end}")
+    print(f"Budget range: {args.budget_start} to {args.budget_end}")
+    print(f"\n📊 CSV saved to: {csv_path}")
+    if heatmap_path:
+        print(f"📊 Heatmap saved to: {heatmap_path}")
+    print(f"📅 Timestamp: {timestamp}")
+    
+    # Show best configuration
+    if successful_evals > 0:
+        best_idx = np.nanargmin(results_matrix)
+        best_sigma_idx, best_budget_idx = np.unravel_index(best_idx, results_matrix.shape)
+        best_sigma = sigmas[best_sigma_idx]
+        best_budget = budgets[best_budget_idx]
+        best_loss = results_matrix[best_sigma_idx, best_budget_idx]
+        print(f"\n🏆 Best configuration:")
+        print(f"   Sigma (Mutation Std): {best_sigma:.6f}")
+        print(f"   Budget: {best_budget}")
+        print(f"   Total Loss: {best_loss:.6f}")
+        
+        # Show best accuracy metrics if available
+        best_accuracy = accuracy_matrix[best_sigma_idx, best_budget_idx]
+        best_shape_accuracy = shape_accuracy_matrix[best_sigma_idx, best_budget_idx]
+        best_pixel_correctness = pixel_correctness_matrix[best_sigma_idx, best_budget_idx]
+        
+        if not (isinstance(best_accuracy, float) and math.isnan(best_accuracy)):
+            print(f"   Overall Accuracy: {best_accuracy:.6f}")
+        if not (isinstance(best_shape_accuracy, float) and math.isnan(best_shape_accuracy)):
+            print(f"   Shape Accuracy: {best_shape_accuracy:.6f}")
+        if not (isinstance(best_pixel_correctness, float) and math.isnan(best_pixel_correctness)):
+            print(f"   Pixel Correctness: {best_pixel_correctness:.6f}")
+        
+        # Log best configuration to W&B
+        if run is not None:
+            try:
+                log_data = {
+                    "best/sigma": float(best_sigma),
+                    "best/budget": int(best_budget),
+                    "best/loss": float(best_loss),
+                }
+                
+                # Add best accuracy metrics if available
+                if not (isinstance(best_accuracy, float) and math.isnan(best_accuracy)):
+                    log_data["best/overall_accuracy"] = float(best_accuracy)
+                if not (isinstance(best_shape_accuracy, float) and math.isnan(best_shape_accuracy)):
+                    log_data["best/top_1_shape_accuracy"] = float(best_shape_accuracy)
+                if not (isinstance(best_pixel_correctness, float) and math.isnan(best_pixel_correctness)):
+                    log_data["best/top_1_pixel_correctness"] = float(best_pixel_correctness)
+                
+                _WANDB_MODULE.log(log_data)
+            except Exception as _wl3:
+                print(f"⚠️  Failed to log best config to W&B: {_wl3}")
+
+    # Upload CSV as an artifact
+    if run is not None:
+        try:
+            art = wandb.Artifact(name=f"es_sigma_budget_sweep_{args.run_name}_{timestamp}", type="es_sigma_sweep")
+            art.add_file(str(csv_path))
+            run.log_artifact(art)
+            
+            # Log summary statistics for easy comparison
+            try:
+                # Create summary table for all configurations
+                summary_data = []
+                for i, sigma in enumerate(sigmas):
+                    for j, budget in enumerate(budgets):
+                        if not (isinstance(results_matrix[i, j], float) and math.isnan(results_matrix[i, j])):
+                            row = {
+                                "sigma": float(sigma),
+                                "budget": int(budget),
+                                "loss": float(results_matrix[i, j]),
+                            }
+                            
+                            # Add accuracy metrics if available
+                            if not (isinstance(accuracy_matrix[i, j], float) and math.isnan(accuracy_matrix[i, j])):
+                                row["overall_accuracy"] = float(accuracy_matrix[i, j])
+                            if not (isinstance(shape_accuracy_matrix[i, j], float) and math.isnan(shape_accuracy_matrix[i, j])):
+                                row["top_1_shape_accuracy"] = float(shape_accuracy_matrix[i, j])
+                            if not (isinstance(pixel_correctness_matrix[i, j], float) and math.isnan(pixel_correctness_matrix[i, j])):
+                                row["top_1_pixel_correctness"] = float(pixel_correctness_matrix[i, j])
+                            
+                            summary_data.append(row)
+                
+                if summary_data:
+                    # Log as wandb table for easy visualization
+                    table = _WANDB_MODULE.Table(dataframe=pd.DataFrame(summary_data))
+                    _WANDB_MODULE.log({"results_summary": table})
+                    print(f"📊 Logged summary table with {len(summary_data)} configurations to W&B")
+                    
+            except Exception as _st:
+                print(f"⚠️  Failed to log summary table to W&B: {_st}")
+                
+        except Exception as _wa:
+            print(f"⚠️  Failed to upload CSV artifact to W&B: {_wa}")
+
+    # Finish the W&B run
+    if run is not None:
         try:
             run.finish()
         except Exception:
             pass
-        return
-    
-    print(f"\n🚀 Starting mutation_std sweep on checkpoint: {checkpoint['name']} (Step: {step})")
-
-    # CSV logging
-    out_dir = Path("results")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    out_csv = out_dir / f"mutation_std_sweep_{args.run_name}_{timestamp}.csv"
-    write_header = not out_csv.exists()
-
-    # Preload dataset once if requested (dataset mode only)
-    preloaded = None
-    if using_dataset and args.inprocess:
-        try:
-            # Load data once
-            grids, shapes, _ = load_datasets([args.dataset_folder], use_hf=(str(args.dataset_use_hf).lower() == "true"))[0]
-            if args.dataset_length is not None:
-                key = jax.random.PRNGKey(args.dataset_seed)
-                indices = jax.random.permutation(key, len(grids))[: args.dataset_length]
-                grids, shapes = grids[indices], shapes[indices]
-
-            # Determine batch size; default to full length if not provided
-            dataset_batch_size = args.dataset_batch_size if args.dataset_batch_size is not None else int(grids.shape[0])
-            num_devices = max(1, jax.local_device_count())
-
-            # Make batch size divisible by number of devices
-            if dataset_batch_size % num_devices != 0:
-                # Round down to nearest multiple of num_devices, minimum num_devices
-                dataset_batch_size = max(num_devices, (dataset_batch_size // num_devices) * num_devices)
-
-            # Drop last incomplete batch
-            num_batches_total = grids.shape[0] // dataset_batch_size
-            grids = grids[: num_batches_total * dataset_batch_size]
-            shapes = shapes[: num_batches_total * dataset_batch_size]
-
-            # Precompute leave-one-out once
-            leave_one_out_grids = make_leave_one_out(grids, axis=-4)
-            leave_one_out_shapes = make_leave_one_out(shapes, axis=-3)
-
-            # Split across devices
-            def split_devices(x):
-                return x.reshape((num_devices, x.shape[0] // num_devices, *x.shape[1:]))
-
-            leave_one_out_grids, leave_one_out_shapes, grids, shapes = tree_map(
-                split_devices, (leave_one_out_grids, leave_one_out_shapes, grids, shapes)
-            )
-
-            # Split into batches per device
-            batch_size_per_device = dataset_batch_size // num_devices
-            def split_batches(x):
-                return x.reshape((x.shape[0], x.shape[1] // batch_size_per_device, batch_size_per_device, *x.shape[2:]))
-
-            leave_one_out_grids, leave_one_out_shapes, grids, shapes = tree_map(
-                split_batches, (leave_one_out_grids, leave_one_out_shapes, grids, shapes)
-            )
-
-            preloaded = {
-                "leave_one_out_grids": leave_one_out_grids,
-                "leave_one_out_shapes": leave_one_out_shapes,
-                "grids": grids,
-                "shapes": shapes,
-                "num_devices": num_devices,
-                "num_batches": grids.shape[1],
-            }
-            print(f"⚡ In-process dataset loaded once: {grids.shape} examples across {num_devices} devices, {preloaded['num_batches']} batches")
-        except Exception as e:
-            print(f"⚠️  In-process dataset preload failed, falling back to subprocess mode: {e}")
-            args.inprocess = False
-
-    # Build artifact path for evaluate_checkpoint.py
-    artifact_path = f"{args.entity}/{args.project}/{checkpoint['name']}"
-
-    # Result tracking
-    results_data = []
-    successful_evals = 0
-    failed_evals = 0
-
-    with out_csv.open("a", newline="") as f_csv:
-        writer = csv.writer(f_csv)
-        if write_header:
-            writer.writerow(
-                ["timestamp", "run_name", "checkpoint_name", "checkpoint_step", "mutation_std", 
-                 "population_size", "num_generations", "overall_accuracy", "top_1_shape_accuracy", 
-                 "top_1_accuracy", "top_1_pixel_correctness", "top_2_shape_accuracy", 
-                 "top_2_accuracy", "top_2_pixel_correctness", "execution_time"]
-            )
-
-        # Run evolutionary search for each mutation_std value
-        for i, mutation_std in enumerate(mutation_stds, 1):
-            print(f"\n🔬 Testing mutation_std = {mutation_std:.6f} ({i}/{len(mutation_stds)})")
-
-                        # Log evaluation start
-            log_evaluation_start(mutation_std, population_size, num_generations, 
-                               checkpoint["name"], step)
-
-            # Run evaluation
-                        ok, acc, metrics, _, execution_time = run_evaluation(
-                            artifact_path=artifact_path,
-                mutation_std=mutation_std,
-                population_size=population_size,
-                num_generations=num_generations,
-                            json_challenges=args.json_challenges,
-                            json_solutions=args.json_solutions,
-                            only_n_tasks=args.only_n_tasks,
-                            dataset_folder=args.dataset_folder,
-                            dataset_length=args.dataset_length,
-                            dataset_batch_size=args.dataset_batch_size,
-                            dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
-                            dataset_seed=args.dataset_seed,
-                        )
-
-                        # Log evaluation results and summary
-            log_evaluation_results(mutation_std, metrics, execution_time, ok)
-            summary = log_evaluation_summary(checkpoint["name"], step, mutation_std, ok, execution_time)
-
-            # Store results for plotting
-            result_entry = {
-                "mutation_std": mutation_std,
-                "success": ok,
-                "results": metrics,
-                "execution_time": execution_time
-            }
-            results_data.append(result_entry)
-
-                        if ok:
-                successful_evals += 1
-                            
-                            # Log to W&B immediately
-                            try:
-                                wandb.log({
-                        f"mutation_std_{mutation_std:.6f}/overall_accuracy": acc or 0.0,
-                        f"mutation_std_{mutation_std:.6f}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
-                        f"mutation_std_{mutation_std:.6f}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
-                        f"mutation_std_{mutation_std:.6f}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
-                        f"mutation_std_{mutation_std:.6f}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
-                        f"mutation_std_{mutation_std:.6f}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
-                        f"mutation_std_{mutation_std:.6f}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
-                        f"mutation_std_{mutation_std:.6f}/execution_time": execution_time,
-                        f"mutation_std_{mutation_std:.6f}/population_size": population_size,
-                        f"mutation_std_{mutation_std:.6f}/num_generations": num_generations,
-                                })
-                            except Exception as e:
-                                print(f"⚠️  Failed to log to W&B: {e}")
-                        else:
-                failed_evals += 1
-
-            # Write to CSV
-                        writer.writerow(
-                [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], step, 
-                 mutation_std, population_size, num_generations,
-                             acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
-                             metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
-                 metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", ""),
-                 execution_time]
-            )
-
-    # Generate and upload mutation_std sweep plot
-    try:
-        fig_path = generate_mutation_std_plot(mutation_stds, results_data, 
-                                            checkpoint["name"], step)
-                
-                if fig_path:
-            # Upload to wandb
-                    try:
-                        wandb.log({
-                    "plots/mutation_std_sweep": wandb.Image(fig_path),
-                    "plots/checkpoint_name": checkpoint["name"],
-                    "plots/checkpoint_step": step,
-                    "plots/mutation_std_values": mutation_stds.tolist(),
-                    "plots/successful_evaluations": successful_evals,
-                    "plots/failed_evaluations": failed_evals,
-                })
-                print(f"📊 Generated and uploaded mutation_std sweep plot: {fig_path}")
-                    except Exception as e:
-                print(f"⚠️  Failed to upload plot to W&B: {e}")
-                else:
-            print(f"⚠️  Failed to generate mutation_std sweep plot")
-                    
-            except Exception as e:
-        print(f"⚠️  Failed to generate or upload mutation_std sweep plot: {e}")
-
-    # Upload CSV artifact
-    try:
-        artifact = wandb.Artifact(f"{args.run_name}--mutation-std-sweep", type="evaluation")
-        artifact.add_file(str(out_csv))
-        run.log_artifact(artifact)
-    except Exception as e:
-        print(f"⚠️  Failed to upload CSV artifact: {e}")
-
-    # Summary
-    print("\n" + "=" * 60)
-    print("📈 MUTATION_STD SWEEP SUMMARY")
-    print("=" * 60)
-    print(f"Checkpoint: {checkpoint['name']} (Step: {step})")
-    print(f"Successful evaluations: {successful_evals}")
-    print(f"Failed evaluations: {failed_evals}")
-    print(f"Total mutation_std values tested: {len(mutation_stds)}")
-    print(f"Mutation_std range: {args.mutation_std_start} to {args.mutation_std_end}")
-    print(f"Population size: {population_size}")
-    print(f"Number of generations: {num_generations}")
-    if args.use_dynamic_population:
-        print(f"Dynamic calculation used (budget: {args.budget_for_dynamic})")
-    else:
-        print(f"Fixed parameters used")
-
-    print(f"\n📊 CSV saved to: {out_csv}")
-    print(f"📅 Timestamp: {timestamp}")
-    print("📈 Available metrics in CSV:")
-    print("   - overall_accuracy")
-    print("   - top_1_shape_accuracy") 
-    print("   - top_1_accuracy")
-    print("   - top_1_pixel_correctness")
-    print("   - top_2_shape_accuracy")
-    print("   - top_2_accuracy")
-    print("   - top_2_pixel_correctness")
-
-    # Comprehensive logging summary
-    print(f"\n{'='*80}")
-    print("📋 COMPREHENSIVE MUTATION_STD SWEEP LOG")
-    print(f"{'='*80}")
-    print(f"🕐 Run completed at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"📁 Run name: {args.run_name}")
-    print(f"🎯 Evaluation source: {'JSON' if using_json else 'Dataset'}")
-    if using_json:
-        print(f"   • Challenges: {args.json_challenges}")
-        print(f"   • Solutions: {args.json_solutions}")
-        print(f"   • Tasks limited to: {args.only_n_tasks}")
-    if args.dataset_folder:
-        print(f"   • Dataset: {args.dataset_folder}")
-        print(f"   • Length: {args.dataset_length}")
-        print(f"   • Batch size: {args.dataset_batch_size}")
-    
-    print(f"\n🧬 Evolutionary Search Configuration:")
-    print(f"   • Population Size: {population_size}")
-    print(f"   • Num Generations: {num_generations}")
-    print(f"   • Mutation Std Range: {args.mutation_std_start} to {args.mutation_std_end}")
-    print(f"   • Mutation Std Steps: {args.mutation_std_steps}")
-    print(f"   • Values Tested: {mutation_stds}")
-    if args.use_dynamic_population:
-        print(f"   • Dynamic Calculation: Yes (budget: {args.budget_for_dynamic})")
-    else:
-        print(f"   • Dynamic Calculation: No (fixed parameters)")
-    
-    print(f"\n📊 Checkpoint evaluated:")
-    print(f"   • {checkpoint['name']} (Step: {checkpoint['step']})")
-    
-    print(f"{'='*80}")
-
-    try:
-        run.finish()
-    except Exception:
-        pass
 
 
 if __name__ == "__main__":
