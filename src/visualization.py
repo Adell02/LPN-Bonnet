@@ -310,6 +310,64 @@ def visualize_tsne(latents, program_ids, perplexity=2, max_iter=1000, random_sta
     return fig
 
 
+def visualize_tsne_sources(
+    latents: jnp.ndarray,
+    program_ids: jnp.ndarray,
+    source_ids: jnp.ndarray,
+    max_points: int = 2000,
+    random_state: int = 42,
+):
+    """t-SNE with task color (arc_cmap) and source encoded as marker.
+
+    Args:
+        latents: [N, D]
+        program_ids: [N]
+        source_ids: [N] integers (0..E-1 encoders, E for PoE)
+        max_points: cap points for memory
+    Returns:
+        fig
+    """
+    lat_np = np.asarray(latents, dtype=float)
+    prog_np = np.asarray(program_ids)
+    src_np = np.asarray(source_ids)
+    N = lat_np.shape[0]
+    if N == 0:
+        return None
+    if N > max_points:
+        rng = np.random.RandomState(random_state)
+        idx = rng.choice(N, size=max_points, replace=False)
+        lat_np = lat_np[idx]
+        prog_np = prog_np[idx]
+        src_np = src_np[idx]
+
+    try:
+        if np.all(lat_np == lat_np[0]):
+            return None
+        tsne = TSNE(n_components=2, perplexity=2, max_iter=1000, random_state=random_state)
+        emb = tsne.fit_transform(lat_np)
+    except Exception as e:
+        print(f"Error during t-SNE (sources): {e}")
+        return None
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    marker_list = ['o', 's', '^', 'P', 'X', 'D', 'v', '<', '>', '*']
+    unique_sources = sorted(list(np.unique(src_np)))
+    for src in unique_sources:
+        m = src_np == src
+        mk = marker_list[int(src) % len(marker_list)]
+        lbl = f"enc{src}" if src < max(unique_sources) else "poe" if src == max(unique_sources) else f"src{src}"
+        ax.scatter(
+            emb[m, 0], emb[m, 1],
+            c=(prog_np[m] % 10), cmap=arc_cmap, norm=arc_norm,
+            marker=mk, alpha=0.8, s=40, label=lbl, edgecolors='none'
+        )
+    ax.legend(title="Source")
+    ax.set_title("t-SNE Visualization of Latent Embeddings")
+    ax.set_xlabel("t-SNE 1")
+    ax.set_ylabel("t-SNE 2")
+    plt.tight_layout()
+    return fig
+
 def visualize_latents_samples(
     dataset_grids: chex.Array,
     dataset_shapes: chex.Array, 

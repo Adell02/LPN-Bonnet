@@ -264,50 +264,55 @@ class StructuredTrainer:
         alphas = jnp.asarray(cfg.structured.alphas, dtype=jnp.float32)
 
         step = 0
-        for batches, shapes in self._iterate_batches(jax.random.PRNGKey(cfg.training.seed), log_every):
-            # Grad over decoder params only; encoder params are fed through kwargs and not part of state.params
-            def loss_fn(decoder_params, batch_pairs, batch_shapes, rng):
-                loss, metrics = self.model.apply(
-                    {"params": decoder_params},
-                    batch_pairs,
-                    batch_shapes,
-                    dropout_eval=False,
-                    mode=cfg.training.inference_mode,
-                    poe_alphas=alphas,
-                    encoder_params_list=enc_params_list,
-                    decoder_params=decoder_params,
-                    rngs={"dropout": rng, "latents": rng},
-                    prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
-                    pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
-                    **(cfg.training.get("inference_kwargs") or {}),
-                )
-                return loss, metrics
+        epoch = 0
+        key = jax.random.PRNGKey(cfg.training.seed)
+        while step < num_steps:
+            key, epoch_key = jax.random.split(key)
+            for batches, shapes in self._iterate_batches(epoch_key, log_every):
+                # Grad over decoder params only; encoder params are fed through kwargs and not part of state.params
+                def loss_fn(decoder_params, batch_pairs, batch_shapes, rng):
+                    loss, metrics = self.model.apply(
+                        {"params": decoder_params},
+                        batch_pairs,
+                        batch_shapes,
+                        dropout_eval=False,
+                        mode=cfg.training.inference_mode,
+                        poe_alphas=alphas,
+                        encoder_params_list=enc_params_list,
+                        decoder_params=decoder_params,
+                        rngs={"dropout": rng, "latents": rng},
+                        prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
+                        pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
+                        **(cfg.training.get("inference_kwargs") or {}),
+                    )
+                    return loss, metrics
 
-            batch_pairs, batch_shapes = batches, shapes
-            rng = jax.random.PRNGKey(step)
-            (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params, batch_pairs, batch_shapes, rng)
-            state = state.apply_gradients(grads=grads)
+                batch_pairs, batch_shapes = batches, shapes
+                rng = jax.random.PRNGKey(step)
+                (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params, batch_pairs, batch_shapes, rng)
+                state = state.apply_gradients(grads=grads)
 
-            # Log
-            wandb.log({"train/loss": float(loss), **{f"train/{k}": float(v) for k, v in metrics.items()}}, step=step)
+                # Log
+                wandb.log({"train/loss": float(loss), **{f"train/{k}": float(v) for k, v in metrics.items()}}, step=step)
 
-            # Periodic eval and checkpointing parity with unstructured
-            if cfg.training.get("eval_every_n_logs") and (step // log_every) % cfg.training.eval_every_n_logs == 0:
-                try:
-                    self.evaluate(state, enc_params_list)
-                except Exception as e:
-                    logging.warning(f"Eval failed: {e}")
-            if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
-                try:
-                    from flax.serialization import msgpack_serialize, to_state_dict
-                    with open("state.msgpack", "wb") as outfile:
-                        outfile.write(msgpack_serialize(to_state_dict(state)))
-                    wandb.save("state.msgpack")
-                except Exception as e:
-                    logging.warning(f"Checkpoint save failed: {e}")
-            step += log_every
-            if step >= num_steps:
-                break
+                # Periodic eval and checkpointing parity with unstructured (skip step 0)
+                if cfg.training.get("eval_every_n_logs") and step > 0 and (step // log_every) % cfg.training.eval_every_n_logs == 0:
+                    try:
+                        self.evaluate(state, enc_params_list)
+                    except Exception as e:
+                        logging.warning(f"Eval failed: {e}")
+                if cfg.training.get("save_checkpoint_every_n_logs") and step > 0 and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
+                    try:
+                        from flax.serialization import msgpack_serialize, to_state_dict
+                        with open("state.msgpack", "wb") as outfile:
+                            outfile.write(msgpack_serialize(to_state_dict(state)))
+                        wandb.save("state.msgpack")
+                    except Exception as e:
+                        logging.warning(f"Checkpoint save failed: {e}")
+                step += log_every
+                if step >= num_steps:
+                    break
+            epoch += 1
 
         return state
 
@@ -416,26 +421,9 @@ class StructuredTrainer:
             source_ids_np = source_ids_np[idx]
             task_ids_concat = task_ids_concat[idx]
 
-        # Compute t-SNE
-        from sklearn.manifold import TSNE
-        emb = TSNE(n_components=2, perplexity=2, max_iter=1000, random_state=42).fit_transform(latents_concat.astype(float))
-        # Plot: color by task id, marker by source
-        import matplotlib.pyplot as plt
-        from visualization import arc_cmap, arc_norm
-        marker_list = ['o', 's', '^', 'P', 'X', 'D', 'v', '<', '>', '*']
-        fig_tsne, ax = plt.subplots(figsize=(10, 8))
-        for src in sorted(set(source_ids_np.tolist())):
-            mask = source_ids_np == src
-            mk = marker_list[src % len(marker_list)]
-            lbl = f"enc{src}" if src < len(enc_params_list) else "poe"
-            sc = ax.scatter(
-                emb[mask, 0], emb[mask, 1],
-                c=task_ids_concat[mask] % 10, cmap=arc_cmap, norm=arc_norm,
-                marker=mk, alpha=0.8, s=40, label=lbl,
-                edgecolors='none'
-            )
-        ax.legend(title="Source")
-        ax.set_title("t-SNE: tasks colored, source as marker")
+        # Compute t-SNE figure using shared visualization helper
+        from visualization import visualize_tsne_sources
+        fig_tsne = visualize_tsne_sources(latents_concat, task_ids_concat, source_ids_np, max_points=int(cfg.eval.get("tsne_max_points", 2000)))
 
         wandb.log({
             f"test/{test_name}/pixel_accuracy": wandb.Image(fig_heatmap),
