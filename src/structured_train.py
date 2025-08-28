@@ -474,21 +474,19 @@ class StructuredTrainer:
                 logging.info(f"Batch {i} - input shapes: pairs={batch_pairs[:, 0, ..., 0].shape}, shapes={batch_shapes[:, 0, ..., 0].shape}")
                 
                 # Use generate_output method for evaluation (like train.py does)
-                # Pass arguments in the correct order as expected by generate_output method
-                batch_output_grids, batch_output_shapes, batch_info = self.model.apply(
-                    {"params": state.params},
-                    method=self.model.generate_output,
-                    batch_leave_one_out_pairs,  # pairs: support pairs
-                    batch_leave_one_out_shapes, # grid_shapes: support shapes
-                    batch_pairs[:, 0, ..., 0],  # input: query pair
-                    batch_shapes[:, 0, ..., 0], # input_grid_shape: query shape
-                    key,  # key: RNG key
-                    True,  # dropout_eval
-                    cfg.eval.inference_mode,  # mode
-                    False,  # return_two_best
-                    alphas,  # poe_alphas
-                    enc_params_list,  # encoder_params_list
-                    state.params,  # decoder_params
+                # Call generate_output directly on the model with the correct parameters
+                batch_output_grids, batch_output_shapes, batch_info = self.model.generate_output(
+                    pairs=batch_leave_one_out_pairs,  # support pairs
+                    grid_shapes=batch_leave_one_out_shapes, # support shapes
+                    input=batch_pairs[:, 0, ..., 0],  # query pair
+                    input_grid_shape=batch_shapes[:, 0, ..., 0], # query shape
+                    key=key,  # RNG key
+                    dropout_eval=True,  # dropout_eval
+                    mode=cfg.eval.inference_mode,  # mode
+                    return_two_best=False,  # return_two_best
+                    poe_alphas=alphas,  # poe_alphas
+                    encoder_params_list=enc_params_list,  # encoder_params_list
+                    decoder_params=state.params,  # decoder_params
                 )
                 
                 # DEBUG: Log output shapes
