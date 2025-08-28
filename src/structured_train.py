@@ -64,16 +64,16 @@ def load_artifact_params(artifact_ref: str, key: str = "params") -> dict:
     art_dir = art.download()
     # Expect a msgpack serialized flax state named state.msgpack
     import os
-    from flax.serialization import from_bytes
-    from flax.core import FrozenDict
-    from flax.training.train_state import TrainState
+    from flax.serialization import msgpack_restore
     state_path = os.path.join(art_dir, "state.msgpack")
     with open(state_path, "rb") as f:
         data = f.read()
-    # Minimal loader: construct a dummy TrainState to extract params
-    dummy = TrainState(step=jnp.array(0), apply_fn=lambda *args, **kwargs: None, params=None, tx=optax.adam(1e-3))
-    restored = from_bytes(dummy, data)
-    return restored.params
+    # Restore raw state dict written via to_state_dict(state)
+    restored = msgpack_restore(data)
+    if isinstance(restored, dict) and "params" in restored:
+        return restored["params"]
+    # Fallback if artifact directly stores params
+    return restored
 
 
 def build_params_from_artifacts(cfg: omegaconf.DictConfig, decoder_module: DecoderTransformer) -> tuple[list[dict], dict]:
