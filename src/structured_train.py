@@ -362,7 +362,11 @@ class StructuredTrainer:
         # Limit number of tasks shown for memory efficiency
         num_show = int(cfg.eval.get("num_tasks_to_show", 5))
         num_show = max(1, min(num_show, int(pairs.shape[0])))
-        fig_gen = visualize_dataset_generation(pairs[:num_show], shapes[:num_show], output_grids[:num_show], output_shapes[:num_show], num_show)
+        # Visualization expects predicted grids/shapes with per-pair axis; tile our single prediction across pairs
+        num_pairs = int(shapes.shape[1])
+        pred_grids_vis = jnp.repeat(output_grids[:num_show, None, ...], num_pairs, axis=1)
+        pred_shapes_vis = jnp.repeat(output_shapes[:num_show, None, :], num_pairs, axis=1)
+        fig_gen = visualize_dataset_generation(pairs[:num_show], shapes[:num_show], pred_grids_vis, pred_shapes_vis, num_show)
 
         # Latent t-SNE: per-encoder and PoE overlay using marker shapes
         # Compute per-encoder latents once and reuse for PoE
