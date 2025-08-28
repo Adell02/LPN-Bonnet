@@ -33,12 +33,24 @@ eval:
     - generator: PATTERN
       task_generator_kwargs:
         pattern_size: ${training.task_generator.pattern_size}
-      name: pattern_4_mean
+      name: pattern_4
       num_pairs: 4
       length: 50
       batch_size: 32
       num_tasks_to_show: 4
-    
+    - generator: PATTERN
+      task_generator_kwargs:
+        pattern_size: ${training.task_generator.pattern_size}
+      name: pattern_4
+      num_pairs: 4
+      length: 50
+      batch_size: 32
+      num_tasks_to_show: 4
+      inference_mode: gradient_ascent
+      inference_kwargs:
+        num_steps: 100
+        lr: 0.1
+
   
   json_datasets:
 
