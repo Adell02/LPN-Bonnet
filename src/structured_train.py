@@ -255,8 +255,9 @@ class StructuredTrainer:
         shapes = shapes[: num_logs * log_every_n_steps]
         if self.cfg.training.online_data_augmentation:
             grids, shapes = data_augmentation_fn(grids, shapes, aug_key)
-        for i in range(0, grids.shape[0], log_every_n_steps):
-            yield grids[i : i + log_every_n_steps], shapes[i : i + log_every_n_steps]
+        # Yield individual batches, not chunks of log_every_n_steps
+        for i in range(0, grids.shape[0], self.batch_size):
+            yield grids[i : i + self.batch_size], shapes[i : i + self.batch_size]
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
@@ -268,10 +269,34 @@ class StructuredTrainer:
         epoch = 0
         key = jax.random.PRNGKey(cfg.training.seed)
         logging.info("Starting structured training...")
+        logging.info(f"Total steps: {num_steps}, Log every: {log_every}, Batch size: {self.batch_size}")
+        
+        # Test forward pass first to catch any issues early
+        logging.info("Testing forward pass...")
+        try:
+            test_batch = self.train_grids[:self.batch_size], self.train_shapes[:self.batch_size]
+            test_loss, test_metrics = self.model.apply(
+                {"params": state.params},
+                *test_batch,
+                dropout_eval=False,
+                mode=cfg.training.inference_mode,
+                poe_alphas=alphas,
+                encoder_params_list=enc_params_list,
+                decoder_params=state.params,
+                rngs={"dropout": key, "latents": key},
+                prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
+                pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
+                **(cfg.training.get("inference_kwargs") or {}),
+            )
+            logging.info(f"Forward pass test successful: loss={float(test_loss):.4f}")
+        except Exception as e:
+            logging.error(f"Forward pass test failed: {e}")
+            raise
+        
         pbar = trange(num_steps, disable=False)
         while step < num_steps:
             key, epoch_key = jax.random.split(key)
-            for batches, shapes in self._iterate_batches(epoch_key, log_every):
+            for batch_idx, (batch_pairs, batch_shapes) in enumerate(self._iterate_batches(epoch_key, log_every)):
                 # Grad over decoder params only; encoder params are fed through kwargs and not part of state.params
                 def loss_fn(decoder_params, batch_pairs, batch_shapes, rng):
                     loss, metrics = self.model.apply(
@@ -290,7 +315,6 @@ class StructuredTrainer:
                     )
                     return loss, metrics
 
-                batch_pairs, batch_shapes = batches, shapes
                 rng = jax.random.PRNGKey(step)
                 import time
                 t0 = time.time()
@@ -298,17 +322,19 @@ class StructuredTrainer:
                 state = state.apply_gradients(grads=grads)
                 t1 = time.time()
 
-                # Align logs with train.py: include grad_norm and timing
-                grad_norm = float(optax.global_norm(grads))
-                throughput = (log_every * self.batch_size) / max(t1 - t0, 1e-8)
-                to_log = {k: float(v) for k, v in metrics.items()}
-                to_log.update({
-                    "grad_norm": grad_norm,
-                    "timing/train_time": t1 - t0,
-                    "timing/train_num_samples_per_second": throughput,
-                })
-                wandb.log(to_log, step=step)
-                pbar.set_postfix(loss=float(loss))
+                # Log every log_every steps
+                if step % log_every == 0:
+                    # Align logs with train.py: include grad_norm and timing
+                    grad_norm = float(optax.global_norm(grads))
+                    throughput = self.batch_size / max(t1 - t0, 1e-8)
+                    to_log = {k: float(v) for k, v in metrics.items()}
+                    to_log.update({
+                        "grad_norm": grad_norm,
+                        "timing/train_time": t1 - t0,
+                        "timing/train_num_samples_per_second": throughput,
+                    })
+                    wandb.log(to_log, step=step)
+                    pbar.set_postfix(loss=float(loss))
 
                 # Periodic eval and checkpointing parity with unstructured (skip step 0)
                 if cfg.training.get("eval_every_n_logs") and step > 0 and (step // log_every) % cfg.training.eval_every_n_logs == 0:
@@ -324,8 +350,9 @@ class StructuredTrainer:
                         wandb.save("state.msgpack")
                     except Exception as e:
                         logging.warning(f"Checkpoint save failed: {e}")
-                step += log_every
-                pbar.update(log_every)
+                
+                step += 1
+                pbar.update(1)
                 if step >= num_steps:
                     break
             epoch += 1

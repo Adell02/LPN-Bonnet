@@ -35,6 +35,7 @@ import argparse
 import subprocess
 import time
 import csv
+import math
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
@@ -245,7 +246,7 @@ def run_ga_only_single(
     dataset_use_hf: str = "true",
     dataset_seed: int = 0,
     out_dir: str = "results/ga_lr_budget_sweep",
-) -> Tuple[bool, Dict[int, float], float]:
+) -> Tuple[bool, Dict[int, float], Dict[str, float], float]:
     """Run evaluate_checkpoint.py in GA mode only and extract intermediate losses."""
     run_out_dir = os.path.join(out_dir, f"ga_only_lr_{lr:.6f}_budget_{max_budget}")
     os.makedirs(run_out_dir, exist_ok=True)
@@ -282,11 +283,11 @@ def run_ga_only_single(
                 print(f"[GA-ONLY] stdout:\n{result.stdout}")
 
         # Extract intermediate losses directly from the GA NPZ file
-        intermediate_losses = extract_intermediate_losses(ga_npz_path, max_budget)
-        return result.returncode == 0 and bool(intermediate_losses), intermediate_losses, execution_time
+        intermediate_losses, accuracy_metrics = extract_intermediate_losses(ga_npz_path, max_budget)
+        return result.returncode == 0 and bool(intermediate_losses), intermediate_losses, accuracy_metrics, execution_time
     except Exception as e:
         print(f"[GA-ONLY] ❌ Error: {e}")
-        return False, {}, 0.0
+        return False, {}, {}, 0.0
 
 def extract_total_loss(npz_path: str) -> Optional[float]:
     """Extract total final loss from GA NPZ file."""
@@ -316,7 +317,7 @@ def extract_total_loss(npz_path: str) -> Optional[float]:
         return None
 
 
-def extract_intermediate_losses(npz_path: str, max_budget: int) -> Dict[int, float]:
+def extract_intermediate_losses(npz_path: str, max_budget: int) -> Tuple[Dict[int, float], Dict[str, float]]:
     """Extract intermediate losses at different budget checkpoints from GA NPZ file."""
     try:
         if not os.path.exists(npz_path):
@@ -341,7 +342,9 @@ def extract_intermediate_losses(npz_path: str, max_budget: int) -> Dict[int, flo
                         intermediate_losses[b] = mean_loss
                         print(f"📊 Budget {b} → Mean loss over {per_sample.shape[0]} samples: {mean_loss:.6f}")
                 if intermediate_losses:
-                    return intermediate_losses
+                    # Extract accuracy metrics if available
+                    accuracy_metrics = extract_accuracy_metrics(data)
+                    return intermediate_losses, accuracy_metrics
         
         # Fallback to representative single trajectory if per-sample not present
         losses = None
@@ -353,7 +356,7 @@ def extract_intermediate_losses(npz_path: str, max_budget: int) -> Dict[int, flo
                     break
         if losses is None:
             print(f"⚠️  No loss data found in NPZ. Available keys: {list(data.keys())}")
-            return {}
+            return {}, {}
         losses = losses.reshape(-1)
         checkpoints = list(2 * np.arange(1, len(losses) + 1))
         checkpoints = [int(b) for b in checkpoints if b <= max_budget]
@@ -363,11 +366,43 @@ def extract_intermediate_losses(npz_path: str, max_budget: int) -> Dict[int, flo
             intermediate_losses[budget] = float(losses[step_idx])
             print(f"📊 Budget {budget} → Step {step_idx} → Loss {intermediate_losses[budget]:.6f}")
         
-        return intermediate_losses
+        # Extract accuracy metrics if available
+        accuracy_metrics = extract_accuracy_metrics(data)
+        return intermediate_losses, accuracy_metrics
         
     except Exception as e:
         print(f"⚠️  Failed to extract intermediate losses from {npz_path}: {e}")
-        return {}
+        return {}, {}
+
+
+def extract_accuracy_metrics(data: np.ndarray) -> Dict[str, float]:
+    """Extract accuracy metrics from NPZ data."""
+    accuracy_metrics = {}
+    
+    try:
+        # Extract per-sample accuracy metrics if available
+        if 'per_sample_accuracy' in data:
+            accuracies = np.array(data['per_sample_accuracy'])
+            if accuracies.size > 0:
+                accuracy_metrics['accuracy'] = float(np.mean(accuracies))
+                print(f"📊 Extracted accuracy: {accuracy_metrics['accuracy']:.6f}")
+        
+        if 'per_sample_shape_accuracy' in data:
+            shape_accuracies = np.array(data['per_sample_shape_accuracy'])
+            if shape_accuracies.size > 0:
+                accuracy_metrics['shape_accuracy'] = float(np.mean(shape_accuracies))
+                print(f"📊 Extracted shape accuracy: {accuracy_metrics['shape_accuracy']:.6f}")
+        
+        if 'per_sample_pixel_correctness' in data:
+            pixel_correctness = np.array(data['per_sample_pixel_correctness'])
+            if pixel_correctness.size > 0:
+                accuracy_metrics['pixel_correctness'] = float(np.mean(pixel_correctness))
+                print(f"📊 Extracted pixel correctness: {accuracy_metrics['pixel_correctness']:.6f}")
+                
+    except Exception as e:
+        print(f"⚠️  Failed to extract accuracy metrics: {e}")
+    
+    return accuracy_metrics
 
 
 def search_for_loss_files(run_out_dir: str) -> Dict[int, float]:
@@ -567,7 +602,7 @@ def create_heatmap(
     budgets: List[int], 
     results_matrix: np.ndarray,
     out_dir: str
-) -> str:
+) -> Tuple[str, plt.Figure]:
     """Create a heatmap showing lr vs budget colored by total loss."""
     
     fig, ax = plt.subplots(figsize=(12, 8))
@@ -582,7 +617,9 @@ def create_heatmap(
                    extent=[budgets[0], budgets[-1], lrs[0], lrs[-1]],
                    origin='lower')
     
-    # No colorbar and no cell labels per request
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label('Total Loss', fontsize=12)
     
     # Set labels and title (no cell labels)
     ax.set_xlabel('Search Budget', fontsize=14)
@@ -608,9 +645,8 @@ def create_heatmap(
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_path = out_dir / "ga_lr_budget_heatmap.png"
     fig.savefig(fig_path, dpi=200, bbox_inches='tight')
-    plt.close(fig)
     
-    return str(fig_path)
+    return str(fig_path), fig
 
 
 def main():
@@ -672,8 +708,11 @@ def main():
     out_dir = Path("results/ga_lr_budget_sweep")
     out_dir.mkdir(parents=True, exist_ok=True)
     
-    # Results matrix: [lr_idx, budget_idx] -> total_loss (budget-aligned)
-    results_matrix = np.full((len(lrs), len(budgets)), np.nan)
+    # Results matrices: [lr_idx, budget_idx] -> metrics (budget-aligned)
+    results_matrix = np.full((len(lrs), len(budgets)), np.nan)  # Loss matrix
+    accuracy_matrix = np.full((len(lrs), len(budgets)), np.nan)  # Accuracy matrix
+    shape_accuracy_matrix = np.full((len(lrs), len(budgets)), np.nan)  # Shape accuracy matrix
+    pixel_correctness_matrix = np.full((len(lrs), len(budgets)), np.nan)  # Pixel correctness matrix
     execution_times = np.full((len(lrs), len(budgets)), np.nan)
     
     # CSV logging
@@ -712,14 +751,14 @@ def main():
     with open(csv_path, 'w', newline='') as f_csv:
         writer = csv.writer(f_csv)
         writer.writerow([
-            "timestamp", "artifact_name", "lr", "budget", "total_loss", "execution_time", "success", "status"
+            "timestamp", "artifact_name", "lr", "budget", "total_loss", "accuracy", "shape_accuracy", "pixel_correctness", "execution_time", "success", "status"
         ])
         
         for i, lr in enumerate(lrs):
             print(f"\n🔬 Testing lr = {lr:.6f} ({i+1}/{len(lrs)})")
             
             # Run GA-only with maximum budget to get intermediate results (avoid ES path)
-            success, intermediate_losses, exec_time = run_ga_only_single(
+            success, intermediate_losses, accuracy_metrics, exec_time = run_ga_only_single(
                 artifact_path=artifact_path,
                 lr=lr,
                 max_budget=args.budget_end,
@@ -738,6 +777,14 @@ def main():
                     budget_idx = np.argmin(np.abs(np.array(budgets) - budget))
                     results_matrix[i, budget_idx] = loss
                     execution_times[i, budget_idx] = exec_time
+                    
+                    # Store accuracy metrics in corresponding matrices
+                    if 'accuracy' in accuracy_metrics:
+                        accuracy_matrix[i, budget_idx] = accuracy_metrics['accuracy']
+                    if 'shape_accuracy' in accuracy_metrics:
+                        shape_accuracy_matrix[i, budget_idx] = accuracy_metrics['shape_accuracy']
+                    if 'pixel_correctness' in accuracy_metrics:
+                        pixel_correctness_matrix[i, budget_idx] = accuracy_metrics['pixel_correctness']
                 
                 if success:
                     successful_evals += 1
@@ -750,52 +797,81 @@ def main():
             
             # Write to CSV for each budget point
             for budget, loss in intermediate_losses.items():
+                # Get accuracy metrics for this budget (use the same metrics for all budgets)
+                accuracy = accuracy_metrics.get('accuracy', float('nan'))
+                shape_accuracy = accuracy_metrics.get('shape_accuracy', float('nan'))
+                pixel_correctness = accuracy_metrics.get('pixel_correctness', float('nan'))
+                
                 writer.writerow([
                     time.strftime("%Y-%m-%d %H:%M:%S"),
                     artifact_name,
                     lr,
                     budget,
                     loss,
+                    accuracy,
+                    shape_accuracy,
+                    pixel_correctness,
                     exec_time,
                     success,
                     "partial" if not success else "complete"
                 ])
 
-                # Log per-point result to W&B
+                # Log per-point result to W&B (batch logging for efficiency)
                 if run is not None:
                     try:
-                        wandb.log({
+                        # Prepare log data for this point
+                        point_data = {
                             "lr": float(lr),
                             "budget": int(budget),
                             "loss": float(loss),
                             "success": bool(success),
-                        })
+                        }
+                        
+                        # Add accuracy metrics if available
+                        if not (isinstance(accuracy, float) and math.isnan(accuracy)):
+                            point_data["accuracy"] = float(accuracy)
+                        if not (isinstance(shape_accuracy, float) and math.isnan(shape_accuracy)):
+                            point_data["shape_accuracy"] = float(shape_accuracy)
+                        if not (isinstance(pixel_correctness, float) and math.isnan(pixel_correctness)):
+                            point_data["pixel_correctness"] = float(pixel_correctness)
+                        
+                        # Log immediately for real-time monitoring
+                        wandb.log(point_data)
                     except Exception as _wl:
                         print(f"⚠️  Failed to log to W&B: {_wl}")
     
     # Forward-fill missing cells per LR to avoid empty spots (e.g., budgets below first available)
     try:
-        for i in range(results_matrix.shape[0]):
-            row = results_matrix[i]
-            mask = ~np.isnan(row)
-            if not np.any(mask):
-                continue
-            first_idx = int(np.where(mask)[0][0])
-            # Backfill leading NaNs with first available value
-            if first_idx > 0:
-                row[:first_idx] = row[first_idx]
-            # Forward-fill subsequent NaNs
-            for j in range(first_idx + 1, row.shape[0]):
-                if np.isnan(row[j]):
-                    row[j] = row[j - 1]
-            results_matrix[i] = row
+        matrices_to_fill = [
+            (results_matrix, "loss"),
+            (accuracy_matrix, "accuracy"),
+            (shape_accuracy_matrix, "shape_accuracy"),
+            (pixel_correctness_matrix, "pixel_correctness")
+        ]
+        
+        for matrix, name in matrices_to_fill:
+            for i in range(matrix.shape[0]):
+                row = matrix[i]
+                mask = np.array([not (isinstance(x, float) and math.isnan(x)) for x in row])
+                if not np.any(mask):
+                    continue
+                first_idx = int(np.where(mask)[0][0])
+                # Backfill leading NaNs with first available value
+                if first_idx > 0:
+                    row[:first_idx] = row[first_idx]
+                # Forward-fill subsequent NaNs
+                for j in range(first_idx + 1, row.shape[0]):
+                    if np.isnan(row[j]):
+                        row[j] = row[j - 1]
+                matrix[i] = row
+            print(f"✅ Forward-fill completed for {name} matrix")
     except Exception as _ff:
         print(f"⚠️  Forward-fill failed: {_ff}")
 
     # Create heatmap
     if successful_evals > 0:
         print(f"\n📊 Creating heatmap with {successful_evals} successful evaluations...")
-        heatmap_path = create_heatmap(lrs, budgets, results_matrix, str(out_dir))
+        heatmap_path, fig = create_heatmap(lrs, budgets, results_matrix, str(out_dir))
         print(f"📊 Heatmap saved to: {heatmap_path}")
         # Log heatmap to W&B
         if run is not None:
@@ -833,13 +909,40 @@ def main():
         print(f"   Learning Rate: {best_lr:.6f}")
         print(f"   Budget: {best_budget}")
         print(f"   Total Loss: {best_loss:.6f}")
+        
+        # Show best accuracy metrics if available
+        best_accuracy = accuracy_matrix[best_lr_idx, best_budget_idx]
+        best_shape_accuracy = shape_accuracy_matrix[best_lr_idx, best_budget_idx]
+        best_pixel_correctness = pixel_correctness_matrix[best_lr_idx, best_budget_idx]
+        
+        if not (isinstance(best_accuracy, float) and math.isnan(best_accuracy)):
+            print(f"   Accuracy: {best_accuracy:.6f}")
+        if not (isinstance(best_shape_accuracy, float) and math.isnan(best_shape_accuracy)):
+            print(f"   Shape Accuracy: {best_shape_accuracy:.6f}")
+        if not (isinstance(best_pixel_correctness, float) and math.isnan(best_pixel_correctness)):
+            print(f"   Pixel Correctness: {best_pixel_correctness:.6f}")
         if run is not None:
             try:
-                wandb.log({
+                # Get accuracy metrics for the best configuration
+                best_accuracy = accuracy_matrix[best_lr_idx, best_budget_idx]
+                best_shape_accuracy = shape_accuracy_matrix[best_lr_idx, best_budget_idx]
+                best_pixel_correctness = pixel_correctness_matrix[best_lr_idx, best_budget_idx]
+                
+                log_data = {
                     "best/lr": float(best_lr),
                     "best/budget": int(best_budget),
                     "best/loss": float(best_loss),
-                })
+                }
+                
+                # Add best accuracy metrics if available
+                if not (isinstance(best_accuracy, float) and math.isnan(best_accuracy)):
+                    log_data["best/accuracy"] = float(best_accuracy)
+                if not (isinstance(best_shape_accuracy, float) and math.isnan(best_shape_accuracy)):
+                    log_data["best/shape_accuracy"] = float(best_shape_accuracy)
+                if not (isinstance(best_pixel_correctness, float) and math.isnan(best_pixel_correctness)):
+                    log_data["best/pixel_correctness"] = float(best_pixel_correctness)
+                
+                wandb.log(log_data)
             except Exception as _wl3:
                 print(f"⚠️  Failed to log best config to W&B: {_wl3}")
 
@@ -849,6 +952,40 @@ def main():
             art = wandb.Artifact(name=f"ga_lr_budget_sweep_{artifact_name}_{timestamp}", type="ga_lr_sweep")
             art.add_file(str(csv_path))
             run.log_artifact(art)
+            
+            # Log summary statistics for easy comparison
+            try:
+                # Create summary table for all configurations
+                summary_data = []
+                for i, lr in enumerate(lrs):
+                    for j, budget in enumerate(budgets):
+                        if not (isinstance(results_matrix[i, j], float) and math.isnan(results_matrix[i, j])):
+                            row = {
+                                "lr": float(lr),
+                                "budget": int(budget),
+                                "loss": float(results_matrix[i, j]),
+                            }
+                            
+                            # Add accuracy metrics if available
+                            if not (isinstance(accuracy_matrix[i, j], float) and math.isnan(accuracy_matrix[i, j])):
+                                row["accuracy"] = float(accuracy_matrix[i, j])
+                            if not (isinstance(shape_accuracy_matrix[i, j], float) and math.isnan(shape_accuracy_matrix[i, j])):
+                                row["shape_accuracy"] = float(shape_accuracy_matrix[i, j])
+                            if not (isinstance(pixel_correctness_matrix[i, j], float) and math.isnan(pixel_correctness_matrix[i, j])):
+                                row["pixel_correctness"] = float(pixel_correctness_matrix[i, j])
+                            
+                            summary_data.append(row)
+                
+                if summary_data:
+                    # Log as wandb table for easy visualization
+                    import wandb
+                    table = wandb.Table(dataframe=pd.DataFrame(summary_data))
+                    wandb.log({"results_summary": table})
+                    print(f"📊 Logged summary table with {len(summary_data)} configurations to W&B")
+                    
+            except Exception as _st:
+                print(f"⚠️  Failed to log summary table to W&B: {_st}")
+                
         except Exception as _wa:
             print(f"⚠️  Failed to upload CSV artifact to W&B: {_wa}")
 

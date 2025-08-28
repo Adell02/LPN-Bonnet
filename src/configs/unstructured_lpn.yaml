@@ -46,7 +46,7 @@ encoder_transformer:
   _target_:  models.utils.EncoderTransformerConfig
   max_rows: 5
   max_cols: 5
-  num_layers: 2
+  num_layers: 6
   transformer_layer:
     _target_:  models.utils.TransformerLayerConfig
     num_heads: 6
