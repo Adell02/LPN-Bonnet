@@ -2389,6 +2389,31 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     src_args = build_dataset_args(args)
 
+    # ------------------------------------------------------------------
+    # Evaluate the mean latent (no optimisation) to obtain a baseline
+    # sample.  This latent should be treated as the first sample for both
+    # optimisation methods so that the trajectories include the starting
+    # point.  We store the resulting metrics and latent vector in an NPZ
+    # file which will later be prepended to the GA and ES trajectories.
+    # ------------------------------------------------------------------
+    mean_out = os.path.join(args.out_dir, "mean_latent.npz")
+    mean_cmd = [
+        sys.executable,
+        "src/evaluate_checkpoint.py",
+        "-w",
+        args.wandb_artifact_path,
+        "-i",
+        "mean",
+        "--no-wandb-run",
+        "true",
+        "--store-latents",
+        mean_out,
+    ]
+    mean_cmd += src_args
+    print("Running:", " ".join(mean_cmd))
+    mean_rc = subprocess.run(mean_cmd, check=False).returncode
+    print(f"Mean latent return code: {mean_rc}")
+
     # Gradient Ascent config
     ga_steps = args.ga_steps if args.ga_steps is not None else int(math.ceil(args.budget / 2))
     print(f"🔧 GA config: {ga_steps} steps (lr={args.ga_lr})")
@@ -2438,7 +2463,13 @@ def main() -> None:
         es_cmd.append("--track-progress")
     es_cmd += src_args
     if args.use_subspace_mutation:
-        es_cmd += ["--use-subspace-mutation", "--subspace-dim", str(args.subspace_dim), "--ga-step-length", str(args.ga_step_length)]
+        es_cmd += [
+            "--use-subspace-mutation",
+            "--subspace-dim",
+            str(args.subspace_dim),
+            "--ga-step-length",
+            str(args.ga_step_length),
+        ]
         if args.trust_region_radius is not None:
             es_cmd += ["--trust-region-radius", str(args.trust_region_radius)]
 
@@ -2453,6 +2484,72 @@ def main() -> None:
     # Log ES completion
     if run is not None:
         wandb.log({"es_return_code": es_rc, "es_status": "completed"})
+
+    # ------------------------------------------------------------------
+    # Prepend the mean latent as the first sample for both GA and ES
+    # trajectories.  We try to extract the latent vector and metrics from
+    # the mean_latent.npz produced above.  If some quantities are missing
+    # we simply skip their insertion.
+    # ------------------------------------------------------------------
+    def _prepend_baseline(mean_npz: str, target_npz: str, prefix: str) -> None:
+        if not (os.path.exists(mean_npz) and os.path.exists(target_npz)):
+            return
+        with np.load(mean_npz, allow_pickle=True) as fmean:
+            base_latent = None
+            base_loss = None
+            base_acc = None
+            base_shape = None
+            base_pixel = None
+            if "context" in fmean:
+                base_latent = np.array(fmean["context"]).reshape(1, -1)
+            elif "mean_latent" in fmean:
+                base_latent = np.array(fmean["mean_latent"]).reshape(1, -1)
+            if "per_sample_loss" in fmean:
+                base_loss = float(np.array(fmean["per_sample_loss"]).mean())
+            if base_loss is None and "per_sample_losses" in fmean:
+                base_loss = float(np.array(fmean["per_sample_losses"]).mean())
+            if "per_sample_accuracy" in fmean:
+                base_acc = float(np.array(fmean["per_sample_accuracy"]).mean())
+            if "per_sample_shape_accuracy" in fmean:
+                base_shape = float(np.array(fmean["per_sample_shape_accuracy"]).mean())
+            if "per_sample_pixel_correctness" in fmean:
+                base_pixel = float(np.array(fmean["per_sample_pixel_correctness"]).mean())
+
+        with np.load(target_npz, allow_pickle=True) as ftgt:
+            data = dict(ftgt.items())
+
+        if prefix == "ga_":
+            if base_latent is not None and "ga_latents" in data:
+                data["ga_latents"] = np.concatenate([base_latent, data["ga_latents"]], axis=0)
+            if base_latent is not None and "ga_path" in data:
+                data["ga_path"] = np.concatenate([base_latent, data["ga_path"]], axis=0)
+            if base_loss is not None and "ga_losses" in data:
+                data["ga_losses"] = np.concatenate([[base_loss], np.array(data["ga_losses"]).reshape(-1)])
+            if base_acc is not None:
+                data.setdefault("ga_accuracy", []).insert(0, base_acc)
+            if base_shape is not None:
+                data.setdefault("ga_shape_correctness", []).insert(0, base_shape)
+            if base_pixel is not None:
+                data.setdefault("ga_pixel_correctness", []).insert(0, base_pixel)
+        elif prefix == "es_":
+            if base_latent is not None and "es_best_latents_per_generation" in data:
+                data["es_best_latents_per_generation"] = np.concatenate([
+                    base_latent,
+                    data["es_best_latents_per_generation"],
+                ], axis=0)
+            if base_loss is not None and "es_generation_losses" in data:
+                data["es_generation_losses"] = np.concatenate([[base_loss], np.array(data["es_generation_losses"]).reshape(-1)])
+            if base_acc is not None:
+                data.setdefault("es_accuracy", []).insert(0, base_acc)
+            if base_shape is not None:
+                data.setdefault("es_shape_correctness", []).insert(0, base_shape)
+            if base_pixel is not None:
+                data.setdefault("es_pixel_correctness", []).insert(0, base_pixel)
+
+        np.savez_compressed(target_npz, **data)
+
+    _prepend_baseline(mean_out, ga_out, "ga_")
+    _prepend_baseline(mean_out, es_out, "es_")
 
     # Handle multiple runs when n_samples > 1
     # NOTE: n_samples controls how many times to run the script with different seeds
