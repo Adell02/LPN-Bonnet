@@ -306,9 +306,51 @@ def instantiate_train_state(lpn: LPN) -> TrainState:
 def load_model_weights(
     train_state: TrainState, artifact_dir: str, ckpt_name: str = "state.msgpack"
 ) -> TrainState:
-    with open(os.path.join(artifact_dir, ckpt_name), "rb") as data_file:
+    print(f"   🔍 load_model_weights: Loading checkpoint from {os.path.join(artifact_dir, ckpt_name)}")
+    
+    # First, let's inspect what's in the checkpoint file
+    checkpoint_path = os.path.join(artifact_dir, ckpt_name)
+    if os.path.exists(checkpoint_path):
+        print(f"   🔍 load_model_weights: Checkpoint file exists, size: {os.path.getsize(checkpoint_path)} bytes")
+        
+        # Try to peek at the checkpoint structure without loading
+        try:
+            with open(checkpoint_path, "rb") as data_file:
+                byte_data = data_file.read()
+            
+            # Create a temporary state to inspect the checkpoint structure
+            temp_state = train_state
+            temp_state = temp_state.replace(params={})  # Empty params to avoid shape conflicts
+            
+            print(f"   🔍 load_model_weights: About to call from_bytes...")
+            loaded_state = from_bytes(temp_state, byte_data)
+            
+            # Inspect the loaded structure
+            if hasattr(loaded_state, 'params') and loaded_state.params:
+                print(f"   🔍 load_model_weights: Checkpoint contains params with keys: {list(loaded_state.params.keys())}")
+                if 'encoder' in loaded_state.params:
+                    encoder_params = loaded_state.params['encoder']
+                    print(f"   🔍 load_model_weights: Encoder params keys: {list(encoder_params.keys())}")
+                    if 'Dense_0' in encoder_params:
+                        dense_params = encoder_params['Dense_0']
+                        if 'kernel' in dense_params:
+                            kernel_shape = dense_params['kernel'].shape
+                            print(f"   🔍 load_model_weights: Checkpoint Dense_0 kernel shape: {kernel_shape}")
+                            print(f"   🔍 load_model_weights: Expected Dense_0 kernel shape: (96, 2)")
+                            if kernel_shape != (96, 2):
+                                print(f"   ⚠️  SHAPE MISMATCH: Checkpoint has {kernel_shape}, but model expects (96, 2)")
+                                print(f"   ⚠️  This checkpoint was trained with {kernel_shape[1]}-dimensional latents!")
+            
+        except Exception as e:
+            print(f"   ❌ load_model_weights: Failed to inspect checkpoint structure: {e}")
+    
+    # Now load into the actual train state
+    with open(checkpoint_path, "rb") as data_file:
         byte_data = data_file.read()
+    
+    print(f"   🔍 load_model_weights: Loading checkpoint into actual train state...")
     loaded_state = from_bytes(train_state, byte_data)
+    print(f"   ✅ load_model_weights: Checkpoint loaded successfully")
     return loaded_state
 
 

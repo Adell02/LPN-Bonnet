@@ -959,28 +959,28 @@ class LPN(nn.Module):
             # x has shape (..., lam, dim) where lam is the population size
             # best_idx has shape (..., mu) where mu is the number of best candidates
             # We need to expand best_idx to match x's dimensions for axis=-2
-            if best_idx.ndim < x.ndim:
-                # Add missing dimensions to match x exactly
-                # x has shape (..., lam, dim), best_idx should have shape (..., mu, ...)
-                # We need to insert dimensions to match x's shape before the last dimension
-                missing_dims = x.ndim - best_idx.ndim - 1  # -1 because we keep the last dim
-                if missing_dims > 0:
-                    # Insert None (newaxis) for each missing dimension
-                    for _ in range(missing_dims):
-                        best_idx = best_idx[..., None, :]
-                best_idx_expanded = best_idx
-                print(f"         🔍 Gen {g}: expanded best_idx shape: {best_idx_expanded.shape}")
-            else:
-                # Ensure best_idx has the right shape for take_along_axis on axis=-2
-                best_idx_expanded = best_idx
-                print(f"         🔍 Gen {g}: using original best_idx shape: {best_idx_expanded.shape}")
+            print(f"         🔍 Gen {g}: x shape: {x.shape}, best_idx shape: {best_idx.shape}")
             
-            # Ensure best_idx_expanded has the same number of dimensions as x
-            # best_idx_expanded should be (..., mu, 1) to work with take_along_axis on axis=-2
-            if best_idx_expanded.ndim != x.ndim:
-                # Add missing dimensions to match x exactly
-                while best_idx_expanded.ndim < x.ndim:
-                    best_idx_expanded = best_idx_expanded[..., None, :]
+            # x has shape (batch, pairs, population, latent_dim)
+            # best_idx has shape (batch, top_candidates)
+            # We need to expand best_idx to (batch, pairs, 1, top_candidates) for take_along_axis
+            
+            # Get the batch and pairs dimensions from x
+            batch_dims = x.shape[:-2]  # Everything except (population, latent_dim)
+            
+            # Expand best_idx to match x's leading dimensions
+            best_idx_expanded = best_idx
+            for i, dim_size in enumerate(batch_dims[1:], 1):  # Skip first dimension (batch)
+                best_idx_expanded = best_idx_expanded[..., None, :]
+            
+            print(f"         🔍 Gen {g}: expanded best_idx shape: {best_idx_expanded.shape}")
+            
+            # Verify the shapes are compatible for take_along_axis
+            if best_idx_expanded.shape[:-1] != x.shape[:-2]:
+                print(f"         ⚠️  Shape mismatch: best_idx_expanded {best_idx_expanded.shape[:-1]} vs x {x.shape[:-2]}")
+                # Force the correct shape by broadcasting
+                best_idx_expanded = best_idx_expanded.reshape(*x.shape[:-2], -1)
+                print(f"         🔧 Fixed best_idx_expanded shape: {best_idx_expanded.shape}")
             
             x_sel = jnp.take_along_axis(x, best_idx_expanded, axis=-2)
             z_sel = jnp.take_along_axis(z, best_idx_expanded, axis=-2)
