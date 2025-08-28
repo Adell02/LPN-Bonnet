@@ -975,6 +975,13 @@ class LPN(nn.Module):
                 best_idx_expanded = best_idx
                 print(f"         🔍 Gen {g}: using original best_idx shape: {best_idx_expanded.shape}")
             
+            # Ensure best_idx_expanded has the same number of dimensions as x
+            # best_idx_expanded should be (..., mu, 1) to work with take_along_axis on axis=-2
+            if best_idx_expanded.ndim != x.ndim:
+                # Add missing dimensions to match x exactly
+                while best_idx_expanded.ndim < x.ndim:
+                    best_idx_expanded = best_idx_expanded[..., None, :]
+            
             x_sel = jnp.take_along_axis(x, best_idx_expanded, axis=-2)
             z_sel = jnp.take_along_axis(z, best_idx_expanded, axis=-2)
             mean_old = mean
