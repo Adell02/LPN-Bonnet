@@ -32,10 +32,11 @@ eval:
   test_datasets:
     - generator: STRUCT_PATTERN
       task_generator_kwargs:
-        pattern: 0   # mixed
+        pattern: 0
+        pattern_per_task: true
         num_rows: 5
         num_cols: 5
-      name: struct_pattern_mixed
+      name: struct_pattern_mixed_per_task
       num_pairs: 4
       length: 96
       batch_size: 96
