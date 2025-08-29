@@ -316,6 +316,7 @@ def visualize_tsne_sources(
     source_ids: jnp.ndarray,
     max_points: int = 2000,
     random_state: int = 42,
+    task_ids: jnp.ndarray | None = None,
 ):
     """t-SNE with task color (arc_cmap) and source encoded as marker.
 
@@ -324,21 +325,68 @@ def visualize_tsne_sources(
         program_ids: [N]
         source_ids: [N] integers (0..E-1 encoders, E for PoE)
         max_points: cap points for memory
+        task_ids: [N] optional task/group id so we can keep all sources (quads) together
     Returns:
         fig
     """
     lat_np = np.asarray(latents, dtype=float)
     prog_np = np.asarray(program_ids)
     src_np = np.asarray(source_ids)
+    if task_ids is not None:
+        tid_np = np.asarray(task_ids)
+        assert tid_np.shape[0] == lat_np.shape[0], "task_ids must align with latents"
     N = lat_np.shape[0]
     if N == 0:
         return None
+    # Group-preserving downsampling by task if task_ids provided
     if N > max_points:
         rng = np.random.RandomState(random_state)
-        idx = rng.choice(N, size=max_points, replace=False)
-        lat_np = lat_np[idx]
-        prog_np = prog_np[idx]
-        src_np = src_np[idx]
+        if task_ids is not None:
+            # Determine number of sources per task (mode)
+            unique_tids, counts = np.unique(tid_np, return_counts=True)
+            if len(counts) == 0:
+                return None
+            sources_per_task = int(np.max(counts))
+            max_tasks = max(1, max_points // max(1, sources_per_task))
+            # Map task -> indices, and task -> pattern (majority of program_ids within the task)
+            task_to_indices = {}
+            task_to_pattern = {}
+            for tid in unique_tids:
+                idxs = np.where(tid_np == tid)[0]
+                task_to_indices[int(tid)] = idxs
+                # Majority program for labeling/stratification
+                if idxs.size > 0:
+                    vals, cnts = np.unique(prog_np[idxs], return_counts=True)
+                    task_to_pattern[int(tid)] = int(vals[np.argmax(cnts)])
+            # Stratified sampling: roughly equal tasks per pattern if possible
+            patterns = np.unique(list(task_to_pattern.values()))
+            per_pat = max(1, max_tasks // max(1, len(patterns)))
+            selected_tasks = []
+            # First, balanced pick
+            for pat in patterns:
+                cand = [t for t, p in task_to_pattern.items() if p == pat]
+                if len(cand) > per_pat:
+                    cand = list(rng.choice(cand, size=per_pat, replace=False))
+                selected_tasks.extend(cand)
+            # Fill remainder if any
+            if len(selected_tasks) < max_tasks:
+                remaining = [t for t in unique_tids if t not in selected_tasks]
+                need = max_tasks - len(selected_tasks)
+                if len(remaining) > need:
+                    remaining = list(rng.choice(remaining, size=need, replace=False))
+                selected_tasks.extend(list(remaining))
+            # Gather indices for all selected tasks (all sources per task)
+            sel_indices = np.concatenate([task_to_indices[int(t)] for t in selected_tasks])
+            lat_np = lat_np[sel_indices]
+            prog_np = prog_np[sel_indices]
+            src_np = src_np[sel_indices]
+            tid_np = tid_np[sel_indices]
+        else:
+            idx = rng.choice(N, size=max_points, replace=False)
+            lat_np = lat_np[idx]
+            prog_np = prog_np[idx]
+            src_np = src_np[idx]
+            tid_np = None
 
     try:
         if np.all(lat_np == lat_np[0]):
@@ -389,13 +437,11 @@ def visualize_tsne_sources(
     for src in unique_sources:
         m = src_np == src
         mk = source_markers.get(src, 'o')
-        
         # Plot each program ID separately
         for prog_id in unique_ids:
             prog_mask = m & (prog_np == prog_id)
             if np.any(prog_mask):
                 points = emb[prog_mask]
-                
                 # Use pattern color and source marker
                 color = pattern_colors.get(prog_id, '#AAAAAA')
                 ax.scatter(
@@ -406,25 +452,21 @@ def visualize_tsne_sources(
                     s=50,
                     edgecolors='none'
                 )
-                
-                # Add labels on samples showing GROUP ID (sample index), not pattern type
-                # We need to find the original sample indices for these points
-                sample_indices = np.where(prog_mask)[0]
-                for i, (point, sample_idx) in enumerate(zip(points, sample_indices)):
-                    # Calculate the group ID based on the sample index
-                    # Since we have 4 points per group (3 encoders + 1 context), 
-                    # and we're plotting all sources together, we need to map back to original samples
-                    group_id = sample_idx // 4  # Each group has 4 points
-                    ax.annotate(str(group_id), point, xytext=(3, 3), textcoords="offset points", fontsize=8, alpha=0.8)
+
+    # If task_ids present, annotate centroid per task
+    if task_ids is not None and 'tid_np' in locals() and tid_np is not None:
+        for tid in np.unique(tid_np):
+            mask = tid_np == tid
+            if np.sum(mask) >= 2:
+                centroid = emb[mask].mean(axis=0)
+                ax.annotate(str(int(tid)), centroid, xytext=(3, 3), textcoords="offset points", fontsize=9, alpha=0.9)
 
     # EXACTLY same title, labels, and style as train.py
     ax.set_title("t-SNE Visualization of Latent Embeddings")
     ax.set_xlabel("t-SNE 1")
     ax.set_ylabel("t-SNE 2")
 
-    # Build a clean legend with:
-    # - Colors: Pattern 1/2/3
-    # - Shapes: Encoder 0/1/2 and Context
+    # Build a clean legend with colors (patterns) and shapes (sources)
     from matplotlib.lines import Line2D
     pattern_handles = []
     for pid in [1, 2, 3]:
@@ -434,7 +476,6 @@ def visualize_tsne_sources(
                        markerfacecolor=pattern_colors.get(pid, '#AAAAAA'), markeredgecolor='none', markersize=10,
                        label=f"Pattern {pid}")
             )
-    # Shapes legend: show marker glyphs with their source names to the right
     shape_labels = {
         0: "Encoder 0",
         1: "Encoder 1",
@@ -449,14 +490,11 @@ def visualize_tsne_sources(
             Line2D([0], [0], marker=marker, linestyle='None', color='black',
                    markerfacecolor='white', markeredgecolor='black', markersize=10, label=label)
         )
-    # Combine: first colors with labels, then shapes without labels
     handles = pattern_handles + shape_handles
     ax.legend(handles=handles, bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.0,
               title="Patterns (color) and Sources (shape)")
 
-    # Adjust layout to prevent legend from being cut off - EXACTLY like train.py
     plt.tight_layout()
-
     return fig
 
 def visualize_latents_samples(
@@ -756,8 +794,8 @@ def visualize_struct_confidence_panel(
     
     # Add the note to the right of the entire figure (outside all subplots)
     # Position the text in the right margin of the figure
-    fig.text(0.98, 0.5, note_text, 
-             fontsize=11, verticalalignment='center', horizontalalignment='right',
+    fig.text(0.98, 0.12, note_text,
+             fontsize=10, verticalalignment='bottom', horizontalalignment='right',
              bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.9, edgecolor='gray'))
 
     fig.suptitle(title, fontsize=14, fontweight='bold')

@@ -499,30 +499,36 @@ class StructuredTrainer:
         return TrainState.create(apply_fn=self.model.apply, tx=tx, params=combined_params)
 
     def prepare_train_dataset_for_epoch(self, key: chex.PRNGKey, log_every_n_steps: int) -> tuple[chex.Array, chex.Array]:
-        """Shuffle the dataset and reshape it to (num_logs, log_every_n_steps, batch_size, *)."""
+        """Shuffle the dataset and reshape it to (num_logs, log_every_n_steps, batch_size, *).
+        Gracefully handles cases where available batches are fewer than log_every_n_steps by
+        reducing the inner group size to the number of available batches.
+        """
         shuffle_key, augmentation_key = jax.random.split(key)
         grids, shapes = shuffle_dataset_into_batches(
             self.train_grids, self.train_shapes, self.batch_size, shuffle_key
         )
 
         num_batches = grids.shape[0]
-        if num_batches < log_every_n_steps:
-            raise ValueError(
-                "Dataset provides only "
-                f"{num_batches} batches but log_every_n_steps={log_every_n_steps}. "
-                "Increase dataset size or reduce log_every_n_steps to avoid stalling."
-            )
+        # Use an effective group size that fits the available number of batches
+        effective_log_every = max(1, min(log_every_n_steps, num_batches))
 
-        num_logs = num_batches // log_every_n_steps
-        grids = grids[: num_logs * log_every_n_steps]
-        shapes = shapes[: num_logs * log_every_n_steps]
+        # Compute number of groups (logs)
+        num_logs = num_batches // effective_log_every
+        # Ensure at least one group exists when there are batches
+        if num_logs == 0 and num_batches > 0:
+            effective_log_every = num_batches
+            num_logs = 1
+
+        # Truncate to complete groups only
+        grids = grids[: num_logs * effective_log_every]
+        shapes = shapes[: num_logs * effective_log_every]
 
         if self.cfg.training.online_data_augmentation:
             grids, shapes = data_augmentation_fn(grids, shapes, augmentation_key)
 
-        # Reshape to (num_logs, log_every_n_steps, batch_size, *)
-        grids = grids.reshape(num_logs, log_every_n_steps, self.batch_size, *grids.shape[2:])
-        shapes = shapes.reshape(num_logs, log_every_n_steps, self.batch_size, *shapes.shape[2:])
+        # Reshape to (num_logs, effective_log_every, batch_size, *)
+        grids = grids.reshape(num_logs, effective_log_every, self.batch_size, *grids.shape[2:])
+        shapes = shapes.reshape(num_logs, effective_log_every, self.batch_size, *shapes.shape[2:])
         return grids, shapes
 
     def train_n_steps(self, state: TrainState, batches: tuple[chex.Array, chex.Array], key: chex.PRNGKey) -> tuple[TrainState, dict]:
@@ -1145,12 +1151,17 @@ class StructuredTrainer:
                     logging.warning(f"T-SNE max_points too small to sample from all patterns")
             
             # Use visualize_tsne_sources to show different markers for encoders vs context
+            # Build task_ids aligned with concatenated latents: repeat each task id for all sources (encoders + context)
+            sources_per_task = len(enc_params_list) + 1
+            num_tasks_total = latents_concat.shape[0] // sources_per_task
+            task_ids = np.repeat(np.arange(num_tasks_total), sources_per_task)
             fig_tsne = visualize_tsne_sources(
                 latents=latents_concat,
                 program_ids=pattern_ids_concat,  # Pattern types (1, 2, 3) for colors
                 source_ids=source_ids_np,        # 0,1,2 for encoders, 3 for context
                 max_points=max_points,
-                random_state=42
+                random_state=42,
+                task_ids=task_ids,
             )
             
             # COMPUTE CLUSTERING METRICS AND UPLOAD TO WANDB
@@ -1520,12 +1531,16 @@ class StructuredTrainer:
                     logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
                     
                     # Use visualize_tsne_sources for different markers
+                    sources_per_task = len(enc_params_list) + 1
+                    num_tasks_total = latents_concat.shape[0] // sources_per_task
+                    task_ids = np.repeat(np.arange(num_tasks_total), sources_per_task)
                     fig_latents = visualize_tsne_sources(
                         latents=latents_concat,
                         program_ids=pattern_ids_concat,
                         source_ids=source_ids_np,
                         max_points=500,
-                        random_state=42
+                        random_state=42,
+                        task_ids=task_ids,
                     )
                     
                     # COMPUTE CLUSTERING METRICS FOR TEST DATASETS

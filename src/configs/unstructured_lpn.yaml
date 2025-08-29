@@ -28,17 +28,36 @@ training:
   use_hf: False
 
 eval:
-  eval_datasets:
+  eval_datasets: []  # Keep empty
+  test_datasets:
+    # Replace the mixed pattern test with balanced pattern tests
     - generator: STRUCT_PATTERN
-      name: "all_patterns"
-      num_pairs: 4
-      length: 96  # 32 per pattern
+      name: pattern_1_only
       task_generator_kwargs:
-        pattern: 0  # Mix all patterns
+        pattern: 1  # Only O-tetrominos
         pattern_per_task: true
-      batch_size: 96
-      num_tasks_to_show: 5
-  test_datasets: []  # Empty - use eval_datasets instead
+      num_pairs: 4
+      length: 32  # 32 samples of pattern 1
+      batch_size: 32
+      num_tasks_to_show: 3
+    - generator: STRUCT_PATTERN
+      name: pattern_2_only
+      task_generator_kwargs:
+        pattern: 2  # Only T-tetrominos
+        pattern_per_task: true
+      num_pairs: 4
+      length: 32  # 32 samples of pattern 2
+      batch_size: 32
+      num_tasks_to_show: 3
+    - generator: STRUCT_PATTERN
+      name: pattern_3_only
+      task_generator_kwargs:
+        pattern: 3  # Only L-tetrominos
+        pattern_per_task: true
+      num_pairs: 4
+      length: 32  # 32 samples of pattern 3
+      batch_size: 32
+      num_tasks_to_show: 3
 
   json_datasets:
 
