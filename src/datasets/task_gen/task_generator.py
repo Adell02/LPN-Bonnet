@@ -122,10 +122,6 @@ class StructPatternTaskGenerator(IterableDataset):
             self._task_pattern = random.choice((1, 2, 3))
         else:
             self._task_pattern = None
-            if self.pattern_per_task:
-                print(f"DEBUG: pattern_per_task=True but pattern={self.pattern} is fixed, not mixing")
-            else:
-                print(f"DEBUG: pattern_per_task=False, will mix patterns per pair")
             
         task = []
         for _ in range(self.num_pairs):
