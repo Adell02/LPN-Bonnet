@@ -28,18 +28,17 @@ training:
   use_hf: False
 
 eval:
-  eval_datasets:
   test_datasets:
     - generator: STRUCT_PATTERN
       task_generator_kwargs:
-        pattern: 1
+        pattern: 0   # mixed
         num_rows: 5
         num_cols: 5
-      name: struct_pattern_1
+      name: struct_pattern_mixed
       num_pairs: 4
       length: 96
       batch_size: 96
-      num_tasks_to_show: 4
+      num_tasks_to_show: 3
   json_datasets:
 
 encoder_transformer:

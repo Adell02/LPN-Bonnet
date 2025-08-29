@@ -662,6 +662,7 @@ def visualize_struct_confidence_panel(
     poe_logvar: chex.Array,
     title: str = "Structured Confidence Panel",
     encoder_labels: list[str] | None = None,
+    combined_label: str = "PoE",
 ) -> plt.Figure:
     """
     Panel with:
@@ -718,11 +719,11 @@ def visualize_struct_confidence_panel(
         ax_means.hist(mu_flat, bins=30, alpha=0.5, color=color, label=encoder_labels[idx], density=True)
         ax_vars.hist(var_flat, bins=30, alpha=0.5, color=color, label=encoder_labels[idx], density=True)
 
-    # Plot PoE distributions
+    # Plot combined (PoE or Context) distributions
     poe_mu_flat = _np.asarray(poe_mu).reshape(-1)
     poe_var_flat = _np.exp(_np.asarray(poe_logvar).reshape(-1))
-    ax_means.hist(poe_mu_flat, bins=30, histtype='step', linewidth=2.0, color=poe_color, label='PoE', density=True)
-    ax_vars.hist(poe_var_flat, bins=30, histtype='step', linewidth=2.0, color=poe_color, label='PoE', density=True)
+    ax_means.hist(poe_mu_flat, bins=30, histtype='step', linewidth=2.0, color=poe_color, label=combined_label, density=True)
+    ax_vars.hist(poe_var_flat, bins=30, histtype='step', linewidth=2.0, color=poe_color, label=combined_label, density=True)
 
     ax_means.set_title("Latent Means")
     ax_vars.set_title("Latent Variances")

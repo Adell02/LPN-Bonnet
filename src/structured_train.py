@@ -1188,24 +1188,35 @@ class StructuredTrainer:
                         True, 
                         mutable=False
                     )
-                    # Average over pairs dimension -> [1, D]
-                    enc_mus.append(np.array(mu_i).mean(axis=-2))
-                    enc_logvars.append(np.array(logvar_i).mean(axis=-2))
+                    # Use QUERY PAIR ONLY (pair index 0) -> shape [1, D]
+                    mu_i_np = np.array(mu_i)
+                    logvar_i_np = np.array(logvar_i)
+                    enc_mus.append(mu_i_np[:, 0, :])
+                    enc_logvars.append(logvar_i_np[:, 0, :])
 
-                # PoE on encoder latents (diagonal Gaussians): precision add with alphas
-                alphas_np = np.asarray(alphas)
-                precisions = [np.exp(-lv) for lv in enc_logvars]  # [1, D]
-                # Weighted sum of precisions
-                poe_precision = np.zeros_like(precisions[0])
-                for a, p in zip(alphas_np, precisions):
-                    poe_precision = poe_precision + a * p
-                poe_var = 1.0 / (poe_precision + 1e-8)
-                # PoE mean for completeness (not plotted directly in hist): sum(a_i * prec_i * mu_i) / sum(a_i * prec_i)
-                num = np.zeros_like(enc_mus[0])
-                for a, p, m in zip(alphas_np, precisions, enc_mus):
-                    num = num + a * p * m
-                poe_mu = num / (poe_precision + 1e-8)
-                poe_logvar = np.log(poe_var + 1e-8)
+                # Use CONTEXT from generate_output instead of PoE for the combined curve
+                # Re-run generate_output for this single task to fetch context (query pair only)
+                key_ctx = jax.random.PRNGKey(0)
+                out_gr, out_sh, info_single = self.model.apply(
+                    {"params": state.params},
+                    method=self.model.generate_output,
+                    pairs=pairs[idx:idx+1],
+                    grid_shapes=shapes[idx:idx+1],
+                    input=pairs[idx:idx+1, 0, ..., 0],
+                    input_grid_shape=shapes[idx:idx+1, 0, ..., 0],
+                    key=key_ctx,
+                    dropout_eval=True,
+                    mode=cfg.eval.inference_mode,
+                    return_two_best=False,
+                    poe_alphas=alphas,
+                    encoder_params_list=enc_params_list,
+                    decoder_params=state.params,
+                )
+                context_vec = np.asarray(info_single.get("context"))  # [1, D]
+                # For visualization parity, build a synthetic narrow variance around context
+                # (context has no variance; show a very tight distribution)
+                poe_mu = context_vec
+                poe_logvar = np.log(np.full_like(context_vec, 1e-3))
 
                 panel_title = f"Pattern {pid} - Confidence"
                 enc_labels = [f"Encoder {i}" for i in range(len(enc_mus))]
@@ -1218,6 +1229,7 @@ class StructuredTrainer:
                     poe_logvar=poe_logvar.squeeze(0),
                     title=panel_title,
                     encoder_labels=enc_labels,
+                    combined_label="Context",
                 )
                 wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)})
                 plt.close(fig_panel)

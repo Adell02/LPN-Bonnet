@@ -97,6 +97,7 @@ def _compute_ari(embeddings: np.ndarray, true_labels: np.ndarray, k: int = 5) ->
         # Run KMeans with number of clusters equal to the number of unique labels
         n_clusters = len(np.unique(true_labels))
         if n_clusters <= 1:
+            logging.info("Community metrics: ARI skipped (only one unique label in true_labels)")
             return 0.0
         kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
         pred = kmeans.fit_predict(embeddings)
