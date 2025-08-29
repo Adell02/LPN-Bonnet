@@ -636,6 +636,14 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         try:
             with np.load(es_npz_path, allow_pickle=True) as f:
                 print(f"[plot] 🔍 ES NPZ keys for PCA: {list(f.keys())}")
+                print(f"[plot] 🔍 ES NPZ content analysis:")
+                for key in f.keys():
+                    data = f[key]
+                    if hasattr(data, 'shape'):
+                        print(f"[plot] 🔍   {key}: {data.shape}")
+                    else:
+                        print(f"[plot] 🔍   {key}: {type(data)}")
+                
                 if 'es_best_latents_per_generation' in f:
                     es_trajectory = np.array(f['es_best_latents_per_generation'])
                     print(f"[plot] 🔍 Found ES trajectory for PCA: {es_trajectory.shape}")
@@ -707,6 +715,14 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # BEFORE: Only used trajectory values (best per generation) - missed poor regions
     # AFTER: Uses full population losses - shows complete search space exploration
     # This reveals valleys, plateaus, and local minima that help understand optimization difficulty
+    
+    # 🔍 STRATEGIC DEBUGGING: Check what ES data is actually available
+    print(f"[plot] 🔍 === ES LOSS LANDSCAPE DEBUGGING ===")
+    print(f"[plot] 🔍 es.pop_pts: {es.pop_pts.shape if es.pop_pts is not None else None}")
+    print(f"[plot] 🔍 es.pop_vals: {es.pop_vals.shape if es.pop_vals is not None else None}")
+    print(f"[plot] 🔍 es.vals: {es.vals.shape if es.vals is not None else None}")
+    print(f"[plot] 🔍 es.best_per_gen: {es.best_per_gen.shape if es.best_per_gen is not None else None}")
+    
     if es.pop_pts is not None:
         es_pop_pts_original = es.pop_pts.reshape(-1, es.pop_pts.shape[-1])  # (N, D) where D is original dim
         
@@ -760,6 +776,46 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 print(f"[plot] ES trajectory values missing, cannot create background")
     else:
         print(f"[plot] ES background missing: pts={es.pop_pts is not None}")
+        
+        # 🔍 CRITICAL FIX: If no population data, try to reconstruct from best_latents_per_generation
+        # This is what we actually have in the ES NPZ file
+        if es.best_per_gen is not None:
+            print(f"[plot] 🔍 Attempting to reconstruct ES loss landscape from best_latents_per_generation")
+            print(f"[plot] 🔍 es.best_per_gen shape: {es.best_per_gen.shape}")
+            
+            # Check if we have generation-level losses that we can expand to population level
+            if es.vals is not None:
+                print(f"[plot] 🔍 es.vals shape: {es.vals.shape}")
+                print(f"[plot] 🔍 es.vals content: {es.vals}")
+                
+                # Try to reconstruct population-level data
+                # If es.vals has 32 values and es.best_per_gen has shape (1, 32, 4, 256)
+                # We can assume 32 generations with 4 samples each
+                if len(es.vals) == 32 and es.best_per_gen.shape[1] == 32:
+                    print(f"[plot] 🔍 Reconstructing: 32 generations × 4 samples = 128 population points")
+                    
+                    # Reshape best_latents_per_generation to get all population points
+                    es_pop_reconstructed = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])  # (128, 256)
+                    
+                    # Expand generation losses to population level
+                    # Each generation has 4 samples, so repeat each loss value 4 times
+                    es_pop_vals_reconstructed = np.repeat(es.vals, 4)  # (128,)
+                    
+                    print(f"[plot] 🔍 Reconstructed ES population: pts={es_pop_reconstructed.shape}, vals={es_pop_vals_reconstructed.shape}")
+                    print(f"[plot] 🔍 Reconstructed ES values range: [{es_pop_vals_reconstructed.min():.4f}, {es_pop_vals_reconstructed.max():.4f}]")
+                    
+                    # Add to background for loss landscape
+                    bgP_original.append(es_pop_reconstructed)
+                    bgV_original.append(es_pop_vals_reconstructed)
+                    print(f"[plot] 🔍 Added reconstructed ES population to loss landscape background")
+                else:
+                    print(f"[plot] 🔍 Cannot reconstruct: es.vals length ({len(es.vals)}) != es.best_per_gen shape[1] ({es.best_per_gen.shape[1]})")
+            else:
+                print(f"[plot] 🔍 No es.vals available for reconstruction")
+        else:
+            print(f"[plot] 🔍 No es.best_per_gen available for reconstruction")
+    
+    print(f"[plot] 🔍 === ES LOSS LANDSCAPE DEBUGGING END ===")
     
     # Check for value consistency between GA and ES
     # Note: GA uses trajectory losses, ES uses full population losses for comprehensive landscape

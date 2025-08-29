@@ -53,12 +53,6 @@ except Exception:
     _WANDB_AVAILABLE = False
     _WANDB_MODULE = None
 
-# Dataset functionality imports
-import jax
-from jax.tree_util import tree_map
-from data_utils import make_leave_one_out
-from train import load_datasets
-
 
 def get_checkpoint(
     run_name: str,
