@@ -2722,7 +2722,6 @@ def main() -> None:
         np.savez_compressed(target_npz, **data)
         print(f"[baseline] Successfully prepended baseline to {prefix} trajectory")
 
-    # Now prepend the baseline after both GA and ES have been executed
     _prepend_baseline(mean_out, ga_out, "ga_")
     _prepend_baseline(mean_out, es_out, "es_")
 
