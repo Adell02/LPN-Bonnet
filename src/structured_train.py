@@ -49,8 +49,7 @@ from visualization import (
     visualize_dataset_generation,
     visualize_heatmap,
     visualize_tsne,
-    visualize_tsne_sources,  # Added for source-aware T-SNE
-    visualize_latents_samples,  # Added for latent samples visualization
+    visualize_tsne_sources,  # For different markers (encoders vs context)
 )
 
 
@@ -751,11 +750,11 @@ class StructuredTrainer:
         pred_shapes_vis = np.repeat(out_shapes_np[:num_show, None, :], num_pairs, axis=1)
         fig_gen = visualize_dataset_generation(pairs_np[:num_show], shapes_np[:num_show], pred_grids_vis, pred_shapes_vis, num_show)
 
-        # 5. IMPLEMENT TSNE CONTEXT SAMPLING: Use generation context like train.py
-        # Instead of raw encoder latents, use the context that was actually used for generation
+        # 5. IMPLEMENT TSNE WITH ENCODERS + CONTEXT: Show both with different markers
+        # We want to see: encoder outputs vs final generation context, both colored by pattern
         all_latents = []
-        source_ids = []  # 0..E-1 for encoders, E for PoE, E+1 for generation context
-        pattern_ids_list = []  # pattern types (1, 2, 3) per point for color - NOT individual task IDs
+        source_ids = []  # 0 for encoders, 1 for generation context
+        pattern_ids_list = []  # pattern types (1, 2, 3) per point for color
         
         # Create pattern IDs based on how the evaluation dataset was generated
         # We generated 32 samples per pattern: pattern 1 (O), pattern 2 (T), pattern 3 (L)
@@ -765,7 +764,7 @@ class StructuredTrainer:
             pattern_sequence.extend([pattern_id] * num_samples_per_pattern)
         pattern_sequence = np.array(pattern_sequence)
         
-        # Add individual encoder latents (for comparison)
+        # Add individual encoder latents (unique source_id per encoder)
         for enc_idx, enc_params in enumerate(enc_params_list):
             mu_i, logvar_i = self.encoders[enc_idx].apply(
                 {"params": enc_params}, 
@@ -777,80 +776,42 @@ class StructuredTrainer:
             lat = mu_i.mean(axis=-2)  # Mean over pairs
             lat_np = np.array(lat).reshape(-1, lat.shape[-1])
             all_latents.append(lat_np)
-            source_ids.extend([enc_idx] * lat_np.shape[0])
+            source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
             pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for each encoder
         
-        # Add PoE combined latents
-        if len(enc_params_list) > 1:
-            # Collect encoder outputs for PoE computation
-            enc_mus = []
-            enc_logvars = []
-            for enc_idx, enc_params in enumerate(enc_params_list):
-                mu_i, logvar_i = self.encoders[enc_idx].apply(
-                    {"params": enc_params}, 
-                    pairs, 
-                    shapes, 
-                    True, 
-                    mutable=False
-                )
-                enc_mus.append(mu_i)
-                enc_logvars.append(logvar_i)
-            
-            mus = jnp.stack(enc_mus, axis=0)
-            logvars = jnp.stack(enc_logvars, axis=0)
-            alphas = jnp.asarray(cfg.structured.alphas, dtype=jnp.float32)
-            from models.structured_lpn import poe_diag_gaussians
-            mu_poe, _ = poe_diag_gaussians(mus, logvars, alphas)
-            poe_lat = mu_poe.mean(axis=-2)
-            poe_np = np.array(poe_lat).reshape(-1, poe_lat.shape[-1])
-            all_latents.append(poe_np)
-            source_ids.extend([len(enc_params_list)] * poe_np.shape[0])
-            pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for PoE
-        
-        # MOST IMPORTANT: Add the generation context (like train.py does)
+        # Add the generation context (source_id = num_encoders)
         if "context" in info:
             generation_context = info["context"]
             if generation_context is not None:
-                # Use the context that was actually used for generation
+                # Reshape like train.py does
                 context_np = np.array(generation_context).reshape(-1, generation_context.shape[-1])
                 all_latents.append(context_np)
-                source_ids.extend([len(enc_params_list) + 1] * context_np.shape[0])  # E+1 for generation context
-                pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for generation context
+                source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for generation context
+                pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for context
         
-        # ALSO IMPORTANT: Add latent samples for variational uncertainty visualization (like train.py)
-        if "latents_samples" in info:
-            latents_samples = info["latents_samples"]
-            if latents_samples is not None:
-                # Reshape: [num_tasks, num_samples, num_pairs, latent_dim] -> [num_tasks * num_samples * num_pairs, latent_dim]
-                latents_samples_np = np.array(latents_samples).reshape(-1, latents_samples.shape[-1])
-                all_latents.append(latents_samples_np)
-                source_ids.extend([len(enc_params_list) + 2] * latents_samples_np.shape[0])  # E+2 for latent samples
-                # Repeat pattern sequence for each sample
-                pattern_samples_sequence = np.repeat(pattern_sequence, 5 * 4, axis=0)  # 5 samples * 4 pairs
-                pattern_ids_list.append(pattern_samples_sequence)
-
-        latents_concat = np.concatenate(all_latents, axis=0)
-        source_ids_np = np.array(source_ids)
-        pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
-
-        # Downsample points for t-SNE to be memory efficient
-        max_points = int(cfg.eval.get("tsne_max_points", 2000))
-        if latents_concat.shape[0] > max_points:
-            idx = np.random.RandomState(42).choice(latents_concat.shape[0], size=max_points, replace=False)
-            latents_concat = latents_concat[idx]
-            source_ids_np = source_ids_np[idx]
-            pattern_ids_concat = pattern_ids_concat[idx]
-
-        # Compute t-SNE figure using visualize_tsne_sources for both markers (sources) and colors (patterns)
-        # This shows: different markers for encoder 0,1,2, PoE, generation context
-        # AND different colors for pattern types 1,2,3 (O, T, L tetrominos)
-        fig_tsne = visualize_tsne_sources(
-            latents=latents_concat,
-            program_ids=pattern_ids_concat,  # Pattern types (1, 2, 3) for colors
-            source_ids=source_ids_np,        # Source types (0,1,2 for encoders, 3 for PoE, 4 for generation) for markers
-            max_points=max_points,
-            random_state=42
-        )
+        if all_latents:
+            latents_concat = np.concatenate(all_latents, axis=0)
+            source_ids_np = np.array(source_ids)
+            pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
+            
+            # Downsample points for t-SNE to be memory efficient
+            max_points = int(cfg.eval.get("tsne_max_points", 500))
+            if latents_concat.shape[0] > max_points:
+                idx = np.random.RandomState(42).choice(latents_concat.shape[0], size=max_points, replace=False)
+                latents_concat = latents_concat[idx]
+                source_ids_np = source_ids_np[idx]
+                pattern_ids_concat = pattern_ids_concat[idx]
+            
+            # Use visualize_tsne_sources to show different markers for encoders vs context
+            fig_tsne = visualize_tsne_sources(
+                latents=latents_concat,
+                program_ids=pattern_ids_concat,  # Pattern types (1, 2, 3) for colors
+                source_ids=source_ids_np,        # 0 for encoders, 1 for context
+                max_points=max_points,
+                random_state=42
+            )
+        else:
+            fig_tsne = None
 
         wandb.log({
             f"test/{test_name}/pixel_accuracy": wandb.Image(fig_heatmap),
@@ -994,31 +955,54 @@ class StructuredTrainer:
         pred_shapes_vis = np.repeat(out_shapes_np[:num_show, None, :], num_pairs, axis=1)
         fig_gen = visualize_dataset_generation(grids_np[:num_show], shapes_np[:num_show], pred_grids_vis, pred_shapes_vis, num_show)
         
-        # T-SNE visualization - EXACTLY like train.py
+        # T-SNE visualization - Show encoders + context with different markers
         fig_latents = None
-        fig_latents_samples = None
         fig_search_progress = None
         
         if "context" in info and program_ids is not None:
             context = info["context"]
             if context is not None:
-                context_np = np.array(context).reshape(-1, context.shape[-1])
-                fig_latents = visualize_tsne(context_np, program_ids)
+                # Show both encoder outputs and generation context
+                all_latents = []
+                source_ids = []
+                pattern_ids_list = []
                 
-                # FIXED: Use original program_ids and actual latents_samples from generated_info (like train.py)
-                if 'latents_samples' in info:
-                    fig_latents_samples = visualize_latents_samples(
+                # Add encoder outputs (unique source_id per encoder)
+                for enc_idx, enc_params in enumerate(enc_params_list):
+                    mu_i, logvar_i = self.encoders[enc_idx].apply(
+                        {"params": enc_params}, 
                         dataset_grids, 
                         dataset_shapes, 
-                        program_ids,  # Use original program_ids (not repeated)
-                        info['latents_samples'],  # Use actual latents samples
-                        num_tasks=min(num_tasks_to_show, 5),
-                        num_samples_per_task=3
+                        True, 
+                        mutable=False
                     )
-                else:
-                    fig_latents_samples = None
+                    lat = mu_i.mean(axis=-2)  # Mean over pairs
+                    lat_np = np.array(lat).reshape(-1, lat.shape[-1])
+                    all_latents.append(lat_np)
+                    source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
+                    pattern_ids_list.append(program_ids)  # Pattern IDs for each encoder
+                
+                # Add generation context (source_id = num_encoders)
+                context_np = np.array(context).reshape(-1, context.shape[-1])
+                all_latents.append(context_np)
+                source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for context
+                pattern_ids_list.append(program_ids)  # Pattern IDs for context
+                
+                if all_latents:
+                    latents_concat = np.concatenate(all_latents, axis=0)
+                    source_ids_np = np.array(source_ids)
+                    pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
+                    
+                    # Use visualize_tsne_sources for different markers
+                    fig_latents = visualize_tsne_sources(
+                        latents=latents_concat,
+                        program_ids=pattern_ids_concat,
+                        source_ids=source_ids_np,
+                        max_points=500,
+                        random_state=42
+                    )
         
-        return metrics, fig_gen, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress
+        return metrics, fig_gen, fig_heatmap, fig_latents, None, fig_search_progress
 
 
 @hydra.main(config_path="configs", version_base=None, config_name="structured")

@@ -378,11 +378,7 @@ def visualize_tsne_sources(
         elif src == 2:
             lbl = "Encoder 2"
         elif src == 3:
-            lbl = "PoE Combined"
-        elif src == 4:
             lbl = "Generation Context"
-        elif src == 5:
-            lbl = "Latent Samples"
         else:
             lbl = f"Source {src}"
         

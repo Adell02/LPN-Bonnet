@@ -191,18 +191,8 @@ class StructuredLPN(nn.Module):
         assert key is not None, "'key' is required for stochastic generation"
         key, key_lat = jax.random.split(key)
         
-        # Generate single sample for generation
+        # Generate single sample for generation (like regular LPN)
         latents = mu_poe + jnp.exp(0.5 * logvar_poe) * jax.random.normal(key_lat, mu_poe.shape)
-        
-        # Generate multiple samples for T-SNE visualization (like train.py)
-        num_samples = 5  # Number of samples per task for visualization
-        key, key_samples = jax.random.split(key)
-        latents_samples = []
-        for i in range(num_samples):
-            key_samples, key_i = jax.random.split(key_samples)
-            sample = mu_poe + jnp.exp(0.5 * logvar_poe) * jax.random.normal(key_i, mu_poe.shape)
-            latents_samples.append(sample)
-        latents_samples = jnp.stack(latents_samples, axis=-3)  # [..., num_samples, num_pairs, latent_dim]
 
         # 3) optionally replace latents
         if mode_kwargs.get("remove_encoder_latents", False):
@@ -214,11 +204,11 @@ class StructuredLPN(nn.Module):
         if mode == "mean":
             first_context = latents.mean(axis=-2)
             second_context = first_context
-            info = {"context": first_context, "latents_samples": latents_samples}
+            info = {"context": first_context}
         elif mode == "first":
             first_context = latents[..., 0, :]
             second_context = first_context
-            info = {"context": first_context, "latents_samples": latents_samples}
+            info = {"context": first_context}
         elif mode == "random_search":
             assert key is not None
             for arg in ["num_samples", "scale"]:
@@ -227,7 +217,7 @@ class StructuredLPN(nn.Module):
             first_context, second_context = self._core._get_random_search_context(
                 latents, pairs, grid_shapes, k, **mode_kwargs
             )
-            info = {"context": first_context, "latents_samples": latents_samples}
+            info = {"context": first_context}
         elif mode == "gradient_ascent":
             for arg in ["num_steps", "lr"]:
                 assert arg in mode_kwargs
@@ -235,7 +225,7 @@ class StructuredLPN(nn.Module):
             first_context, second_context = self._core._get_gradient_ascent_context(
                 latents, pairs, grid_shapes, k, **mode_kwargs
             )
-            info = {"context": first_context, "latents_samples": latents_samples}
+            info = {"context": first_context}
         elif mode == "evolutionary_search":
             for arg in ["population_size", "num_generations", "mutation_std"]:
                 assert arg in mode_kwargs
@@ -243,7 +233,7 @@ class StructuredLPN(nn.Module):
             first_context, second_context = self._core._get_evolutionary_search_context(
                 latents, pairs, grid_shapes, k, **mode_kwargs
             )
-            info = {"context": first_context, "latents_samples": latents_samples}
+            info = {"context": first_context}
         else:
             raise ValueError(f"Unsupported mode: {mode}")
 
