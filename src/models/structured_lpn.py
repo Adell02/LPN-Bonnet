@@ -181,22 +181,13 @@ class StructuredLPN(nn.Module):
             and pattern_ids is not None
         ):
             try:
-                # Debug logging for contrastive loss
-                logging.debug(f"Computing contrastive loss with:")
-                logging.debug(f"  - mus shape: {mus.shape}")
-                logging.debug(f"  - logvars shape: {logvars.shape}")
-                logging.debug(f"  - mu_poe shape: {mu_poe.shape}")
-                logging.debug(f"  - logvar_poe shape: {logvar_poe.shape}")
-                logging.debug(f"  - pattern_ids shape: {pattern_ids.shape}")
-                logging.debug(f"  - pattern_ids unique: {jnp.unique(pattern_ids)}")
+                # Note: Removed debug logging from inside JAX-compiled function
+                # as it can cause issues with JAX traced arrays
                 
                 contrastive_loss, kl_mean, sign_mean = self._compute_contrastive_loss(
                     mus, logvars, mu_poe, logvar_poe, pattern_ids
                 )
                 loss += contrastive_kl_coeff * contrastive_loss
-                
-                logging.debug(f"Contrastive loss computed: {float(contrastive_loss):.6f}")
-                logging.debug(f"KL mean: {float(kl_mean):.6f}, Sign mean: {float(sign_mean):.6f}")
             except Exception as e:
                 logging.warning(
                     f"Contrastive loss computation failed: {e}. Skipping contrastive loss."
@@ -505,12 +496,8 @@ class StructuredLPN(nn.Module):
         if E == 0:
             return 0.0, 0.0, 0.0
             
-        # Debug logging
-        logging.debug(f"_compute_contrastive_loss:")
-        logging.debug(f"  - E (num encoders): {E}")
-        logging.debug(f"  - mus shape: {mus.shape}")
-        logging.debug(f"  - pattern_ids shape: {pattern_ids.shape}")
-        logging.debug(f"  - pattern_ids unique: {jnp.unique(pattern_ids)}")
+        # Note: Removed debug logging from inside JAX-compiled function
+        # as it can cause issues with JAX traced arrays
         
         var_poe = jnp.exp(logvar_poe)
         var_enc = jnp.exp(logvars)
@@ -523,28 +510,21 @@ class StructuredLPN(nn.Module):
             - 1.0
         )
         kl = jnp.mean(kl, axis=(-2, -1))  # (E, B) - average over pairs and latent dims
-        
-        logging.debug(f"  - kl shape after mean: {kl.shape}")
-        logging.debug(f"  - kl values: {kl}")
 
         # Create encoder IDs: 1, 2, 3 for encoders 0, 1, 2
         # This assumes encoder 0 specializes in pattern 1, encoder 1 in pattern 2, etc.
         enc_ids = jnp.arange(1, E + 1, dtype=pattern_ids.dtype)[:, None]
-        logging.debug(f"  - enc_ids: {enc_ids}")
         
         # Create sign matrix: 
         # +1 if pattern matches encoder specialization (encourage lower KL)
         # -1 if pattern doesn't match (encourage higher KL)
         sign = jnp.where(pattern_ids[None, :] == enc_ids, 1.0, -1.0)
-        logging.debug(f"  - sign matrix shape: {sign.shape}")
-        logging.debug(f"  - sign matrix: {sign}")
         
         # Compute contrastive loss: 
         # - Positive sign * KL: encourages encoders to have lower KL for their specialized patterns
         # - Negative sign * KL: encourages encoders to have higher KL for non-specialized patterns
         # This should lead to encoder specialization
         contrastive = jnp.mean(sign * kl)
-        logging.debug(f"  - final contrastive loss: {float(contrastive):.6f}")
         
         # Return additional metrics for monitoring
         return contrastive, jnp.mean(kl), jnp.mean(sign)

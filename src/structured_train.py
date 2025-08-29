@@ -606,15 +606,24 @@ class StructuredTrainer:
         
         # Log repulsion loss if present
         if "repulsion_loss" in avg_metrics:
-            logging.info(f"Repulsion loss: {float(avg_metrics['repulsion_loss']):.6f} (weighted: {float(avg_metrics.get('repulsion_loss_weighted', 0)):.6f})")
+            # Convert JAX arrays to Python types for safe logging
+            repulsion_loss_val = float(np.array(avg_metrics['repulsion_loss']))
+            repulsion_loss_weighted_val = float(np.array(avg_metrics.get('repulsion_loss_weighted', 0)))
+            logging.info(f"Repulsion loss: {repulsion_loss_val:.6f} (weighted: {repulsion_loss_weighted_val:.6f})")
         
         # Log contrastive loss if present
         if "contrastive_loss" in avg_metrics:
-            logging.info(f"Contrastive loss: {float(avg_metrics['contrastive_loss']):.6f} (weighted: {float(avg_metrics.get('contrastive_loss_weighted', 0)):.6f})")
+            # Convert JAX arrays to Python types for safe logging
+            contrastive_loss_val = float(np.array(avg_metrics['contrastive_loss']))
+            contrastive_loss_weighted_val = float(np.array(avg_metrics.get('contrastive_loss_weighted', 0)))
+            logging.info(f"Contrastive loss: {contrastive_loss_val:.6f} (weighted: {contrastive_loss_weighted_val:.6f})")
+            
             if "contrastive_kl_mean" in avg_metrics:
-                logging.info(f"  - KL mean: {float(avg_metrics['contrastive_kl_mean']):.6f}")
+                kl_mean_val = float(np.array(avg_metrics['contrastive_kl_mean']))
+                logging.info(f"  - KL mean: {kl_mean_val:.6f}")
             if "contrastive_sign_mean" in avg_metrics:
-                logging.info(f"  - Sign mean: {float(avg_metrics['contrastive_sign_mean']):.6f}")
+                sign_mean_val = float(np.array(avg_metrics['contrastive_sign_mean']))
+                logging.info(f"  - Sign mean: {sign_mean_val:.6f}")
         
         # Decrement exposure counter by number of gradient steps completed
         self.encoder_expose_steps = max(0, self.encoder_expose_steps - num_steps)
