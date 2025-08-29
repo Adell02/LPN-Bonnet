@@ -1225,7 +1225,6 @@ class StructuredTrainer:
             logging.warning(f"Confidence panel generation failed: {e}")
 
         # Free figures to save memory
-        import matplotlib.pyplot as plt
         plt.close(fig_heatmap)
         plt.close(fig_gen)
         plt.close(fig_tsne)
