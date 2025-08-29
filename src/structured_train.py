@@ -947,6 +947,14 @@ class StructuredTrainer:
         # Limit number of tasks shown for memory efficiency, but STRATIFY across patterns (1,2,3)
         num_show = int(cfg.eval.get("num_tasks_to_show", 5))
         num_show = max(1, min(num_show, int(pairs_np.shape[0])))
+        # Build a local pattern sequence (assumes ordering by pattern with equal blocks)
+        total_sets = int(pairs_np.shape[0])
+        spp = max(1, total_sets // 3)
+        pattern_sequence = np.concatenate([
+            np.ones(spp, dtype=int),
+            np.ones(spp, dtype=int) * 2,
+            np.ones(total_sets - 2 * spp, dtype=int) * 3,
+        ])
         # Determine per-pattern counts (at least 1 from each if possible)
         per_pat = max(1, num_show // 3)
         # Build indices for each pattern in a round-robin up to num_show
