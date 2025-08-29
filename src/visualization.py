@@ -374,6 +374,16 @@ def visualize_tsne_sources(
         3: "Context"
     }
     
+    # Pattern labels for better legend
+    pattern_labels = {
+        1: "O-tetromino",
+        2: "T-tetromino", 
+        3: "L-tetromino"
+    }
+    
+    # Track what we've plotted to avoid duplicate legend entries
+    legend_entries = set()
+    
     # Plot each source with different markers
     for src in unique_sources:
         m = src_np == src
@@ -385,15 +395,33 @@ def visualize_tsne_sources(
             prog_mask = m & (prog_np == prog_id)
             if np.any(prog_mask):
                 points = emb[prog_mask]
-                ax.scatter(
-                    points[:, 0], points[:, 1], 
-                    c=[color_map[prog_id]], 
-                    marker=mk, 
-                    label=f"{source_label} - Sample {prog_id}", 
-                    alpha=0.7, 
-                    s=50,
-                    edgecolors='none'
-                )
+                
+                # Create legend label based on source and pattern
+                pattern_label = pattern_labels.get(prog_id, f"Pattern {prog_id}")
+                legend_key = f"{source_label} - {pattern_label}"
+                
+                # Only add to legend if we haven't seen this combination
+                if legend_key not in legend_entries:
+                    ax.scatter(
+                        points[:, 0], points[:, 1], 
+                        c=[color_map[prog_id]], 
+                        marker=mk, 
+                        label=legend_key, 
+                        alpha=0.7, 
+                        s=50,
+                        edgecolors='none'
+                    )
+                    legend_entries.add(legend_key)
+                else:
+                    # Plot without adding to legend
+                    ax.scatter(
+                        points[:, 0], points[:, 1], 
+                        c=[color_map[prog_id]], 
+                        marker=mk, 
+                        alpha=0.7, 
+                        s=50,
+                        edgecolors='none'
+                    )
                 
                 # Add labels on samples showing sample ID
                 for i, point in enumerate(points):

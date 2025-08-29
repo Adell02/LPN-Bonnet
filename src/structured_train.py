@@ -857,14 +857,17 @@ class StructuredTrainer:
 
         # Merge info dictionaries
         info = {}
+        logging.info(f"Available info keys: {list(all_info[0].keys())}")
         for key in all_info[0].keys():
             if key == "context":
                 # Concatenate contexts
                 contexts = [inf[key] for inf in all_info]
                 info[key] = jnp.concatenate(contexts, axis=0)
+                logging.info(f"Context shape after concatenation: {info[key].shape}")
             else:
                 # For other info, just take the first batch
                 info[key] = all_info[0][key]
+                logging.info(f"Info key '{key}' shape: {info[key].shape}")
 
         # Move tensors to host (CPU) and convert to numpy for lightweight eval
         pairs_np = np.array(jax.device_get(pairs))
@@ -1014,6 +1017,7 @@ class StructuredTrainer:
         # Add the generation context (source_id = num_encoders)
         if "context" in info:
             generation_context = info["context"]
+            logging.info(f"Main eval - Found context in info, shape: {generation_context.shape}")
             if generation_context is not None:
                 # Reshape like train.py does
                 context_np = np.array(generation_context).reshape(-1, generation_context.shape[-1])
@@ -1039,6 +1043,9 @@ class StructuredTrainer:
                 all_latents.append(context_np)
                 source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for generation context
                 pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for context
+                logging.info(f"Main eval - Added context to T-SNE: {len(context_np)} points")
+        else:
+            logging.warning(f"Main eval - No 'context' key found in info. Available keys: {list(info.keys())}")
         
         if all_latents:
             latents_concat = np.concatenate(all_latents, axis=0)
@@ -1055,31 +1062,39 @@ class StructuredTrainer:
             # Downsample points for t-SNE to be memory efficient
             max_points = int(cfg.eval.get("tsne_max_points", 500))
             if latents_concat.shape[0] > max_points:
-                # IMPORTANT: Sample by PATTERNS, not individual points, to maintain pattern relationships
-                # Each pattern has multiple sets, each with 4 points
+                # Simple random sampling while preserving pattern distribution
+                # Since we have 3 patterns, ensure we keep some from each
                 points_per_pattern = total_points // total_patterns
-                max_patterns = max_points // points_per_pattern
-                if max_patterns > 0:
-                    # Sample complete patterns
-                    pattern_indices = np.random.RandomState(42).choice(total_patterns, size=max_patterns, replace=False)
-                    # For each selected pattern, get all its points
+                max_points_per_pattern = max_points // total_patterns
+                
+                if max_points_per_pattern > 0:
+                    # Sample from each pattern
                     point_indices = []
-                    for pattern_idx in pattern_indices:
-                        # Pattern 1: sets 0-31, Pattern 2: sets 32-63, Pattern 3: sets 64-95
-                        start_set = pattern_idx * samples_per_pattern
-                        end_set = start_set + samples_per_pattern
-                        # Each set has 4 points, so multiply by points per set
-                        start_point = start_set * (len(enc_params_list) + 1)
-                        end_point = end_set * (len(enc_params_list) + 1)
-                        point_indices.extend(range(start_point, end_point))
+                    for pattern_idx in range(total_patterns):
+                        # Find all points for this pattern
+                        pattern_mask = pattern_ids_concat == (pattern_idx + 1)
+                        pattern_point_indices = np.where(pattern_mask)[0]
+                        
+                        # Sample from this pattern
+                        if len(pattern_point_indices) > max_points_per_pattern:
+                            sampled_indices = np.random.RandomState(42).choice(
+                                pattern_point_indices, 
+                                size=max_points_per_pattern, 
+                                replace=False
+                            )
+                        else:
+                            sampled_indices = pattern_point_indices
+                        
+                        point_indices.extend(sampled_indices)
                     
+                    # Apply sampling
                     latents_concat = latents_concat[point_indices]
                     source_ids_np = source_ids_np[point_indices]
                     pattern_ids_concat = pattern_ids_concat[point_indices]
                     
-                    logging.info(f"T-SNE downsampled: {len(point_indices)} points from {max_patterns} complete patterns")
+                    logging.info(f"T-SNE downsampled: {len(point_indices)} points, maintaining pattern distribution")
                 else:
-                    logging.warning(f"T-SNE max_points too small to sample complete patterns")
+                    logging.warning(f"T-SNE max_points too small to sample from all patterns")
             
             # Use visualize_tsne_sources to show different markers for encoders vs context
             fig_tsne = visualize_tsne_sources(
@@ -1128,7 +1143,7 @@ class StructuredTrainer:
         plt.close(fig_tsne)
 
         # Release large intermediates
-        del all_latents, latents_concat, source_ids_np, sample_ids_concat
+        del all_latents, latents_concat, source_ids_np, pattern_ids_concat
         return metrics
 
     def test_dataset_submission(
