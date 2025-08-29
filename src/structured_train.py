@@ -563,9 +563,9 @@ class StructuredTrainer:
                 
                 pattern_ids = jnp.array(pattern_sequence, dtype=jnp.int32)
                 
-                # Log pattern distribution for debugging
-                unique_patterns, counts = jnp.unique(pattern_ids, return_counts=True)
-                logging.debug(f"Batch pattern distribution: {dict(zip(unique_patterns, counts))}")
+                # Note: Removed debug logging from inside JAX-compiled function
+                # as it can cause issues with JAX arrays
+                # Pattern IDs are validated by the model's contrastive loss computation
                 
                 loss, metrics = self.model.apply(
                     {"params": full_params["decoder"]},
@@ -665,9 +665,17 @@ class StructuredTrainer:
             
             test_pattern_ids = jnp.array(test_pattern_sequence, dtype=jnp.int32)
             
-            # Log test pattern distribution for debugging
-            unique_patterns, counts = jnp.unique(test_pattern_ids, return_counts=True)
-            logging.debug(f"Test batch pattern distribution: {dict(zip(unique_patterns, counts))}")
+            # Validate pattern_ids
+            logging.debug(f"Pattern IDs validation:")
+            logging.debug(f"  - Shape: {test_pattern_ids.shape}")
+            logging.debug(f"  - Dtype: {test_pattern_ids.dtype}")
+            logging.debug(f"  - Min value: {int(jnp.min(test_pattern_ids))}")
+            logging.debug(f"  - Max value: {int(jnp.max(test_pattern_ids))}")
+            logging.debug(f"  - Unique values: {jnp.unique(test_pattern_ids)}")
+            
+            # Log pattern distribution for test forward pass (safe to do outside JAX context)
+            samples_per_pattern = test_batch_size // 3
+            logging.debug(f"Test forward pass: {test_batch_size} samples, ~{samples_per_pattern} per pattern")
             
             test_loss, test_metrics = self.model.apply(
                 {"params": state.params["decoder"]},
@@ -688,6 +696,9 @@ class StructuredTrainer:
             logging.info(f"Forward pass test successful: loss={float(test_loss):.4f}")
         except Exception as e:
             logging.error(f"Forward pass test failed: {e}")
+            logging.error(f"Error details: {type(e).__name__}: {str(e)}")
+            logging.error(f"Test batch shapes: grids={test_batch[0].shape}, shapes={test_batch[1].shape}")
+            logging.error(f"Pattern IDs shape: {test_pattern_ids.shape}, dtype: {test_pattern_ids.dtype}")
             raise
         
         logging.info("Starting training loop...")
@@ -754,6 +765,12 @@ class StructuredTrainer:
                 # Training - process log_every_n_steps batches at once
                 key, train_key = jax.random.split(key)
                 start = time.time()
+                
+                # Log pattern distribution for current batch (safe to do outside JAX context)
+                batch_size = batches[0].shape[1]  # Get batch size from first batch
+                samples_per_pattern = batch_size // 3
+                logging.debug(f"Processing batch with {batch_size} samples, ~{samples_per_pattern} per pattern")
+                
                 state, metrics = self.train_n_steps(state, batches, train_key)
                 end = time.time()
                 
