@@ -751,7 +751,6 @@ class StructuredTrainer:
         # 1. IMPLEMENT LEAVE-ONE-OUT: Create leave_one_out versions like train.py
         # The issue is that make_leave_one_out is adding an extra dimension instead of reducing it
         # We need to manually create the leave_one_out data with correct shapes
-        from data_utils import make_leave_one_out
         
         # DEBUG: Log what we're evaluating
         logging.info(f"Evaluation dataset info:")

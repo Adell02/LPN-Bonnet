@@ -1,6 +1,12 @@
 import functools
 import random
-from typing import Any, Optional, Literal
+from typing import Any, Optional
+
+try:
+    from typing import Literal
+except ImportError:
+    # Fallback for older Python versions
+    Literal = str
 
 import networkx as nx
 import numpy as np
@@ -82,6 +88,7 @@ class StructPatternTaskGenerator(IterableDataset):
         num_pairs: int,
         seed: Optional[int] = None,
         pattern: Optional[int] = 1,  # 1=O, 2=T, 3=L; 0 or None=mix randomly
+        pattern_per_task: bool = False,  # If True, use same pattern for all pairs in a task
         num_rows: int = 5,
         num_cols: int = 5,
         **_: Any,
@@ -90,6 +97,8 @@ class StructPatternTaskGenerator(IterableDataset):
         self.seed = seed
         # pattern: 1,2,3 fixed; 0/None => mix randomly per pair
         self.pattern = pattern
+        # pattern_per_task: if True, sample one pattern per task (when pattern=0/None)
+        self.pattern_per_task = pattern_per_task
         # Allow overriding grid size from configs; default 5x5
         self.num_rows = int(num_rows)
         self.num_cols = int(num_cols)
@@ -107,6 +116,18 @@ class StructPatternTaskGenerator(IterableDataset):
     def __next__(self) -> tuple[list[dict[str, tuple]], dict[str, Any]]:
         # Sample a 4-color pattern once per task (colors 1..9)
         self._task_colors = [random.randint(1, 9) for _ in range(4)]
+        
+        # If pattern_per_task is True and we're mixing patterns, sample one pattern for this task
+        if self.pattern_per_task and self.pattern in (0, None):
+            self._task_pattern = random.choice((1, 2, 3))
+            print(f"DEBUG: pattern_per_task=True, sampled pattern {self._task_pattern} for this task")
+        else:
+            self._task_pattern = None
+            if self.pattern_per_task:
+                print(f"DEBUG: pattern_per_task=True but pattern={self.pattern} is fixed, not mixing")
+            else:
+                print(f"DEBUG: pattern_per_task=False, will mix patterns per pair")
+            
         task = []
         for _ in range(self.num_pairs):
             task.append(self.generate_pair(self._task_colors))
@@ -117,8 +138,11 @@ class StructPatternTaskGenerator(IterableDataset):
         input_grid = np.zeros((self.num_rows, self.num_cols), dtype=int)
         output_grid = np.zeros((self.num_rows, self.num_cols), dtype=int)
 
-        # Choose pattern per pair if mixing requested
-        pat = self.pattern if self.pattern not in (0, None) else random.choice((1, 2, 3))
+        # Choose pattern: respect pattern_per_task if set
+        if self.pattern_per_task and self.pattern in (0, None) and hasattr(self, '_task_pattern'):
+            pat = self._task_pattern  # Use the pattern sampled for this task
+        else:
+            pat = self.pattern if self.pattern not in (0, None) else random.choice((1, 2, 3))
 
         # Define relative offsets and bounding box per pattern (top-left anchored), 0-based
         if pat == 1:  # O tetromino (2x2)
