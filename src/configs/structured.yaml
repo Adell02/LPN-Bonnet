@@ -62,7 +62,7 @@ training:
   total_num_steps: 5000
   encoder_expose_steps: 5000  # number of initial gradient steps encoders are trainable
   repulsion_kl: 0
-  contrastive_kl: 0.01
+  contrastive_kl: 1e-3
   log_every_n_steps: 5
   eval_every_n_logs: 20       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable
