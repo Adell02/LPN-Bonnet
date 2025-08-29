@@ -134,36 +134,86 @@ class Trace:
 
 
 def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
-    # values associated with the *trajectory* points (GA path or ES path)
-    for k in [
-        f"{prefix}losses",
-        f"{prefix}scores",
-        f"{prefix}all_losses",
-        f"{prefix}all_scores",
-        f"{prefix}best_scores_per_generation",
-        f"{prefix}best_losses_per_generation",
-        f"{prefix}generation_losses",  # ES trajectory values (new key)
-        f"{prefix}best_losses_per_generation",  # ES trajectory values (new key)
-    ]:
-        if k in npz:
-            arr = np.array(npz[k]).reshape(-1)
-            if arr.ndim == 1 and arr.size > 0:
-                print(f"[plot] Using values key '{k}', length={arr.size}")
-                return arr
-    
-    # Special handling for ES: if we have best_latents_per_generation but no values,
-    # we need to extract the trajectory from the saved data
-    if prefix == "es_" and f"{prefix}best_latents_per_generation" in npz:
-        print(f"[plot] ES trajectory found but no values - this indicates a data saving issue")
-        print(f"[plot] Available keys: {list(npz.keys())}")
-        
-        # Try to use generation_losses for ES trajectory
+    """
+    Extract scalar values aligned with the trajectory for a given prefix.
+    - For GA: prefer ga_losses; fall back to ga_scores.
+    - For ES: prefer es_best_losses_per_generation, then es_generation_losses.
+      Handle shapes like (G,), (1, G), (N, G) by reducing ONLY on the sample axis,
+      never collapsing the generation axis to length 1.
+    """
+    def _flatten_generation_vector(arr: np.ndarray) -> Optional[np.ndarray]:
+        if arr is None:
+            return None
+        a = np.asarray(arr)
+        if a.ndim == 1:
+            return a
+        # If (1, G) or (N, G), reduce across first axis only if needed
+        if a.ndim == 2:
+            if a.shape[0] == 1:
+                return a[0]
+            # More than one sample: take mean across samples (keep generations)
+            return a.mean(axis=0)
+        # Higher dims: try to average across all leading dims, keep last dim as generations
+        gens = a.shape[-1]
+        lead = int(np.prod(a.shape[:-1]))
+        a2 = a.reshape(lead, gens)
+        return a2.mean(axis=0)
+
+    # GA first: simple
+    if prefix == "ga_":
+        for k in [f"{prefix}losses", f"{prefix}scores"]:
+            if k in npz:
+                v = _flatten_generation_vector(npz[k])
+                if v is not None and v.size > 0:
+                    print(f"[plot] Using values key '{k}', length={v.size}")
+                    return v.astype(float)
+        # secondary fallbacks
+        for k in [f"{prefix}all_losses", f"{prefix}all_scores"]:
+            if k in npz:
+                v = _flatten_generation_vector(npz[k])
+                if v is not None and v.size > 0:
+                    print(f"[plot] Using values key '{k}', length={v.size}")
+                    return v.astype(float)
+        return None
+
+    # ES: prefer explicit generation vectors
+    if prefix == "es_":
+        # 1) Preferred key
+        if f"{prefix}best_losses_per_generation" in npz:
+            v = _flatten_generation_vector(npz[f"{prefix}best_losses_per_generation"]) 
+            if v is not None and v.size > 0:
+                print(f"[plot] Using values key '{prefix}best_losses_per_generation', length={v.size}")
+                return v.astype(float)
+        # 2) Next best
         if f"{prefix}generation_losses" in npz:
-            gen_losses = np.array(npz[f"{prefix}generation_losses"]).reshape(-1)
-            if gen_losses.ndim == 1 and gen_losses.size > 0:
-                print(f"[plot] Using ES generation_losses for trajectory: {gen_losses.shape}")
-                return gen_losses
-    
+            v = _flatten_generation_vector(npz[f"{prefix}generation_losses"]) 
+            if v is not None and v.size > 0:
+                print(f"[plot] Using values key '{prefix}generation_losses', length={v.size}")
+                return v.astype(float)
+        # 3) Other fallbacks if above missing
+        for k in [f"{prefix}losses", f"{prefix}scores", f"{prefix}all_losses", f"{prefix}all_scores"]:
+            if k in npz:
+                v = _flatten_generation_vector(npz[k])
+                if v is not None and v.size > 0:
+                    # Guard against accidental collapse to size 1 when we have best_latents_per_generation
+                    if v.size == 1 and f"{prefix}best_latents_per_generation" in npz:
+                        print(f"[plot] Skipping '{k}' (length 1) since best_latents_per_generation exists; looking for generation-wise values")
+                        continue
+                    print(f"[plot] Using values key '{k}', length={v.size}")
+                    return v.astype(float)
+        
+        # 4) As a last resort, if we have best_latents_per_generation but no values, signal
+        if f"{prefix}best_latents_per_generation" in npz:
+            print(f"[plot] ES trajectory found but no generation-wise values. Available keys: {list(npz.keys())}")
+        return None
+
+    # Default
+    for k in [f"{prefix}losses", f"{prefix}scores", f"{prefix}all_losses", f"{prefix}all_scores"]:
+        if k in npz:
+            v = _flatten_generation_vector(npz[k])
+            if v is not None and v.size > 0:
+                print(f"[plot] Using values key '{k}', length={v.size}")
+                return v.astype(float)
     return None
 
 
