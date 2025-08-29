@@ -843,10 +843,7 @@ class LPN(nn.Module):
         def _eval_candidates(cand_latents: chex.Array) -> chex.Array:
             input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
 
-            # Debug: print input shapes
-            print(f"         🔍 _eval_candidates: cand_latents shape: {cand_latents.shape}")
-            print(f"         🔍 _eval_candidates: input_seq shape: {input_seq.shape}")
-            print(f"         🔍 _eval_candidates: output_seq shape: {output_seq.shape}")
+                    # Debug: print input shapes
             
             # Fix dimension handling: cand_latents shape is (..., population_size, latent_dim)
             # We need to expand to match the number of pairs for evaluation
@@ -855,7 +852,7 @@ class LPN(nn.Module):
             
             # Expand latents to match pairs: (..., pop_size, num_pairs, latent_dim)
             expanded_latents = cand_latents[..., None, :, :].repeat(num_pairs, axis=-3)
-            print(f"         🔍 _eval_candidates: expanded_latents shape: {expanded_latents.shape}")
+
             
             # Use scan for batching if needed
             batch_size = scan_batch_size or expanded_latents.shape[-3]  # population size
@@ -909,7 +906,6 @@ class LPN(nn.Module):
                 )
             
             losses = -log_probs
-            print(f"         🔍 _eval_candidates: final losses shape: {losses.shape}")
             return losses
 
         mean = latents.mean(axis=-2)
@@ -951,20 +947,15 @@ class LPN(nn.Module):
             )
             
             # Debug: print shapes to understand dimension handling
-            print(f"         🔍 Gen {g}: x shape: {x.shape}, mean shape: {mean.shape}")
             
             losses = _eval_candidates(x)
-            print(f"         🔍 Gen {g}: losses shape: {losses.shape}")
             
             fitness = -losses.mean(axis=-2) if losses.ndim >= 3 else -losses
-            print(f"         🔍 Gen {g}: fitness shape: {fitness.shape}")
             
             idx = jnp.argsort(fitness, axis=-1, descending=True)
             best_idx = idx[..., :mu]
-            print(f"         🔍 Gen {g}: best_idx shape: {best_idx.shape}")
             
             # Fix dimension mismatch for take_along_axis
-            print(f"         🔍 Gen {g}: x shape: {x.shape}, best_idx shape: {best_idx.shape}")
             
             # We expand best_idx to (batch, 1, μ, 1) so it broadcasts across
             # the pair and latent dimensions when selecting.

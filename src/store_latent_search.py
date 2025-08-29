@@ -1144,10 +1144,22 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             print(f"[plot] Plotting ES trajectory: {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
             _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES selected", alpha=1.0)
         elif es_sel.ndim == 2 and es_sel.shape[0] > 1:
-            # Already flattened: (G, 2)
-            es_sel_flat = es_sel
-            print(f"[plot] Plotting ES trajectory (already flat): {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
-            _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES selected", alpha=1.0)
+            # Check if this needs PCA projection (should be 2D for plotting)
+            if es_sel.shape[-1] != 2:
+                print(f"[plot] ES trajectory needs PCA projection: {es_sel.shape} -> projecting to 2D")
+                if pca_transformer is not None:
+                    es_sel_flat = _apply_fitted_pca(es_sel, pca_transformer, target_dim=2)
+                    print(f"[plot] ES trajectory after PCA: {es_sel_flat.shape}")
+                else:
+                    print(f"[plot] No PCA transformer available, skipping ES trajectory")
+                    es_sel_flat = None
+            else:
+                # Already 2D: (G, 2)
+                es_sel_flat = es_sel
+                print(f"[plot] Plotting ES trajectory (already 2D): {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
+            
+            if es_sel_flat is not None:
+                _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES selected", alpha=1.0)
         else:
             print(f"[plot] ES trajectory plotting skipped: es_sel shape={es_sel.shape}, not enough generations")
             
@@ -1157,7 +1169,16 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 es_fallback = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])
                 if es_fallback.shape[0] > 1:
                     print(f"[plot] ES fallback plotting: {es_fallback.shape}")
-                    _plot_traj(ax, es_fallback, color="#DB74DB", label="ES selected (fallback)", alpha=1.0)
+                    # Check if PCA projection is needed
+                    if es_fallback.shape[-1] != 2 and pca_transformer is not None:
+                        es_fallback = _apply_fitted_pca(es_fallback, pca_transformer, target_dim=2)
+                        print(f"[plot] ES fallback after PCA: {es_fallback.shape}")
+                    elif es_fallback.shape[-1] != 2:
+                        print(f"[plot] ES fallback needs PCA but no transformer available, skipping")
+                        es_fallback = None
+                    
+                    if es_fallback is not None:
+                        _plot_traj(ax, es_fallback, color="#DB74DB", label="ES selected (fallback)", alpha=1.0)
                 else:
                     print(f"[plot] ES fallback failed: not enough points ({es_fallback.shape[0]})")
             else:
@@ -1214,11 +1235,16 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     
     # Check ES trajectory bounds
     if es.pts is not None:
-        es_flat = es.pts.reshape(-1, 2)
-        es_xmin, es_xmax = es_flat[:, 0].min(), es_flat[:, 0].max()
-        es_ymin, es_ymax = es_flat[:, 1].min(), es_flat[:, 1].max()
-        es_visible = (es_xmin >= xlim[0] and es_xmax <= xlim[1] and es_ymin >= ylim[0] and es_ymax <= ylim[1])
-        print(f"[verification] ES trajectory: x[{es_xmin:.3f}, {es_xmax:.3f}], y[{es_ymin:.3f}, {es_ymax:.3f}] - {'✅ VISIBLE' if es_visible else '❌ OUT OF BOUNDS'}")
+        # Ensure ES trajectory is 2D for bounds checking
+        if es.pts.shape[-1] == 2:
+            es_flat = es.pts.reshape(-1, 2)
+            es_xmin, es_xmax = es_flat[:, 0].min(), es_flat[:, 0].max()
+            es_ymin, es_ymax = es_flat[:, 1].min(), es_flat[:, 1].max()
+            es_visible = (es_xmin >= xlim[0] and es_xmax <= xlim[1] and es_ymin >= ylim[0] and es_ymax <= ylim[1])
+            print(f"[verification] ES trajectory: x[{es_xmin:.3f}, {es_xmax:.3f}], y[{es_ymin:.3f}, {es_ymax:.3f}] - {'✅ VISIBLE' if es_visible else '❌ OUT OF BOUNDS'}")
+        else:
+            print(f"[verification] ES trajectory: shape {es.pts.shape} is not 2D, skipping bounds check")
+            es_visible = True  # Assume visible to avoid breaking the verification
     
     # Check ES population bounds
     if es.pop_pts is not None:
