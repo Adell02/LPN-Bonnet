@@ -385,14 +385,10 @@ def visualize_tsne_sources(
         3: "L-tetromino"
     }
     
-    # Track what we've plotted to avoid duplicate legend entries
-    legend_entries = set()
-    
     # Plot each source with different markers
     for src in unique_sources:
         m = src_np == src
         mk = source_markers.get(src, 'o')
-        source_label = source_labels.get(src, f"Source {src}")
         
         # Plot each program ID separately
         for prog_id in unique_ids:
@@ -402,33 +398,14 @@ def visualize_tsne_sources(
                 
                 # Use pattern color and source marker
                 color = pattern_colors.get(prog_id, '#AAAAAA')
-                
-                # Create legend label based on source and pattern
-                pattern_label = pattern_labels.get(prog_id, f"Pattern {prog_id}")
-                legend_key = f"{source_label} - {pattern_label}"
-                
-                # Only add to legend if we haven't seen this combination
-                if legend_key not in legend_entries:
-                    ax.scatter(
-                        points[:, 0], points[:, 1], 
-                        c=[color], 
-                        marker=mk, 
-                        label=legend_key, 
-                        alpha=0.7, 
-                        s=50,
-                        edgecolors='none'
-                    )
-                    legend_entries.add(legend_key)
-                else:
-                    # Plot without adding to legend
-                    ax.scatter(
-                        points[:, 0], points[:, 1], 
-                        c=[color], 
-                        marker=mk, 
-                        alpha=0.7, 
-                        s=50,
-                        edgecolors='none'
-                    )
+                ax.scatter(
+                    points[:, 0], points[:, 1], 
+                    c=[color], 
+                    marker=mk, 
+                    alpha=0.7, 
+                    s=50,
+                    edgecolors='none'
+                )
                 
                 # Add labels on samples showing GROUP ID (sample index), not pattern type
                 # We need to find the original sample indices for these points
@@ -445,8 +422,30 @@ def visualize_tsne_sources(
     ax.set_xlabel("t-SNE 1")
     ax.set_ylabel("t-SNE 2")
 
-    # Add legend - EXACTLY like train.py
-    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.0)
+    # Build a clean legend with:
+    # - Colors: Pattern 1/2/3
+    # - Shapes: Encoder 0/1/2 and Context
+    from matplotlib.lines import Line2D
+    pattern_handles = []
+    for pid in [1, 2, 3]:
+        if pid in unique_ids:
+            pattern_handles.append(
+                Line2D([0], [0], marker='o', linestyle='None', color='none',
+                       markerfacecolor=pattern_colors.get(pid, '#AAAAAA'), markeredgecolor='none', markersize=10,
+                       label=f"Pattern {pid}")
+            )
+    # Shapes legend: show only marker glyphs (no text labels)
+    shape_handles = []
+    for src in unique_sources:
+        marker = source_markers.get(src, 'o')
+        shape_handles.append(
+            Line2D([0], [0], marker=marker, linestyle='None', color='black',
+                   markerfacecolor='white', markeredgecolor='black', markersize=10, label='')
+        )
+    # Combine: first colors with labels, then shapes without labels
+    handles = pattern_handles + shape_handles
+    ax.legend(handles=handles, bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.0,
+              title="Patterns (color) and Sources (shape)")
 
     # Adjust layout to prevent legend from being cut off - EXACTLY like train.py
     plt.tight_layout()
