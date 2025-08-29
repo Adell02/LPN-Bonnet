@@ -1347,6 +1347,9 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Ensure x-axis shows integers for budget
     ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
     
+    # Collect all y values that are actually plotted to scale y-axis robustly (single run and multirun)
+    y_values_for_limits: list[np.ndarray] = []
+    
     # Helper: moving average
     def _moving_average(x: np.ndarray, k: int = 3) -> np.ndarray:
         if x.size == 0 or k <= 1:
@@ -1374,6 +1377,9 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     ax.fill_between(x, ga_min, ga_max, color="#FBB998", alpha=0.25, label="GA range", zorder=2)
                     ga_mean_ma = _moving_average(ga_mean, k=max(3, L.shape[1]//10))
                     ax.plot(x, ga_mean_ma, color="#FBB998", linewidth=3.0, label=f"GA mean", zorder=4)
+                    # Track y extents for axis scaling
+                    y_values_for_limits.append(ga_min)
+                    y_values_for_limits.append(ga_max)
                     did_ga_overlay = True
         except Exception as _ge:
             print(f"[loss] Failed GA per-sample plotting: {_ge}")
@@ -1389,6 +1395,8 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             ga_steps_indices = np.arange(len(ga.vals))
             ax.plot(ga_steps_indices, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
                     markersize=6, label="Gradient Ascent", zorder=3)
+        # Track y extents
+        y_values_for_limits.append(np.asarray(ga.vals).reshape(-1))
     
     # Plot ES envelope (min/max) with mean line if available
     es_budget = None
@@ -1407,6 +1415,9 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     ax.fill_between(x, es_min, es_max, color="#DB74DB", alpha=0.25, label="ES range", zorder=2)
                     es_mean_ma = _moving_average(es_mean, k=max(3, L.shape[1]//4))
                     ax.plot(x, es_mean_ma, color="#DB74DB", linewidth=3.0, label=f"ES mean", zorder=4)
+                    # Track y extents
+                    y_values_for_limits.append(es_min)
+                    y_values_for_limits.append(es_max)
                     did_es_overlay = True
         except Exception as _ee:
             print(f"[loss] Failed ES per-sample plotting: {_ee}")
@@ -1431,6 +1442,8 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             es_steps_indices = np.arange(len(es.vals))
             ax.plot(es_steps_indices, es.vals, color="#DB74DB", linewidth=3.0, marker='s', 
                     markersize=6, label="Evolutionary Search", zorder=3)
+        # Track y extents
+        y_values_for_limits.append(np.asarray(es.vals).reshape(-1))
     else:
         # Fallback: try to reconstruct ES curve from available data
         print(f"[loss] ES loss data missing - attempting to reconstruct from available data")
@@ -1442,18 +1455,22 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             print(f"[loss] The ES curve cannot be plotted without loss data.")
             print(f"[loss] This suggests a data saving issue in evaluate_checkpoint.py")
     
-    # Set y-axis to start from a reasonable lower bound
-    if has_ga_loss or has_es_loss:
-        all_vals = []
-        if has_ga_loss:
-            all_vals.extend(ga.vals)
-        if has_es_loss:
-            all_vals.extend(es.vals)
-        
-        y_min = min(all_vals)
-        y_max = max(all_vals)
-        y_range = y_max - y_min
-        ax.set_ylim(y_min - 0.1 * y_range, y_max + 0.1 * y_range)
+    # Robust y-axis scaling: use min/max of whatever we actually plotted (handles multirun envelopes)
+    try:
+        if y_values_for_limits:
+            concat_vals = np.concatenate([np.asarray(v).reshape(-1) for v in y_values_for_limits])
+            if concat_vals.size > 0:
+                y_min = float(np.nanmin(concat_vals))
+                y_max = float(np.nanmax(concat_vals))
+                if np.isfinite(y_min) and np.isfinite(y_max):
+                    if y_max == y_min:
+                        pad = max(1e-6, 0.05 * max(1.0, y_max))
+                        ax.set_ylim(y_min - pad, y_max + pad)
+                    else:
+                        y_range = y_max - y_min
+                        ax.set_ylim(y_min - 0.1 * y_range, y_max + 0.1 * y_range)
+    except Exception as _ylim_e:
+        print(f"[loss] Y-axis scaling fallback due to error: {_ylim_e}")
     
     # Add legend
     ax.legend(loc="upper right", frameon=True, fontsize=10)
