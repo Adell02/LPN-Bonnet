@@ -871,7 +871,18 @@ class LPN(nn.Module):
             track_progress: bool = False,
             **kwargs,
         ) -> tuple[chex.Array, chex.Array] | tuple[chex.Array, chex.Array, dict]:
-        """Evolutionary search for optimal latent context with optional subspace mutation."""
+        """Evolutionary search for optimal latent context with optional subspace mutation.
+
+        Supports two simple heuristics to stabilise the search:
+
+        * ``mutation_decay`` (float, default ``0.95``) – multiply the mutation
+          standard deviation by this factor each generation to gradually
+          concentrate the population.
+        * ``elite_size`` (int, default ``population_size//2``) – number of
+          top‑scoring individuals to preserve unmodified each generation. The
+          remaining population is regenerated around the mean of these elites,
+          moving the search distribution toward promising regions.
+        """
 
         # ----- helper: evaluate candidates EXACTLY like random search -----
         def _eval_candidates(cand_latents: chex.Array) -> chex.Array:
@@ -985,7 +996,7 @@ class LPN(nn.Module):
                 # Start from mean, add noise around it
                 population = jnp.concatenate([mean_latent, mean_latent + sigma * noise], axis=-2)
 
-        # Optional tracking
+        # Optional tracking of per-generation progress
         if track_progress:
             gen_bests = []
             gen_best_latents = []
@@ -993,15 +1004,21 @@ class LPN(nn.Module):
             gen_fitnesses = []
             best_so_far = -jnp.inf
 
+        # Optional mutation std decay and elitism parameters
+        decay_rate = kwargs.get("mutation_decay", 0.95)
+        elite_size = kwargs.get("elite_size", max(1, population_size // 2))
+
         # ----- main evolutionary loop (plain Python, no extra JAX transform) -----
         for _ in range(num_generations):
             # Score current population exactly like random search
             losses = _eval_candidates(population)                     # (*B, P, C) or (*B, C) if P=1 folded inside impl
             # Reduce over pairs to get a fitness per candidate (keep batch dims)
             # Note: lower losses are better, so we negate to get fitness (higher is better)
+            losses = _eval_candidates(population)                     # (*B, P, C) or (*B, C)
             fitness = -losses.mean(axis=-2) if losses.ndim >= 3 else -losses  # (*B, C)
 
             # Track
+            # Track best fitness/latents if requested
             if track_progress:
                 # Per-batch best fitness and corresponding best latent this generation
                 gen_best = fitness.max(axis=-1)                       # (*B,)
@@ -1015,17 +1032,21 @@ class LPN(nn.Module):
                     rep = population[..., 0, :, :]                    # (*B, C, H)
                 else:
                     rep = population                                  # (*B, C, H)
+                rep = population[..., 0, :, :] if population.ndim == 4 else population
                 best_lat = jnp.take_along_axis(
                     rep, best_idx[..., None, None], axis=-2
                 ).squeeze(axis=-2)                                    # (*B, H)
+                ).squeeze(axis=-2)
                 gen_best_latents.append(best_lat)
                 # Store full population and losses for this generation (representative per batch)
                 gen_populations.append(rep)
                 # Store only the best loss per generation (not all population losses)
                 gen_losses = losses.mean(axis=-2) if losses.ndim >= 3 else losses  # (*B, C)
+                gen_losses = losses.mean(axis=-2) if losses.ndim >= 3 else losses
                 best_loss_this_gen = jnp.take_along_axis(
                     gen_losses, best_idx[..., None], axis=-1
                 ).squeeze(axis=-1)  # (*B,) - only the best loss this generation
+                ).squeeze(axis=-1)
                 gen_fitnesses.append(best_loss_this_gen)
 
             # Select top half per batch (ensure at least 1 survivor)
@@ -1038,6 +1059,10 @@ class LPN(nn.Module):
             # Create proper gather index that matches population dimensions
             # population shape is (*B, P, C, H) where P=pairs, C=candidates, H=latent_dim
             # We need to gather along the candidates axis (-2), and index shape must broadcast to population
+            # Sort candidates by fitness and keep elites
+            idx_sorted = jnp.argsort(fitness, axis=-1, descending=True)
+            elite_idx = idx_sorted[..., :elite_size]
+
             if population.ndim == 4:
                 # idx: (*B, S) -> (*B, 1, S, 1) for proper broadcasting
                 P = population.shape[-3]
@@ -1059,9 +1084,18 @@ class LPN(nn.Module):
             if survivors.ndim == 4:
                 # survivors: (*B, P, S, H) -> parents: (*B, P, need, H)
                 parents = jnp.repeat(survivors, reps, axis=-2)[..., :need, :]
+                base_idx = elite_idx[..., None, :, None]
+                elite = jnp.take_along_axis(population, base_idx, axis=-2)  # (*B, P, E, H)
+                elite_rep = elite[..., 0, :, :]                             # (*B, E, H)
             else:
                 # survivors: (*B, S, H) -> parents: (*B, need, H)
                 parents = jnp.repeat(survivors, reps, axis=-2)[..., :need, :]
+                gather_idx = jnp.repeat(elite_idx[..., None], population.shape[-1], axis=-1)
+                elite = jnp.take_along_axis(population, gather_idx, axis=-2)  # (*B, E, H)
+                elite_rep = elite
+
+            center = elite_rep.mean(axis=-2, keepdims=True)  # (*B,1,H)
+            need = population_size - elite_size
             key, nk = jax.random.split(key)
             
             if use_subspace_mutation and U is not None:
@@ -1075,6 +1109,28 @@ class LPN(nn.Module):
                     R = trust_region_radius
                     scale = jnp.minimum(1.0, R / (jnp.linalg.norm(delta, axis=-1, keepdims=True) + 1e-8))
                     offspring = mean0 + scale * delta
+
+            if need > 0:
+                if use_subspace_mutation and U is not None:
+                    noise = jax.random.normal(nk, (*base.shape[:-2], need, U.shape[-1]))
+                    step = jnp.einsum('...nm,...hm->...nh', noise, jnp.swapaxes(U, -2, -1))
+                    offspring_rep = center + sigma * step
+                    if trust_region_radius is not None:
+                        mean0 = base.mean(axis=-2, keepdims=True)
+                        delta = offspring_rep - mean0
+                        R = trust_region_radius
+                        scale = jnp.minimum(1.0, R / (jnp.linalg.norm(delta, axis=-1, keepdims=True) + 1e-8))
+                        offspring_rep = mean0 + scale * delta
+                else:
+                    offspring_rep = center + sigma * jax.random.normal(
+                        nk, (*base.shape[:-2], need, base.shape[-1])
+                    )
+
+                if population.ndim == 4:
+                    offspring = jnp.expand_dims(offspring_rep, -3).repeat(population.shape[-3], axis=-3)
+                else:
+                    offspring = offspring_rep
+                population = jnp.concatenate([elite, offspring], axis=-2)
             else:
                 # Standard isotropic mutation
                 offspring = parents + sigma * jax.random.normal(nk, parents.shape)
@@ -1091,6 +1147,10 @@ class LPN(nn.Module):
             
             # Concatenate: [survivors, offspring]
             population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, P, C, H) or (*B, C, H)
+                population = elite
+
+            # Decay mutation standard deviation
+            sigma *= decay_rate
 
         # ----- final selection like random search -----
         final_losses = -_eval_candidates(population)              # (*B, P, C)

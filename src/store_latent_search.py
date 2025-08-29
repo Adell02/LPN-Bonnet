@@ -30,7 +30,10 @@ python src/store_latent_search.py \
     --ga_lr 0.1 \
     --es_population 20 \
     --es_generations 5 \
-    --es_mutation_std 0.3
+    --es_mutation_std 0.3 \
+    --es_mutation_std 0.3 \
+    --mutation_decay 0.9 \
+    --elite_size 10
 
 # With subspace mutation and progress tracking:
 python src/store_latent_search.py \
@@ -2247,6 +2250,9 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                     'ga_steps': cfg.get('ga_steps'),
                     'es_population': cfg.get('es_population'),
                     'es_generations': cfg.get('es_generations'),
+                    'es_mutation_std': cfg.get('es_mutation_std'),
+                    'es_mutation_decay': cfg.get('es_mutation_decay'),
+                    'es_elite_size': cfg.get('es_elite_size'),
                     'run_seed': cfg.get('dataset_seed'),
                     'run_index': cfg.get('run_idx', 0),
                     'n_samples': cfg.get('n_samples', 1),
@@ -2375,6 +2381,9 @@ def main() -> None:
     parser.add_argument("--es_mutation_std", type=float, default=0.5)
     parser.add_argument("--es_population", type=int, default=None, help="ES population size (overrides sqrt(budget) calculation)")
     parser.add_argument("--es_generations", type=int, default=None, help="ES number of generations (overrides budget/pop calculation)")
+    parser.add_argument("--mutation-decay", "--mutation_decay", dest="mutation_decay", type=float, default=None, help="Multiply mutation std by this factor each generation (default 0.95)")
+    parser.add_argument("--elite-size", "--elite_size", dest="elite_size", type=int, default=None, help="Number of top candidates preserved each generation (default population//2)")
+
     parser.add_argument("--use_subspace_mutation", action="store_true")
     parser.add_argument("--subspace_dim", type=int, default=32)
     parser.add_argument("--ga_step_length", type=float, default=0.5)
@@ -2438,8 +2447,11 @@ def main() -> None:
     # Evolutionary Search config
     pop = args.es_population if args.es_population is not None else max(3, min(32, int(round(math.sqrt(args.budget)))))
     gens = args.es_generations if args.es_generations is not None else max(1, int(math.ceil(args.budget / pop)))
-    print(f"🧬 ES config: population={pop}, generations={gens} (mutation_std={args.es_mutation_std})")
-    print(f"   🎯 ES starts from mean latent (same as GA)")
+    mutation_decay = args.mutation_decay if args.mutation_decay is not None else 0.95
+    elite_size = args.elite_size if args.elite_size is not None else max(1, pop // 2)
+    print(
+        f"🧬 ES config: population={pop}, generations={gens} (mutation_std={args.es_mutation_std}, mutation_decay={mutation_decay}, elite_size={elite_size})"
+    )    print(f"   🎯 ES starts from mean latent (same as GA)")
     es_out = os.path.join(args.out_dir, "es_latents.npz")
     es_cmd = [
         sys.executable, "src/evaluate_checkpoint.py",
@@ -2448,6 +2460,8 @@ def main() -> None:
         "--population-size", str(pop),
         "--num-generations", str(gens),
         "--mutation-std", str(args.es_mutation_std),
+        "--mutation-decay", str(mutation_decay),
+        "--elite-size", str(elite_size),
         "--no-wandb-run", "true",
         "--store-latents", es_out,
     ]
@@ -2500,6 +2514,8 @@ def main() -> None:
                 "es_population": pop,
                 "es_generations": gens,
                 "es_mutation_std": args.es_mutation_std,
+                "es_mutation_decay": mutation_decay,
+                "es_elite_size": elite_size,
                 "use_subspace_mutation": args.use_subspace_mutation,
                 "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
                 "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
@@ -2604,6 +2620,8 @@ def main() -> None:
                 "--population-size", str(pop),
                 "--num-generations", str(gens),
                 "--mutation-std", str(args.es_mutation_std),
+                "--mutation-decay", str(mutation_decay),
+                "--elite-size", str(elite_size),
                 "--no-wandb-run", "true",
                 "--store-latents", es_out,
             ]
@@ -2800,6 +2818,8 @@ def main() -> None:
                         "es_population": pop,
                         "es_generations": gens,
                         "es_mutation_std": args.es_mutation_std,
+                        "es_mutation_decay": mutation_decay,
+                        "es_elite_size": elite_size,
                         "use_subspace_mutation": args.use_subspace_mutation,
                         "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
                         "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,
@@ -2884,6 +2904,8 @@ def main() -> None:
             "es_population": pop,
             "es_generations": gens,
             "es_mutation_std": args.es_mutation_std,
+            "es_mutation_decay": mutation_decay,
+            "es_elite_size": elite_size,
             "use_subspace_mutation": args.use_subspace_mutation,
             "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
             "ga_step_length": args.ga_step_length if args.use_subspace_mutation else None,

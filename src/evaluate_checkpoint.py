@@ -1229,6 +1229,22 @@ if __name__ == "__main__":
         default=None,
         help="Mutation standard deviation for evolutionary search mode.",
     )
+    parser.add_argument(
+        "--mutation-decay",
+        dest="mutation_decay",
+        type=float,
+        required=False,
+        default=None,
+        help="Multiply mutation_std by this factor each generation (default: 0.95).",
+    )
+    parser.add_argument(
+        "--elite-size",
+        dest="elite_size",
+        type=int,
+        required=False,
+        default=None,
+        help="Number of top individuals preserved each generation (default: population_size//2).",
+    )
     
     # Subspace evolutionary search parameters
     parser.add_argument(
@@ -1313,6 +1329,8 @@ if __name__ == "__main__":
         "scan_gradients_latents",
         "accumulate_gradients_decoder_pairs",
         "random_perturbation",
+        "mutation_decay",
+        "elite_size",
     ]:
         if getattr(args, arg) is not None:
             inference_mode_kwargs[arg] = getattr(args, arg)
