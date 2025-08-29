@@ -230,7 +230,6 @@ class Trainer:
 
         # Uniform structured loading: balanced patterns 1/2/3, consistent colors/pattern per task
         if cfg.training.get("struct_uniform", False):
-            from datasets.task_gen.dataloader import make_dataset
             total_len = int(cfg.training.get("struct_uniform_length", 1024))
             num_pairs = int(cfg.training.get("struct_num_pairs", 4))
             per_pat = max(1, total_len // 3)
@@ -296,7 +295,6 @@ class Trainer:
         # Load eval datasets (uniform structured option)
         self.eval_datasets = []
         if cfg.eval.get("struct_uniform", False):
-            from datasets.task_gen.dataloader import make_dataset
             total_len = int(cfg.eval.get("struct_uniform_length", 96))
             per_pat = max(1, total_len // 3)
             num_pairs = int(cfg.training.get("struct_num_pairs", 4))
@@ -355,7 +353,6 @@ class Trainer:
         # Load test datasets (uniform structured option)
         self.test_datasets = []
         if cfg.eval.get("struct_uniform", False):
-            from datasets.task_gen.dataloader import make_dataset
             total_len = int(cfg.eval.get("struct_uniform_length", 96))
             per_pat = max(1, total_len // 3)
             num_pairs = int(cfg.training.get("struct_num_pairs", 4))
