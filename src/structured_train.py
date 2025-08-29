@@ -648,14 +648,14 @@ class StructuredTrainer:
                 logging.info(f"Running evaluation at step 0 (first step)")
                 self.evaluate(state, enc_params_list)
                 
-                                        # Test datasets evaluation at first step
-                        if hasattr(self, 'test_datasets') and self.test_datasets:
-                            for dataset_dict in self.test_datasets:
-                                try:
-                                    start = time.time()
-                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress = self.test_dataset_submission(
-                                        state, dataset_dict
-                                    )
+                # Test datasets evaluation at first step
+                if hasattr(self, 'test_datasets') and self.test_datasets:
+                    for dataset_dict in self.test_datasets:
+                        try:
+                            start = time.time()
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress = self.test_dataset_submission(
+                                state, dataset_dict
+                            )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                             
                             # Upload all figures
