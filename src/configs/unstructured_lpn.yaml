@@ -6,7 +6,6 @@ training:
   batch_size: 128  # divisible by gradient_accumulation_steps * num_devices
   gradient_accumulation_steps: 1
   total_num_steps: 5500
-  encoder_expose_steps: 200  # number of initial gradient steps encoders are trainable
   log_every_n_steps: 50
   eval_every_n_logs: 20  # null to disable eval
   save_checkpoint_every_n_logs: 10  # null to disable checkpointing
@@ -29,19 +28,36 @@ training:
   use_hf: False
 
 eval:
+  eval_datasets: []  # Keep empty
   test_datasets:
+    # Replace the mixed pattern test with balanced pattern tests
     - generator: STRUCT_PATTERN
+      name: pattern_1_only
       task_generator_kwargs:
-        pattern: 0
+        pattern: 1  # Only O-tetrominos
         pattern_per_task: true
-        num_rows: 5
-        num_cols: 5
-      name: struct_pattern_mixed_per_task
       num_pairs: 4
-      length: 96
-      batch_size: 96
+      length: 32  # 32 samples of pattern 1
+      batch_size: 32
       num_tasks_to_show: 3
-  eval_datasets: []    # add this line
+    - generator: STRUCT_PATTERN
+      name: pattern_2_only
+      task_generator_kwargs:
+        pattern: 2  # Only T-tetrominos
+        pattern_per_task: true
+      num_pairs: 4
+      length: 32  # 32 samples of pattern 2
+      batch_size: 32
+      num_tasks_to_show: 3
+    - generator: STRUCT_PATTERN
+      name: pattern_3_only
+      task_generator_kwargs:
+        pattern: 3  # Only L-tetrominos
+        pattern_per_task: true
+      num_pairs: 4
+      length: 32  # 32 samples of pattern 3
+      batch_size: 32
+      num_tasks_to_show: 3
 
   json_datasets:
 

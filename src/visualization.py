@@ -741,6 +741,25 @@ def visualize_struct_confidence_panel(
     ax_means.legend(frameon=True)
     ax_vars.legend(frameon=True)
 
+    # Add note on the right of the variance histogram showing mean variances from each encoder
+    # Calculate mean variances for each encoder
+    encoder_mean_vars = []
+    for idx, logvar in enumerate(encoder_logvars):
+        var_flat = _np.exp(_np.asarray(logvar).reshape(-1))
+        mean_var = _np.mean(var_flat)
+        encoder_mean_vars.append(mean_var)
+    
+    # Create text for the note
+    note_text = "Mean Variances:\n"
+    for idx, (label, mean_var) in enumerate(zip(encoder_labels, encoder_mean_vars)):
+        note_text += f"Var {label}: {mean_var:.4f}\n"
+    
+    # Add the note to the right of the variance histogram
+    # Position the text in the upper right area of the variance subplot
+    ax_vars.text(0.98, 0.95, note_text, transform=ax_vars.transAxes, 
+                 fontsize=10, verticalalignment='top', horizontalalignment='right',
+                 bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8))
+
     fig.suptitle(title, fontsize=14, fontweight='bold')
     return fig
 
