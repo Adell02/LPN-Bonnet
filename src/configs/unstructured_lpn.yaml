@@ -5,7 +5,7 @@ training:
   inference_kwargs:
   batch_size: 128  # divisible by gradient_accumulation_steps * num_devices
   gradient_accumulation_steps: 1
-  total_num_steps: 5250
+  total_num_steps: 5500
   log_every_n_steps: 50
   eval_every_n_logs: 20  # null to disable eval
   save_checkpoint_every_n_logs: 10  # null to disable checkpointing
