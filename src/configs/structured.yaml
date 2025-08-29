@@ -24,9 +24,9 @@ decoder_transformer:
 structured:
   artifacts:
     models:
-      - "ga624-imperial-college-london/LPN-ARC/sparkling-wood-255--checkpoint:latest"
-      - "ga624-imperial-college-london/LPN-ARC/revived-grass-259--checkpoint:latest"
-      - "ga624-imperial-college-london/LPN-ARC/wobbly-rain-258--checkpoint:latest"  
+      - "ga624-imperial-college-london/LPN-ARC/sparkling-wood-255--checkpoint:latest"  # Model Pattern 1
+      - "ga624-imperial-college-london/LPN-ARC/revived-grass-259--checkpoint:latest"  # Model Pattern 2
+      - "ga624-imperial-college-london/LPN-ARC/wobbly-rain-258--checkpoint:latest"   # Model Pattern 3
   alphas: [0.3333333, 0.3333333, 0.3333333]     # uniform over 3 models
   # Optional: configuration describing the model architecture of the loaded checkpoints.
   # If provided, StructuredTrainer will instantiate enc/dec with these hyperparameters
@@ -62,7 +62,7 @@ training:
   total_num_steps: 2000
   encoder_expose_steps: 1000  # number of initial gradient steps encoders are trainable
   repulsion_kl: 0
-  constrastive_kl: 1e-4
+  constrastive_kl: 1e-2
   log_every_n_steps: 5
   eval_every_n_logs: 50       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable
