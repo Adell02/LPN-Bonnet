@@ -43,7 +43,7 @@ from tqdm.auto import trange
 # For clustering metrics
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import adjusted_rand_score
-from sklearn.cluster import Leiden
+from sklearn.cluster import KMeans
 
 from models.transformer import EncoderTransformer, DecoderTransformer
 from models.utils import DecoderTransformerConfig, EncoderTransformerConfig
