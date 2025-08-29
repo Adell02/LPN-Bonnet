@@ -282,6 +282,8 @@ class StructuredTrainer:
         self.gradient_accumulation_steps = cfg.training.gradient_accumulation_steps
         if self.batch_size % self.gradient_accumulation_steps != 0:
             raise ValueError("batch_size must be divisible by gradient_accumulation_steps")
+        # Optional: expose/unfreeze encoders for the first N gradient steps
+        self.encoder_expose_steps = int(cfg.training.get("encoder_expose_steps", 0) or 0)
 
         # Training/eval datasets
         if cfg.training.get("struct_patterns_balanced", False):
@@ -476,13 +478,6 @@ class StructuredTrainer:
             decoder_params=avg_decoder_params,
         )
 
-        # Mask: only decoder params are trainable
-        def mask_fn(params):
-            def mark(p):
-                # Expect top-level keys: 'encoder', 'decoder' in original LPN; here only decoder matters
-                return True
-            return tree_map(lambda _: True, avg_decoder_params)
-
         lr = self.cfg.training.learning_rate
         linear_warmup_steps = self.cfg.training.get("linear_warmup_steps", 99)
         scheduler = optax.warmup_exponential_decay_schedule(
@@ -493,10 +488,15 @@ class StructuredTrainer:
             end_value=lr,
             decay_rate=1.0,
         )
-        tx = optax.chain(optax.clip_by_global_norm(1.0), optax.masked(optax.adamw(scheduler), mask_fn(avg_decoder_params)))
+        # Standard optimizer over full param tree; we will zero encoder grads manually after exposure
+        tx = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(scheduler))
 
-        # TrainState holds only decoder params for updates
-        return TrainState.create(apply_fn=self.model.apply, tx=tx, params=avg_decoder_params)
+        # Compose params for decoder and encoders
+        combined_params = {
+            "decoder": avg_decoder_params,
+            "encoders": tuple(enc_params_list),
+        }
+        return TrainState.create(apply_fn=self.model.apply, tx=tx, params=combined_params)
 
     def prepare_train_dataset_for_epoch(self, key: chex.PRNGKey, log_every_n_steps: int) -> tuple[chex.Array, chex.Array]:
         """Shuffle the dataset and reshape it to (num_logs, log_every_n_steps, batch_size, *)."""
@@ -525,16 +525,16 @@ class StructuredTrainer:
             batch_pairs, batch_shapes = batches[0][i], batches[1][i]
             rng = keys[i]
             
-            def loss_fn(decoder_params, batch_pairs, batch_shapes, rng):
+            def loss_fn(full_params, batch_pairs, batch_shapes, rng):
                 loss, metrics = self.model.apply(
-                    {"params": decoder_params},
+                    {"params": full_params["decoder"]},
                     batch_pairs,
                     batch_shapes,
                     dropout_eval=False,
                     mode=self.cfg.training.inference_mode,
                     poe_alphas=jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32),
-                    encoder_params_list=self.enc_params_list,
-                    decoder_params=decoder_params,
+                    encoder_params_list=full_params["encoders"],
+                    decoder_params=full_params["decoder"],
                     rngs={"dropout": rng, "latents": rng},
                     prior_kl_coeff=self.cfg.training.get("prior_kl_coeff"),
                     pairwise_kl_coeff=self.cfg.training.get("pairwise_kl_coeff"),
@@ -543,6 +543,11 @@ class StructuredTrainer:
                 return loss, metrics
             
             (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params, batch_pairs, batch_shapes, rng)
+            # Zero encoder grads after exposure window
+            if self.encoder_expose_steps <= 0 and "encoders" in grads:
+                zeros_enc = tree_map(lambda g: jnp.zeros_like(g), grads["encoders"])
+                grads = dict(grads)
+                grads["encoders"] = zeros_enc
             state = state.apply_gradients(grads=grads)
             all_metrics.append(metrics)
         
@@ -551,6 +556,8 @@ class StructuredTrainer:
         for key in all_metrics[0].keys():
             avg_metrics[key] = jnp.mean(jnp.stack([m[key] for m in all_metrics]))
         
+        # Decrement exposure counter by number of gradient steps completed
+        self.encoder_expose_steps = max(0, self.encoder_expose_steps - num_steps)
         return state, avg_metrics
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
@@ -572,13 +579,13 @@ class StructuredTrainer:
         try:
             test_batch = self.train_grids[:self.batch_size], self.train_shapes[:self.batch_size]
             test_loss, test_metrics = self.model.apply(
-                {"params": state.params},
+                {"params": state.params["decoder"]},
                 *test_batch,
                 dropout_eval=False,
                 mode=cfg.training.inference_mode,
                 poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32),
-                encoder_params_list=enc_params_list,
-                decoder_params=state.params,
+                encoder_params_list=state.params["encoders"],
+                decoder_params=state.params["decoder"],
                 rngs={"dropout": key, "latents": key},
                 prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
                 pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),

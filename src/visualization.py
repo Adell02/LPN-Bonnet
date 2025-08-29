@@ -434,13 +434,20 @@ def visualize_tsne_sources(
                        markerfacecolor=pattern_colors.get(pid, '#AAAAAA'), markeredgecolor='none', markersize=10,
                        label=f"Pattern {pid}")
             )
-    # Shapes legend: show only marker glyphs (no text labels)
+    # Shapes legend: show marker glyphs with their source names to the right
+    shape_labels = {
+        0: "Encoder 0",
+        1: "Encoder 1",
+        2: "Encoder 2",
+        3: "Context",
+    }
     shape_handles = []
     for src in unique_sources:
         marker = source_markers.get(src, 'o')
+        label = shape_labels.get(src, f"Source {src}")
         shape_handles.append(
             Line2D([0], [0], marker=marker, linestyle='None', color='black',
-                   markerfacecolor='white', markeredgecolor='black', markersize=10, label='')
+                   markerfacecolor='white', markeredgecolor='black', markersize=10, label=label)
         )
     # Combine: first colors with labels, then shapes without labels
     handles = pattern_handles + shape_handles
