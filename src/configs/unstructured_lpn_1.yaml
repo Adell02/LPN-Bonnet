@@ -15,12 +15,12 @@ training:
   mixed_precision: False  # if True, it uses bfloat16 for activations (params stay in float32)
   online_data_augmentation: False
   task_generator:
-    num_workers: 16
-    num_pairs: 4
     class: STRUCT_PATTERN
-    pattern: 1
+    pattern: 0    # was 1 → use 0 for mixed
     num_rows: 5
     num_cols: 5
+    num_pairs: 4
+    num_workers: 16
   train_datasets:
   use_hf: True
 
@@ -30,14 +30,14 @@ eval:
   test_datasets:
     - generator: STRUCT_PATTERN
       task_generator_kwargs:
-        pattern: ${training.task_generator.pattern}
+        pattern: ${training.task_generator.pattern}  # now resolves to 0 (mixed)
         num_rows: ${training.task_generator.num_rows}
         num_cols: ${training.task_generator.num_cols}
-      name: struct_pattern_1
+      name: struct_pattern_mixed   # was struct_pattern_1
       num_pairs: 4
       length: 96
       batch_size: 96
-      num_tasks_to_show: 4
+      num_tasks_to_show: 3
     # - generator: PATTERN
     #   task_generator_kwargs:
     #     pattern_size: ${training.task_generator.pattern_size}
