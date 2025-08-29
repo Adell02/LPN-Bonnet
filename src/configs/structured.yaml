@@ -58,20 +58,21 @@ training:
   inference_kwargs: {}
   prior_kl_coeff: null
   pairwise_kl_coeff: null
-  total_num_steps: 5000
-  log_every_n_steps: 10
-  eval_every_n_logs: 1        # null to disable
+  total_num_steps: 500
+  log_every_n_steps: 5
+  eval_every_n_logs: 10        # null to disable
   save_checkpoint_every_n_logs: 100  # null to disable
   resume_from_checkpoint: null
   # Option B: balanced structured tetromino patterns (O, T, L) - now using task generator
   struct_patterns_balanced: true
-  struct_num_pairs: 4          # Increased to match regular training
-  num_workers: 4               # Added for task generator
-  # Remove struct_length_per_pattern as it's no longer needed with task generator
+  struct_num_pairs: 4          # 4 pairs per task (input + output)
+  num_workers: 4               # Number of workers for data generation
+  # Training: 1024 total samples (341 per pattern: O, T, L tetrominos)
+  # Evaluation: 96 total samples (32 per pattern: O, T, L tetrominos)
 
 eval:
   dataset:
-    folder: ""  # optional; when empty, can evaluate on a small balanced struct sample
+    folder: ""  # optional; when empty, evaluates on balanced struct sample (32 samples per pattern)
     use_hf: true
   batch_size: 96  # batch size for evaluation (like train.py)
   inference_mode: "mean"

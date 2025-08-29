@@ -174,21 +174,25 @@ class StructuredTrainer:
         if cfg.training.get("struct_patterns_balanced", False):
             # Build a balanced dataset by concatenating equal-sized splits from the 3 struct patterns
             from datasets.task_gen.dataloader import make_dataset
-            L = int(cfg.training.get("struct_length_per_pattern", 1024))
-            N = int(cfg.training.get("struct_num_pairs", 2))
+            total_train_length = 1024  # Total training samples
+            samples_per_pattern = total_train_length // 3  # ~341 samples per pattern
+            N = int(cfg.training.get("struct_num_pairs", 4))  # Use 4 pairs like config
+            
             grids_all, shapes_all = [], []
-            for pid in (1, 2, 3):
+            for pid in (1, 2, 3):  # Generate from all 3 patterns (O, T, L tetrominos)
                 g, s, _ = make_dataset(
-                    length=L,
-                    num_pairs=N,
-                    num_workers=0,
+                    length=samples_per_pattern,  # ~341 samples per pattern
+                    num_pairs=N,  # 4 pairs per task
+                    num_workers=cfg.training.get("num_workers", 4),
                     task_generator_class="STRUCT_PATTERN",
-                    online_data_augmentation=False,
-                    seed=cfg.training.seed,
-                    pattern=pid,
+                    online_data_augmentation=cfg.training.online_data_augmentation,
+                    seed=cfg.training.seed + pid,  # Different seed per pattern
+                    pattern=pid,  # pattern 1, 2, 3 for O, T, L tetrominos
                 )
                 grids_all.append(g)
                 shapes_all.append(s)
+            
+            # Concatenate to get balanced dataset: ~341 + ~341 + ~341 = 1024 total samples
             self.train_grids = jnp.concatenate(grids_all, axis=0)
             self.train_shapes = jnp.concatenate(shapes_all, axis=0)
         else:
@@ -212,23 +216,27 @@ class StructuredTrainer:
             self.eval_grids = eg
             self.eval_shapes = es
         elif cfg.training.get("struct_patterns_balanced", False):
-            # Build a small balanced eval sample
+            # Build a small balanced eval sample with equal representation from all 3 patterns
             from datasets.task_gen.dataloader import make_dataset
-            L = 96
-            N = int(cfg.training.get("struct_num_pairs", 2))
+            total_eval_length = 96  # Total evaluation samples
+            samples_per_pattern = total_eval_length // 3  # 32 samples per pattern
+            N = int(cfg.training.get("struct_num_pairs", 4))  # Use 4 pairs like training
+            
             grids_all, shapes_all = [], []
-            for pid in (1, 2, 3):
+            for pid in (1, 2, 3):  # Generate from all 3 patterns (O, T, L tetrominos)
                 g, s, _ = make_dataset(
-                    length=L,
-                    num_pairs=N,
+                    length=samples_per_pattern,  # 32 samples per pattern
+                    num_pairs=N,  # 4 pairs per task
                     num_workers=0,
                     task_generator_class="STRUCT_PATTERN",
                     online_data_augmentation=False,
-                    seed=cfg.training.seed + pid,
-                    pattern=pid,
+                    seed=cfg.training.seed + pid,  # Different seed per pattern
+                    pattern=pid,  # pattern 1, 2, 3 for O, T, L tetrominos
                 )
                 grids_all.append(g)
                 shapes_all.append(s)
+            
+            # Concatenate to get balanced dataset: 32 + 32 + 32 = 96 total samples
             self.eval_grids = jnp.concatenate(grids_all, axis=0)
             self.eval_shapes = jnp.concatenate(shapes_all, axis=0)
 
@@ -449,20 +457,12 @@ class StructuredTrainer:
         raw_leave_one_out_pairs = make_leave_one_out(self.eval_grids, axis=-4)
         raw_leave_one_out_shapes = make_leave_one_out(self.eval_shapes, axis=-3)
         
-        # DEBUG: Log the raw leave_one_out data shapes
-        logging.info(f"Original eval_grids shape: {self.eval_grids.shape}")
-        logging.info(f"Original eval_shapes shape: {self.eval_shapes.shape}")
-        logging.info(f"Raw leave_one_out_pairs shape: {raw_leave_one_out_pairs.shape}")
-        logging.info(f"Raw leave_one_out_shapes shape: {raw_leave_one_out_shapes.shape}")
-        
         # Fix the shapes by removing the extra dimension
         # From (288, 4, 3, 5, 5, 2) -> (288, 3, 5, 5, 2)
         # From (288, 4, 3, 2, 2) -> (288, 3, 2, 2)
         if raw_leave_one_out_pairs.shape[1] == 4:  # If the extra dimension is there
             leave_one_out_pairs = raw_leave_one_out_pairs[:, 0, :, :, :, :]  # Take first slice
             leave_one_out_shapes = raw_leave_one_out_shapes[:, 0, :, :, :]   # Take first slice
-            logging.info(f"Fixed leave_one_out_pairs shape: {leave_one_out_pairs.shape}")
-            logging.info(f"Fixed leave_one_out_shapes shape: {leave_one_out_shapes.shape}")
         else:
             # If no extra dimension, use as is
             leave_one_out_pairs = raw_leave_one_out_pairs
@@ -486,17 +486,7 @@ class StructuredTrainer:
             leave_one_out_pairs = leave_one_out_pairs[:num_batches * batch_size]
             leave_one_out_shapes = leave_one_out_shapes[:num_batches * batch_size]
             
-            # DEBUG: Log the batched data shapes to ensure consistency
-            logging.info(f"Batched pairs shape: {pairs.shape}")
-            logging.info(f"Batched shapes shape: {shapes.shape}")
-            logging.info(f"Batched leave_one_out_pairs shape: {leave_one_out_pairs.shape}")
-            logging.info(f"Batched leave_one_out_shapes shape: {leave_one_out_shapes.shape}")
-            
             # Ensure all batched data has consistent shapes
-            # Pairs: (288, 4, 5, 5, 2) - 5 dimensions
-            # Shapes: (288, 4, 2, 2) - 4 dimensions
-            # Leave_one_out_pairs: (288, 3, 5, 5, 2) - 5 dimensions  
-            # Leave_one_out_shapes: (288, 3, 2, 2) - 4 dimensions
             assert pairs.shape[:-4] == shapes.shape[:-3], f"Batched shape mismatch: pairs={pairs.shape}, shapes={shapes.shape}"
             assert leave_one_out_pairs.shape[:-4] == leave_one_out_shapes.shape[:-3], f"Batched leave_one_out shape mismatch: pairs={leave_one_out_pairs.shape}, shapes={leave_one_out_shapes.shape}"
         
@@ -513,43 +503,15 @@ class StructuredTrainer:
             batch_leave_one_out_pairs = leave_one_out_pairs[start_idx:end_idx]
             batch_leave_one_out_shapes = leave_one_out_shapes[start_idx:end_idx]
             
-            # DEBUG: Log the individual batch data shapes to ensure consistency
-            logging.info(f"Batch {i} - batch_pairs shape: {batch_pairs.shape}")
-            logging.info(f"Batch {i} - batch_shapes shape: {batch_shapes.shape}")
-            logging.info(f"Batch {i} - batch_leave_one_out_pairs shape: {batch_leave_one_out_pairs.shape}")
-            logging.info(f"Batch {i} - batch_leave_one_out_shapes shape: {batch_leave_one_out_shapes.shape}")
-            
             # Ensure all batch data has consistent shapes
-            # Batch_pairs: (96, 4, 5, 5, 2) - 5 dimensions
-            # Batch_shapes: (96, 4, 2, 2) - 4 dimensions
-            # Batch_leave_one_out_pairs: (96, 3, 5, 5, 2) - 5 dimensions
-            # Batch_leave_one_out_shapes: (96, 3, 2, 2) - 4 dimensions
             assert batch_pairs.shape[:-4] == batch_shapes.shape[:-3], f"Batch {i} shape mismatch: pairs={batch_pairs.shape}, shapes={batch_shapes.shape}"
-            assert batch_leave_one_out_pairs.shape[:-4] == batch_leave_one_out_shapes.shape[:-3], f"Batch {i} leave_one_out shape mismatch: pairs={batch_leave_one_out_pairs.shape}, shapes={batch_leave_one_out_shapes.shape}"
+            assert batch_leave_one_out_pairs.shape[:-4] == batch_leave_one_out_shapes.shape[:-3], f"Batch {i} leave_one_out shape mismatch: pairs={batch_pairs.shape}, shapes={batch_shapes.shape}"
             
             key = jax.random.PRNGKey(i)  # Different key per batch
             
             # Generate output using leave_one_out approach (like train.py)
             try:
-                # DEBUG: Log what we're about to pass
-                prior_kl = cfg.training.get("prior_kl_coeff")
-                pairwise_kl = self.cfg.training.get("pairwise_kl_coeff")
-                logging.info(f"Batch {i} - prior_kl_coeff: {prior_kl}, pairwise_kl_coeff: {pairwise_kl}")
-                logging.info(f"Batch {i} - inference_mode: {cfg.eval.inference_mode}, type: {type(cfg.eval.inference_mode)}")
-                logging.info(f"Batch {i} - input shapes: pairs={batch_pairs[:, 0, ..., 0].shape}, shapes={batch_shapes[:, 0, ..., 0].shape}")
-                
-                # DEBUG: Log the exact shapes being passed to generate_output to ensure consistency
-                logging.info(f"Batch {i} - support pairs shape: {batch_leave_one_out_pairs.shape}")
-                logging.info(f"Batch {i} - support shapes shape: {batch_leave_one_out_shapes.shape}")
-                logging.info(f"Batch {i} - query input shape: {batch_pairs[:, 0, ..., 0].shape}")
-                logging.info(f"Batch {i} - query shape shape: {batch_shapes[:, 0, ..., 0].shape}")
-                
                 # Ensure all encoders receive exactly the same input data with the same shapes
-                # The support pairs and shapes should be consistent across all encoders
-                # Support pairs: (96, 3, 5, 5, 2) - 3 pairs for support (N-1)
-                # Support shapes: (96, 3, 2, 2) - 3 shapes for support (N-1)
-                # Query input: (96, 5, 5) - 1 pair for query
-                # Query shape: (96, 2) - 1 shape for query
                 expected_support_pairs_shape = (96, 3, 5, 5, 2)
                 expected_support_shapes_shape = (96, 3, 2, 2)
                 
@@ -573,12 +535,6 @@ class StructuredTrainer:
                     encoder_params_list=enc_params_list,  # encoder_params_list
                     decoder_params=state.params,  # decoder_params
                 )
-                
-                # DEBUG: Log output shapes
-                logging.info(f"Batch {i} outputs: grids={batch_output_grids.shape}, shapes={batch_output_shapes.shape}")
-                logging.info(f"Batch {i} info keys: {list(batch_info.keys())}")
-                if "context" in batch_info and batch_info["context"] is not None:
-                    logging.info(f"Batch {i} context shape: {batch_info['context'].shape}")
                 
                 all_output_grids.append(batch_output_grids)
                 all_output_shapes.append(batch_output_shapes)
@@ -658,9 +614,7 @@ class StructuredTrainer:
                         best_final_log_probs = np.max(final_log_probs, axis=-1)  # Best candidate
                         final_losses = -best_final_log_probs  # Convert to positive loss
                         search_metrics[f"test/{test_name}/total_final_loss"] = float(np.mean(final_losses))
-                        print(f"✅ Found gradient ascent trajectory with {log_probs.shape}")
-            
-            # Check for search trajectory (random_search)
+                        # Check for search trajectory (random_search)
             if "search_trajectory" in info:
                 search_traj = info["search_trajectory"]
                 if "sample_accuracies" in search_traj:
@@ -668,7 +622,6 @@ class StructuredTrainer:
                     if sample_accs.ndim >= 1:
                         max_acc = np.max(sample_accs)
                         search_metrics[f"test/{test_name}/final_best_accuracy"] = float(max_acc)
-                        print(f"✅ Found random search trajectory with {sample_accs.shape}")
             
             # Check for evolutionary trajectory (evolutionary_search)
             if "evolutionary_trajectory" in info:
@@ -679,12 +632,8 @@ class StructuredTrainer:
                         final_fitness = gen_fitness[..., -1]  # Last generation
                         final_losses = -final_fitness  # Convert fitness to loss
                         search_metrics[f"test/{test_name}/total_final_loss"] = float(np.mean(final_losses))
-                        print(f"✅ Found evolutionary search trajectory with {gen_fitness.shape}")
         
-        # Log what we found
-        print(f"🔍 Evaluation mode: {cfg.eval.inference_mode}")
-        print(f"🔍 Info keys: {list(info.keys())}")
-        print(f"🔍 Search metrics found: {list(search_metrics.keys())}")
+
         
         metrics = {
             f"test/{test_name}/correct_shapes": float(np.mean(correct_shapes)),
@@ -764,11 +713,6 @@ class StructuredTrainer:
                 all_latents.append(context_np)
                 source_ids.extend([len(enc_params_list) + 1] * context_np.shape[0])  # E+1 for generation context
                 task_ids_list.append(np.arange(context_np.shape[0]))
-                print(f"✅ Added generation context to T-SNE: {context_np.shape}")
-            else:
-                print("⚠️  No generation context found in info")
-        else:
-            print("⚠️  No 'context' key in info")
 
         latents_concat = np.concatenate(all_latents, axis=0)
         source_ids_np = np.array(source_ids)
