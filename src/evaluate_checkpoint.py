@@ -235,12 +235,6 @@ def instantiate_model(cfg: omegaconf.DictConfig, mixed_precision: bool) -> LPN:
 
 
 def instantiate_train_state(lpn: LPN) -> TrainState:
-    """Create a proper train state that can be loaded from checkpoint."""
-    # This was the original working function - we need to restore it
-    print(f"   🔍 instantiate_train_state: Starting model initialization...")
-    print(f"   🔍 instantiate_train_state: lpn.encoder.config.latent_dim = {lpn.encoder.config.latent_dim}")
-    print(f"   🔍 instantiate_train_state: lpn.decoder.config = {lpn.decoder.config}")
-    
     key = jax.random.PRNGKey(0)
     decoder = lpn.decoder
     grids = jax.random.randint(
@@ -255,37 +249,9 @@ def instantiate_train_state(lpn: LPN) -> TrainState:
         minval=1,
         maxval=min(decoder.config.max_rows, decoder.config.max_cols) + 1,
     )
-    
-    print(f"   🔍 instantiate_train_state: About to call lpn.init with:")
-    print(f"   🔍 instantiate_train_state: - grids shape: {grids.shape}")
-    print(f"   🔍 instantiate_train_state: - shapes shape: {shapes.shape}")
-    print(f"   🔍 instantiate_train_state: - lpn.encoder.config.latent_dim: {lpn.encoder.config.latent_dim}")
-    
-    try:
-        variables = lpn.init(
-            key, grids, shapes, dropout_eval=False, prior_kl_coeff=0.0, pairwise_kl_coeff=0.0, mode="mean"
-        )
-        print(f"   ✅ instantiate_train_state: lpn.init completed successfully")
-        print(f"   🔍 instantiate_train_state: variables keys: {list(variables.keys())}")
-        print(f"   🔍 instantiate_train_state: params keys: {list(variables['params'].keys())}")
-        
-        # Check the encoder parameters specifically
-        if 'encoder' in variables['params']:
-            encoder_params = variables['params']['encoder']
-            print(f"   🔍 instantiate_train_state: encoder params keys: {list(encoder_params.keys())}")
-            if 'Dense_0' in encoder_params:
-                dense_params = encoder_params['Dense_0']
-                print(f"   🔍 instantiate_train_state: Dense_0 params keys: {list(dense_params.keys())}")
-                if 'kernel' in dense_params:
-                    kernel_shape = dense_params['kernel'].shape
-                    print(f"   🔍 instantiate_train_state: Dense_0 kernel shape: {kernel_shape}")
-        
-    except Exception as e:
-        print(f"   ❌ instantiate_train_state: lpn.init failed with error: {e}")
-        print(f"   🔍 instantiate_train_state: Error type: {type(e)}")
-        import traceback
-        traceback.print_exc()
-        raise
+    variables = lpn.init(
+        key, grids, shapes, dropout_eval=False, prior_kl_coeff=0.0, pairwise_kl_coeff=0.0, mode="mean"
+    )
 
     learning_rate, linear_warmup_steps = 0, 0
     linear_warmup_scheduler = optax.warmup_exponential_decay_schedule(
@@ -299,58 +265,15 @@ def instantiate_train_state(lpn: LPN) -> TrainState:
     optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(linear_warmup_scheduler))
     optimizer = optax.MultiSteps(optimizer, every_k_schedule=1)
     train_state = TrainState.create(apply_fn=lpn.apply, tx=optimizer, params=variables["params"])
-    print(f"   ✅ instantiate_train_state: TrainState created successfully")
     return train_state
 
 
 def load_model_weights(
     train_state: TrainState, artifact_dir: str, ckpt_name: str = "state.msgpack"
 ) -> TrainState:
-    print(f"   🔍 load_model_weights: Loading checkpoint from {os.path.join(artifact_dir, ckpt_name)}")
-    
-    # First, let's inspect what's in the checkpoint file
-    checkpoint_path = os.path.join(artifact_dir, ckpt_name)
-    if os.path.exists(checkpoint_path):
-        print(f"   🔍 load_model_weights: Checkpoint file exists, size: {os.path.getsize(checkpoint_path)} bytes")
-        
-        # Try to peek at the checkpoint structure without loading
-        try:
-            with open(checkpoint_path, "rb") as data_file:
-                byte_data = data_file.read()
-            
-            # Create a temporary state to inspect the checkpoint structure
-            temp_state = train_state
-            temp_state = temp_state.replace(params={})  # Empty params to avoid shape conflicts
-            
-            print(f"   🔍 load_model_weights: About to call from_bytes...")
-            loaded_state = from_bytes(temp_state, byte_data)
-            
-            # Inspect the loaded structure
-            if hasattr(loaded_state, 'params') and loaded_state.params:
-                print(f"   🔍 load_model_weights: Checkpoint contains params with keys: {list(loaded_state.params.keys())}")
-                if 'encoder' in loaded_state.params:
-                    encoder_params = loaded_state.params['encoder']
-                    print(f"   🔍 load_model_weights: Encoder params keys: {list(encoder_params.keys())}")
-                    if 'Dense_0' in encoder_params:
-                        dense_params = encoder_params['Dense_0']
-                        if 'kernel' in dense_params:
-                            kernel_shape = dense_params['kernel'].shape
-                            print(f"   🔍 load_model_weights: Checkpoint Dense_0 kernel shape: {kernel_shape}")
-                            print(f"   🔍 load_model_weights: Expected Dense_0 kernel shape: (96, 2)")
-                            if kernel_shape != (96, 2):
-                                print(f"   ⚠️  SHAPE MISMATCH: Checkpoint has {kernel_shape}, but model expects (96, 2)")
-                                print(f"   ⚠️  This checkpoint was trained with {kernel_shape[1]}-dimensional latents!")
-            
-        except Exception as e:
-            print(f"   ❌ load_model_weights: Failed to inspect checkpoint structure: {e}")
-    
-    # Now load into the actual train state
-    with open(checkpoint_path, "rb") as data_file:
+    with open(os.path.join(artifact_dir, ckpt_name), "rb") as data_file:
         byte_data = data_file.read()
-    
-    print(f"   🔍 load_model_weights: Loading checkpoint into actual train state...")
     loaded_state = from_bytes(train_state, byte_data)
-    print(f"   ✅ load_model_weights: Checkpoint loaded successfully")
     return loaded_state
 
 
@@ -695,7 +618,7 @@ def evaluate_custom_dataset(
                         return x[0]
                     except Exception:
                         return x
-                info0 = jax.tree_util.tree_map(_first_device, info_tree)
+                info0 = jax.tree_map(_first_device, info_tree)
                 # Bring to host (avoid device-backed arrays in payload)
                 try:
                     info0 = jax.device_get(info0)
@@ -855,7 +778,7 @@ def evaluate_custom_dataset(
                             return x[0]
                         except Exception:
                             return x
-                    info0_batch = jax.tree_util.tree_map(_first_device, info_tree)
+                    info0_batch = jax.tree_map(_first_device, info_tree)
                     try:
                         info0_batch = jax.device_get(info0_batch)
                     except Exception:
@@ -1011,12 +934,7 @@ def main(
     omegaconf.OmegaConf.save(config=cfg, f=os.path.join(artifact_dir, "config.yaml"))
 
     print("Instantiating the model and the train state...")
-    print(f"   - Config type: {type(cfg)}")
-    print(f"   - Encoder config: {cfg.encoder_transformer}")
-    print(f"   - Decoder config: {cfg.decoder_transformer}")
     lpn = instantiate_model(cfg, mixed_precision)
-    print(f"   - Model created with encoder config: {lpn.encoder.config}")
-    print(f"   - Model created with decoder config: {lpn.decoder.config}")
     train_state = instantiate_train_state(lpn)
     evaluator = Evaluator(
         lpn,
@@ -1027,17 +945,7 @@ def main(
 
     # Load the model weights
     print("Loading the model weights...")
-    try:
-        train_state = load_model_weights(train_state, artifact_dir)
-        print(f"✅ Checkpoint loaded successfully")
-        print(f"   - Checkpoint path: {artifact_dir}")
-        print(f"   - Model config: latent_dim={cfg.encoder_transformer.get('latent_dim', 'N/A')}")
-        print(f"   - Params structure: {list(train_state.params.keys()) if hasattr(train_state, 'params') else 'No params'}")
-    except Exception as e:
-        print(f"❌ Failed to load checkpoint: {e}")
-        print(f"   - Checkpoint path: {artifact_dir}")
-        print(f"   - Available files: {os.listdir(artifact_dir) if os.path.exists(artifact_dir) else 'Directory not found'}")
-        raise
+    train_state = load_model_weights(train_state, artifact_dir)
 
     # Put the train state on the device(s)
     train_state = jax.device_put_replicated(train_state, evaluator.devices)

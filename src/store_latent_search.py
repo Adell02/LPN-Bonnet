@@ -134,86 +134,36 @@ class Trace:
 
 
 def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
-    """
-    Extract scalar values aligned with the trajectory for a given prefix.
-    - For GA: prefer ga_losses; fall back to ga_scores.
-    - For ES: prefer es_best_losses_per_generation, then es_generation_losses.
-      Handle shapes like (G,), (1, G), (N, G) by reducing ONLY on the sample axis,
-      never collapsing the generation axis to length 1.
-    """
-    def _flatten_generation_vector(arr: np.ndarray) -> Optional[np.ndarray]:
-        if arr is None:
-            return None
-        a = np.asarray(arr)
-        if a.ndim == 1:
-            return a
-        # If (1, G) or (N, G), reduce across first axis only if needed
-        if a.ndim == 2:
-            if a.shape[0] == 1:
-                return a[0]
-            # More than one sample: take mean across samples (keep generations)
-            return a.mean(axis=0)
-        # Higher dims: try to average across all leading dims, keep last dim as generations
-        gens = a.shape[-1]
-        lead = int(np.prod(a.shape[:-1]))
-        a2 = a.reshape(lead, gens)
-        return a2.mean(axis=0)
-
-    # GA first: simple
-    if prefix == "ga_":
-        for k in [f"{prefix}losses", f"{prefix}scores"]:
-            if k in npz:
-                v = _flatten_generation_vector(npz[k])
-                if v is not None and v.size > 0:
-                    print(f"[plot] Using values key '{k}', length={v.size}")
-                    return v.astype(float)
-        # secondary fallbacks
-        for k in [f"{prefix}all_losses", f"{prefix}all_scores"]:
-            if k in npz:
-                v = _flatten_generation_vector(npz[k])
-                if v is not None and v.size > 0:
-                    print(f"[plot] Using values key '{k}', length={v.size}")
-                    return v.astype(float)
-        return None
-
-    # ES: prefer explicit generation vectors
-    if prefix == "es_":
-        # 1) Preferred key
-        if f"{prefix}best_losses_per_generation" in npz:
-            v = _flatten_generation_vector(npz[f"{prefix}best_losses_per_generation"]) 
-            if v is not None and v.size > 0:
-                print(f"[plot] Using values key '{prefix}best_losses_per_generation', length={v.size}")
-                return v.astype(float)
-        # 2) Next best
-        if f"{prefix}generation_losses" in npz:
-            v = _flatten_generation_vector(npz[f"{prefix}generation_losses"]) 
-            if v is not None and v.size > 0:
-                print(f"[plot] Using values key '{prefix}generation_losses', length={v.size}")
-                return v.astype(float)
-        # 3) Other fallbacks if above missing
-        for k in [f"{prefix}losses", f"{prefix}scores", f"{prefix}all_losses", f"{prefix}all_scores"]:
-            if k in npz:
-                v = _flatten_generation_vector(npz[k])
-                if v is not None and v.size > 0:
-                    # Guard against accidental collapse to size 1 when we have best_latents_per_generation
-                    if v.size == 1 and f"{prefix}best_latents_per_generation" in npz:
-                        print(f"[plot] Skipping '{k}' (length 1) since best_latents_per_generation exists; looking for generation-wise values")
-                        continue
-                    print(f"[plot] Using values key '{k}', length={v.size}")
-                    return v.astype(float)
-        
-        # 4) As a last resort, if we have best_latents_per_generation but no values, signal
-        if f"{prefix}best_latents_per_generation" in npz:
-            print(f"[plot] ES trajectory found but no generation-wise values. Available keys: {list(npz.keys())}")
-        return None
-
-    # Default
-    for k in [f"{prefix}losses", f"{prefix}scores", f"{prefix}all_losses", f"{prefix}all_scores"]:
+    # values associated with the *trajectory* points (GA path or ES path)
+    for k in [
+        f"{prefix}losses",
+        f"{prefix}scores",
+        f"{prefix}all_losses",
+        f"{prefix}all_scores",
+        f"{prefix}best_scores_per_generation",
+        f"{prefix}best_losses_per_generation",
+        f"{prefix}generation_losses",  # ES trajectory values (new key)
+        f"{prefix}best_losses_per_generation",  # ES trajectory values (new key)
+    ]:
         if k in npz:
-            v = _flatten_generation_vector(npz[k])
-            if v is not None and v.size > 0:
-                print(f"[plot] Using values key '{k}', length={v.size}")
-                return v.astype(float)
+            arr = np.array(npz[k]).reshape(-1)
+            if arr.ndim == 1 and arr.size > 0:
+                print(f"[plot] Using values key '{k}', length={arr.size}")
+                return arr
+    
+    # Special handling for ES: if we have best_latents_per_generation but no values,
+    # we need to extract the trajectory from the saved data
+    if prefix == "es_" and f"{prefix}best_latents_per_generation" in npz:
+        print(f"[plot] ES trajectory found but no values - this indicates a data saving issue")
+        print(f"[plot] Available keys: {list(npz.keys())}")
+        
+        # Try to use generation_losses for ES trajectory
+        if f"{prefix}generation_losses" in npz:
+            gen_losses = np.array(npz[f"{prefix}generation_losses"]).reshape(-1)
+            if gen_losses.ndim == 1 and gen_losses.size > 0:
+                print(f"[plot] Using ES generation_losses for trajectory: {gen_losses.shape}")
+                return gen_losses
+    
     return None
 
 
@@ -250,16 +200,10 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
     Extract ES population data with proper loss pairing.
     Prefer per-sample losses to ensure counts match.
     """
-    # 🔍 DEBUGGING POPULATION EXTRACTION 🔍
-    print(f"[extract_pop] 🔍 === POPULATION EXTRACTION DEBUGGING START ===")
-    print(f"[extract_pop] 🔍 Prefix: {prefix}")
-    print(f"[extract_pop] 🔍 NPZ keys: {list(npz.keys())}")
-    
     pts = gens = vals = None
     
     if f"{prefix}all_latents" in npz:
         pts = np.array(npz[f"{prefix}all_latents"])
-        print(f"[extract_pop] 🔍 Found {prefix}all_latents: {pts.shape}")
         # Don't reshape here - PCA will handle dimension reduction
     
     if f"{prefix}generation_idx" in npz:
@@ -289,7 +233,7 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
         flat = lp.reshape(-1)
         if N is not None and flat.size == N:
             vals = flat
-        print(f"[plot] Using {prefix}losses_per_generation: {lp.shape} -> {vals.shape}")
+            print(f"[plot] Using {prefix}losses_per_generation: {lp.shape} -> {vals.shape}")
 
     # 2) Map per-generation losses to individuals via generation_idx
     if vals is None and gens is not None:
@@ -671,65 +615,22 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     original_dims = []
     all_points = []
     
-    # 🔍 COMPREHENSIVE DEBUGGING FOR PCA FITTING 🔍
-    print(f"[plot] 🔍 === PCA FITTING DEBUGGING START ===")
-    
     # Collect all points for unified PCA fitting
     if ga.pts is not None:
         all_points.append(ga.pts)
         original_dims.append(ga.pts.shape[-1])
-        print(f"[plot] 🔍 Added GA points to PCA: {ga.pts.shape}")
-    
-    # For ES, we need to get the actual latent trajectory from the NPZ file
-    es_trajectory = None
-    if es_npz_path and os.path.exists(es_npz_path):
-        try:
-            with np.load(es_npz_path, allow_pickle=True) as f:
-                print(f"[plot] 🔍 ES NPZ keys for PCA: {list(f.keys())}")
-                print(f"[plot] 🔍 ES NPZ content analysis:")
-                for key in f.keys():
-                    data = f[key]
-                    if hasattr(data, 'shape'):
-                        print(f"[plot] 🔍   {key}: {data.shape}")
-                    else:
-                        print(f"[plot] 🔍   {key}: {type(data)}")
-                
-                if 'es_best_latents_per_generation' in f:
-                    es_trajectory = np.array(f['es_best_latents_per_generation'])
-                    print(f"[plot] 🔍 Found ES trajectory for PCA: {es_trajectory.shape}")
-                elif 'es_latents' in f:
-                    es_trajectory = np.array(f['es_latents'])
-                    print(f"[plot] 🔍 Found ES trajectory for PCA: {es_trajectory.shape}")
-                elif 'es_path' in f:
-                    es_trajectory = np.array(f['es_path'])
-                    print(f"[plot] 🔍 Found ES trajectory for PCA: {es_trajectory.shape}")
-        except Exception as e:
-            print(f"[plot] 🔍 Failed to load ES trajectory for PCA: {e}")
-    
-    if es_trajectory is not None:
-        all_points.append(es_trajectory)
-        original_dims.append(es_trajectory.shape[-1])
-        print(f"[plot] 🔍 Added ES trajectory to PCA: {es_trajectory.shape}")
-    elif es.pts is not None:
+    if es.pts is not None:
         all_points.append(es.pts)
         original_dims.append(es.pts.shape[-1])
-        print(f"[plot] 🔍 Added es.pts to PCA: {es.pts.shape}")
-    elif es.best_per_gen is not None:
-        all_points.append(es.best_per_gen)
-        original_dims.append(es.best_per_gen.shape[-1])
-        print(f"[plot] 🔍 Added es.best_per_gen to PCA: {es.best_per_gen.shape}")
-    
     if es.pop_pts is not None:
         all_points.append(es.pop_pts)
         original_dims.append(es.pop_pts.shape[-1])
-        print(f"[plot] 🔍 Added es.pop_pts to PCA: {es.pop_pts.shape}")
+    if es.best_per_gen is not None:
+        all_points.append(es.best_per_gen)
+        original_dims.append(es.best_per_gen.shape[-1])
     
     # Get the most common original dimension (or max if different)
     original_dim = max(original_dims) if original_dims else 2
-    print(f"[plot] 🔍 Total points for PCA: {len(all_points)}")
-    print(f"[plot] 🔍 Original dimensions: {original_dims}")
-    print(f"[plot] 🔍 Selected original_dim: {original_dim}")
-    print(f"[plot] 🔍 === PCA FITTING DEBUGGING END ===")
     
     # Initialize PCA transformer early to avoid scope issues
     pca_transformer = None
@@ -765,14 +666,6 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # BEFORE: Only used trajectory values (best per generation) - missed poor regions
     # AFTER: Uses full population losses - shows complete search space exploration
     # This reveals valleys, plateaus, and local minima that help understand optimization difficulty
-    
-    # 🔍 STRATEGIC DEBUGGING: Check what ES data is actually available
-    print(f"[plot] 🔍 === ES LOSS LANDSCAPE DEBUGGING ===")
-    print(f"[plot] 🔍 es.pop_pts: {es.pop_pts.shape if es.pop_pts is not None else None}")
-    print(f"[plot] 🔍 es.pop_vals: {es.pop_vals.shape if es.pop_vals is not None else None}")
-    print(f"[plot] 🔍 es.vals: {es.vals.shape if es.vals is not None else None}")
-    print(f"[plot] 🔍 es.best_per_gen: {es.best_per_gen.shape if es.best_per_gen is not None else None}")
-    
     if es.pop_pts is not None:
         es_pop_pts_original = es.pop_pts.reshape(-1, es.pop_pts.shape[-1])  # (N, D) where D is original dim
         
@@ -826,46 +719,6 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 print(f"[plot] ES trajectory values missing, cannot create background")
     else:
         print(f"[plot] ES background missing: pts={es.pop_pts is not None}")
-        
-        # 🔍 CRITICAL FIX: If no population data, try to reconstruct from best_latents_per_generation
-        # This is what we actually have in the ES NPZ file
-        if es.best_per_gen is not None:
-            print(f"[plot] 🔍 Attempting to reconstruct ES loss landscape from best_latents_per_generation")
-            print(f"[plot] 🔍 es.best_per_gen shape: {es.best_per_gen.shape}")
-            
-            # Check if we have generation-level losses that we can expand to population level
-            if es.vals is not None:
-                print(f"[plot] 🔍 es.vals shape: {es.vals.shape}")
-                print(f"[plot] 🔍 es.vals content: {es.vals}")
-                
-                # Try to reconstruct population-level data
-                # If es.vals has 32 values and es.best_per_gen has shape (1, 32, 4, 256)
-                # We can assume 32 generations with 4 samples each
-                if len(es.vals) == 32 and es.best_per_gen.shape[1] == 32:
-                    print(f"[plot] 🔍 Reconstructing: 32 generations × 4 samples = 128 population points")
-                    
-                    # Reshape best_latents_per_generation to get all population points
-                    es_pop_reconstructed = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])  # (128, 256)
-                    
-                    # Expand generation losses to population level
-                    # Each generation has 4 samples, so repeat each loss value 4 times
-                    es_pop_vals_reconstructed = np.repeat(es.vals, 4)  # (128,)
-                    
-                    print(f"[plot] 🔍 Reconstructed ES population: pts={es_pop_reconstructed.shape}, vals={es_pop_vals_reconstructed.shape}")
-                    print(f"[plot] 🔍 Reconstructed ES values range: [{es_pop_vals_reconstructed.min():.4f}, {es_pop_vals_reconstructed.max():.4f}]")
-                    
-                    # Add to background for loss landscape
-                    bgP_original.append(es_pop_reconstructed)
-                    bgV_original.append(es_pop_vals_reconstructed)
-                    print(f"[plot] 🔍 Added reconstructed ES population to loss landscape background")
-                else:
-                    print(f"[plot] 🔍 Cannot reconstruct: es.vals length ({len(es.vals)}) != es.best_per_gen shape[1] ({es.best_per_gen.shape[1]})")
-            else:
-                print(f"[plot] 🔍 No es.vals available for reconstruction")
-        else:
-            print(f"[plot] 🔍 No es.best_per_gen available for reconstruction")
-    
-    print(f"[plot] 🔍 === ES LOSS LANDSCAPE DEBUGGING END ===")
     
     # Check for value consistency between GA and ES
     # Note: GA uses trajectory losses, ES uses full population losses for comprehensive landscape
@@ -1277,45 +1130,10 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             else:
                 print(f"[plot] Skipping generation circles due to unavailable/mismatched generation index")
 
-    # 🔍 COMPREHENSIVE DEBUGGING FOR ES TRAJECTORY ISSUE 🔍
-    print(f"[plot] 🔍 === ES TRAJECTORY DEBUGGING START ===")
-    print(f"[plot] 🔍 ES NPZ path: {es_npz_path}")
-    print(f"[plot] 🔍 ES NPZ exists: {os.path.exists(es_npz_path) if es_npz_path else False}")
-    print(f"[plot] 🔍 es.best_per_gen: {es.best_per_gen.shape if es.best_per_gen is not None else None}")
-    print(f"[plot] 🔍 es.pts: {es.pts.shape if es.pts is not None else None}")
-    
-    # For ES, we need to get the actual latent trajectory, not just the values
-    # The issue is that es.pts might be coming from a different source than expected
-    es_sel = None
-    
-    # First try to get the actual latent trajectory from the NPZ file
-    if es_npz_path and os.path.exists(es_npz_path):
-        try:
-            with np.load(es_npz_path, allow_pickle=True) as f:
-                print(f"[plot] 🔍 ES NPZ keys for trajectory: {list(f.keys())}")
-                
-                # Look for the actual latent trajectory
-                if 'es_best_latents_per_generation' in f:
-                    es_sel = np.array(f['es_best_latents_per_generation'])
-                    print(f"[plot] 🔍 Found ES trajectory from es_best_latents_per_generation: {es_sel.shape}")
-                elif 'es_latents' in f:
-                    es_sel = np.array(f['es_latents'])
-                    print(f"[plot] 🔍 Found ES trajectory from es_latents: {es_sel.shape}")
-                elif 'es_path' in f:
-                    es_sel = np.array(f['es_path'])
-                    print(f"[plot] 🔍 Found ES trajectory from es_path: {es_sel.shape}")
-                else:
-                    print(f"[plot] 🔍 No ES latent trajectory found in NPZ, using fallback")
-                    es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
-        except Exception as e:
-            print(f"[plot] 🔍 Failed to load ES NPZ for trajectory: {e}")
-            es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
-    else:
-        print(f"[plot] 🔍 No ES NPZ path provided, using fallback")
-        es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
-    
-    print(f"[plot] 🔍 Final ES selected for plotting: {es_sel.shape if es_sel is not None else None}")
-    print(f"[plot] 🔍 === ES TRAJECTORY DEBUGGING END ===")
+    # ES selected path (best per generation if present, otherwise es.pts)
+    print(f"[plot] ES trajectory debug: best_per_gen={es.best_per_gen.shape if es.best_per_gen is not None else None}, es.pts={es.pts.shape if es.pts is not None else None}")
+    es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
+    print(f"[plot] ES selected for plotting: {es_sel.shape if es_sel is not None else None}")
     
     if es_sel is not None and es_sel.size > 0:
         # Check if we have enough trajectory points (more than 1 generation)
@@ -1326,74 +1144,24 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             print(f"[plot] Plotting ES trajectory: {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
             _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES selected", alpha=1.0)
         elif es_sel.ndim == 2 and es_sel.shape[0] > 1:
-            # 🔍 DEBUGGING ES TRAJECTORY PROJECTION 🔍
-            print(f"[plot] 🔍 ES trajectory shape: {es_sel.shape}")
-            print(f"[plot] 🔍 ES trajectory needs PCA projection: {es_sel.shape[-1]}D -> 2D")
-            print(f"[plot] 🔍 PCA transformer available: {pca_transformer is not None}")
-            
-            # Check if this needs PCA projection (should be 2D for plotting)
-            if es_sel.shape[-1] != 2:
-                print(f"[plot] 🔍 ES trajectory needs PCA projection: {es_sel.shape} -> projecting to 2D")
-                if pca_transformer is not None:
-                    try:
-                        es_sel_flat = _apply_fitted_pca(es_sel, pca_transformer, target_dim=2)
-                        print(f"[plot] 🔍 ES trajectory after PCA: {es_sel_flat.shape}")
-                        print(f"[plot] 🔍 ES trajectory range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
-                    except Exception as e:
-                        print(f"[plot] 🔍 PCA projection failed: {e}")
-                        print(f"[plot] 🔍 Skipping ES trajectory due to PCA error")
-                        es_sel_flat = None
-                else:
-                    print(f"[plot] 🔍 No PCA transformer available, skipping ES trajectory")
-                    es_sel_flat = None
-            else:
-                # Already 2D: (G, 2)
-                es_sel_flat = es_sel
-                print(f"[plot] 🔍 Plotting ES trajectory (already 2D): {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
-            
-            if es_sel_flat is not None:
-                _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES selected", alpha=1.0)
+            # Already flattened: (G, 2)
+            es_sel_flat = es_sel
+            print(f"[plot] Plotting ES trajectory (already flat): {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
+            _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES selected", alpha=1.0)
         else:
             print(f"[plot] ES trajectory plotting skipped: es_sel shape={es_sel.shape}, not enough generations")
             
-            # 🔍 DEBUGGING ES FALLBACK PLOTTING 🔍
-            print(f"[plot] 🔍 === ES FALLBACK DEBUGGING START ===")
-            
             # Fallback: try to plot ES trajectory from best_per_gen if available
             if es.best_per_gen is not None and es.best_per_gen.size > 0:
-                print(f"[plot] 🔍 ES fallback: attempting to plot from best_per_gen")
-                print(f"[plot] 🔍 es.best_per_gen shape: {es.best_per_gen.shape}")
+                print(f"[plot] ES fallback: attempting to plot from best_per_gen")
                 es_fallback = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])
-                print(f"[plot] 🔍 es_fallback after reshape: {es_fallback.shape}")
-                
                 if es_fallback.shape[0] > 1:
-                    print(f"[plot] 🔍 ES fallback plotting: {es_fallback.shape}")
-                    # Check if PCA projection is needed
-                    if es_fallback.shape[-1] != 2 and pca_transformer is not None:
-                        print(f"[plot] 🔍 ES fallback needs PCA: {es_fallback.shape[-1]}D -> 2D")
-                        try:
-                            es_fallback = _apply_fitted_pca(es_fallback, pca_transformer, target_dim=2)
-                            print(f"[plot] 🔍 ES fallback after PCA: {es_fallback.shape}")
-                        except Exception as e:
-                            print(f"[plot] 🔍 ES fallback PCA failed: {e}")
-                            es_fallback = None
-                    elif es_fallback.shape[-1] != 2:
-                        print(f"[plot] 🔍 ES fallback needs PCA but no transformer available, skipping")
-                        es_fallback = None
-                    else:
-                        print(f"[plot] 🔍 ES fallback already 2D, no PCA needed")
-                    
-                    if es_fallback is not None:
-                        print(f"[plot] 🔍 Plotting ES fallback trajectory: {es_fallback.shape}")
-                        _plot_traj(ax, es_fallback, color="#DB74DB", label="ES selected (fallback)", alpha=1.0)
-                    else:
-                        print(f"[plot] 🔍 ES fallback trajectory is None, skipping plot")
+                    print(f"[plot] ES fallback plotting: {es_fallback.shape}")
+                    _plot_traj(ax, es_fallback, color="#DB74DB", label="ES selected (fallback)", alpha=1.0)
                 else:
-                    print(f"[plot] 🔍 ES fallback failed: not enough points ({es_fallback.shape[0]})")
+                    print(f"[plot] ES fallback failed: not enough points ({es_fallback.shape[0]})")
             else:
-                print(f"[plot] 🔍 ES fallback: no best_per_gen available")
-            
-            print(f"[plot] 🔍 === ES FALLBACK DEBUGGING END ===")
+                print(f"[plot] ES fallback: no best_per_gen available")
     else:
         print(f"[plot] ES trajectory plotting skipped: es_sel is None or empty")
 
@@ -1444,27 +1212,13 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         ga_visible = (ga_xmin >= xlim[0] and ga_xmax <= xlim[1] and ga_ymin >= ylim[0] and ga_ymax <= ylim[1])
         print(f"[verification] GA trajectory: x[{ga_xmin:.3f}, {ga_xmax:.3f}], y[{ga_ymin:.3f}, {ga_ymax:.3f}] - {'✅ VISIBLE' if ga_visible else '❌ OUT OF BOUNDS'}")
     
-    # 🔍 DEBUGGING ES BOUNDS VERIFICATION 🔍
-    print(f"[verification] 🔍 === ES BOUNDS VERIFICATION START ===")
-    
     # Check ES trajectory bounds
     if es.pts is not None:
-        print(f"[verification] 🔍 ES.pts shape: {es.pts.shape}")
-        # Ensure ES trajectory is 2D for bounds checking
-        if es.pts.shape[-1] == 2:
-            es_flat = es.pts.reshape(-1, 2)
-            es_xmin, es_xmax = es_flat[:, 0].min(), es_flat[:, 0].max()
-            es_ymin, es_ymax = es_flat[:, 1].min(), es_flat[:, 1].max()
-            es_visible = (es_xmin >= xlim[0] and es_xmax <= xlim[1] and es_ymin >= ylim[0] and es_ymax <= ylim[1])
-            print(f"[verification] 🔍 ES trajectory: x[{es_xmin:.3f}, {es_xmax:.3f}], y[{es_ymin:.3f}, {es_ymax:.3f}] - {'✅ VISIBLE' if es_visible else '❌ OUT OF BOUNDS'}")
-        else:
-            print(f"[verification] 🔍 ES trajectory: shape {es.pts.shape} is not 2D, skipping bounds check")
-            es_visible = True  # Assume visible to avoid breaking the verification
-    else:
-        print(f"[verification] 🔍 ES trajectory: no pts available for bounds check")
-        es_visible = True  # Assume visible to avoid breaking the verification
-    
-    print(f"[verification] 🔍 === ES BOUNDS VERIFICATION END ===")
+        es_flat = es.pts.reshape(-1, 2)
+        es_xmin, es_xmax = es_flat[:, 0].min(), es_flat[:, 0].max()
+        es_ymin, es_ymax = es_flat[:, 1].min(), es_flat[:, 1].max()
+        es_visible = (es_xmin >= xlim[0] and es_xmax <= xlim[1] and es_ymin >= ylim[0] and es_ymax <= ylim[1])
+        print(f"[verification] ES trajectory: x[{es_xmin:.3f}, {es_xmax:.3f}], y[{es_ymin:.3f}, {es_ymax:.3f}] - {'✅ VISIBLE' if es_visible else '❌ OUT OF BOUNDS'}")
     
     # Check ES population bounds
     if es.pop_pts is not None:
@@ -1613,32 +1367,13 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     ga_budget = np.array(f['ga_budget']).reshape(-1)
                 if (dataset_length is not None and dataset_length > 1) and 'ga_losses_per_sample' in f:
                     L = np.array(f['ga_losses_per_sample'])  # (N, S)
-                    # Check if baseline was prepended (first step should be baseline)
-                    has_baseline = L.shape[1] > 1 and L.shape[1] == ga_steps + 1 if ga_steps else False
-                    
-                    if has_baseline:
-                        # Baseline is at step 0, optimization starts at step 1
-                        x = np.arange(L.shape[1])  # 0, 1, 2, 3, ...
-                        x_labels = ["Baseline"] + [f"Step {i}" for i in range(1, L.shape[1])]
-                        print(f"[loss] GA with baseline: {L.shape[1]} steps (0=baseline, 1-{L.shape[1]-1}=optimization)")
-                    else:
-                        # No baseline, use original budget calculation
-                        x = ga_budget if ga_budget is not None and len(ga_budget) == L.shape[1] else np.arange(L.shape[1])
-                        x_labels = [f"Step {i}" for i in range(L.shape[1])]
-                        print(f"[loss] GA without baseline: {L.shape[1]} steps")
-                    
+                    x = ga_budget if ga_budget is not None and len(ga_budget) == L.shape[1] else np.arange(L.shape[1])
                     ga_min = np.min(L, axis=0)
                     ga_max = np.max(L, axis=0)
                     ga_mean = np.mean(L, axis=0)
                     ax.fill_between(x, ga_min, ga_max, color="#FBB998", alpha=0.25, label="GA range", zorder=2)
                     ga_mean_ma = _moving_average(ga_mean, k=max(3, L.shape[1]//10))
                     ax.plot(x, ga_mean_ma, color="#FBB998", linewidth=3.0, label=f"GA mean", zorder=4)
-                    
-                    # Highlight baseline point if present
-                    if has_baseline:
-                        ax.scatter([0], [ga_mean[0]], s=100, color="#FBB998", edgecolors='black', linewidths=2, 
-                                 zorder=5, label="Baseline (mean latent)")
-                    
                     did_ga_overlay = True
         except Exception as _ge:
             print(f"[loss] Failed GA per-sample plotting: {_ge}")
@@ -1646,20 +1381,8 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Fallback single GA curve if no per-sample available
     if has_ga_loss and not did_ga_overlay:
         if ga_steps is not None:
-            # Check if baseline was prepended
-            has_baseline = len(ga.vals) == ga_steps + 1
-            if has_baseline:
-                # Baseline at step 0, optimization at steps 1+
-                ga_budget = np.arange(len(ga.vals))  # 0, 1, 2, 3, ...
-                print(f"[loss] GA with baseline: {len(ga.vals)} steps (0=baseline, 1-{ga_steps}=optimization)")
-                # Highlight baseline point
-                ax.scatter([0], [ga.vals[0]], s=100, color="#FBB998", edgecolors='black', linewidths=2, 
-                          zorder=5, label="Baseline (mean latent)")
-            else:
-                # No baseline, use original budget calculation
-                ga_budget = 2 * np.arange(1, len(ga.vals) + 1)
-                print(f"[loss] GA without baseline: {len(ga.vals)} steps → budget points: {ga_budget}")
-            
+            ga_budget = 2 * np.arange(1, len(ga.vals) + 1)
+            print(f"[loss] GA budget calculation: {len(ga.vals)} steps → budget points: {ga_budget}")
             ax.plot(ga_budget, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
                     markersize=6, label=f"Gradient Ascent (2×{ga_steps} steps)", zorder=3)
         else:
@@ -1677,32 +1400,13 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     es_budget = np.array(f['es_budget']).reshape(-1)
                 if (dataset_length is not None and dataset_length > 1) and 'es_generation_losses_per_sample' in f:
                     L = np.array(f['es_generation_losses_per_sample'])  # (N, G)
-                    # Check if baseline was prepended (first generation should be baseline)
-                    has_baseline = L.shape[1] > 1 and L.shape[1] == es_generations + 1 if es_generations else False
-                    
-                    if has_baseline:
-                        # Baseline is at generation 0, optimization starts at generation 1
-                        x = np.arange(L.shape[1])  # 0, 1, 2, 3, ...
-                        x_labels = ["Baseline"] + [f"Gen {i}" for i in range(1, L.shape[1])]
-                        print(f"[loss] ES with baseline: {L.shape[1]} generations (0=baseline, 1-{L.shape[1]-1}=optimization)")
-                    else:
-                        # No baseline, use original budget calculation
-                        x = es_budget if es_budget is not None and len(es_budget) == L.shape[1] else np.arange(1, L.shape[1]+1)
-                        x_labels = [f"Gen {i}" for i in range(L.shape[1])]
-                        print(f"[loss] ES without baseline: {L.shape[1]} generations")
-                    
+                    x = es_budget if es_budget is not None and len(es_budget) == L.shape[1] else np.arange(1, L.shape[1]+1)
                     es_min = np.min(L, axis=0)
                     es_max = np.max(L, axis=0)
                     es_mean = np.mean(L, axis=0)
                     ax.fill_between(x, es_min, es_max, color="#DB74DB", alpha=0.25, label="ES range", zorder=2)
                     es_mean_ma = _moving_average(es_mean, k=max(3, L.shape[1]//4))
                     ax.plot(x, es_mean_ma, color="#DB74DB", linewidth=3.0, label=f"ES mean", zorder=4)
-                    
-                    # Highlight baseline point if present
-                    if has_baseline:
-                        ax.scatter([0], [es_mean[0]], s=100, color="#DB74DB", edgecolors='black', linewidths=2, 
-                                 zorder=5, label="Baseline (mean latent)")
-                    
                     did_es_overlay = True
         except Exception as _ee:
             print(f"[loss] Failed ES per-sample plotting: {_ee}")
@@ -1710,25 +1414,12 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Fallback single ES curve
     if has_es_loss and not did_es_overlay:
         if es_population is not None and es_generations is not None:
-            # Check if baseline was prepended
-            has_baseline = len(es.vals) == es_generations + 1
-            if has_baseline:
-                # Baseline at generation 0, optimization at generations 1+
-                es_budget = np.arange(len(es.vals))  # 0, 1, 2, 3, ...
-                print(f"[loss] ES with baseline: {len(es.vals)} generations (0=baseline, 1-{es_generations}=optimization)")
-                # Highlight baseline point
-                ax.scatter([0], [es.vals[0]], s=100, color="#DB74DB", edgecolors='black', linewidths=2, 
-                          zorder=5, label="Baseline (mean latent)")
+            if len(es.vals) == es_generations + 1:
+                es_budget = np.arange(es_generations + 1) * es_population
+            elif len(es.vals) == es_generations:
+                es_budget = np.arange(1, es_generations + 1) * es_population
             else:
-                # No baseline, use original budget calculation
-                if len(es.vals) == es_generations + 1:
-                    es_budget = np.arange(es_generations + 1) * es_population
-                elif len(es.vals) == es_generations:
-                    es_budget = np.arange(1, es_generations + 1) * es_population
-                else:
-                    es_budget = np.arange(len(es.vals)) * es_population
-                print(f"[loss] ES without baseline: {len(es.vals)} generations → budget points: {es_budget}")
-            
+                es_budget = np.arange(len(es.vals)) * es_population
             if len(es_budget) == len(es.vals):
                 ax.plot(es_budget, es.vals, color="#DB74DB", linewidth=3.0, marker='s', 
                         markersize=6, label=f"Evolutionary Search ({es_population}×{es_generations})", zorder=3)
@@ -2361,7 +2052,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                                 run.log({f"{wandb_key}_std": float(np.std(arr))})
                             except Exception as _we:
                                 print(f"[metrics] Failed to log GA histogram {wandb_key}: {_we}")
-                
+
                 # Create GA metrics CSV for download
                 ga_csv_path = f"ga_metrics_run_{cfg.get('run_idx', 0)}.csv"
                 
@@ -2470,7 +2161,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                                 run.log({f"{wandb_key}_std": float(np.std(arr))})
                             except Exception as _we:
                                 print(f"[metrics] Failed to log ES histogram {wandb_key}: {_we}")
-                
+
                 # Log ES metrics
                 for key, value in es_metrics.items():
                     if value is not None:
@@ -2698,36 +2389,10 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     src_args = build_dataset_args(args)
 
-    # ------------------------------------------------------------------
-    # Evaluate the mean latent (no optimisation) to obtain a baseline
-    # sample.  This latent should be treated as the first sample for both
-    # optimisation methods so that the trajectories include the starting
-    # point.  We store the resulting metrics and latent vector in an NPZ
-    # file which will later be prepended to the GA and ES trajectories.
-    # ------------------------------------------------------------------
-    mean_out = os.path.join(args.out_dir, "mean_latent.npz")
-    mean_cmd = [
-        sys.executable,
-        "src/evaluate_checkpoint.py",
-        "-w",
-        args.wandb_artifact_path,
-        "-i",
-        "mean",
-        "--no-wandb-run",
-        "true",
-        "--store-latents",
-        mean_out,
-    ]
-    mean_cmd += src_args
-    print("Running:", " ".join(mean_cmd))
-    mean_rc = subprocess.run(mean_cmd, check=False).returncode
-    print(f"Mean latent return code: {mean_rc}")
-
     # Gradient Ascent config
     ga_steps = args.ga_steps if args.ga_steps is not None else int(math.ceil(args.budget / 2))
     print(f"🔧 GA config: {ga_steps} steps (lr={args.ga_lr})")
-    print(f"   🎯 GA starts from mean latent (baseline)")
-    print(f"   📊 Total trajectory: {ga_steps + 1} points (1 baseline + {ga_steps} optimization steps)")
+    print(f"   🎯 GA starts from mean latent")
     ga_out = os.path.join(args.out_dir, "ga_latents.npz")
     ga_cmd = [
         sys.executable, "src/evaluate_checkpoint.py",
@@ -2753,21 +2418,12 @@ def main() -> None:
     if run is not None:
         wandb.log({"ga_return_code": ga_rc, "ga_status": "completed"})
 
-    # 🔍 DEBUGGING ES EXECUTION 🔍
-    print(f"[main] 🔍 === ES EXECUTION DEBUGGING START ===")
-    
     # Evolutionary Search config
     pop = args.es_population if args.es_population is not None else max(3, min(32, int(round(math.sqrt(args.budget)))))
     gens = args.es_generations if args.es_generations is not None else max(1, int(math.ceil(args.budget / pop)))
     print(f"🧬 ES config: population={pop}, generations={gens} (mutation_std={args.es_mutation_std})")
-    print(f"   🎯 ES starts from mean latent (baseline, same as GA)")
-    print(f"   📊 Total trajectory: {gens + 1} generations (1 baseline + {gens} optimization generations)")
+    print(f"   🎯 ES starts from mean latent (same as GA)")
     es_out = os.path.join(args.out_dir, "es_latents.npz")
-    
-    print(f"[main] 🔍 ES output path: {es_out}")
-    print(f"[main] 🔍 ES output dir exists: {os.path.dirname(es_out) if es_out else 'None'}")
-    print(f"[main] 🔍 ES output file will be: {es_out}")
-    
     es_cmd = [
         sys.executable, "src/evaluate_checkpoint.py",
         "-w", args.wandb_artifact_path,
@@ -2782,13 +2438,7 @@ def main() -> None:
         es_cmd.append("--track-progress")
     es_cmd += src_args
     if args.use_subspace_mutation:
-        es_cmd += [
-            "--use-subspace-mutation",
-            "--subspace-dim",
-            str(args.subspace_dim),
-            "--ga-step-length",
-            str(args.ga_step_length),
-        ]
+        es_cmd += ["--use-subspace-mutation", "--subspace-dim", str(args.subspace_dim), "--ga-step-length", str(args.ga_step_length)]
         if args.trust_region_radius is not None:
             es_cmd += ["--trust-region-radius", str(args.trust_region_radius)]
 
@@ -2796,211 +2446,13 @@ def main() -> None:
     if run is not None:
         wandb.log({"es_status": "started"})
     
-    print(f"[main] 🔍 ES command: {' '.join(es_cmd)}")
     print("Running:", " ".join(es_cmd))
     es_rc = subprocess.run(es_cmd, check=False).returncode
-    print(f"[main] 🔍 ES return code: {es_rc}")
-    
-    # 🔍 VERIFY ES OUTPUT FILE 🔍
-    print(f"[main] 🔍 === ES OUTPUT VERIFICATION START ===")
-    if os.path.exists(es_out):
-        print(f"[main] 🔍 ES output file exists: {es_out}")
-        print(f"[main] 🔍 ES output file size: {os.path.getsize(es_out)} bytes")
-        try:
-            with np.load(es_out, allow_pickle=True) as es_npz:
-                print(f"[main] 🔍 ES NPZ keys: {list(es_npz.keys())}")
-                for key in es_npz.keys():
-                    data = es_npz[key]
-                    if hasattr(data, 'shape'):
-                        print(f"[main] 🔍 ES {key}: {data.shape}")
-                    else:
-                        print(f"[main] 🔍 ES {key}: {type(data)}")
-        except Exception as e:
-            print(f"[main] 🔍 Error reading ES NPZ: {e}")
-    else:
-        print(f"[main] 🔍 ES output file does NOT exist: {es_out}")
-    print(f"[main] 🔍 === ES OUTPUT VERIFICATION END ===")
-    
-    print(f"[main] 🔍 === ES EXECUTION DEBUGGING END ===")
+    print(f"ES return code: {es_rc}")
 
     # Log ES completion
     if run is not None:
         wandb.log({"es_return_code": es_rc, "es_status": "completed"})
-
-    # ------------------------------------------------------------------
-    # Prepend the mean latent as the first sample for both GA and ES
-    # trajectories.  We try to extract the latent vector and metrics from
-    # the mean_latent.npz produced above.  If some quantities are missing
-    # we simply skip their insertion.
-    # ------------------------------------------------------------------
-    def _prepend_baseline(mean_npz: str, target_npz: str, prefix: str) -> None:
-        """
-        Prepend the mean latent (baseline) as the starting point for both GA and ES trajectories.
-        This ensures that both optimization methods start from the same initial point.
-        """
-        if not (os.path.exists(mean_npz) and os.path.exists(target_npz)):
-            print(f"[baseline] Skipping baseline prepend: mean_npz={os.path.exists(mean_npz)}, target_npz={os.path.exists(target_npz)}")
-            return
-        
-        print(f"[baseline] Prepending baseline to {prefix} trajectory...")
-        
-        # Extract baseline data from mean latent NPZ
-        with np.load(mean_npz, allow_pickle=True) as fmean:
-            print(f"[baseline] Mean NPZ keys: {list(fmean.keys())}")
-            
-            # Extract initial latent (mean from all latents)
-            base_latent = None
-            if "context" in fmean:
-                base_latent = np.array(fmean["context"]).reshape(1, -1)
-                print(f"[baseline] Found context latent: {base_latent.shape}")
-            elif "mean_latent" in fmean:
-                base_latent = np.array(fmean["mean_latent"]).reshape(1, -1)
-                print(f"[baseline] Found mean_latent: {base_latent.shape}")
-            
-            # Extract initial loss (negative log probability)
-            base_loss = None
-            if "per_sample_loss" in fmean:
-                base_loss = float(np.array(fmean["per_sample_loss"]).mean())
-                print(f"[baseline] Found per_sample_loss: {base_loss:.6f}")
-            elif "per_sample_losses" in fmean:
-                base_loss = float(np.array(fmean["per_sample_losses"]).mean())
-                print(f"[baseline] Found per_sample_losses: {base_loss:.6f}")
-            elif "total_final_loss" in fmean:
-                base_loss = float(np.array(fmean["total_final_loss"]).mean())
-                print(f"[baseline] Found total_final_loss: {base_loss:.6f}")
-            
-            # Extract initial accuracy metrics
-            base_acc = None
-            base_shape = None
-            base_pixel = None
-            if "per_sample_accuracy" in fmean:
-                base_acc = float(np.array(fmean["per_sample_accuracy"]).mean())
-                print(f"[baseline] Found per_sample_accuracy: {base_acc:.6f}")
-            if "per_sample_shape_accuracy" in fmean:
-                base_shape = float(np.array(fmean["per_sample_shape_accuracy"]).mean())
-                print(f"[baseline] Found per_sample_shape_accuracy: {base_shape:.6f}")
-            if "per_sample_pixel_correctness" in fmean:
-                base_pixel = float(np.array(fmean["per_sample_pixel_correctness"]).mean())
-                print(f"[baseline] Found per_sample_pixel_correctness: {base_pixel:.6f}")
-
-        # Load target NPZ data
-        with np.load(target_npz, allow_pickle=True) as ftgt:
-            data = dict(ftgt.items())
-            print(f"[baseline] Target NPZ keys: {list(data.keys())}")
-
-        # Prepend baseline to GA trajectory
-        if prefix == "ga_":
-            print(f"[baseline] Prepending to GA trajectory...")
-            
-            # Prepend initial latent to GA latents
-            if base_latent is not None and "ga_latents" in data:
-                original_shape = data["ga_latents"].shape
-                data["ga_latents"] = np.concatenate([base_latent, data["ga_latents"]], axis=0)
-                print(f"[baseline] GA latents: {original_shape} -> {data['ga_latents'].shape}")
-            
-            # Prepend initial latent to GA path
-            if base_latent is not None and "ga_path" in data:
-                original_shape = data["ga_path"].shape
-                data["ga_path"] = np.concatenate([base_latent, data["ga_path"]], axis=0)
-                print(f"[baseline] GA path: {original_shape} -> {data['ga_path'].shape}")
-            
-            # Prepend initial loss to GA losses
-            if base_loss is not None and "ga_losses" in data:
-                original_shape = data["ga_losses"].shape
-                data["ga_losses"] = np.concatenate([[base_loss], np.array(data["ga_losses"]).reshape(-1)])
-                print(f"[baseline] GA losses: {original_shape} -> {data['ga_losses'].shape}")
-            
-            # Prepend initial loss to GA losses per sample
-            if base_loss is not None and "ga_losses_per_sample" in data:
-                original_shape = data["ga_losses_per_sample"].shape
-                # Add baseline as first step for each sample
-                baseline_step = np.full((data["ga_losses_per_sample"].shape[0], 1), base_loss)
-                data["ga_losses_per_sample"] = np.concatenate([baseline_step, data["ga_losses_per_sample"]], axis=1)
-                print(f"[baseline] GA losses per sample: {original_shape} -> {data['ga_losses_per_sample'].shape}")
-            
-            # Prepend initial accuracy metrics
-            if base_acc is not None:
-                if "ga_accuracy" not in data:
-                    data["ga_accuracy"] = []
-                if isinstance(data["ga_accuracy"], np.ndarray):
-                    data["ga_accuracy"] = data["ga_accuracy"].tolist()
-                data["ga_accuracy"].insert(0, base_acc)
-                print(f"[baseline] GA accuracy: prepended {base_acc:.6f}")
-            
-            if base_shape is not None:
-                if "ga_shape_correctness" not in data:
-                    data["ga_shape_correctness"] = []
-                if isinstance(data["ga_shape_correctness"], np.ndarray):
-                    data["ga_shape_correctness"] = data["ga_shape_correctness"].tolist()
-                data["ga_shape_correctness"].insert(0, base_shape)
-                print(f"[baseline] GA shape correctness: prepended {base_shape:.6f}")
-            
-            if base_pixel is not None:
-                if "ga_pixel_correctness" not in data:
-                    data["ga_pixel_correctness"] = []
-                if isinstance(data["ga_pixel_correctness"], np.ndarray):
-                    data["ga_pixel_correctness"] = data["ga_pixel_correctness"].tolist()
-                data["ga_pixel_correctness"].insert(0, base_pixel)
-                print(f"[baseline] GA pixel correctness: prepended {base_pixel:.6f}")
-        
-        # Prepend baseline to ES trajectory
-        elif prefix == "es_":
-            print(f"[baseline] Prepending to ES trajectory...")
-            
-            # Prepend initial latent to ES best latents per generation
-            if base_latent is not None and "es_best_latents_per_generation" in data:
-                original_shape = data["es_best_latents_per_generation"].shape
-                data["es_best_latents_per_generation"] = np.concatenate([
-                    base_latent,
-                    data["es_best_latents_per_generation"],
-                ], axis=0)
-                print(f"[baseline] ES best latents per generation: {original_shape} -> {data['es_best_latents_per_generation'].shape}")
-            
-            # Prepend initial loss to ES generation losses
-            if base_loss is not None and "es_generation_losses" in data:
-                original_shape = data["es_generation_losses"].shape
-                data["es_generation_losses"] = np.concatenate([[base_loss], np.array(data["es_generation_losses"]).reshape(-1)])
-                print(f"[baseline] ES generation losses: {original_shape} -> {data['es_generation_losses'].shape}")
-            
-            # Prepend initial loss to ES generation losses per sample
-            if base_loss is not None and "es_generation_losses_per_sample" in data:
-                original_shape = data["es_generation_losses_per_sample"].shape
-                # Add baseline as generation 0 for each sample
-                baseline_gen = np.full((data["es_generation_losses_per_sample"].shape[0], 1), base_loss)
-                data["es_generation_losses_per_sample"] = np.concatenate([baseline_gen, data["es_generation_losses_per_sample"]], axis=1)
-                print(f"[baseline] ES generation losses per sample: {original_shape} -> {data['es_generation_losses_per_sample'].shape}")
-            
-            # Prepend initial accuracy metrics
-            if base_acc is not None:
-                if "es_accuracy" not in data:
-                    data["es_accuracy"] = []
-                if isinstance(data["es_accuracy"], np.ndarray):
-                    data["es_accuracy"] = data["es_accuracy"].tolist()
-                data["es_accuracy"].insert(0, base_acc)
-                print(f"[baseline] ES accuracy: prepended {base_acc:.6f}")
-            
-            if base_shape is not None:
-                if "es_shape_correctness" not in data:
-                    data["es_shape_correctness"] = []
-                if isinstance(data["es_shape_correctness"], np.ndarray):
-                    data["es_shape_correctness"] = data["es_shape_correctness"].tolist()
-                data["es_shape_correctness"].insert(0, base_shape)
-                print(f"[baseline] ES shape correctness: prepended {base_shape:.6f}")
-            
-            if base_pixel is not None:
-                if "es_pixel_correctness" not in data:
-                    data["es_pixel_correctness"] = []
-                if isinstance(data["es_pixel_correctness"], np.ndarray):
-                    data["es_pixel_correctness"] = data["es_pixel_correctness"].tolist()
-                data["es_pixel_correctness"].insert(0, base_pixel)
-                print(f"[baseline] ES pixel correctness: prepended {base_pixel:.6f}")
-
-        # Save the updated data
-        np.savez_compressed(target_npz, **data)
-        print(f"[baseline] Successfully prepended baseline to {prefix} trajectory")
-
-    _prepend_baseline(mean_out, ga_out, "ga_")
-    _prepend_baseline(mean_out, es_out, "es_")
 
     # Handle multiple runs when n_samples > 1
     # NOTE: n_samples controls how many times to run the script with different seeds
@@ -3017,7 +2469,7 @@ def main() -> None:
         # Optional aggregators for cross-run statistics
         ga_agg_acc, ga_agg_shape, ga_agg_pixel, ga_agg_best_loss = [], [], [], []
         es_agg_acc, es_agg_shape, es_agg_pixel, es_agg_best_loss = [], [], [], []
-        
+
         for run_idx in range(args.n_samples):
             seed = args.dataset_seed + run_idx
             print(f"\n🔬 Run {run_idx + 1}/{args.n_samples} with seed {seed}")
@@ -3026,10 +2478,10 @@ def main() -> None:
             cfg = {
                 "artifact_path": args.wandb_artifact_path,
                 "budget": args.budget,
-                "ga_steps": ga_steps + 1,  # +1 for baseline
+                "ga_steps": ga_steps,
                 "ga_lr": args.ga_lr,
                 "es_population": pop,
-                "es_generations": gens + 1,  # +1 for baseline
+                "es_generations": gens,
                 "es_mutation_std": args.es_mutation_std,
                 "use_subspace_mutation": args.use_subspace_mutation,
                 "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
@@ -3094,10 +2546,6 @@ def main() -> None:
                 "--dataset-use-hf", args.dataset_use_hf,
                 "--dataset-seed", str(seed)
             ]
-            
-            # Update budget calculation to account for baseline
-            ga_steps_with_baseline = ga_steps + 1  # +1 for baseline
-            es_gens_with_baseline = gens + 1       # +1 for baseline
             
             # Debug: show the final args
             print(f"[run] Final args: {run_src_args}")
@@ -3175,33 +2623,17 @@ def main() -> None:
                 except Exception as e:
                     print(f"⚠️  Could not extract latent dimension: {e}")
             else:
-                # Update budget calculation to account for baseline
-                ga_steps_with_baseline = ga_steps + 1  # +1 for baseline
-                es_gens_with_baseline = gens + 1       # +1 for baseline
-                
-                # 🔍 DEBUGGING PLOTTING CALL 🔍
-                print(f"[main] 🔍 === PLOTTING CALL DEBUGGING START ===")
-                print(f"[main] 🔍 GA output path: {ga_out}")
-                print(f"[main] 🔍 ES output path: {es_out}")
-                print(f"[main] 🔍 GA output exists: {os.path.exists(ga_out) if ga_out else False}")
-                print(f"[main] 🔍 ES output exists: {os.path.exists(es_out) if es_out else False}")
-                print(f"[main] 🔍 Output directory: {args.out_dir}")
-                print(f"[main] 🔍 GA steps with baseline: {ga_steps_with_baseline}")
-                print(f"[main] 🔍 ES generations with baseline: {es_gens_with_baseline}")
-                
                 trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
-                                                      background_resolution=args.background_resolution,
-                                                      background_smoothing=args.background_smoothing,
-                                                      background_knn=args.background_knn,
-                                                      background_bandwidth_scale=args.background_bandwidth_scale,
-                                                      background_global_mix=args.background_global_mix,
-                                                          ga_steps=ga_steps_with_baseline, es_population=pop, es_generations=es_gens_with_baseline, dataset_length=args.dataset_length)
-                
-                print(f"[main] 🔍 === PLOTTING CALL DEBUGGING END ===")
-            if trajectory_plot:
-                print(f"Saved trajectory plot to {trajectory_plot}")
-            if loss_plot:
-                print(f"Saved loss curves plot to {loss_plot}")
+                                                          background_resolution=args.background_resolution,
+                                                          background_smoothing=args.background_smoothing,
+                                                          background_knn=args.background_knn,
+                                                          background_bandwidth_scale=args.background_bandwidth_scale,
+                                                          background_global_mix=args.background_global_mix,
+                                                          ga_steps=ga_steps, es_population=pop, es_generations=gens, dataset_length=args.dataset_length)
+                if trajectory_plot:
+                    print(f"Saved trajectory plot to {trajectory_plot}")
+                if loss_plot:
+                    print(f"Saved loss curves plot to {loss_plot}")
                 if stats_plot:
                     print(f"Saved statistical histograms to {stats_plot}")
                 else:
@@ -3216,13 +2648,11 @@ def main() -> None:
             # Upload final results to W&B
             try:
                 if run is not None:
-                                    # Add return codes and latent dimension to config for final upload
+                    # Add return codes and latent dimension to config for final upload
                     cfg.update({
                         "ga_return_code": ga_rc,
                         "es_return_code": es_rc,
                         "latent_dimension": latent_dim,  # Latent space dimension
-                        "ga_steps_with_baseline": ga_steps + 1,  # +1 for baseline
-                        "es_generations_with_baseline": gens + 1,  # +1 for baseline
                     })
                     
                     # Debug: show plot paths before upload
@@ -3240,11 +2670,11 @@ def main() -> None:
             except Exception as e:
                 print(f"Failed to upload to wandb: {e}")
             
-            # Finish the W&B run
+                        # Finish the W&B run
             if run is not None:
                 run.finish()
                 print(f"[wandb] Finished run {run_idx + 1}/{args.n_samples}")
-        
+
             # Aggregate per-sample metrics across runs (if requested later)
             try:
                 # Load GA per-sample metrics from NPZ
@@ -3328,10 +2758,6 @@ def main() -> None:
                     print("🚫 File generation disabled - skipping aggregated statistical histograms")
                     agg_plot = None
                 else:
-                    # Update budget calculation to account for baseline
-                    ga_steps_with_baseline = ga_steps + 1  # +1 for baseline
-                    es_gens_with_baseline = gens + 1       # +1 for baseline
-                    
                     agg_plot = create_statistical_histograms(agg_ga_npz, agg_es_npz, args.out_dir, dataset_length=agg_len if agg_len > 1 else 2)
                     if agg_plot:
                         print(f"[aggregate] Saved aggregated statistical histograms to {agg_plot}")
@@ -3352,10 +2778,10 @@ def main() -> None:
                     agg_cfg = {
                         "artifact_path": args.wandb_artifact_path,
                         "budget": args.budget,
-                        "ga_steps": ga_steps + 1,  # +1 for baseline
+                        "ga_steps": ga_steps,
                         "ga_lr": args.ga_lr,
                         "es_population": pop,
-                        "es_generations": gens + 1,  # +1 for baseline
+                        "es_generations": gens,
                         "es_mutation_std": args.es_mutation_std,
                         "use_subspace_mutation": args.use_subspace_mutation,
                         "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
@@ -3436,10 +2862,10 @@ def main() -> None:
         cfg = {
             "artifact_path": args.wandb_artifact_path,
             "budget": args.budget,
-            "ga_steps": ga_steps + 1,  # +1 for baseline
+            "ga_steps": ga_steps,
             "ga_lr": args.ga_lr,
             "es_population": pop,
-            "es_generations": gens + 1,  # +1 for baseline
+            "es_generations": gens,
             "es_mutation_std": args.es_mutation_std,
             "use_subspace_mutation": args.use_subspace_mutation,
             "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
@@ -3504,21 +2930,17 @@ def main() -> None:
             except Exception as e:
                 print(f"⚠️  Could not extract latent dimension: {e}")
         else:
-            # Update budget calculation to account for baseline
-            ga_steps_with_baseline = ga_steps + 1  # +1 for baseline
-            es_gens_with_baseline = gens + 1       # +1 for baseline
-            
             trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
-                                                  background_resolution=args.background_resolution,
-                                                  background_smoothing=args.background_smoothing,
-                                                  background_knn=args.background_knn,
-                                                  background_bandwidth_scale=args.background_bandwidth_scale,
-                                                  background_global_mix=args.background_global_mix,
-                                                      ga_steps=ga_steps_with_baseline, es_population=pop, es_generations=es_gens_with_baseline, dataset_length=args.dataset_length)
-        if trajectory_plot:
-            print(f"Saved trajectory plot to {trajectory_plot}")
-        if loss_plot:
-            print(f"Saved loss curves plot to {loss_plot}")
+                                                      background_resolution=args.background_resolution,
+                                                      background_smoothing=args.background_smoothing,
+                                                      background_knn=args.background_knn,
+                                                      background_bandwidth_scale=args.background_bandwidth_scale,
+                                                      background_global_mix=args.background_global_mix,
+                                                      ga_steps=ga_steps, es_population=pop, es_generations=gens, dataset_length=args.dataset_length)
+            if trajectory_plot:
+                print(f"Saved trajectory plot to {trajectory_plot}")
+            if loss_plot:
+                print(f"Saved loss curves plot to {loss_plot}")
             if stats_plot:
                 print(f"Saved statistical histograms to {stats_plot}")
             else:
