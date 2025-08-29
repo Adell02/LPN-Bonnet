@@ -1172,14 +1172,18 @@ class StructuredTrainer:
                 k_values = [3, 5, 10]
                 clustering_metrics = {}
                 
-                for k in k_values:
-                    # Modularity Q (no labels needed)
-                    modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
-                    clustering_metrics[f"clustering/modularity_q_k{k}"] = modularity_q
-                    
-                    # Adjusted Rand Index (using pattern types as ground truth)
-                    ari_score = compute_adjusted_rand_index(latents_concat, pattern_ids_concat, k=k)
-                    clustering_metrics[f"clustering/ari_k{k}"] = ari_score
+                # Use CONTEXT-ONLY embeddings for community metrics
+                context_mask = (source_ids_np == (len(enc_params_list)))
+                if np.any(context_mask):
+                    ctx_emb = latents_concat[context_mask]
+                    ctx_prog = pattern_ids_concat[context_mask]
+                    for k in k_values:
+                        modularity_q = compute_modularity_q(ctx_emb, ctx_prog, k=k)
+                        clustering_metrics[f"clustering/modularity_q_k{k}"] = modularity_q
+                        ari_score = compute_adjusted_rand_index(ctx_emb, ctx_prog, k=k)
+                        clustering_metrics[f"clustering/ari_k{k}"] = ari_score
+                else:
+                    logging.warning("No context points found for clustering metrics; skipping")
                 
                 # Log clustering metrics to WandB
                 wandb.log(clustering_metrics, step=step if 'step' in locals() else None)
@@ -1551,14 +1555,18 @@ class StructuredTrainer:
                         k_values = [3, 5, 10]
                         test_clustering_metrics = {}
                         
-                        for k in k_values:
-                            # Modularity Q (no labels needed)
-                            modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
-                            test_clustering_metrics[f"clustering/{test_name}/modularity_q_k{k}"] = modularity_q
-                            
-                            # Adjusted Rand Index (using pattern types as ground truth)
-                            ari_score = compute_adjusted_rand_index(latents_concat, pattern_ids_concat, k=k)
-                            test_clustering_metrics[f"clustering/{test_name}/ari_k{k}"] = ari_score
+                        # Use CONTEXT-ONLY embeddings for community metrics
+                        context_mask = (source_ids_np == (len(enc_params_list)))
+                        if np.any(context_mask):
+                            ctx_emb = latents_concat[context_mask]
+                            ctx_prog = pattern_ids_concat[context_mask]
+                            for k in k_values:
+                                modularity_q = compute_modularity_q(ctx_emb, ctx_prog, k=k)
+                                test_clustering_metrics[f"clustering/{test_name}/modularity_q_k{k}"] = modularity_q
+                                ari_score = compute_adjusted_rand_index(ctx_emb, ctx_prog, k=k)
+                                test_clustering_metrics[f"clustering/{test_name}/ari_k{k}"] = ari_score
+                        else:
+                            logging.warning("Test: No context points found for clustering metrics; skipping")
                         
                         # Add clustering metrics to the main metrics dict
                         metrics.update(test_clustering_metrics)
