@@ -685,24 +685,24 @@ def visualize_struct_confidence_panel(
     grid = plt.GridSpec(3, 3, hspace=0.6, wspace=0.3)
 
     # Top: struct visualization spanning all columns
-    ax_top = fig.add_subplot(grid[0:2, :])
-    # Render a compact grid of pairs inside ax_top
-    # We'll create a small mosaic: 2 rows (input/output) x num_pairs columns
-    inner_grid = plt.GridSpecFromSubplotSpec(2, num_pairs, subplot_spec=grid[0:2, :], wspace=0.1, hspace=0.15)
+    # Create inner layout manually without GridSpecFromSubplotSpec for compatibility
+    top_axes = []
     for i in range(num_pairs):
-        ax_in = fig.add_subplot(inner_grid[0, i])
+        # Position subplots manually: two rows in the top section
+        # Row heights: first two rows share ~2/3 of height
+        ax_in = fig.add_subplot(3, num_pairs, i + 1)
         display_grid(ax_in, _np.array(sample_grids[i, :, :, 0]), _np.array(sample_shapes[i, :, 0]))
         if i == 0:
             ax_in.set_title("Input")
-        ax_out = fig.add_subplot(inner_grid[1, i])
+        ax_out = fig.add_subplot(3, num_pairs, num_pairs + i + 1)
         display_grid(ax_out, _np.array(sample_grids[i, :, :, 1]), _np.array(sample_shapes[i, :, 1]))
         if i == 0:
             ax_out.set_title("Output")
 
     # Bottom-left: histogram of means
-    ax_means = fig.add_subplot(grid[2, 0])
+    ax_means = fig.add_subplot(3, 3, 7)
     # Bottom-right: histogram of variances
-    ax_vars = fig.add_subplot(grid[2, 1])
+    ax_vars = fig.add_subplot(3, 3, 8)
 
     # Colors for encoders + PoE (consistent and distinct)
     enc_colors = ['#1f77b4', '#ff7f0e', '#2ca02c']

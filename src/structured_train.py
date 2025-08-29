@@ -1298,14 +1298,24 @@ class StructuredTrainer:
                 if "context" in batch_info and batch_info["context"] is not None:
                     ctx = batch_info["context"]
                     try:
-                        # Flatten all leading dims into one
-                        ctx = ctx.reshape(-1, ctx.shape[-1])
-                    except Exception:
-                        # As a fallback, convert to array then reshape
+                        # Ensure array-like
                         import numpy as _np
-                        ctx = _np.array(ctx)
-                        ctx = ctx.reshape(-1, ctx.shape[-1])
+                        if not hasattr(ctx, "shape"):
+                            logging.warning(f"Test batch {i} - context has no shape attr, attempting np.array conversion. type={type(ctx)}")
+                            ctx = _np.array(ctx)
+                        # Flatten all leading dims into one
+                        if len(ctx.shape) != 2:
+                            logging.info(f"Test batch {i} - normalizing context shape from {ctx.shape} -> (-1, {ctx.shape[-1]})")
+                            ctx = ctx.reshape(-1, ctx.shape[-1])
+                        else:
+                            logging.info(f"Test batch {i} - context already 2D: {ctx.shape}")
+                    except Exception as e:
+                        logging.error(f"Test batch {i} - context normalization failed: {e} (type={type(batch_info['context'])})")
                     batch_info["context"] = ctx
+                    try:
+                        logging.info(f"Test batch {i} - context post-normalization type={type(ctx)}, shape={getattr(ctx, 'shape', None)}")
+                    except Exception:
+                        pass
                 
                 all_output_grids.append(batch_output_grids)
                 all_output_shapes.append(batch_output_shapes)
@@ -1327,24 +1337,44 @@ class StructuredTrainer:
         info = {}
         for key in all_info[0].keys():
             if key == "context":
-                # All batch contexts are already normalized to 2D above
+                # All batch contexts are already normalized to 2D above; add robust checks and logs
+                import numpy as _np
                 contexts = []
-                for inf in all_info:
+                for b_idx, inf in enumerate(all_info):
                     ctx = inf.get(key)
                     if ctx is None:
+                        logging.warning(f"Test - batch {b_idx} has None context; skipping")
                         continue
-                    # Ensure 2D shape
+                    # Convert to numpy array first for consistent handling
+                    try:
+                        ctx = _np.array(ctx)
+                    except Exception as e:
+                        logging.error(f"Test - batch {b_idx} context could not be converted to numpy: {e} (type={type(ctx)})")
+                        continue
                     if len(ctx.shape) != 2:
                         try:
-                            ctx = ctx.reshape(-1, ctx.shape[-1])
-                        except Exception:
-                            import numpy as _np
-                            ctx = _np.array(ctx).reshape(-1, ctx.shape[-1])
+                            # First squeeze stray singleton dims except the last latent dim
+                            if ctx.ndim > 2:
+                                # Keep last dim, squeeze others of size 1
+                                squeeze_axes = tuple(ax for ax in range(ctx.ndim - 1) if ctx.shape[ax] == 1)
+                                if squeeze_axes:
+                                    ctx = _np.squeeze(ctx, axis=squeeze_axes)
+                            logging.info(f"Test - batch {b_idx} context reshape from {ctx.shape} -> (-1, {ctx.shape[-1]})")
+                            ctx = ctx.reshape(-1, int(ctx.shape[-1]))
+                        except Exception as e:
+                            logging.error(f"Test - batch {b_idx} context reshape failed: {e}")
+                            continue
+                    logging.info(f"Test - batch {b_idx} context ready for concat: shape={ctx.shape}")
                     contexts.append(ctx)
 
                 if contexts:
-                    info[key] = jnp.concatenate(contexts, axis=0)
-                    logging.info(f"Test merged context shape: {info[key].shape}")
+                    try:
+                        merged = _np.concatenate(contexts, axis=0)
+                        logging.info(f"Test merged context shape: {merged.shape}")
+                        info[key] = jnp.asarray(merged)
+                    except Exception as e:
+                        logging.error(f"Test - Failed to concatenate contexts: {e}")
+                        logging.error(f"Test - Context shapes list: {[getattr(c, 'shape', None) for c in contexts]}")
                 else:
                     logging.info("Test - No context tensors to merge")
             else:
