@@ -39,6 +39,8 @@ eval:
       length: 96
       batch_size: 96
       num_tasks_to_show: 3
+  eval_datasets: []    # add this line
+
   json_datasets:
 
 encoder_transformer:

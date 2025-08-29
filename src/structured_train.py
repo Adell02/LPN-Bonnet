@@ -1194,29 +1194,18 @@ class StructuredTrainer:
                     enc_mus.append(mu_i_np[:, 0, :])
                     enc_logvars.append(logvar_i_np[:, 0, :])
 
-                # Use CONTEXT from generate_output instead of PoE for the combined curve
-                # Re-run generate_output for this single task to fetch context (query pair only)
-                key_ctx = jax.random.PRNGKey(0)
-                out_gr, out_sh, info_single = self.model.apply(
-                    {"params": state.params},
-                    method=self.model.generate_output,
-                    pairs=pairs[idx:idx+1],
-                    grid_shapes=shapes[idx:idx+1],
-                    input=pairs[idx:idx+1, 0, ..., 0],
-                    input_grid_shape=shapes[idx:idx+1, 0, ..., 0],
-                    key=key_ctx,
-                    dropout_eval=True,
-                    mode=cfg.eval.inference_mode,
-                    return_two_best=False,
-                    poe_alphas=alphas,
-                    encoder_params_list=enc_params_list,
-                    decoder_params=state.params,
-                )
-                context_vec = np.asarray(info_single.get("context"))  # [1, D]
-                # For visualization parity, build a synthetic narrow variance around context
-                # (context has no variance; show a very tight distribution)
-                poe_mu = context_vec
-                poe_logvar = np.log(np.full_like(context_vec, 1e-3))
+                # Compute PoE (precision-weighted) from encoder posteriors for the combined curve
+                alphas_np = np.asarray(alphas)
+                precisions = [np.exp(-lv) for lv in enc_logvars]  # [1, D]
+                poe_precision = np.zeros_like(precisions[0])
+                for a, p in zip(alphas_np, precisions):
+                    poe_precision = poe_precision + a * p
+                poe_var = 1.0 / (poe_precision + 1e-8)
+                num = np.zeros_like(enc_mus[0])
+                for a, p, m in zip(alphas_np, precisions, enc_mus):
+                    num = num + a * p * m
+                poe_mu = num / (poe_precision + 1e-8)
+                poe_logvar = np.log(poe_var + 1e-8)
 
                 panel_title = f"Pattern {pid} - Confidence"
                 enc_labels = [f"Encoder {i}" for i in range(len(enc_mus))]
@@ -1229,7 +1218,7 @@ class StructuredTrainer:
                     poe_logvar=poe_logvar.squeeze(0),
                     title=panel_title,
                     encoder_labels=enc_labels,
-                    combined_label="Context",
+                    combined_label="PoE",
                 )
                 wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)})
                 plt.close(fig_panel)
@@ -1307,16 +1296,19 @@ class StructuredTrainer:
                 )
                 
                 # Normalize context to 2D (num_points, latent_dim) to avoid concat shape mismatches
+                # And drop any extra keys to mimic train.py behavior (only 'context')
+                normalized_batch_info = {}
                 if "context" in batch_info and batch_info["context"] is not None:
                     import numpy as _np
                     try:
                         ctx_np = _np.asarray(batch_info["context"])  # force numpy
                         ctx_np = ctx_np.reshape(-1, int(ctx_np.shape[-1]))  # unconditional 2D reshape
-                        batch_info["context"] = ctx_np
+                        normalized_batch_info["context"] = ctx_np
                         logging.info(f"Test batch {i} - context normalized to {ctx_np.shape}")
                     except Exception as e:
                         logging.error(f"Test batch {i} - context normalization failed: {e}; dropping context for this batch")
-                        batch_info.pop("context", None)
+                # Replace batch_info with only the normalized context (drop other keys)
+                batch_info = normalized_batch_info
                 
                 all_output_grids.append(batch_output_grids)
                 all_output_shapes.append(batch_output_shapes)
@@ -1334,39 +1326,31 @@ class StructuredTrainer:
         output_grids = jnp.concatenate(all_output_grids, axis=0)
         output_shapes = jnp.concatenate(all_output_shapes, axis=0)
         
-        # Merge info
+        # Merge info: only 'context' (match train.py behavior)
         info = {}
-        for key in all_info[0].keys():
-            if key == "context":
-                # All batch contexts are already normalized to 2D above; add robust checks and logs
-                import numpy as _np
-                contexts = []
-                for b_idx, inf in enumerate(all_info):
-                    ctx = inf.get(key)
-                    if ctx is None:
-                        logging.warning(f"Test - batch {b_idx} has None context; skipping")
-                        continue
-                    try:
-                        ctx_np = _np.asarray(ctx)
-                        ctx_np = ctx_np.reshape(-1, int(ctx_np.shape[-1]))
-                        logging.info(f"Test - batch {b_idx} context ready for concat: shape={ctx_np.shape}")
-                        contexts.append(ctx_np)
-                    except Exception as e:
-                        logging.error(f"Test - batch {b_idx} context reshape failed: {e}; skipping this batch context")
-                        continue
-
-                if contexts:
-                    try:
-                        merged = _np.concatenate(contexts, axis=0)
-                        logging.info(f"Test merged context shape: {merged.shape}")
-                        info[key] = jnp.asarray(merged)
-                    except Exception as e:
-                        logging.error(f"Test - Failed to concatenate contexts: {e}; dropping context from info")
-                        info.pop(key, None)
-                else:
-                    logging.info("Test - No context tensors to merge")
-            else:
-                info[key] = all_info[0][key]
+        import numpy as _np
+        contexts = []
+        for b_idx, inf in enumerate(all_info):
+            ctx = inf.get("context")
+            if ctx is None:
+                logging.warning(f"Test - batch {b_idx} has None context; skipping")
+                continue
+            try:
+                ctx_np = _np.asarray(ctx).reshape(-1, int(_np.asarray(ctx).shape[-1]))
+                logging.info(f"Test - batch {b_idx} context ready for concat: shape={ctx_np.shape}")
+                contexts.append(ctx_np)
+            except Exception as e:
+                logging.error(f"Test - batch {b_idx} context reshape failed: {e}; skipping this batch context")
+                continue
+        if contexts:
+            try:
+                merged = _np.concatenate(contexts, axis=0)
+                logging.info(f"Test merged context shape: {merged.shape}")
+                info["context"] = jnp.asarray(merged)
+            except Exception as e:
+                logging.error(f"Test - Failed to concatenate contexts: {e}; dropping context from info")
+        else:
+            logging.info("Test - No context tensors to merge")
         
         # Convert to numpy for evaluation
         grids_np = np.array(jax.device_get(dataset_grids))
