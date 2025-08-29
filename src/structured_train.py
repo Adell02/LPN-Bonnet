@@ -1305,6 +1305,9 @@ class StructuredTrainer:
                             logging.warning(f"Test batch {i} - context has no shape attr, attempting np.array conversion. type={type(ctx)}")
                             ctx = _np.array(ctx)
                         # Flatten all leading dims into one
+                        if len(ctx.shape) < 2:
+                            logging.warning(f"Test batch {i} - context has <2 dims: {ctx.shape}, attempting expand_dims")
+                            ctx = _np.expand_dims(ctx, axis=0)
                         if len(ctx.shape) != 2:
                             logging.info(f"Test batch {i} - normalizing context shape from {ctx.shape} -> (-1, {ctx.shape[-1]})")
                             ctx = ctx.reshape(-1, ctx.shape[-1])
@@ -1352,6 +1355,9 @@ class StructuredTrainer:
                     except Exception as e:
                         logging.error(f"Test - batch {b_idx} context could not be converted to numpy: {e} (type={type(ctx)})")
                         continue
+                    if len(ctx.shape) < 2:
+                        logging.warning(f"Test - batch {b_idx} context has <2 dims: {ctx.shape}, attempting expand_dims")
+                        ctx = _np.expand_dims(ctx, axis=0)
                     if len(ctx.shape) != 2:
                         try:
                             # First squeeze stray singleton dims except the last latent dim

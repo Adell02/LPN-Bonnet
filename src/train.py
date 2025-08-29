@@ -49,6 +49,62 @@ from datasets.task_gen.dataloader import make_task_gen_dataloader, make_dataset
 logging.getLogger().setLevel(logging.INFO)
 
 
+# Try to import sklearn for clustering metrics, but make it optional
+try:
+    from sklearn.neighbors import NearestNeighbors
+    from sklearn.metrics import adjusted_rand_score
+    from sklearn.cluster import KMeans
+    _SKLEARN_AVAILABLE = True
+except ImportError:
+    _SKLEARN_AVAILABLE = False
+    logging.warning("sklearn not available. Community metrics (ARI/Modularity Q) will be disabled.")
+
+
+def _compute_modularity_q(embeddings: np.ndarray, labels: np.ndarray, k: int = 5) -> float:
+    if not _SKLEARN_AVAILABLE:
+        return 0.0
+    try:
+        nbrs = NearestNeighbors(n_neighbors=k + 1, algorithm="auto").fit(embeddings)
+        _, indices = nbrs.kneighbors(embeddings)
+        N = len(embeddings)
+        A = np.zeros((N, N))
+        for i in range(N):
+            for j in range(1, k + 1):
+                A[i, indices[i, j]] = 1.0
+                A[indices[i, j], i] = 1.0
+        k_i = np.sum(A, axis=1)
+        m = np.sum(A) / 2
+        if m == 0:
+            return 0.0
+        Q = 0.0
+        for i in range(N):
+            for j in range(N):
+                if i == j:
+                    continue
+                expected = (k_i[i] * k_i[j]) / (2 * m)
+                same = 1 if labels[i] == labels[j] else 0
+                Q += (A[i, j] - expected) * same
+        Q = Q / (2 * m)
+        return float(Q)
+    except Exception:
+        return 0.0
+
+
+def _compute_ari(embeddings: np.ndarray, true_labels: np.ndarray, k: int = 5) -> float:
+    if not _SKLEARN_AVAILABLE:
+        return 0.0
+    try:
+        # Run KMeans with number of clusters equal to the number of unique labels
+        n_clusters = len(np.unique(true_labels))
+        if n_clusters <= 1:
+            return 0.0
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        pred = kmeans.fit_predict(embeddings)
+        return float(adjusted_rand_score(true_labels, pred))
+    except Exception:
+        return 0.0
+
+
 class Trainer:
     def __init__(self, cfg: omegaconf.DictConfig, model: LPN, num_devices: Optional[int] = None) -> None:
         if num_devices is None:
@@ -575,6 +631,18 @@ class Trainer:
         if program_ids is not None:
             repeated_program_ids = jnp.repeat(program_ids, pairs_per_problem)
             fig_latents = visualize_tsne(program_context, repeated_program_ids)
+            # Community metrics (optional if sklearn present)
+            try:
+                prog_np = np.asarray(repeated_program_ids)
+                emb_np = np.asarray(program_context)
+                k_values = [3, 5, 10]
+                comm_metrics = {}
+                for k in k_values:
+                    comm_metrics[f"test/{test_name}/community/modularity_q_k{k}"] = _compute_modularity_q(emb_np, prog_np, k=k)
+                    comm_metrics[f"test/{test_name}/community/ari_k{k}"] = _compute_ari(emb_np, prog_np, k=k)
+                metrics.update(comm_metrics)
+            except Exception as e:
+                logging.warning(f"Community metrics computation failed: {e}")
             
             # FIXED: Use original program_ids and actual latents_samples from generated_info
             if 'latents_samples' in generated_info:

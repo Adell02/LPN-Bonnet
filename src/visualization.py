@@ -683,15 +683,17 @@ def visualize_struct_confidence_panel(
 
     # Use constrained_layout to avoid tight_layout warnings with arbitrary num_pairs
     fig = plt.figure(figsize=(16, 10), constrained_layout=True)
-    # Top two rows: a small mosaic (2 x num_pairs)
-    gs = fig.add_gridspec(3, max(num_pairs, 3), height_ratios=[1, 1, 1])
-    top_gs = gs[:2, :num_pairs]
+    # Grid: 3 rows, C columns (C >= num_pairs)
+    cols = max(num_pairs, 3)
+    gs = fig.add_gridspec(3, cols, height_ratios=[1, 1, 1])
+    # Create a nested grid for the top two rows: 2 x num_pairs
+    top = gs[0:2, 0:num_pairs].subgridspec(2, num_pairs)
     for i in range(num_pairs):
-        ax_in = fig.add_subplot(top_gs[0, i])
+        ax_in = fig.add_subplot(top[0, i])
         display_grid(ax_in, _np.array(sample_grids[i, :, :, 0]), _np.array(sample_shapes[i, :, 0]))
         if i == 0:
             ax_in.set_title("Input")
-        ax_out = fig.add_subplot(top_gs[1, i])
+        ax_out = fig.add_subplot(top[1, i])
         display_grid(ax_out, _np.array(sample_grids[i, :, :, 1]), _np.array(sample_shapes[i, :, 1]))
         if i == 0:
             ax_out.set_title("Output")
