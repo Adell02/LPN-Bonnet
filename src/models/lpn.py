@@ -1014,7 +1014,6 @@ class LPN(nn.Module):
             losses = _eval_candidates(population)                     # (*B, P, C) or (*B, C) if P=1 folded inside impl
             # Reduce over pairs to get a fitness per candidate (keep batch dims)
             # Note: lower losses are better, so we negate to get fitness (higher is better)
-            losses = _eval_candidates(population)                     # (*B, P, C) or (*B, C)
             fitness = -losses.mean(axis=-2) if losses.ndim >= 3 else -losses  # (*B, C)
 
             # Track
@@ -1032,21 +1031,20 @@ class LPN(nn.Module):
                     rep = population[..., 0, :, :]                    # (*B, C, H)
                 else:
                     rep = population                                  # (*B, C, H)
-                rep = population[..., 0, :, :] if population.ndim == 4 else population
+                
                 best_lat = jnp.take_along_axis(
                     rep, best_idx[..., None, None], axis=-2
                 ).squeeze(axis=-2)                                    # (*B, H)
-                ).squeeze(axis=-2)
+                
                 gen_best_latents.append(best_lat)
                 # Store full population and losses for this generation (representative per batch)
                 gen_populations.append(rep)
                 # Store only the best loss per generation (not all population losses)
                 gen_losses = losses.mean(axis=-2) if losses.ndim >= 3 else losses  # (*B, C)
-                gen_losses = losses.mean(axis=-2) if losses.ndim >= 3 else losses
+                
                 best_loss_this_gen = jnp.take_along_axis(
                     gen_losses, best_idx[..., None], axis=-1
                 ).squeeze(axis=-1)  # (*B,) - only the best loss this generation
-                ).squeeze(axis=-1)
                 gen_fitnesses.append(best_loss_this_gen)
 
             # Select top half per batch (ensure at least 1 survivor)
@@ -1102,9 +1100,9 @@ class LPN(nn.Module):
                 # Use subspace mutation with antithetic sampling
                 offspring = self._mutate_in_subspace(parents, U, sigma, nk, need)
                 
-                # Optional trust region around base mean
+                # Optional trust region around elite mean
                 if trust_region_radius is not None:
-                    mean0 = base.mean(axis=-2, keepdims=True)
+                    mean0 = elite_rep.mean(axis=-2, keepdims=True)
                     delta = offspring - mean0
                     R = trust_region_radius
                     scale = jnp.minimum(1.0, R / (jnp.linalg.norm(delta, axis=-1, keepdims=True) + 1e-8))
@@ -1112,18 +1110,18 @@ class LPN(nn.Module):
 
             if need > 0:
                 if use_subspace_mutation and U is not None:
-                    noise = jax.random.normal(nk, (*base.shape[:-2], need, U.shape[-1]))
+                    noise = jax.random.normal(nk, (*elite_rep.shape[:-2], need, U.shape[-1]))
                     step = jnp.einsum('...nm,...hm->...nh', noise, jnp.swapaxes(U, -2, -1))
                     offspring_rep = center + sigma * step
                     if trust_region_radius is not None:
-                        mean0 = base.mean(axis=-2, keepdims=True)
+                        mean0 = elite_rep.mean(axis=-2, keepdims=True)
                         delta = offspring_rep - mean0
                         R = trust_region_radius
                         scale = jnp.minimum(1.0, R / (jnp.linalg.norm(delta, axis=-1, keepdims=True) + 1e-8))
                         offspring_rep = mean0 + scale * delta
                 else:
                     offspring_rep = center + sigma * jax.random.normal(
-                        nk, (*base.shape[:-2], need, base.shape[-1])
+                        nk, (*elite_rep.shape[:-2], need, elite_rep.shape[-1])
                     )
 
                 if population.ndim == 4:
@@ -1147,7 +1145,6 @@ class LPN(nn.Module):
             
             # Concatenate: [survivors, offspring]
             population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, P, C, H) or (*B, C, H)
-                population = elite
 
             # Decay mutation standard deviation
             sigma *= decay_rate
