@@ -78,6 +78,32 @@ eval:
   inference_mode: "mean"
   inference_kwargs: {}
   num_tasks_to_show: 5
-  tsne_max_points: 500
+  tsne_max_points: 500  
+  # Test datasets for comprehensive evaluation across all patterns
+  test_datasets:
+    - generator: "STRUCT_PATTERN"
+      name: "pattern_1"
+      num_pairs: 4
+      length: 96  # 32 samples per pattern (O, T, L)
+      task_generator_kwargs:
+        pattern: 1  # O-tetromino
+      batch_size: 96
+      num_tasks_to_show: 5
+    - generator: "STRUCT_PATTERN"
+      name: "pattern_2" 
+      num_pairs: 4
+      length: 96  # 32 samples per pattern (O, T, L)
+      task_generator_kwargs:
+        pattern: 2  # T-tetromino
+      batch_size: 96
+      num_tasks_to_show: 5
+    - generator: "STRUCT_PATTERN"
+      name: "pattern_3"
+      num_pairs: 4
+      length: 96  # 32 samples per pattern (O, T, L)
+      task_generator_kwargs:
+        pattern: 3  # L-tetromino
+      batch_size: 96
+      num_tasks_to_show: 5
 
 

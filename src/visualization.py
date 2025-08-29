@@ -349,12 +349,27 @@ def visualize_tsne_sources(
         print(f"Error during t-SNE (sources): {e}")
         return None
 
-    fig, ax = plt.subplots(figsize=(12, 10))
+    # Create the plot - EXACTLY like train.py style
+    fig, ax = plt.subplots(figsize=(15, 12))
+
+    # Get unique program IDs and assign a color to each - EXACTLY like train.py
+    unique_ids = np.unique(prog_np)
+    num_colors = len(unique_ids)
+
+    # Use custom color palette - EXACTLY like train.py
+    custom_colors = ['#FBB998', '#DB74DB', '#5361E5', '#4B9D61']
+    # Cycle through custom colors if we have more program IDs than colors
+    color_palette = [custom_colors[i % len(custom_colors)] for i in range(num_colors)]
+    color_map = dict(zip(unique_ids, color_palette))
+
+    # Plot each source with different markers but same color scheme as train.py
     marker_list = ['o', 's', '^', 'P', 'X', 'D', 'v', '<', '>', '*']
     unique_sources = sorted(list(np.unique(src_np)))
+    
     for src in unique_sources:
         m = src_np == src
         mk = marker_list[int(src) % len(marker_list)]
+        
         # Create better labels for structured training
         if src == 0:
             lbl = "Encoder 0"
@@ -366,30 +381,37 @@ def visualize_tsne_sources(
             lbl = "PoE Combined"
         elif src == 4:
             lbl = "Generation Context"
+        elif src == 5:
+            lbl = "Latent Samples"
         else:
             lbl = f"Source {src}"
-        ax.scatter(
-            emb[m, 0], emb[m, 1],
-            c=(prog_np[m] % 10), cmap=arc_cmap, norm=arc_norm,
-            marker=mk, alpha=0.8, s=40, label=lbl, edgecolors='none'
-        )
-    
-    ax.set_title("t-SNE Visualization: Latent Sources vs Pattern Types")
-    ax.set_xlabel("t-SNE 1")
-    ax.set_ylabel("t-SNE 2")
-    
-    # Add legend
-    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.0)
-    
-    # Adjust layout to prevent legend from being cut off
-    plt.tight_layout()
-    
-    return fig
-    ax.legend(title="Source")
+        
+        # Plot each program ID separately with the same color scheme as train.py
+        for prog_id in unique_ids:
+            prog_mask = m & (prog_np == prog_id)
+            if np.any(prog_mask):
+                points = emb[prog_mask]
+                ax.scatter(
+                    points[:, 0], points[:, 1], 
+                    c=[color_map[prog_id]], 
+                    marker=mk, 
+                    label=f"{lbl} - Pattern {prog_id}", 
+                    alpha=0.7, 
+                    s=50,
+                    edgecolors='none'
+                )
+
+    # EXACTLY same title, labels, and style as train.py
     ax.set_title("t-SNE Visualization of Latent Embeddings")
     ax.set_xlabel("t-SNE 1")
     ax.set_ylabel("t-SNE 2")
+
+    # Add legend - EXACTLY like train.py
+    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.0)
+
+    # Adjust layout to prevent legend from being cut off - EXACTLY like train.py
     plt.tight_layout()
+
     return fig
 
 def visualize_latents_samples(

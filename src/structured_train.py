@@ -22,6 +22,7 @@ import logging
 import time
 from functools import partial
 from typing import Optional, Sequence
+import matplotlib.pyplot as plt
 
 import chex
 import hydra
@@ -49,6 +50,7 @@ from visualization import (
     visualize_heatmap,
     visualize_tsne,
     visualize_tsne_sources,  # Added for source-aware T-SNE
+    visualize_latents_samples,  # Added for latent samples visualization
 )
 
 
@@ -237,9 +239,73 @@ class StructuredTrainer:
                 grids_all.append(g)
                 shapes_all.append(s)
             
-            # Concatenate to get balanced dataset: 32 + 32 + 32 = 96 total samples
-            self.eval_grids = jnp.concatenate(grids_all, axis=0)
-            self.eval_shapes = jnp.concatenate(shapes_all, axis=0)
+                    # Concatenate to get balanced dataset: 32 + 32 + 32 = 96 total samples
+        self.eval_grids = jnp.concatenate(grids_all, axis=0)
+        self.eval_shapes = jnp.concatenate(shapes_all, axis=0)
+        
+        # Load test datasets for comprehensive evaluation (like train.py)
+        self.test_datasets = []
+        for i, dict_ in enumerate(cfg.eval.test_datasets or []):
+            if dict_.get("generator", False):
+                for arg in ["num_pairs", "length"]:
+                    assert arg in dict_, f"Each test generator dataset must have arg '{arg}'."
+                num_pairs, length = dict_["num_pairs"], dict_["length"]
+                default_dataset_name = dict_["generator"]
+                task_generator_kwargs = dict_.get("task_generator_kwargs") or {}
+                grids, shapes, program_ids = make_dataset(
+                    length,
+                    num_pairs,
+                    num_workers=0,  # No workers for evaluation
+                    task_generator_class=dict_["generator"],
+                    online_data_augmentation=False,
+                    seed=cfg.training.seed + i,  # Different seed per test dataset
+                    **task_generator_kwargs,
+                )
+            else:
+                for arg in ["folder", "length"]:
+                    assert arg in dict_, f"Each test dataset must have arg '{arg}'."
+                folder, length = dict_["folder"], dict_["length"]
+                default_dataset_name = folder.rstrip().split("/")[-1]
+                grids, shapes, program_ids = load_datasets([folder], dict_.get("use_hf", True))[0]
+            
+            if length is not None:
+                key = jax.random.PRNGKey(dict_.get("seed", cfg.training.seed + i))
+                indices = jax.random.permutation(key, len(grids))[:length]
+                grids, shapes, program_ids = grids[indices], shapes[indices], program_ids[indices]
+            
+            batch_size = dict_.get("batch_size", len(grids))
+            # Drop the last batch if it's not full
+            num_batches = len(grids) // batch_size
+            grids, shapes, program_ids = (
+                grids[: num_batches * batch_size],
+                shapes[: num_batches * batch_size],
+                program_ids[: num_batches * batch_size],
+            )
+            
+            inference_mode = dict_.get("inference_mode", "mean")
+            # Fix the test name construction
+            if dict_.get("name"):
+                # If explicit name is provided, use it directly with inference mode
+                test_name = dict_["name"] + "_" + inference_mode
+            else:
+                # If no name provided, use default_dataset_name + inference_mode
+                test_name = default_dataset_name + "_" + inference_mode
+            
+            # Remove the duplicate generator prefix if it exists
+            if test_name.startswith("generator_generator"):
+                test_name = test_name.replace("generator_generator", "generator", 1)
+            
+            inference_kwargs = dict_.get("inference_kwargs", {})
+            self.test_datasets.append({
+                "test_name": test_name,
+                "dataset_grids": grids,
+                "dataset_shapes": shapes,
+                "batch_size": batch_size,
+                "num_tasks_to_show": dict_.get("num_tasks_to_show", 5),
+                "program_ids": program_ids,
+                "inference_mode": inference_mode,
+                "inference_kwargs": inference_kwargs,
+            })
 
     def init_state(self, key: chex.PRNGKey, enc_params_list: list[dict], avg_decoder_params: dict) -> TrainState:
         variables = self.model.init(
@@ -410,6 +476,34 @@ class StructuredTrainer:
                     try:
                         logging.info(f"Running evaluation at step {step}")
                         self.evaluate(state, enc_params_list)
+                        
+                        # Test datasets evaluation (like train.py)
+                        if hasattr(self, 'test_datasets') and self.test_datasets:
+                            for dataset_dict in self.test_datasets:
+                                try:
+                                    start = time.time()
+                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress = self.test_dataset_submission(
+                                        state, enc_params_list, **dataset_dict
+                                    )
+                                    test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
+                                    
+                                    # Upload all figures
+                                    for fig, name in [
+                                        (fig_grids, "generation"),
+                                        (fig_heatmap, "pixel_accuracy"),
+                                        (fig_latents, "latents"),
+                                        (fig_latents_samples, "latents_samples"),
+                                        (fig_search_progress, "search_progress"),
+                                    ]:
+                                        if fig is not None:
+                                            test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)
+                                    
+                                    wandb.log(test_metrics, step=step)
+                                    plt.close('all')  # Close all figures to prevent memory leaks
+                                    
+                                except Exception as e:
+                                    logging.warning(f"Test dataset {dataset_dict['test_name']} failed: {e}")
+                        
                     except Exception as e:
                         logging.warning(f"Eval failed: {e}")
 
@@ -722,6 +816,18 @@ class StructuredTrainer:
                 all_latents.append(context_np)
                 source_ids.extend([len(enc_params_list) + 1] * context_np.shape[0])  # E+1 for generation context
                 pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for generation context
+        
+        # ALSO IMPORTANT: Add latent samples for variational uncertainty visualization (like train.py)
+        if "latents_samples" in info:
+            latents_samples = info["latents_samples"]
+            if latents_samples is not None:
+                # Reshape: [num_tasks, num_samples, num_pairs, latent_dim] -> [num_tasks * num_samples * num_pairs, latent_dim]
+                latents_samples_np = np.array(latents_samples).reshape(-1, latents_samples.shape[-1])
+                all_latents.append(latents_samples_np)
+                source_ids.extend([len(enc_params_list) + 2] * latents_samples_np.shape[0])  # E+2 for latent samples
+                # Repeat pattern sequence for each sample
+                pattern_samples_sequence = np.repeat(pattern_sequence, 5 * 4, axis=0)  # 5 samples * 4 pairs
+                pattern_ids_list.append(pattern_samples_sequence)
 
         latents_concat = np.concatenate(all_latents, axis=0)
         source_ids_np = np.array(source_ids)
@@ -762,6 +868,157 @@ class StructuredTrainer:
         # Release large intermediates
         del enc_mus, enc_logvars, all_latents, latents_concat, source_ids_np, pattern_ids_concat, mus, logvars, mu_poe, poe_np
         return metrics
+
+    def test_dataset_submission(
+        self,
+        state: TrainState,
+        enc_params_list: list[dict],
+        test_name: str,
+        dataset_grids: chex.Array,
+        dataset_shapes: chex.Array,
+        program_ids: Optional[chex.Array],
+        batch_size: int,
+        num_tasks_to_show: int = 5,
+        inference_mode: str = "mean",
+        inference_kwargs: dict = None,
+    ) -> tuple[dict[str, float], Optional[plt.Figure], plt.Figure, Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure]]:
+        """
+        Test dataset submission method for structured training (similar to train.py).
+        Generates outputs using leave-one-out approach and computes metrics.
+        """
+        if inference_kwargs is None:
+            inference_kwargs = {}
+            
+        # Create leave_one_out data
+        leave_one_out_grids = make_leave_one_out(dataset_grids, axis=-4)
+        leave_one_out_shapes = make_leave_one_out(dataset_shapes, axis=-3)
+        
+        # Process in batches
+        all_output_grids = []
+        all_output_shapes = []
+        all_info = []
+        
+        num_batches = len(dataset_grids) // batch_size
+        for i in range(num_batches):
+            start_idx = i * batch_size
+            end_idx = start_idx + batch_size
+            batch_grids = dataset_grids[start_idx:end_idx]
+            batch_shapes = dataset_shapes[start_idx:end_idx]
+            batch_leave_one_out_grids = leave_one_out_grids[start_idx:end_idx]
+            batch_leave_one_out_shapes = leave_one_out_shapes[start_idx:end_idx]
+            
+            key = jax.random.PRNGKey(i)
+            
+            try:
+                # Generate output using leave_one_out approach
+                batch_output_grids, batch_output_shapes, batch_info = self.model.apply(
+                    {"params": state.params},
+                    method=self.model.generate_output,
+                    pairs=batch_leave_one_out_grids,
+                    grid_shapes=batch_leave_one_out_shapes,
+                    input=batch_grids[:, 0, ..., 0],
+                    input_grid_shape=batch_shapes[:, 0, ..., 0],
+                    key=key,
+                    dropout_eval=True,
+                    mode=inference_mode,
+                    return_two_best=False,
+                    poe_alphas=jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32),
+                    encoder_params_list=enc_params_list,
+                    decoder_params=state.params,
+                )
+                
+                all_output_grids.append(batch_output_grids)
+                all_output_shapes.append(batch_output_shapes)
+                all_info.append(batch_info)
+                
+            except Exception as e:
+                logging.error(f"Test batch {i} failed: {e}")
+                continue
+        
+        if not all_output_grids:
+            logging.error("No successful test generations")
+            return {}, None, None, None, None, None
+        
+        # Concatenate results
+        output_grids = jnp.concatenate(all_output_grids, axis=0)
+        output_shapes = jnp.concatenate(all_output_shapes, axis=0)
+        
+        # Merge info
+        info = {}
+        for key in all_info[0].keys():
+            if key == "context":
+                contexts = [inf[key] for inf in all_info]
+                info[key] = jnp.concatenate(contexts, axis=0)
+            else:
+                info[key] = all_info[0][key]
+        
+        # Convert to numpy for evaluation
+        grids_np = np.array(jax.device_get(dataset_grids))
+        shapes_np = np.array(jax.device_get(dataset_shapes))
+        out_grids_np = np.array(jax.device_get(output_grids))
+        out_shapes_np = np.array(jax.device_get(output_shapes))
+        
+        # Compute metrics
+        gt_grids = grids_np[:, 0, ..., 1]
+        gt_shapes = shapes_np[:, 0, ..., 1]
+        
+        correct_shapes = np.all(out_shapes_np == gt_shapes, axis=-1)
+        
+        # Pixel accuracy
+        R, C = grids_np.shape[-3], grids_np.shape[-2]
+        rows = np.arange(R)[None, :, None]
+        cols = np.arange(C)[None, None, :]
+        mask = (rows < gt_shapes[:, 0:1, None]) & (cols < gt_shapes[:, 1:2, None])
+        eq = (out_grids_np == gt_grids)
+        pixels_equal = np.where(mask, eq, False)
+        num_valid = (gt_shapes[:, 0] * gt_shapes[:, 1])
+        pixel_correctness = pixels_equal.sum(axis=(1, 2)) / (num_valid + 1e-5)
+        accuracy = pixels_equal.sum(axis=(1, 2)) == num_valid
+        
+        metrics = {
+            f"test/{test_name}/correct_shapes": float(np.mean(correct_shapes)),
+            f"test/{test_name}/pixel_correctness": float(np.mean(pixel_correctness)),
+            f"test/{test_name}/accuracy": float(np.mean(accuracy)),
+        }
+        
+        # Create visualizations
+        fig_heatmap = visualize_heatmap(
+            (pixels_equal.sum(axis=(0)) / (mask.sum(axis=(0)) + 1e-5)),
+            (mask.sum(axis=(0)) / (mask.sum() + 1e-5)),
+        )
+        
+        # Generation visualization
+        num_show = max(1, min(num_tasks_to_show, int(grids_np.shape[0])))
+        num_pairs = int(shapes_np.shape[1])
+        pred_grids_vis = np.repeat(out_grids_np[:num_show, None, ...], num_pairs, axis=1)
+        pred_shapes_vis = np.repeat(out_shapes_np[:num_show, None, :], num_pairs, axis=1)
+        fig_gen = visualize_dataset_generation(grids_np[:num_show], shapes_np[:num_show], pred_grids_vis, pred_shapes_vis, num_show)
+        
+        # T-SNE visualization - EXACTLY like train.py
+        fig_latents = None
+        fig_latents_samples = None
+        fig_search_progress = None
+        
+        if "context" in info and program_ids is not None:
+            context = info["context"]
+            if context is not None:
+                context_np = np.array(context).reshape(-1, context.shape[-1])
+                fig_latents = visualize_tsne(context_np, program_ids)
+                
+                # FIXED: Use original program_ids and actual latents_samples from generated_info (like train.py)
+                if 'latents_samples' in info:
+                    fig_latents_samples = visualize_latents_samples(
+                        dataset_grids, 
+                        dataset_shapes, 
+                        program_ids,  # Use original program_ids (not repeated)
+                        info['latents_samples'],  # Use actual latents samples
+                        num_tasks=min(num_tasks_to_show, 5),
+                        num_samples_per_task=3
+                    )
+                else:
+                    fig_latents_samples = None
+        
+        return metrics, fig_gen, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress
 
 
 @hydra.main(config_path="configs", version_base=None, config_name="structured")
