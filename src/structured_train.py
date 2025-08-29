@@ -435,21 +435,38 @@ class StructuredTrainer:
         alphas = jnp.asarray(cfg.structured.alphas, dtype=jnp.float32)
         
         # 1. IMPLEMENT LEAVE-ONE-OUT: Create leave_one_out versions like train.py
-        # The issue is that make_leave_one_out is adding an extra dimension
-        # We need to create the leave_one_out data correctly to match train.py
+        # The issue is that make_leave_one_out is adding an extra dimension instead of reducing it
+        # We need to manually create the leave_one_out data with correct shapes
         from data_utils import make_leave_one_out
         
         # Create leave_one_out data with correct shapes
         # For pairs: (L, N, R, C, 2) -> (L, N-1, R, C, 2) where N=4, so N-1=3
         # For shapes: (L, N, 2, 2) -> (L, N-1, 2, 2) where N=4, so N-1=3
-        leave_one_out_pairs = make_leave_one_out(self.eval_grids, axis=-4)
-        leave_one_out_shapes = make_leave_one_out(self.eval_shapes, axis=-3)
         
-        # DEBUG: Log the leave_one_out data shapes to ensure consistency
+        # The make_leave_one_out function is adding an extra dimension, so we need to fix it
+        # Original: (288, 4, 5, 5, 2) -> make_leave_one_out -> (288, 4, 3, 5, 5, 2)
+        # We want: (288, 3, 5, 5, 2) - remove the extra 4 dimension
+        raw_leave_one_out_pairs = make_leave_one_out(self.eval_grids, axis=-4)
+        raw_leave_one_out_shapes = make_leave_one_out(self.eval_shapes, axis=-3)
+        
+        # DEBUG: Log the raw leave_one_out data shapes
         logging.info(f"Original eval_grids shape: {self.eval_grids.shape}")
         logging.info(f"Original eval_shapes shape: {self.eval_shapes.shape}")
-        logging.info(f"Leave_one_out_pairs shape: {leave_one_out_pairs.shape}")
-        logging.info(f"Leave_one_out_shapes shape: {leave_one_out_shapes.shape}")
+        logging.info(f"Raw leave_one_out_pairs shape: {raw_leave_one_out_pairs.shape}")
+        logging.info(f"Raw leave_one_out_shapes shape: {raw_leave_one_out_shapes.shape}")
+        
+        # Fix the shapes by removing the extra dimension
+        # From (288, 4, 3, 5, 5, 2) -> (288, 3, 5, 5, 2)
+        # From (288, 4, 3, 2, 2) -> (288, 3, 2, 2)
+        if raw_leave_one_out_pairs.shape[1] == 4:  # If the extra dimension is there
+            leave_one_out_pairs = raw_leave_one_out_pairs[:, 0, :, :, :, :]  # Take first slice
+            leave_one_out_shapes = raw_leave_one_out_shapes[:, 0, :, :, :]   # Take first slice
+            logging.info(f"Fixed leave_one_out_pairs shape: {leave_one_out_pairs.shape}")
+            logging.info(f"Fixed leave_one_out_shapes shape: {leave_one_out_shapes.shape}")
+        else:
+            # If no extra dimension, use as is
+            leave_one_out_pairs = raw_leave_one_out_pairs
+            leave_one_out_shapes = raw_leave_one_out_shapes
         
         # The leave_one_out should reduce the N dimension from 4 to 3
         # So pairs: (L, 3, R, C, 2) and shapes: (L, 3, 2, 2)
