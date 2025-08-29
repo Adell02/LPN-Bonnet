@@ -233,7 +233,7 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
         flat = lp.reshape(-1)
         if N is not None and flat.size == N:
             vals = flat
-        print(f"[plot] Using {prefix}losses_per_generation: {lp.shape} -> {vals.shape}")
+            print(f"[plot] Using {prefix}losses_per_generation: {lp.shape} -> {vals.shape}")
 
     # 2) Map per-generation losses to individuals via generation_idx
     if vals is None and gens is not None:
@@ -1367,32 +1367,13 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     ga_budget = np.array(f['ga_budget']).reshape(-1)
                 if (dataset_length is not None and dataset_length > 1) and 'ga_losses_per_sample' in f:
                     L = np.array(f['ga_losses_per_sample'])  # (N, S)
-                    # Check if baseline was prepended (first step should be baseline)
-                    has_baseline = L.shape[1] > 1 and L.shape[1] == ga_steps + 1 if ga_steps else False
-                    
-                    if has_baseline:
-                        # Baseline is at step 0, optimization starts at step 1
-                        x = np.arange(L.shape[1])  # 0, 1, 2, 3, ...
-                        x_labels = ["Baseline"] + [f"Step {i}" for i in range(1, L.shape[1])]
-                        print(f"[loss] GA with baseline: {L.shape[1]} steps (0=baseline, 1-{L.shape[1]-1}=optimization)")
-                    else:
-                        # No baseline, use original budget calculation
-                        x = ga_budget if ga_budget is not None and len(ga_budget) == L.shape[1] else np.arange(L.shape[1])
-                        x_labels = [f"Step {i}" for i in range(L.shape[1])]
-                        print(f"[loss] GA without baseline: {L.shape[1]} steps")
-                    
+                    x = ga_budget if ga_budget is not None and len(ga_budget) == L.shape[1] else np.arange(L.shape[1])
                     ga_min = np.min(L, axis=0)
                     ga_max = np.max(L, axis=0)
                     ga_mean = np.mean(L, axis=0)
                     ax.fill_between(x, ga_min, ga_max, color="#FBB998", alpha=0.25, label="GA range", zorder=2)
                     ga_mean_ma = _moving_average(ga_mean, k=max(3, L.shape[1]//10))
                     ax.plot(x, ga_mean_ma, color="#FBB998", linewidth=3.0, label=f"GA mean", zorder=4)
-                    
-                    # Highlight baseline point if present
-                    if has_baseline:
-                        ax.scatter([0], [ga_mean[0]], s=100, color="#FBB998", edgecolors='black', linewidths=2, 
-                                 zorder=5, label="Baseline (mean latent)")
-                    
                     did_ga_overlay = True
         except Exception as _ge:
             print(f"[loss] Failed GA per-sample plotting: {_ge}")
@@ -1400,20 +1381,8 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Fallback single GA curve if no per-sample available
     if has_ga_loss and not did_ga_overlay:
         if ga_steps is not None:
-            # Check if baseline was prepended
-            has_baseline = len(ga.vals) == ga_steps + 1
-            if has_baseline:
-                # Baseline at step 0, optimization at steps 1+
-                ga_budget = np.arange(len(ga.vals))  # 0, 1, 2, 3, ...
-                print(f"[loss] GA with baseline: {len(ga.vals)} steps (0=baseline, 1-{ga_steps}=optimization)")
-                # Highlight baseline point
-                ax.scatter([0], [ga.vals[0]], s=100, color="#FBB998", edgecolors='black', linewidths=2, 
-                          zorder=5, label="Baseline (mean latent)")
-            else:
-                # No baseline, use original budget calculation
-                ga_budget = 2 * np.arange(1, len(ga.vals) + 1)
-                print(f"[loss] GA without baseline: {len(ga.vals)} steps → budget points: {ga_budget}")
-            
+            ga_budget = 2 * np.arange(1, len(ga.vals) + 1)
+            print(f"[loss] GA budget calculation: {len(ga.vals)} steps → budget points: {ga_budget}")
             ax.plot(ga_budget, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
                     markersize=6, label=f"Gradient Ascent (2×{ga_steps} steps)", zorder=3)
         else:
@@ -1431,32 +1400,13 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     es_budget = np.array(f['es_budget']).reshape(-1)
                 if (dataset_length is not None and dataset_length > 1) and 'es_generation_losses_per_sample' in f:
                     L = np.array(f['es_generation_losses_per_sample'])  # (N, G)
-                    # Check if baseline was prepended (first generation should be baseline)
-                    has_baseline = L.shape[1] > 1 and L.shape[1] == es_generations + 1 if es_generations else False
-                    
-                    if has_baseline:
-                        # Baseline is at generation 0, optimization starts at generation 1
-                        x = np.arange(L.shape[1])  # 0, 1, 2, 3, ...
-                        x_labels = ["Baseline"] + [f"Gen {i}" for i in range(1, L.shape[1])]
-                        print(f"[loss] ES with baseline: {L.shape[1]} generations (0=baseline, 1-{L.shape[1]-1}=optimization)")
-                    else:
-                        # No baseline, use original budget calculation
-                        x = es_budget if es_budget is not None and len(es_budget) == L.shape[1] else np.arange(1, L.shape[1]+1)
-                        x_labels = [f"Gen {i}" for i in range(L.shape[1])]
-                        print(f"[loss] ES without baseline: {L.shape[1]} generations")
-                    
+                    x = es_budget if es_budget is not None and len(es_budget) == L.shape[1] else np.arange(1, L.shape[1]+1)
                     es_min = np.min(L, axis=0)
                     es_max = np.max(L, axis=0)
                     es_mean = np.mean(L, axis=0)
                     ax.fill_between(x, es_min, es_max, color="#DB74DB", alpha=0.25, label="ES range", zorder=2)
                     es_mean_ma = _moving_average(es_mean, k=max(3, L.shape[1]//4))
                     ax.plot(x, es_mean_ma, color="#DB74DB", linewidth=3.0, label=f"ES mean", zorder=4)
-                    
-                    # Highlight baseline point if present
-                    if has_baseline:
-                        ax.scatter([0], [es_mean[0]], s=100, color="#DB74DB", edgecolors='black', linewidths=2, 
-                                 zorder=5, label="Baseline (mean latent)")
-                    
                     did_es_overlay = True
         except Exception as _ee:
             print(f"[loss] Failed ES per-sample plotting: {_ee}")
@@ -1464,25 +1414,12 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Fallback single ES curve
     if has_es_loss and not did_es_overlay:
         if es_population is not None and es_generations is not None:
-            # Check if baseline was prepended
-            has_baseline = len(es.vals) == es_generations + 1
-            if has_baseline:
-                # Baseline at generation 0, optimization at generations 1+
-                es_budget = np.arange(len(es.vals))  # 0, 1, 2, 3, ...
-                print(f"[loss] ES with baseline: {len(es.vals)} generations (0=baseline, 1-{es_generations}=optimization)")
-                # Highlight baseline point
-                ax.scatter([0], [es.vals[0]], s=100, color="#DB74DB", edgecolors='black', linewidths=2, 
-                          zorder=5, label="Baseline (mean latent)")
+            if len(es.vals) == es_generations + 1:
+                es_budget = np.arange(es_generations + 1) * es_population
+            elif len(es.vals) == es_generations:
+                es_budget = np.arange(1, es_generations + 1) * es_population
             else:
-                # No baseline, use original budget calculation
-                if len(es.vals) == es_generations + 1:
-                    es_budget = np.arange(es_generations + 1) * es_population
-                elif len(es.vals) == es_generations:
-                    es_budget = np.arange(1, es_generations + 1) * es_population
-                else:
-                    es_budget = np.arange(len(es.vals)) * es_population
-                print(f"[loss] ES without baseline: {len(es.vals)} generations → budget points: {es_budget}")
-            
+                es_budget = np.arange(len(es.vals)) * es_population
             if len(es_budget) == len(es.vals):
                 ax.plot(es_budget, es.vals, color="#DB74DB", linewidth=3.0, marker='s', 
                         markersize=6, label=f"Evolutionary Search ({es_population}×{es_generations})", zorder=3)
@@ -2115,7 +2052,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                                 run.log({f"{wandb_key}_std": float(np.std(arr))})
                             except Exception as _we:
                                 print(f"[metrics] Failed to log GA histogram {wandb_key}: {_we}")
-                
+
                 # Create GA metrics CSV for download
                 ga_csv_path = f"ga_metrics_run_{cfg.get('run_idx', 0)}.csv"
                 
@@ -2224,7 +2161,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                                 run.log({f"{wandb_key}_std": float(np.std(arr))})
                             except Exception as _we:
                                 print(f"[metrics] Failed to log ES histogram {wandb_key}: {_we}")
-                
+
                 # Log ES metrics
                 for key, value in es_metrics.items():
                     if value is not None:
@@ -2452,36 +2389,10 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     src_args = build_dataset_args(args)
 
-    # ------------------------------------------------------------------
-    # Evaluate the mean latent (no optimisation) to obtain a baseline
-    # sample.  This latent should be treated as the first sample for both
-    # optimisation methods so that the trajectories include the starting
-    # point.  We store the resulting metrics and latent vector in an NPZ
-    # file which will later be prepended to the GA and ES trajectories.
-    # ------------------------------------------------------------------
-    mean_out = os.path.join(args.out_dir, "mean_latent.npz")
-    mean_cmd = [
-        sys.executable,
-        "src/evaluate_checkpoint.py",
-        "-w",
-        args.wandb_artifact_path,
-        "-i",
-        "mean",
-        "--no-wandb-run",
-        "true",
-        "--store-latents",
-        mean_out,
-    ]
-    mean_cmd += src_args
-    print("Running:", " ".join(mean_cmd))
-    mean_rc = subprocess.run(mean_cmd, check=False).returncode
-    print(f"Mean latent return code: {mean_rc}")
-
     # Gradient Ascent config
     ga_steps = args.ga_steps if args.ga_steps is not None else int(math.ceil(args.budget / 2))
     print(f"🔧 GA config: {ga_steps} steps (lr={args.ga_lr})")
-    print(f"   🎯 GA starts from mean latent (baseline)")
-    print(f"   📊 Total trajectory: {ga_steps + 1} points (1 baseline + {ga_steps} optimization steps)")
+    print(f"   🎯 GA starts from mean latent")
     ga_out = os.path.join(args.out_dir, "ga_latents.npz")
     ga_cmd = [
         sys.executable, "src/evaluate_checkpoint.py",
@@ -2511,8 +2422,7 @@ def main() -> None:
     pop = args.es_population if args.es_population is not None else max(3, min(32, int(round(math.sqrt(args.budget)))))
     gens = args.es_generations if args.es_generations is not None else max(1, int(math.ceil(args.budget / pop)))
     print(f"🧬 ES config: population={pop}, generations={gens} (mutation_std={args.es_mutation_std})")
-    print(f"   🎯 ES starts from mean latent (baseline, same as GA)")
-    print(f"   📊 Total trajectory: {gens + 1} generations (1 baseline + {gens} optimization generations)")
+    print(f"   🎯 ES starts from mean latent (same as GA)")
     es_out = os.path.join(args.out_dir, "es_latents.npz")
     es_cmd = [
         sys.executable, "src/evaluate_checkpoint.py",
@@ -2528,13 +2438,7 @@ def main() -> None:
         es_cmd.append("--track-progress")
     es_cmd += src_args
     if args.use_subspace_mutation:
-        es_cmd += [
-            "--use-subspace-mutation",
-            "--subspace-dim",
-            str(args.subspace_dim),
-            "--ga-step-length",
-            str(args.ga_step_length),
-        ]
+        es_cmd += ["--use-subspace-mutation", "--subspace-dim", str(args.subspace_dim), "--ga-step-length", str(args.ga_step_length)]
         if args.trust_region_radius is not None:
             es_cmd += ["--trust-region-radius", str(args.trust_region_radius)]
 
@@ -2549,182 +2453,6 @@ def main() -> None:
     # Log ES completion
     if run is not None:
         wandb.log({"es_return_code": es_rc, "es_status": "completed"})
-
-    # ------------------------------------------------------------------
-    # Prepend the mean latent as the first sample for both GA and ES
-    # trajectories.  We try to extract the latent vector and metrics from
-    # the mean_latent.npz produced above.  If some quantities are missing
-    # we simply skip their insertion.
-    # ------------------------------------------------------------------
-    def _prepend_baseline(mean_npz: str, target_npz: str, prefix: str) -> None:
-        """
-        Prepend the mean latent (baseline) as the starting point for both GA and ES trajectories.
-        This ensures that both optimization methods start from the same initial point.
-        """
-        if not (os.path.exists(mean_npz) and os.path.exists(target_npz)):
-            print(f"[baseline] Skipping baseline prepend: mean_npz={os.path.exists(mean_npz)}, target_npz={os.path.exists(target_npz)}")
-            return
-        
-        print(f"[baseline] Prepending baseline to {prefix} trajectory...")
-        
-        # Extract baseline data from mean latent NPZ
-        with np.load(mean_npz, allow_pickle=True) as fmean:
-            print(f"[baseline] Mean NPZ keys: {list(fmean.keys())}")
-            
-            # Extract initial latent (mean from all latents)
-            base_latent = None
-            if "context" in fmean:
-                base_latent = np.array(fmean["context"]).reshape(1, -1)
-                print(f"[baseline] Found context latent: {base_latent.shape}")
-            elif "mean_latent" in fmean:
-                base_latent = np.array(fmean["mean_latent"]).reshape(1, -1)
-                print(f"[baseline] Found mean_latent: {base_latent.shape}")
-            
-            # Extract initial loss (negative log probability)
-            base_loss = None
-            if "per_sample_loss" in fmean:
-                base_loss = float(np.array(fmean["per_sample_loss"]).mean())
-                print(f"[baseline] Found per_sample_loss: {base_loss:.6f}")
-            elif "per_sample_losses" in fmean:
-                base_loss = float(np.array(fmean["per_sample_losses"]).mean())
-                print(f"[baseline] Found per_sample_losses: {base_loss:.6f}")
-            elif "total_final_loss" in fmean:
-                base_loss = float(np.array(fmean["total_final_loss"]).mean())
-                print(f"[baseline] Found total_final_loss: {base_loss:.6f}")
-            
-            # Extract initial accuracy metrics
-            base_acc = None
-            base_shape = None
-            base_pixel = None
-            if "per_sample_accuracy" in fmean:
-                base_acc = float(np.array(fmean["per_sample_accuracy"]).mean())
-                print(f"[baseline] Found per_sample_accuracy: {base_acc:.6f}")
-            if "per_sample_shape_accuracy" in fmean:
-                base_shape = float(np.array(fmean["per_sample_shape_accuracy"]).mean())
-                print(f"[baseline] Found per_sample_shape_accuracy: {base_shape:.6f}")
-            if "per_sample_pixel_correctness" in fmean:
-                base_pixel = float(np.array(fmean["per_sample_pixel_correctness"]).mean())
-                print(f"[baseline] Found per_sample_pixel_correctness: {base_pixel:.6f}")
-
-        # Load target NPZ data
-        with np.load(target_npz, allow_pickle=True) as ftgt:
-            data = dict(ftgt.items())
-            print(f"[baseline] Target NPZ keys: {list(data.keys())}")
-
-        # Prepend baseline to GA trajectory
-        if prefix == "ga_":
-            print(f"[baseline] Prepending to GA trajectory...")
-            
-            # Prepend initial latent to GA latents
-            if base_latent is not None and "ga_latents" in data:
-                original_shape = data["ga_latents"].shape
-                data["ga_latents"] = np.concatenate([base_latent, data["ga_latents"]], axis=0)
-                print(f"[baseline] GA latents: {original_shape} -> {data['ga_latents'].shape}")
-            
-            # Prepend initial latent to GA path
-            if base_latent is not None and "ga_path" in data:
-                original_shape = data["ga_path"].shape
-                data["ga_path"] = np.concatenate([base_latent, data["ga_path"]], axis=0)
-                print(f"[baseline] GA path: {original_shape} -> {data['ga_path'].shape}")
-            
-            # Prepend initial loss to GA losses
-            if base_loss is not None and "ga_losses" in data:
-                original_shape = data["ga_losses"].shape
-                data["ga_losses"] = np.concatenate([[base_loss], np.array(data["ga_losses"]).reshape(-1)])
-                print(f"[baseline] GA losses: {original_shape} -> {data['ga_losses'].shape}")
-            
-            # Prepend initial loss to GA losses per sample
-            if base_loss is not None and "ga_losses_per_sample" in data:
-                original_shape = data["ga_losses_per_sample"].shape
-                # Add baseline as first step for each sample
-                baseline_step = np.full((data["ga_losses_per_sample"].shape[0], 1), base_loss)
-                data["ga_losses_per_sample"] = np.concatenate([baseline_step, data["ga_losses_per_sample"]], axis=1)
-                print(f"[baseline] GA losses per sample: {original_shape} -> {data['ga_losses_per_sample'].shape}")
-            
-            # Prepend initial accuracy metrics
-            if base_acc is not None:
-                if "ga_accuracy" not in data:
-                    data["ga_accuracy"] = []
-                if isinstance(data["ga_accuracy"], np.ndarray):
-                    data["ga_accuracy"] = data["ga_accuracy"].tolist()
-                data["ga_accuracy"].insert(0, base_acc)
-                print(f"[baseline] GA accuracy: prepended {base_acc:.6f}")
-            
-            if base_shape is not None:
-                if "ga_shape_correctness" not in data:
-                    data["ga_shape_correctness"] = []
-                if isinstance(data["ga_shape_correctness"], np.ndarray):
-                    data["ga_shape_correctness"] = data["ga_shape_correctness"].tolist()
-                data["ga_shape_correctness"].insert(0, base_shape)
-                print(f"[baseline] GA shape correctness: prepended {base_shape:.6f}")
-            
-            if base_pixel is not None:
-                if "ga_pixel_correctness" not in data:
-                    data["ga_pixel_correctness"] = []
-                if isinstance(data["ga_pixel_correctness"], np.ndarray):
-                    data["ga_pixel_correctness"] = data["ga_pixel_correctness"].tolist()
-                data["ga_pixel_correctness"].insert(0, base_pixel)
-                print(f"[baseline] GA pixel correctness: prepended {base_pixel:.6f}")
-        
-        # Prepend baseline to ES trajectory
-        elif prefix == "es_":
-            print(f"[baseline] Prepending to ES trajectory...")
-            
-            # Prepend initial latent to ES best latents per generation
-            if base_latent is not None and "es_best_latents_per_generation" in data:
-                original_shape = data["es_best_latents_per_generation"].shape
-                data["es_best_latents_per_generation"] = np.concatenate([
-                    base_latent,
-                    data["es_best_latents_per_generation"],
-                ], axis=0)
-                print(f"[baseline] ES best latents per generation: {original_shape} -> {data['es_best_latents_per_generation'].shape}")
-            
-            # Prepend initial loss to ES generation losses
-            if base_loss is not None and "es_generation_losses" in data:
-                original_shape = data["es_generation_losses"].shape
-                data["es_generation_losses"] = np.concatenate([[base_loss], np.array(data["es_generation_losses"]).reshape(-1)])
-                print(f"[baseline] ES generation losses: {original_shape} -> {data['es_generation_losses'].shape}")
-            
-            # Prepend initial loss to ES generation losses per sample
-            if base_loss is not None and "es_generation_losses_per_sample" in data:
-                original_shape = data["es_generation_losses_per_sample"].shape
-                # Add baseline as generation 0 for each sample
-                baseline_gen = np.full((data["es_generation_losses_per_sample"].shape[0], 1), base_loss)
-                data["es_generation_losses_per_sample"] = np.concatenate([baseline_gen, data["es_generation_losses_per_sample"]], axis=1)
-                print(f"[baseline] ES generation losses per sample: {original_shape} -> {data['es_generation_losses_per_sample'].shape}")
-            
-            # Prepend initial accuracy metrics
-            if base_acc is not None:
-                if "es_accuracy" not in data:
-                    data["es_accuracy"] = []
-                if isinstance(data["es_accuracy"], np.ndarray):
-                    data["es_accuracy"] = data["es_accuracy"].tolist()
-                data["es_accuracy"].insert(0, base_acc)
-                print(f"[baseline] ES accuracy: prepended {base_acc:.6f}")
-            
-            if base_shape is not None:
-                if "es_shape_correctness" not in data:
-                    data["es_shape_correctness"] = []
-                if isinstance(data["es_shape_correctness"], np.ndarray):
-                    data["es_shape_correctness"] = data["es_shape_correctness"].tolist()
-                data["es_shape_correctness"].insert(0, base_shape)
-                print(f"[baseline] ES shape correctness: prepended {base_shape:.6f}")
-            
-            if base_pixel is not None:
-                if "es_pixel_correctness" not in data:
-                    data["es_pixel_correctness"] = []
-                if isinstance(data["es_pixel_correctness"], np.ndarray):
-                    data["es_pixel_correctness"] = data["es_pixel_correctness"].tolist()
-                data["es_pixel_correctness"].insert(0, base_pixel)
-                print(f"[baseline] ES pixel correctness: prepended {base_pixel:.6f}")
-
-        # Save the updated data
-        np.savez_compressed(target_npz, **data)
-        print(f"[baseline] Successfully prepended baseline to {prefix} trajectory")
-
-    # Now prepend the baseline after both GA and ES have been executed
-    _prepend_baseline(mean_out, ga_out, "ga_")
-    _prepend_baseline(mean_out, es_out, "es_")
 
     # Handle multiple runs when n_samples > 1
     # NOTE: n_samples controls how many times to run the script with different seeds
@@ -2741,7 +2469,7 @@ def main() -> None:
         # Optional aggregators for cross-run statistics
         ga_agg_acc, ga_agg_shape, ga_agg_pixel, ga_agg_best_loss = [], [], [], []
         es_agg_acc, es_agg_shape, es_agg_pixel, es_agg_best_loss = [], [], [], []
-        
+
         for run_idx in range(args.n_samples):
             seed = args.dataset_seed + run_idx
             print(f"\n🔬 Run {run_idx + 1}/{args.n_samples} with seed {seed}")
@@ -2750,10 +2478,10 @@ def main() -> None:
             cfg = {
                 "artifact_path": args.wandb_artifact_path,
                 "budget": args.budget,
-                "ga_steps": ga_steps + 1,  # +1 for baseline
+                "ga_steps": ga_steps,
                 "ga_lr": args.ga_lr,
                 "es_population": pop,
-                "es_generations": gens + 1,  # +1 for baseline
+                "es_generations": gens,
                 "es_mutation_std": args.es_mutation_std,
                 "use_subspace_mutation": args.use_subspace_mutation,
                 "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
@@ -2818,10 +2546,6 @@ def main() -> None:
                 "--dataset-use-hf", args.dataset_use_hf,
                 "--dataset-seed", str(seed)
             ]
-            
-            # Update budget calculation to account for baseline
-            ga_steps_with_baseline = ga_steps + 1  # +1 for baseline
-            es_gens_with_baseline = gens + 1       # +1 for baseline
             
             # Debug: show the final args
             print(f"[run] Final args: {run_src_args}")
@@ -2899,21 +2623,17 @@ def main() -> None:
                 except Exception as e:
                     print(f"⚠️  Could not extract latent dimension: {e}")
             else:
-                # Update budget calculation to account for baseline
-                ga_steps_with_baseline = ga_steps + 1  # +1 for baseline
-                es_gens_with_baseline = gens + 1       # +1 for baseline
-                
                 trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
-                                                      background_resolution=args.background_resolution,
-                                                      background_smoothing=args.background_smoothing,
-                                                      background_knn=args.background_knn,
-                                                      background_bandwidth_scale=args.background_bandwidth_scale,
-                                                      background_global_mix=args.background_global_mix,
-                                                          ga_steps=ga_steps_with_baseline, es_population=pop, es_generations=es_gens_with_baseline, dataset_length=args.dataset_length)
-            if trajectory_plot:
-                print(f"Saved trajectory plot to {trajectory_plot}")
-            if loss_plot:
-                print(f"Saved loss curves plot to {loss_plot}")
+                                                          background_resolution=args.background_resolution,
+                                                          background_smoothing=args.background_smoothing,
+                                                          background_knn=args.background_knn,
+                                                          background_bandwidth_scale=args.background_bandwidth_scale,
+                                                          background_global_mix=args.background_global_mix,
+                                                          ga_steps=ga_steps, es_population=pop, es_generations=gens, dataset_length=args.dataset_length)
+                if trajectory_plot:
+                    print(f"Saved trajectory plot to {trajectory_plot}")
+                if loss_plot:
+                    print(f"Saved loss curves plot to {loss_plot}")
                 if stats_plot:
                     print(f"Saved statistical histograms to {stats_plot}")
                 else:
@@ -2928,13 +2648,11 @@ def main() -> None:
             # Upload final results to W&B
             try:
                 if run is not None:
-                                    # Add return codes and latent dimension to config for final upload
+                    # Add return codes and latent dimension to config for final upload
                     cfg.update({
                         "ga_return_code": ga_rc,
                         "es_return_code": es_rc,
                         "latent_dimension": latent_dim,  # Latent space dimension
-                        "ga_steps_with_baseline": ga_steps + 1,  # +1 for baseline
-                        "es_generations_with_baseline": gens + 1,  # +1 for baseline
                     })
                     
                     # Debug: show plot paths before upload
@@ -2952,11 +2670,11 @@ def main() -> None:
             except Exception as e:
                 print(f"Failed to upload to wandb: {e}")
             
-            # Finish the W&B run
+                        # Finish the W&B run
             if run is not None:
                 run.finish()
                 print(f"[wandb] Finished run {run_idx + 1}/{args.n_samples}")
-        
+
             # Aggregate per-sample metrics across runs (if requested later)
             try:
                 # Load GA per-sample metrics from NPZ
@@ -3040,10 +2758,6 @@ def main() -> None:
                     print("🚫 File generation disabled - skipping aggregated statistical histograms")
                     agg_plot = None
                 else:
-                    # Update budget calculation to account for baseline
-                    ga_steps_with_baseline = ga_steps + 1  # +1 for baseline
-                    es_gens_with_baseline = gens + 1       # +1 for baseline
-                    
                     agg_plot = create_statistical_histograms(agg_ga_npz, agg_es_npz, args.out_dir, dataset_length=agg_len if agg_len > 1 else 2)
                     if agg_plot:
                         print(f"[aggregate] Saved aggregated statistical histograms to {agg_plot}")
@@ -3064,10 +2778,10 @@ def main() -> None:
                     agg_cfg = {
                         "artifact_path": args.wandb_artifact_path,
                         "budget": args.budget,
-                        "ga_steps": ga_steps + 1,  # +1 for baseline
+                        "ga_steps": ga_steps,
                         "ga_lr": args.ga_lr,
                         "es_population": pop,
-                        "es_generations": gens + 1,  # +1 for baseline
+                        "es_generations": gens,
                         "es_mutation_std": args.es_mutation_std,
                         "use_subspace_mutation": args.use_subspace_mutation,
                         "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
@@ -3148,10 +2862,10 @@ def main() -> None:
         cfg = {
             "artifact_path": args.wandb_artifact_path,
             "budget": args.budget,
-            "ga_steps": ga_steps + 1,  # +1 for baseline
+            "ga_steps": ga_steps,
             "ga_lr": args.ga_lr,
             "es_population": pop,
-            "es_generations": gens + 1,  # +1 for baseline
+            "es_generations": gens,
             "es_mutation_std": args.es_mutation_std,
             "use_subspace_mutation": args.use_subspace_mutation,
             "subspace_dim": args.subspace_dim if args.use_subspace_mutation else None,
@@ -3216,21 +2930,17 @@ def main() -> None:
             except Exception as e:
                 print(f"⚠️  Could not extract latent dimension: {e}")
         else:
-            # Update budget calculation to account for baseline
-            ga_steps_with_baseline = ga_steps + 1  # +1 for baseline
-            es_gens_with_baseline = gens + 1       # +1 for baseline
-            
             trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
-                                                  background_resolution=args.background_resolution,
-                                                  background_smoothing=args.background_smoothing,
-                                                  background_knn=args.background_knn,
-                                                  background_bandwidth_scale=args.background_bandwidth_scale,
-                                                  background_global_mix=args.background_global_mix,
-                                                      ga_steps=ga_steps_with_baseline, es_population=pop, es_generations=es_gens_with_baseline, dataset_length=args.dataset_length)
-        if trajectory_plot:
-            print(f"Saved trajectory plot to {trajectory_plot}")
-        if loss_plot:
-            print(f"Saved loss curves plot to {loss_plot}")
+                                                      background_resolution=args.background_resolution,
+                                                      background_smoothing=args.background_smoothing,
+                                                      background_knn=args.background_knn,
+                                                      background_bandwidth_scale=args.background_bandwidth_scale,
+                                                      background_global_mix=args.background_global_mix,
+                                                      ga_steps=ga_steps, es_population=pop, es_generations=gens, dataset_length=args.dataset_length)
+            if trajectory_plot:
+                print(f"Saved trajectory plot to {trajectory_plot}")
+            if loss_plot:
+                print(f"Saved loss curves plot to {loss_plot}")
             if stats_plot:
                 print(f"Saved statistical histograms to {stats_plot}")
             else:
