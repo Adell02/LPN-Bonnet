@@ -466,9 +466,15 @@ def visualize_tsne_sources(
     if task_ids is not None and 'tid_np' in locals() and tid_np is not None:
         for i in range(len(emb)):
             tid = int(tid_np[i])
-            # Place small label on each individual sample
+            # Place small label on each individual sample with tiny offset to prevent overlap
+            # Calculate tiny offset based on data range to ensure labels don't overlap points
+            x_range = np.ptp(emb[:, 0])
+            y_range = np.ptp(emb[:, 1])
+            offset_x = x_range * 0.01  # 1% of x range
+            offset_y = y_range * 0.01  # 1% of y range
+            
             ax.text(
-                float(emb[i, 0]), float(emb[i, 1]), str(tid),
+                float(emb[i, 0]) + offset_x, float(emb[i, 1]) + offset_y, str(tid),
                 transform=ax.transData,
                 ha='center', va='center', fontsize=6, alpha=0.8,
                 bbox=dict(boxstyle='round,pad=0.1', facecolor='white', edgecolor='none', alpha=0.6),
