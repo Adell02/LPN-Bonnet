@@ -228,7 +228,38 @@ class Trainer:
 
             return generate_output_to_be_pmapped
 
-        if cfg.training.train_datasets and cfg.training.task_generator:
+        # Uniform structured loading: balanced patterns 1/2/3, consistent colors/pattern per task
+        if cfg.training.get("struct_uniform", False):
+            from datasets.task_gen.dataloader import make_dataset
+            total_len = int(cfg.training.get("struct_uniform_length", 1024))
+            num_pairs = int(cfg.training.get("struct_num_pairs", 4))
+            per_pat = max(1, total_len // 3)
+            grids_all, shapes_all = [], []
+            for pid in (1, 2, 3):
+                g, s, _ = make_dataset(
+                    length=per_pat,
+                    num_pairs=num_pairs,
+                    num_workers=cfg.training.get("num_workers", 4),
+                    task_generator_class="STRUCT_PATTERN",
+                    online_data_augmentation=self.online_data_augmentation,
+                    seed=cfg.training.seed + pid,
+                    pattern=pid,
+                    pattern_per_task=True,
+                )
+                grids_all.append(g)
+                shapes_all.append(s)
+            # Concatenate and possibly trim to exact total_len
+            all_grids = jnp.concatenate(grids_all, axis=0)
+            all_shapes = jnp.concatenate(shapes_all, axis=0)
+            if all_grids.shape[0] > total_len:
+                all_grids = all_grids[:total_len]
+                all_shapes = all_shapes[:total_len]
+            self.task_generator = False
+            self.train_dataset_grids = all_grids
+            self.train_dataset_shapes = all_shapes
+            self.init_grids = self.train_dataset_grids[:1]
+            self.init_shapes = self.train_dataset_shapes[:1]
+        elif cfg.training.train_datasets and cfg.training.task_generator:
             raise ValueError("Only one of 'train_datasets' and 'task_generator' can be specified.")
         if cfg.training.train_datasets:
             # Load train datasets
@@ -262,8 +293,43 @@ class Trainer:
             self.init_shapes = jnp.ones((1, num_pairs, 2, 2), jnp.uint8)
         self.online_data_augmentation = cfg.training.online_data_augmentation
 
-        # Load eval datasets
+        # Load eval datasets (uniform structured option)
         self.eval_datasets = []
+        if cfg.eval.get("struct_uniform", False):
+            from datasets.task_gen.dataloader import make_dataset
+            total_len = int(cfg.eval.get("struct_uniform_length", 96))
+            per_pat = max(1, total_len // 3)
+            num_pairs = int(cfg.training.get("struct_num_pairs", 4))
+            grids_all, shapes_all = [], []
+            for pid in (1, 2, 3):
+                g, s, _ = make_dataset(
+                    length=per_pat,
+                    num_pairs=num_pairs,
+                    num_workers=0,
+                    task_generator_class="STRUCT_PATTERN",
+                    online_data_augmentation=False,
+                    seed=0 + pid,
+                    pattern=pid,
+                    pattern_per_task=True,
+                )
+                grids_all.append(g)
+                shapes_all.append(s)
+            grids = jnp.concatenate(grids_all, axis=0)
+            shapes = jnp.concatenate(shapes_all, axis=0)
+            if grids.shape[0] > total_len:
+                grids = grids[:total_len]
+                shapes = shapes[:total_len]
+            batch_size = int(cfg.eval.get("batch_size", grids.shape[0]))
+            num_batches = len(grids) // batch_size
+            grids, shapes = grids[: num_batches * batch_size], shapes[: num_batches * batch_size]
+            self.eval_datasets.append(
+                {
+                    "dataset_name": "struct_uniform",
+                    "dataset_grids": grids,
+                    "dataset_shapes": shapes,
+                    "batch_size": batch_size,
+                }
+            )
         for dict_ in cfg.eval.eval_datasets or []:
             for arg in ["folder"]:
                 assert arg in dict_, f"Each eval dataset must have arg '{arg}'."
@@ -286,8 +352,59 @@ class Trainer:
                 }
             )
 
-        # Load test datasets
+        # Load test datasets (uniform structured option)
         self.test_datasets = []
+        if cfg.eval.get("struct_uniform", False):
+            from datasets.task_gen.dataloader import make_dataset
+            total_len = int(cfg.eval.get("struct_uniform_length", 96))
+            per_pat = max(1, total_len // 3)
+            num_pairs = int(cfg.training.get("struct_num_pairs", 4))
+            grids_all, shapes_all, pids = [], [], []
+            for pid in (1, 2, 3):
+                g, s, _ = make_dataset(
+                    length=per_pat,
+                    num_pairs=num_pairs,
+                    num_workers=0,
+                    task_generator_class="STRUCT_PATTERN",
+                    online_data_augmentation=False,
+                    seed=0 + pid,
+                    pattern=pid,
+                    pattern_per_task=True,
+                )
+                grids_all.append(g)
+                shapes_all.append(s)
+                pids.append(jnp.full((g.shape[0],), pid))
+            grids = jnp.concatenate(grids_all, axis=0)
+            shapes = jnp.concatenate(shapes_all, axis=0)
+            program_ids = jnp.concatenate(pids, axis=0)
+            if grids.shape[0] > total_len:
+                grids = grids[:total_len]
+                shapes = shapes[:total_len]
+                program_ids = program_ids[:total_len]
+            batch_size = int(cfg.eval.get("batch_size", grids.shape[0]))
+            num_batches = len(grids) // batch_size
+            grids, shapes, program_ids = (
+                grids[: num_batches * batch_size],
+                shapes[: num_batches * batch_size],
+                program_ids[: num_batches * batch_size],
+            )
+            inference_mode = cfg.training.inference_mode
+            self.test_datasets.append(
+                {
+                    "pmap_dataset_generate_output": jax.pmap(
+                        build_generate_output_to_be_pmapped(inference_mode, cfg.training.get("inference_kwargs") or {}),
+                        axis_name="devices",
+                        devices=self.devices,
+                        donate_argnums=(3, 5),
+                    ),
+                    "test_name": "struct_uniform",
+                    "dataset_grids": grids,
+                    "dataset_shapes": shapes,
+                    "batch_size": batch_size,
+                    "num_tasks_to_show": 5,
+                    "program_ids": program_ids,
+                }
+            )
         for i, dict_ in enumerate(cfg.eval.test_datasets or []):
             if dict_.get("generator", False):
                 for arg in ["num_pairs", "length"]:

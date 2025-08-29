@@ -14,7 +14,11 @@ training:
   pairwise_kl_coeff: null
   mixed_precision: False  # if True, uses bfloat16 activations
   online_data_augmentation: False
-  # Use on-the-fly generator mixing the three struct patterns
+  # Structured uniform loading (balanced patterns 1/2/3, 4 pairs per task, consistent color/pattern per task)
+  struct_uniform: true
+  struct_uniform_length: 1024  # total training samples; will be split equally among patterns
+  struct_num_pairs: 4
+  # Legacy on-the-fly generator (ignored when struct_uniform=true)
   task_generator:
     class: STRUCT_PATTERN
     num_workers: 4
@@ -28,36 +32,12 @@ training:
   use_hf: False
 
 eval:
+  # Use balanced, uniform evaluation unless you override test_datasets below
+  struct_uniform: true
+  struct_uniform_length: 96   # 32 per pattern
+  batch_size: 96
   eval_datasets: []  # Keep empty
-  test_datasets:
-    # Replace the mixed pattern test with balanced pattern tests
-    - generator: STRUCT_PATTERN
-      name: pattern_1_only
-      task_generator_kwargs:
-        pattern: 1  # Only O-tetrominos
-        pattern_per_task: true
-      num_pairs: 4
-      length: 32  # 32 samples of pattern 1
-      batch_size: 32
-      num_tasks_to_show: 3
-    - generator: STRUCT_PATTERN
-      name: pattern_2_only
-      task_generator_kwargs:
-        pattern: 2  # Only T-tetrominos
-        pattern_per_task: true
-      num_pairs: 4
-      length: 32  # 32 samples of pattern 2
-      batch_size: 32
-      num_tasks_to_show: 3
-    - generator: STRUCT_PATTERN
-      name: pattern_3_only
-      task_generator_kwargs:
-        pattern: 3  # Only L-tetrominos
-        pattern_per_task: true
-      num_pairs: 4
-      length: 32  # 32 samples of pattern 3
-      batch_size: 32
-      num_tasks_to_show: 3
+  test_datasets: []  # Empty when using struct_uniform
 
   json_datasets:
 
