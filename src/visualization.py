@@ -338,6 +338,7 @@ def visualize_tsne_sources(
     N = lat_np.shape[0]
     if N == 0:
         return None
+    
     # Group-preserving downsampling by task if task_ids provided
     if N > max_points:
         rng = np.random.RandomState(random_state)
@@ -348,6 +349,7 @@ def visualize_tsne_sources(
                 return None
             sources_per_task = int(np.max(counts))
             max_tasks = max(1, max_points // max(1, sources_per_task))
+            
             # Map task -> indices, and task -> pattern (majority of program_ids within the task)
             task_to_indices = {}
             task_to_pattern = {}
@@ -358,16 +360,19 @@ def visualize_tsne_sources(
                 if idxs.size > 0:
                     vals, cnts = np.unique(prog_np[idxs], return_counts=True)
                     task_to_pattern[int(tid)] = int(vals[np.argmax(cnts)])
+            
             # Stratified sampling: roughly equal tasks per pattern if possible
             patterns = np.unique(list(task_to_pattern.values()))
             per_pat = max(1, max_tasks // max(1, len(patterns)))
             selected_tasks = []
+            
             # First, balanced pick
             for pat in patterns:
                 cand = [t for t, p in task_to_pattern.items() if p == pat]
                 if len(cand) > per_pat:
                     cand = list(rng.choice(cand, size=per_pat, replace=False))
                 selected_tasks.extend(cand)
+            
             # Fill remainder if any
             if len(selected_tasks) < max_tasks:
                 remaining = [t for t in unique_tids if t not in selected_tasks]
@@ -375,18 +380,22 @@ def visualize_tsne_sources(
                 if len(remaining) > need:
                     remaining = list(rng.choice(remaining, size=need, replace=False))
                 selected_tasks.extend(list(remaining))
+            
             # Gather indices for all selected tasks (all sources per task)
             sel_indices = np.concatenate([task_to_indices[int(t)] for t in selected_tasks])
             lat_np = lat_np[sel_indices]
             prog_np = prog_np[sel_indices]
             src_np = src_np[sel_indices]
             tid_np = tid_np[sel_indices]
+            
+            print(f"T-SNE downsampled: {len(sel_indices)} points from {N} total, maintaining {len(selected_tasks)} complete tasks")
         else:
             idx = rng.choice(N, size=max_points, replace=False)
             lat_np = lat_np[idx]
             prog_np = prog_np[idx]
             src_np = src_np[idx]
             tid_np = None
+            print(f"T-SNE downsampled: {max_points} points from {N} total (no task grouping)")
 
     try:
         if np.all(lat_np == lat_np[0]):
@@ -453,20 +462,18 @@ def visualize_tsne_sources(
                     edgecolors='none'
                 )
 
-    # If task_ids present, annotate centroid per task
+    # If task_ids present, annotate EACH INDIVIDUAL SAMPLE with task ID (not just centroids)
     if task_ids is not None and 'tid_np' in locals() and tid_np is not None:
-        for tid in np.unique(tid_np):
-            mask = tid_np == tid
-            if np.sum(mask) >= 2:
-                centroid = emb[mask].mean(axis=0)
-                # Place label exactly at data coordinates (no offset), centered
-                ax.text(
-                    float(centroid[0]), float(centroid[1]), str(int(tid)),
-                    transform=ax.transData,
-                    ha='center', va='center', fontsize=9, alpha=0.95,
-                    bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor='none', alpha=0.7),
-                    zorder=5,
-                )
+        for i in range(len(emb)):
+            tid = int(tid_np[i])
+            # Place small label on each individual sample
+            ax.text(
+                float(emb[i, 0]), float(emb[i, 1]), str(tid),
+                transform=ax.transData,
+                ha='center', va='center', fontsize=6, alpha=0.8,
+                bbox=dict(boxstyle='round,pad=0.1', facecolor='white', edgecolor='none', alpha=0.6),
+                zorder=5,
+            )
 
     # EXACTLY same title, labels, and style as train.py
     ax.set_title("t-SNE Visualization of Latent Embeddings")

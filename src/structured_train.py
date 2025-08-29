@@ -499,36 +499,30 @@ class StructuredTrainer:
         return TrainState.create(apply_fn=self.model.apply, tx=tx, params=combined_params)
 
     def prepare_train_dataset_for_epoch(self, key: chex.PRNGKey, log_every_n_steps: int) -> tuple[chex.Array, chex.Array]:
-        """Shuffle the dataset and reshape it to (num_logs, log_every_n_steps, batch_size, *).
-        Gracefully handles cases where available batches are fewer than log_every_n_steps by
-        reducing the inner group size to the number of available batches.
-        """
+        """Shuffle the dataset and reshape it to (num_logs, log_every_n_steps, batch_size, *)."""
         shuffle_key, augmentation_key = jax.random.split(key)
         grids, shapes = shuffle_dataset_into_batches(
             self.train_grids, self.train_shapes, self.batch_size, shuffle_key
         )
 
         num_batches = grids.shape[0]
-        # Use an effective group size that fits the available number of batches
-        effective_log_every = max(1, min(log_every_n_steps, num_batches))
+        if num_batches < log_every_n_steps:
+            raise ValueError(
+                "Dataset provides only "
+                f"{num_batches} batches but log_every_n_steps={log_every_n_steps}. "
+                "Increase dataset size or reduce log_every_n_steps to avoid stalling."
+            )
 
-        # Compute number of groups (logs)
-        num_logs = num_batches // effective_log_every
-        # Ensure at least one group exists when there are batches
-        if num_logs == 0 and num_batches > 0:
-            effective_log_every = num_batches
-            num_logs = 1
-
-        # Truncate to complete groups only
-        grids = grids[: num_logs * effective_log_every]
-        shapes = shapes[: num_logs * effective_log_every]
+        num_logs = num_batches // log_every_n_steps
+        grids = grids[: num_logs * log_every_n_steps]
+        shapes = shapes[: num_logs * log_every_n_steps]
 
         if self.cfg.training.online_data_augmentation:
             grids, shapes = data_augmentation_fn(grids, shapes, augmentation_key)
 
-        # Reshape to (num_logs, effective_log_every, batch_size, *)
-        grids = grids.reshape(num_logs, effective_log_every, self.batch_size, *grids.shape[2:])
-        shapes = shapes.reshape(num_logs, effective_log_every, self.batch_size, *shapes.shape[2:])
+        # Reshape to (num_logs, log_every_n_steps, batch_size, *)
+        grids = grids.reshape(num_logs, log_every_n_steps, self.batch_size, *grids.shape[2:])
+        shapes = shapes.reshape(num_logs, log_every_n_steps, self.batch_size, *shapes.shape[2:])
         return grids, shapes
 
     def train_n_steps(self, state: TrainState, batches: tuple[chex.Array, chex.Array], key: chex.PRNGKey) -> tuple[TrainState, dict]:
@@ -555,16 +549,21 @@ class StructuredTrainer:
                     rngs={"dropout": rng, "latents": rng},
                     prior_kl_coeff=self.cfg.training.get("prior_kl_coeff"),
                     pairwise_kl_coeff=self.cfg.training.get("pairwise_kl_coeff"),
+                    repulsion_kl_coeff=self.cfg.training.get("repulsion_kl"),  # ADD REPULSION LOSS
                     **(self.cfg.training.get("inference_kwargs") or {}),
                 )
                 return loss, metrics
             
             (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params, batch_pairs, batch_shapes, rng)
-            # Zero encoder grads after exposure window
+            # Zero encoder grads after exposure window - FIX LOGIC
             if self.encoder_expose_steps <= 0 and "encoders" in grads:
                 zeros_enc = tree_map(lambda g: jnp.zeros_like(g), grads["encoders"])
                 grads = dict(grads)
                 grads["encoders"] = zeros_enc
+                # Note: step logging moved to main training loop for better visibility
+            elif self.encoder_expose_steps > 0 and "encoders" in grads:
+                # Note: step logging moved to main training loop for better visibility
+                pass
             state = state.apply_gradients(grads=grads)
             all_metrics.append(metrics)
         
@@ -572,6 +571,10 @@ class StructuredTrainer:
         avg_metrics = {}
         for key in all_metrics[0].keys():
             avg_metrics[key] = jnp.mean(jnp.stack([m[key] for m in all_metrics]))
+        
+        # Log repulsion loss if present
+        if "repulsion_loss" in avg_metrics:
+            logging.info(f"Repulsion loss: {float(avg_metrics['repulsion_loss']):.6f} (weighted: {float(avg_metrics.get('repulsion_loss_weighted', 0)):.6f})")
         
         # Decrement exposure counter by number of gradient steps completed
         self.encoder_expose_steps = max(0, self.encoder_expose_steps - num_steps)
@@ -588,10 +591,10 @@ class StructuredTrainer:
         key = jax.random.PRNGKey(cfg.training.seed)
         logging.info("Starting structured training...")
         logging.info(f"Total steps: {num_steps}, Log every: {log_every}, Batch size: {self.batch_size}")
-        eval_n_logs = int(cfg.training.get("eval_every_n_logs") or 0)
-        ckpt_n_logs = int(cfg.training.get("save_checkpoint_every_n_logs") or 0)
-        logging.info(f"Training schedule: Log every {log_every} steps, Eval every {eval_n_logs} logs, Checkpoint every {ckpt_n_logs or 'disabled'} logs")
-        logging.info(f"With current config: Eval every {log_every * eval_n_logs} steps, Checkpoint every {log_every * ckpt_n_logs if ckpt_n_logs else 'disabled'} steps")
+        logging.info(f"Training schedule: Log every {log_every} steps, Eval every {cfg.training.get('eval_every_n_logs', 'disabled')} logs, Checkpoint every {cfg.training.get('save_checkpoint_every_n_logs', 'disabled')} logs")
+        logging.info(f"With current config: Eval every {log_every * cfg.training.get('eval_every_n_logs', 0)} steps, Checkpoint every {log_every * cfg.training.get('save_checkpoint_every_n_logs', 0)} steps")
+        logging.info(f"Encoder exposure period: {self.encoder_expose_steps} steps (encoders trainable during this period)")
+        logging.info(f"Repulsion KL coefficient: {cfg.training.get('repulsion_kl', 'disabled')}")
         
         # Test forward pass first to catch any issues early
         logging.info("Testing forward pass...")
@@ -608,6 +611,7 @@ class StructuredTrainer:
                 rngs={"dropout": key, "latents": key},
                 prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
                 pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
+                repulsion_kl_coeff=cfg.training.get("repulsion_kl"),  # repulsion_kl_coeff
                 **(cfg.training.get("inference_kwargs") or {}),
             )
             logging.info(f"Forward pass test successful: loss={float(test_loss):.4f}")
@@ -660,6 +664,11 @@ class StructuredTrainer:
             grids, shapes = self.prepare_train_dataset_for_epoch(epoch_key, log_every)
             dataloader = zip(grids, shapes)
             
+            # Log current step and encoder status
+            if step % 100 == 0:
+                encoder_status = "TRAINABLE" if self.encoder_expose_steps > 0 else "FROZEN"
+                logging.info(f"Step {step}/{num_steps}: Encoders {encoder_status} (exposure: {self.encoder_expose_steps} steps remaining)")
+            
             dataloading_time = time.time()
             for batches in dataloader:
                 wandb.log({"timing/dataloading_time": time.time() - dataloading_time})
@@ -672,6 +681,11 @@ class StructuredTrainer:
                 
                 pbar.update(log_every)
                 step += log_every
+                
+                # Log encoder status after step update
+                if step % 100 == 0:
+                    encoder_status = "TRAINABLE" if self.encoder_expose_steps > 0 else "FROZEN"
+                    logging.info(f"Step {step}/{num_steps}: Encoders {encoder_status} (exposure: {self.encoder_expose_steps} steps remaining)")
                 throughput = log_every * self.batch_size / (end - start)
                 metrics.update({
                     "timing/train_time": end - start,
@@ -690,8 +704,9 @@ class StructuredTrainer:
                     except Exception as e:
                         logging.warning(f"Checkpoint save failed: {e}")
 
-                # Evaluation
-                if cfg.training.get("eval_every_n_logs") and (step // log_every) % cfg.training.eval_every_n_logs == 0:
+                # Evaluation - More frequent during encoder exposure period
+                eval_interval = 5 if self.encoder_expose_steps > 0 else cfg.training.get("eval_every_n_logs", 0)
+                if eval_interval and (step // log_every) % eval_interval == 0:
                     try:
                         logging.info(f"Running evaluation at step {step}")
                         self.evaluate(state, enc_params_list)
@@ -854,6 +869,7 @@ class StructuredTrainer:
                     poe_alphas=alphas,  # poe_alphas
                     encoder_params_list=state.params["encoders"],  # encoder_params_list
                     decoder_params=state.params["decoder"],  # decoder_params
+                    repulsion_kl_coeff=self.cfg.training.get("repulsion_kl"),  # repulsion_kl_coeff
                 )
                 
                 all_output_grids.append(batch_output_grids)
@@ -1153,17 +1169,12 @@ class StructuredTrainer:
                     logging.warning(f"T-SNE max_points too small to sample from all patterns")
             
             # Use visualize_tsne_sources to show different markers for encoders vs context
-            # Build task_ids aligned with concatenated latents: repeat each task id for all sources (encoders + context)
-            sources_per_task = len(enc_params_list) + 1
-            num_tasks_total = latents_concat.shape[0] // sources_per_task
-            task_ids = np.repeat(np.arange(num_tasks_total), sources_per_task)
             fig_tsne = visualize_tsne_sources(
                 latents=latents_concat,
                 program_ids=pattern_ids_concat,  # Pattern types (1, 2, 3) for colors
                 source_ids=source_ids_np,        # 0,1,2 for encoders, 3 for context
                 max_points=max_points,
-                random_state=42,
-                task_ids=task_ids,
+                random_state=42
             )
             
             # COMPUTE CLUSTERING METRICS AND UPLOAD TO WANDB
@@ -1172,18 +1183,14 @@ class StructuredTrainer:
                 k_values = [3, 5, 10]
                 clustering_metrics = {}
                 
-                # Use CONTEXT-ONLY embeddings for community metrics
-                context_mask = (source_ids_np == (len(enc_params_list)))
-                if np.any(context_mask):
-                    ctx_emb = latents_concat[context_mask]
-                    ctx_prog = pattern_ids_concat[context_mask]
-                    for k in k_values:
-                        modularity_q = compute_modularity_q(ctx_emb, ctx_prog, k=k)
-                        clustering_metrics[f"clustering/modularity_q_k{k}"] = modularity_q
-                        ari_score = compute_adjusted_rand_index(ctx_emb, ctx_prog, k=k)
-                        clustering_metrics[f"clustering/ari_k{k}"] = ari_score
-                else:
-                    logging.warning("No context points found for clustering metrics; skipping")
+                for k in k_values:
+                    # Modularity Q (no labels needed)
+                    modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
+                    clustering_metrics[f"clustering/modularity_q_k{k}"] = modularity_q
+                    
+                    # Adjusted Rand Index (using pattern types as ground truth)
+                    ari_score = compute_adjusted_rand_index(latents_concat, pattern_ids_concat, k=k)
+                    clustering_metrics[f"clustering/ari_k{k}"] = ari_score
                 
                 # Log clustering metrics to WandB
                 wandb.log(clustering_metrics, step=step if 'step' in locals() else None)
@@ -1537,16 +1544,12 @@ class StructuredTrainer:
                     logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
                     
                     # Use visualize_tsne_sources for different markers
-                    sources_per_task = len(enc_params_list) + 1
-                    num_tasks_total = latents_concat.shape[0] // sources_per_task
-                    task_ids = np.repeat(np.arange(num_tasks_total), sources_per_task)
                     fig_latents = visualize_tsne_sources(
                         latents=latents_concat,
                         program_ids=pattern_ids_concat,
                         source_ids=source_ids_np,
                         max_points=500,
-                        random_state=42,
-                        task_ids=task_ids,
+                        random_state=42
                     )
                     
                     # COMPUTE CLUSTERING METRICS FOR TEST DATASETS
@@ -1555,18 +1558,14 @@ class StructuredTrainer:
                         k_values = [3, 5, 10]
                         test_clustering_metrics = {}
                         
-                        # Use CONTEXT-ONLY embeddings for community metrics
-                        context_mask = (source_ids_np == (len(enc_params_list)))
-                        if np.any(context_mask):
-                            ctx_emb = latents_concat[context_mask]
-                            ctx_prog = pattern_ids_concat[context_mask]
-                            for k in k_values:
-                                modularity_q = compute_modularity_q(ctx_emb, ctx_prog, k=k)
-                                test_clustering_metrics[f"clustering/{test_name}/modularity_q_k{k}"] = modularity_q
-                                ari_score = compute_adjusted_rand_index(ctx_emb, ctx_prog, k=k)
-                                test_clustering_metrics[f"clustering/{test_name}/ari_k{k}"] = ari_score
-                        else:
-                            logging.warning("Test: No context points found for clustering metrics; skipping")
+                        for k in k_values:
+                            # Modularity Q (no labels needed)
+                            modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
+                            test_clustering_metrics[f"clustering/{test_name}/modularity_q_k{k}"] = modularity_q
+                            
+                            # Adjusted Rand Index (using pattern types as ground truth)
+                            ari_score = compute_adjusted_rand_index(latents_concat, pattern_ids_concat, k=k)
+                            test_clustering_metrics[f"clustering/{test_name}/ari_k{k}"] = ari_score
                         
                         # Add clustering metrics to the main metrics dict
                         metrics.update(test_clustering_metrics)
