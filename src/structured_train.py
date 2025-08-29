@@ -501,14 +501,25 @@ class StructuredTrainer:
     def prepare_train_dataset_for_epoch(self, key: chex.PRNGKey, log_every_n_steps: int) -> tuple[chex.Array, chex.Array]:
         """Shuffle the dataset and reshape it to (num_logs, log_every_n_steps, batch_size, *)."""
         shuffle_key, augmentation_key = jax.random.split(key)
-        grids, shapes = shuffle_dataset_into_batches(self.train_grids, self.train_shapes, self.batch_size, shuffle_key)
-        num_logs = grids.shape[0] // log_every_n_steps
+        grids, shapes = shuffle_dataset_into_batches(
+            self.train_grids, self.train_shapes, self.batch_size, shuffle_key
+        )
+
+        num_batches = grids.shape[0]
+        if num_batches < log_every_n_steps:
+            raise ValueError(
+                "Dataset provides only "
+                f"{num_batches} batches but log_every_n_steps={log_every_n_steps}. "
+                "Increase dataset size or reduce log_every_n_steps to avoid stalling."
+            )
+
+        num_logs = num_batches // log_every_n_steps
         grids = grids[: num_logs * log_every_n_steps]
         shapes = shapes[: num_logs * log_every_n_steps]
-        
+
         if self.cfg.training.online_data_augmentation:
             grids, shapes = data_augmentation_fn(grids, shapes, augmentation_key)
-        
+
         # Reshape to (num_logs, log_every_n_steps, batch_size, *)
         grids = grids.reshape(num_logs, log_every_n_steps, self.batch_size, *grids.shape[2:])
         shapes = shapes.reshape(num_logs, log_every_n_steps, self.batch_size, *shapes.shape[2:])
