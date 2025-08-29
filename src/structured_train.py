@@ -904,18 +904,15 @@ class StructuredTrainer:
         fig_gen = visualize_dataset_generation(pairs_np[:num_show], shapes_np[:num_show], pred_grids_vis, pred_shapes_vis, num_show)
 
         # 5. IMPLEMENT TSNE WITH ENCODERS + CONTEXT: Show both with different markers
-        # We want to see: encoder outputs vs final generation context, both colored by pattern
+        # We want to see: encoder outputs vs final generation context, both colored by sample index
+        # This allows us to compare how the SAME sample is represented across different sources
         all_latents = []
-        source_ids = []  # 0 for encoders, 1 for generation context
-        pattern_ids_list = []  # pattern types (1, 2, 3) per point for color
+        source_ids = []  # 0, 1, 2 for encoders, 3 for generation context
+        sample_ids_list = []  # sample indices (0-95) for each point - same across all sources
         
-        # Create pattern IDs based on how the evaluation dataset was generated
-        # We generated 32 samples per pattern: pattern 1 (O), pattern 2 (T), pattern 3 (L)
-        num_samples_per_pattern = 32
-        pattern_sequence = []
-        for pattern_id in [1, 2, 3]:  # O, T, L tetrominos
-            pattern_sequence.extend([pattern_id] * num_samples_per_pattern)
-        pattern_sequence = np.array(pattern_sequence)
+        # Create sample indices (0-95) - each sample gets a unique ID
+        num_samples = self.eval_grids.shape[0]  # Should be 96
+        sample_sequence = np.arange(num_samples)  # [0, 1, 2, ..., 95]
         
         # Add individual encoder latents (unique source_id per encoder)
         for enc_idx, enc_params in enumerate(enc_params_list):
@@ -930,7 +927,7 @@ class StructuredTrainer:
             lat_np = np.array(lat).reshape(-1, lat.shape[-1])
             all_latents.append(lat_np)
             source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
-            pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for each encoder
+            sample_ids_list.append(sample_sequence)  # Same sample sequence for each encoder
         
         # Add the generation context (source_id = num_encoders)
         if "context" in info:
@@ -940,12 +937,12 @@ class StructuredTrainer:
                 context_np = np.array(generation_context).reshape(-1, generation_context.shape[-1])
                 all_latents.append(context_np)
                 source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for generation context
-                pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for context
+                sample_ids_list.append(sample_sequence)  # Same sample sequence for context
         
         if all_latents:
             latents_concat = np.concatenate(all_latents, axis=0)
             source_ids_np = np.array(source_ids)
-            pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
+            sample_ids_concat = np.concatenate(sample_ids_list, axis=0)
             
             # Downsample points for t-SNE to be memory efficient
             max_points = int(cfg.eval.get("tsne_max_points", 500))
@@ -953,12 +950,12 @@ class StructuredTrainer:
                 idx = np.random.RandomState(42).choice(latents_concat.shape[0], size=max_points, replace=False)
                 latents_concat = latents_concat[idx]
                 source_ids_np = source_ids_np[idx]
-                pattern_ids_concat = pattern_ids_concat[idx]
+                sample_ids_concat = sample_ids_concat[idx]
             
             # Use visualize_tsne_sources to show different markers for encoders vs context
             fig_tsne = visualize_tsne_sources(
                 latents=latents_concat,
-                program_ids=pattern_ids_concat,  # Pattern types (1, 2, 3) for colors
+                program_ids=sample_ids_concat,  # Sample indices (0-95) for colors
                 source_ids=source_ids_np,        # 0 for encoders, 1 for context
                 max_points=max_points,
                 random_state=42
@@ -975,8 +972,8 @@ class StructuredTrainer:
                     modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
                     clustering_metrics[f"clustering/modularity_q_k{k}"] = modularity_q
                     
-                    # Adjusted Rand Index (using pattern labels as ground truth)
-                    ari_score = compute_adjusted_rand_index(latents_concat, pattern_ids_concat, k=k)
+                    # Adjusted Rand Index (using sample indices as ground truth)
+                    ari_score = compute_adjusted_rand_index(latents_concat, sample_ids_concat, k=k)
                     clustering_metrics[f"clustering/ari_k{k}"] = ari_score
                 
                 # Log clustering metrics to WandB
@@ -1002,7 +999,7 @@ class StructuredTrainer:
         plt.close(fig_tsne)
 
         # Release large intermediates
-        del all_latents, latents_concat, source_ids_np, pattern_ids_concat
+        del all_latents, latents_concat, source_ids_np, sample_ids_concat
         return metrics
 
     def test_dataset_submission(
@@ -1140,7 +1137,7 @@ class StructuredTrainer:
                 # Show both encoder outputs and generation context
                 all_latents = []
                 source_ids = []
-                pattern_ids_list = []
+                sample_ids_list = []
                 
                 # Add encoder outputs (unique source_id per encoder)
                 for enc_idx, enc_params in enumerate(enc_params_list):
@@ -1155,23 +1152,23 @@ class StructuredTrainer:
                     lat_np = np.array(lat).reshape(-1, lat.shape[-1])
                     all_latents.append(lat_np)
                     source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
-                    pattern_ids_list.append(program_ids)  # Pattern IDs for each encoder
+                    sample_ids_list.append(program_ids)  # Sample IDs for each encoder
                 
                 # Add generation context (source_id = num_encoders)
                 context_np = np.array(context).reshape(-1, context.shape[-1])
                 all_latents.append(context_np)
                 source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for context
-                pattern_ids_list.append(program_ids)  # Pattern IDs for context
+                sample_ids_list.append(program_ids)  # Sample IDs for context
                 
                 if all_latents:
                     latents_concat = np.concatenate(all_latents, axis=0)
                     source_ids_np = np.array(source_ids)
-                    pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
+                    sample_ids_concat = np.concatenate(sample_ids_list, axis=0)
                     
                     # Use visualize_tsne_sources for different markers
                     fig_latents = visualize_tsne_sources(
                         latents=latents_concat,
-                        program_ids=pattern_ids_concat,
+                        program_ids=sample_ids_concat,
                         source_ids=source_ids_np,
                         max_points=500,
                         random_state=42
@@ -1188,8 +1185,8 @@ class StructuredTrainer:
                             modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
                             test_clustering_metrics[f"clustering/{test_name}/modularity_q_k{k}"] = modularity_q
                             
-                            # Adjusted Rand Index (using pattern labels as ground truth)
-                            ari_score = compute_adjusted_rand_index(latents_concat, pattern_ids_concat, k=k)
+                            # Adjusted Rand Index (using sample indices as ground truth)
+                            ari_score = compute_adjusted_rand_index(latents_concat, sample_ids_concat, k=k)
                             test_clustering_metrics[f"clustering/{test_name}/ari_k{k}"] = ari_score
                         
                         # Add clustering metrics to the main metrics dict
