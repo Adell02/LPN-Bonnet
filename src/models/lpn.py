@@ -1093,7 +1093,7 @@ class LPN(nn.Module):
             population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, P, C, H) or (*B, C, H)
 
         # ----- final selection like random search -----
-        final_losses = _eval_candidates(population)              # (*B, P, C)
+        final_losses = -_eval_candidates(population)              # (*B, P, C)
         # Remove the duplication of latents over pairs for selection (identical to random)
         latents_for_pick = population                             # (*B, C, H)
 
