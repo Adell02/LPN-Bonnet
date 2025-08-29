@@ -16,7 +16,7 @@ this trains only the decoder while using multiple pre-trained encoders via Produ
 This eliminates the data size mismatch that was causing training to get stuck.
 """
 
-from __future__ import annotations
+# from __future__ import annotations  # Not supported in Python 3.6
 
 import logging
 import time
@@ -24,26 +24,27 @@ from functools import partial
 from typing import Optional, Sequence
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.neighbors import NearestNeighbors
-from sklearn.metrics import adjusted_rand_score
-from sklearn.cluster import KMeans
+
+# Try to import sklearn for clustering metrics, but make it optional
+try:
+    from sklearn.neighbors import NearestNeighbors
+    from sklearn.metrics import adjusted_rand_score
+    from sklearn.cluster import KMeans
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    print("Warning: sklearn not available. Clustering metrics will be disabled.")
 
 import chex
 import hydra
 import jax
 import jax.numpy as jnp
-import numpy as np
 import optax
 import omegaconf
 import wandb
 from flax.training.train_state import TrainState
 from jax.tree_util import tree_map
 from tqdm.auto import trange
-
-# For clustering metrics
-from sklearn.neighbors import NearestNeighbors
-from sklearn.metrics import adjusted_rand_score
-from sklearn.cluster import Leiden
 
 from models.transformer import EncoderTransformer, DecoderTransformer
 from models.utils import DecoderTransformerConfig, EncoderTransformerConfig
@@ -77,6 +78,10 @@ def compute_modularity_q(embeddings, labels, k=5):
     Returns:
         float: Modularity Q score (higher is better)
     """
+    if not SKLEARN_AVAILABLE:
+        logging.warning("sklearn not available, skipping Modularity Q computation")
+        return 0.0
+        
     try:
         # Build k-NN graph
         nbrs = NearestNeighbors(n_neighbors=k+1, algorithm='auto').fit(embeddings)
@@ -124,6 +129,10 @@ def compute_adjusted_rand_index(embeddings, true_labels, k=5):
     Returns:
         float: ARI score [-1, 1] (higher is better)
     """
+    if not SKLEARN_AVAILABLE:
+        logging.warning("sklearn not available, skipping ARI computation")
+        return 0.0
+        
     try:
         # Build k-NN graph
         nbrs = NearestNeighbors(n_neighbors=k+1, algorithm='auto').fit(embeddings)
