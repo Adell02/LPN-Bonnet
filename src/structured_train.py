@@ -1166,6 +1166,9 @@ class StructuredTrainer:
         if inference_kwargs is None:
             inference_kwargs = {}
             
+        # Define alphas for PoE (same as main evaluation)
+        alphas = jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32)
+            
         # Create leave_one_out data
         leave_one_out_grids = make_leave_one_out(dataset_grids, axis=-4)
         leave_one_out_shapes = make_leave_one_out(dataset_shapes, axis=-3)
@@ -1199,10 +1202,17 @@ class StructuredTrainer:
                     dropout_eval=True,
                     mode=inference_mode,
                     return_two_best=False,
-                    poe_alphas=jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32),
+                    poe_alphas=alphas,  # Use the same alphas as main evaluation
                     encoder_params_list=enc_params_list,
                     decoder_params=state.params,
                 )
+                
+                # Debug: log batch info structure
+                logging.info(f"Test batch {i} - batch_info keys: {list(batch_info.keys())}")
+                if "context" in batch_info:
+                    logging.info(f"Test batch {i} - context shape: {batch_info['context'].shape}")
+                else:
+                    logging.info(f"Test batch {i} - No context key in batch_info")
                 
                 all_output_grids.append(batch_output_grids)
                 all_output_shapes.append(batch_output_shapes)

@@ -352,21 +352,23 @@ def visualize_tsne_sources(
     # Create the plot - EXACTLY like train.py style
     fig, ax = plt.subplots(figsize=(15, 12))
 
-    # Get unique program IDs and assign a color to each - EXACTLY like train.py
+    # Get unique program IDs (pattern types)
     unique_ids = np.unique(prog_np)
-    num_colors = len(unique_ids)
 
-    # Use custom color palette - EXACTLY like train.py
-    custom_colors = ['#FBB998', '#DB74DB', '#5361E5', '#4B9D61']
-    # Cycle through custom colors if we have more program IDs than colors
-    color_palette = [custom_colors[i % len(custom_colors)] for i in range(num_colors)]
-    color_map = dict(zip(unique_ids, color_palette))
-
-    # Plot each source with different markers but same color scheme as train.py
-    marker_list = ['o', 's', '^', 'P', 'X', 'D', 'v', '<', '>', '*']
-    unique_sources = sorted(list(np.unique(src_np)))
+    # Define colors for patterns and shapes for sources
+    pattern_colors = {
+        1: '#FBB998',  # O-tetromino - Blue
+        2: '#DB74DB',  # T-tetromino - Green  
+        3: '#5361E5'   # L-tetromino - Red
+    }
     
-    # Create simple legend labels
+    source_markers = {
+        0: 'o',    # Encoder 0 - Circle
+        1: 's',    # Encoder 1 - Square
+        2: '^',    # Encoder 2 - Triangle
+        3: 'D'     # Context - Diamond
+    }
+    
     source_labels = {
         0: "Encoder 0",
         1: "Encoder 1", 
@@ -374,7 +376,6 @@ def visualize_tsne_sources(
         3: "Context"
     }
     
-    # Pattern labels for better legend
     pattern_labels = {
         1: "O-tetromino",
         2: "T-tetromino", 
@@ -387,14 +388,17 @@ def visualize_tsne_sources(
     # Plot each source with different markers
     for src in unique_sources:
         m = src_np == src
-        mk = marker_list[int(src) % len(marker_list)]
+        mk = source_markers.get(src, 'o')
         source_label = source_labels.get(src, f"Source {src}")
         
-        # Plot each program ID separately with the same color scheme as train.py
+        # Plot each program ID separately
         for prog_id in unique_ids:
             prog_mask = m & (prog_np == prog_id)
             if np.any(prog_mask):
                 points = emb[prog_mask]
+                
+                # Use pattern color and source marker
+                color = pattern_colors.get(prog_id, '#AAAAAA')
                 
                 # Create legend label based on source and pattern
                 pattern_label = pattern_labels.get(prog_id, f"Pattern {prog_id}")
@@ -404,7 +408,7 @@ def visualize_tsne_sources(
                 if legend_key not in legend_entries:
                     ax.scatter(
                         points[:, 0], points[:, 1], 
-                        c=[color_map[prog_id]], 
+                        c=[color], 
                         marker=mk, 
                         label=legend_key, 
                         alpha=0.7, 
@@ -416,16 +420,22 @@ def visualize_tsne_sources(
                     # Plot without adding to legend
                     ax.scatter(
                         points[:, 0], points[:, 1], 
-                        c=[color_map[prog_id]], 
+                        c=[color], 
                         marker=mk, 
                         alpha=0.7, 
                         s=50,
                         edgecolors='none'
                     )
                 
-                # Add labels on samples showing sample ID
-                for i, point in enumerate(points):
-                    ax.annotate(str(prog_id), point, xytext=(3, 3), textcoords="offset points", fontsize=8, alpha=0.8)
+                # Add labels on samples showing GROUP ID (sample index), not pattern type
+                # We need to find the original sample indices for these points
+                sample_indices = np.where(prog_mask)[0]
+                for i, (point, sample_idx) in enumerate(zip(points, sample_indices)):
+                    # Calculate the group ID based on the sample index
+                    # Since we have 4 points per group (3 encoders + 1 context), 
+                    # and we're plotting all sources together, we need to map back to original samples
+                    group_id = sample_idx // 4  # Each group has 4 points
+                    ax.annotate(str(group_id), point, xytext=(3, 3), textcoords="offset points", fontsize=8, alpha=0.8)
 
     # EXACTLY same title, labels, and style as train.py
     ax.set_title("t-SNE Visualization of Latent Embeddings")
