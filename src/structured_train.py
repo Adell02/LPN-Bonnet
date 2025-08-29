@@ -648,14 +648,14 @@ class StructuredTrainer:
                 logging.info(f"Running evaluation at step 0 (first step)")
                 self.evaluate(state, enc_params_list)
                 
-                # Test datasets evaluation at first step
-                if hasattr(self, 'test_datasets') and self.test_datasets:
-                    for dataset_dict in self.test_datasets:
-                        try:
-                            start = time.time()
-                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress = self.test_dataset_submission(
-                                state, enc_params_list, **dataset_dict
-                            )
+                                        # Test datasets evaluation at first step
+                        if hasattr(self, 'test_datasets') and self.test_datasets:
+                            for dataset_dict in self.test_datasets:
+                                try:
+                                    start = time.time()
+                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress = self.test_dataset_submission(
+                                        state, dataset_dict
+                                    )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                             
                             # Upload all figures
@@ -737,7 +737,7 @@ class StructuredTrainer:
                                 try:
                                     start = time.time()
                                     test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress = self.test_dataset_submission(
-                                        state, enc_params_list, **dataset_dict
+                                        state, dataset_dict
                                     )
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                                     
@@ -772,7 +772,7 @@ class StructuredTrainer:
         pbar.close()
         return state
 
-    def evaluate(self, state: TrainState, enc_params_list: list[dict]) -> dict:
+    def evaluate(self, state: TrainState, enc_params_list: list[dict] = None) -> dict:
         """
         Evaluate the model using the same approach as train.py:
         
@@ -786,6 +786,9 @@ class StructuredTrainer:
         This ensures structured_train.py emulates train.py exactly while maintaining
         the architectural differences (multiple encoders + PoE + single decoder).
         """
+        # Use current encoder weights from state.params, not the original artifact weights
+        current_enc_params_list = state.params["encoders"]
+        logging.info(f"Evaluation using current encoder weights from training state (step {getattr(state, 'step', 'unknown')})")
         if not hasattr(self, "eval_grids"):
             return {}
         cfg = self.cfg
@@ -1065,7 +1068,7 @@ class StructuredTrainer:
         logging.info(f"T-SNE pattern mapping: {samples_per_pattern} samples per pattern, total patterns: {np.unique(pattern_sequence)}")
         
         # Add individual encoder latents (unique source_id per encoder)
-        for enc_idx, enc_params in enumerate(enc_params_list):
+        for enc_idx, enc_params in enumerate(current_enc_params_list):
             try:
                 mu_i, logvar_i = self.encoders[enc_idx].apply(
                     {"params": enc_params}, 
@@ -1260,7 +1263,7 @@ class StructuredTrainer:
                 # Build per-encoder latents for this single task
                 enc_mus = []
                 enc_logvars = []
-                for enc_idx, enc_params in enumerate(enc_params_list):
+                for enc_idx, enc_params in enumerate(current_enc_params_list):
                     mu_i, logvar_i = self.encoders[enc_idx].apply(
                         {"params": enc_params}, 
                         pairs[idx:idx+1], 
@@ -1317,12 +1320,12 @@ class StructuredTrainer:
     def test_dataset_submission(
         self,
         state: TrainState,
-        enc_params_list: list[dict],
-        test_name: str,
-        dataset_grids: chex.Array,
-        dataset_shapes: chex.Array,
-        program_ids: Optional[chex.Array],
-        batch_size: int,
+        enc_params_list: list[dict] = None,
+        test_name: str = None,
+        dataset_grids: chex.Array = None,
+        dataset_shapes: chex.Array = None,
+        program_ids: Optional[chex.Array] = None,
+        batch_size: int = None,
         num_tasks_to_show: int = 5,
         inference_mode: str = "mean",
         inference_kwargs: dict = None,
@@ -1331,6 +1334,23 @@ class StructuredTrainer:
         Test dataset submission method for structured training (similar to train.py).
         Generates outputs using leave-one-out approach and computes metrics.
         """
+        # Use current encoder weights from state.params, not the original artifact weights
+        current_enc_params_list = state.params["encoders"]
+        
+        # Extract parameters from dataset_dict if called from main training loop
+        if test_name is None and hasattr(self, 'test_datasets'):
+            # This is a call from the main training loop, extract from dataset_dict
+            dataset_dict = enc_params_list  # enc_params_list is actually dataset_dict here
+            test_name = dataset_dict["test_name"]
+            dataset_grids = dataset_dict["dataset_grids"]
+            dataset_shapes = dataset_dict["dataset_shapes"]
+            program_ids = dataset_dict.get("program_ids")
+            batch_size = dataset_dict["batch_size"]
+            num_tasks_to_show = dataset_dict.get("num_tasks_to_show", 5)
+            inference_mode = dataset_dict.get("inference_mode", "mean")
+            inference_kwargs = dataset_dict.get("inference_kwargs", {})
+            enc_params_list = None  # Will use current_enc_params_list
+        
         if inference_kwargs is None:
             inference_kwargs = {}
             
@@ -1504,7 +1524,7 @@ class StructuredTrainer:
                 )
                 
                 # Add encoder outputs (unique source_id per encoder)
-                for enc_idx, enc_params in enumerate(enc_params_list):
+                for enc_idx, enc_params in enumerate(current_enc_params_list):
                     try:
                         mu_i, logvar_i = self.encoders[enc_idx].apply(
                             {"params": enc_params}, 
