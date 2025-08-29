@@ -64,7 +64,7 @@ training:
   repulsion_kl: 0
   constrastive_kl: 0.1
   log_every_n_steps: 5
-  eval_every_n_logs: 100       # null to disable
+  eval_every_n_logs: 20       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable
   resume_from_checkpoint: null
   # Option B: balanced structured tetromino patterns (O, T, L) - now using task generator
