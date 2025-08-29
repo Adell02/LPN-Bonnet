@@ -1433,17 +1433,12 @@ class StructuredTrainer:
                 all_latents = []
                 source_ids = []
                 pattern_ids_list = []
-                
-                # Determine pattern type from test dataset name
-                pattern_type = 1  # Default
-                if "pattern_1" in test_name:
-                    pattern_type = 1  # O-tetromino
-                elif "pattern_2" in test_name:
-                    pattern_type = 2  # T-tetromino
-                elif "pattern_3" in test_name:
-                    pattern_type = 3  # L-tetromino
-                
-                logging.info(f"Test dataset pattern type: {pattern_type}")
+
+                # Use provided program IDs to respect per-task patterns
+                pattern_ids_np = np.array(program_ids)
+                logging.info(
+                    f"Test dataset pattern types: {np.unique(pattern_ids_np)}"
+                )
                 
                 # Add encoder outputs (unique source_id per encoder)
                 for enc_idx, enc_params in enumerate(enc_params_list):
@@ -1479,7 +1474,7 @@ class StructuredTrainer:
                         logging.info(f"Test eval - Encoder {enc_idx} - final latent shape: {lat_np.shape}")
                         all_latents.append(lat_np)
                         source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
-                        pattern_ids_list.append(np.full(len(program_ids), pattern_type))  # Same pattern for all sets
+                        pattern_ids_list.append(pattern_ids_np)
                         
                     except Exception as e:
                         logging.error(f"Test eval - Encoder {enc_idx} failed: {e}")
@@ -1508,7 +1503,7 @@ class StructuredTrainer:
                 
                 all_latents.append(context_np)
                 source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for context
-                pattern_ids_list.append(np.full(len(program_ids), pattern_type))  # Same pattern for all sets
+                pattern_ids_list.append(pattern_ids_np)
                 
                 if all_latents:
                     latents_concat = np.concatenate(all_latents, axis=0)
@@ -1517,9 +1512,11 @@ class StructuredTrainer:
                     
                     # Log T-SNE structure for test datasets
                     total_points = latents_concat.shape[0]
-                    total_patterns = 1  # Each test dataset is specific to one pattern
-                    points_per_pattern = total_points // total_patterns
-                    logging.info(f"Test T-SNE structure: {total_points} total points, {total_patterns} pattern, {points_per_pattern} points per pattern")
+                    unique_patterns = np.unique(pattern_ids_concat)
+                    pattern_counts = {int(p): int((pattern_ids_concat == p).sum()) for p in unique_patterns}
+                    logging.info(
+                        f"Test T-SNE structure: {total_points} total points, {len(unique_patterns)} patterns, counts per pattern: {pattern_counts}"
+                    )
                     logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
                     
                     # Use visualize_tsne_sources for different markers
