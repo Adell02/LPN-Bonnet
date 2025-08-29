@@ -510,6 +510,11 @@ class StructuredLPN(nn.Module):
             - 1.0
         )
         kl = jnp.mean(kl, axis=(-2, -1))  # (E, B) - average over pairs and latent dims
+        
+        # STABILIZATION: Clip KL values to prevent explosion
+        # This prevents extremely large KL values from dominating the loss
+        kl_clip_threshold = 10.0  # Reasonable upper bound for KL divergence
+        kl = jnp.clip(kl, -kl_clip_threshold, kl_clip_threshold)
 
         # Create encoder IDs: 1, 2, 3 for encoders 0, 1, 2
         # This assumes encoder 0 specializes in pattern 1, encoder 1 in pattern 2, etc.
@@ -524,7 +529,21 @@ class StructuredLPN(nn.Module):
         # - Positive sign * KL: encourages encoders to have lower KL for their specialized patterns
         # - Negative sign * KL: encourages encoders to have higher KL for non-specialized patterns
         # This should lead to encoder specialization
-        contrastive = jnp.mean(sign * kl)
+        
+        # STABILIZATION: Add temperature scaling and softmax-like normalization
+        # This makes the loss more stable and prevents extreme values
+        temperature = 1.0  # Lower values make the loss more aggressive, higher values more stable
+        
+        # Apply temperature scaling to KL values
+        kl_scaled = kl / temperature
+        
+        # STABILIZATION: Use softmax-like normalization to bound the loss
+        # This prevents the loss from growing unbounded
+        kl_exp = jnp.exp(jnp.clip(kl_scaled, -10.0, 10.0))  # Prevent exp overflow
+        kl_normalized = kl_exp / (jnp.sum(kl_exp, axis=0, keepdims=True) + 1e-8)
+        
+        # Compute contrastive loss with normalized KL values
+        contrastive = jnp.mean(sign * kl_normalized)
         
         # Return additional metrics for monitoring
         return contrastive, jnp.mean(kl), jnp.mean(sign)

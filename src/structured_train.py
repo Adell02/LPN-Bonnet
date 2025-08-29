@@ -497,7 +497,9 @@ class StructuredTrainer:
             decay_rate=1.0,
         )
         # Standard optimizer over full param tree; we will zero encoder grads manually after exposure
-        tx = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(scheduler))
+        # STABILIZATION: Increase gradient clipping for contrastive loss stability
+        gradient_clip_norm = 5.0  # Increased from 1.0 to handle contrastive loss better
+        tx = optax.chain(optax.clip_by_global_norm(gradient_clip_norm), optax.adamw(scheduler))
 
         # Compose params for decoder and encoders
         combined_params = {
@@ -617,6 +619,12 @@ class StructuredTrainer:
             contrastive_loss_val = float(np.array(avg_metrics['contrastive_loss']))
             contrastive_loss_weighted_val = float(np.array(avg_metrics.get('contrastive_loss_weighted', 0)))
             logging.info(f"Contrastive loss: {contrastive_loss_val:.6f} (weighted: {contrastive_loss_weighted_val:.6f})")
+            
+            # STABILIZATION: Adaptive coefficient adjustment suggestion
+            if abs(contrastive_loss_val) > 50.0:
+                logging.warning(f"Contrastive loss is large ({contrastive_loss_val:.2f}). Consider reducing contrastive_kl coefficient.")
+            elif abs(contrastive_loss_val) < 0.01:
+                logging.info(f"Contrastive loss is very small ({contrastive_loss_val:.6f}). Consider increasing contrastive_kl coefficient.")
             
             if "contrastive_kl_mean" in avg_metrics:
                 kl_mean_val = float(np.array(avg_metrics['contrastive_kl_mean']))
@@ -798,6 +806,17 @@ class StructuredTrainer:
                 
                 # Add contrastive loss to Charts section for better visualization
                 if "contrastive_loss" in metrics:
+                    # STABILIZATION: Monitor contrastive loss magnitude and clip if needed
+                    try:
+                        contrastive_loss_val = float(np.array(metrics["contrastive_loss"]))
+                        contrastive_loss_weighted_val = float(np.array(metrics["contrastive_loss_weighted"]))
+                        
+                        # Safety check: if contrastive loss is exploding, log warning
+                        if abs(contrastive_loss_val) > 100.0:
+                            logging.warning(f"Contrastive loss is very large: {contrastive_loss_val:.2f}. Consider reducing contrastive_kl coefficient.")
+                    except Exception as e:
+                        logging.warning(f"Could not monitor contrastive loss magnitude: {e}")
+                    
                     metrics["Charts/contrastive_loss"] = metrics["contrastive_loss"]
                     metrics["Charts/contrastive_loss_weighted"] = metrics["contrastive_loss_weighted"]
                     # Add additional contrastive loss metrics to Charts
