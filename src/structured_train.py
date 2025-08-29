@@ -1200,46 +1200,46 @@ class StructuredTrainer:
                 random_state=42
             )
             
-                            # COMPUTE CLUSTERING METRICS AND UPLOAD TO WANDB
-                try:
-                    # Compute metrics for different k values to check sensitivity
-                    k_values = [3, 5, 10]
-                    clustering_metrics = {}
+            # COMPUTE CLUSTERING METRICS AND UPLOAD TO WANDB
+            try:
+                # Compute metrics for different k values to check sensitivity
+                k_values = [3, 5, 10]
+                clustering_metrics = {}
+                
+                # OPTION 1: Context-only clustering (like train.py) - for direct comparison
+                context_mask = (source_ids_np == (len(enc_params_list)))
+                if np.any(context_mask):
+                    ctx_emb = latents_concat[context_mask]
+                    ctx_prog = pattern_ids_concat[context_mask]
+                    logging.info(f"Context-only clustering: {ctx_emb.shape[0]} points, patterns: {np.unique(ctx_prog)}")
                     
-                    # OPTION 1: Context-only clustering (like train.py) - for direct comparison
-                    context_mask = (source_ids_np == (len(enc_params_list)))
-                    if np.any(context_mask):
-                        ctx_emb = latents_concat[context_mask]
-                        ctx_prog = pattern_ids_concat[context_mask]
-                        logging.info(f"Context-only clustering: {ctx_emb.shape[0]} points, patterns: {np.unique(ctx_prog)}")
-                        
-                        for k in k_values:
-                            # Modularity Q on context-only (comparable to train.py)
-                            modularity_q = compute_modularity_q(ctx_emb, ctx_prog, k=k)
-                            clustering_metrics[f"clustering/context/modularity_q_k{k}"] = modularity_q
-                            
-                            # Adjusted Rand Index on context-only (comparable to train.py)
-                            ari_score = compute_adjusted_rand_index(ctx_emb, ctx_prog, k=k)
-                            clustering_metrics[f"clustering/context/ari_k{k}"] = ari_score
-                    else:
-                        logging.warning("No context points found for context-only clustering; skipping")
-                    
-                    # OPTION 2: Full latent space clustering (current implementation) - for source analysis
                     for k in k_values:
-                        # Modularity Q on all embeddings (sources: encoders vs context)
-                        modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
-                        clustering_metrics[f"clustering/source/modularity_q_k{k}"] = modularity_q
+                        # Modularity Q on context-only (comparable to train.py)
+                        modularity_q = compute_modularity_q(ctx_emb, ctx_prog, k=k)
+                        clustering_metrics[f"clustering/context/modularity_q_k{k}"] = modularity_q
                         
-                        # Adjusted Rand Index on all embeddings (sources: encoders vs context)
-                        ari_score = compute_adjusted_rand_index(latents_concat, source_ids_np, k=k)
-                        clustering_metrics[f"clustering/source/ari_k{k}"] = ari_score
+                        # Adjusted Rand Index on context-only (comparable to train.py)
+                        ari_score = compute_adjusted_rand_index(ctx_emb, ctx_prog, k=k)
+                        clustering_metrics[f"clustering/context/ari_k{k}"] = ari_score
+                else:
+                    logging.warning("No context points found for context-only clustering; skipping")
+                
+                # OPTION 2: Full latent space clustering (current implementation) - for source analysis
+                for k in k_values:
+                    # Modularity Q on all embeddings (sources: encoders vs context)
+                    modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
+                    clustering_metrics[f"clustering/source/modularity_q_k{k}"] = modularity_q
                     
-                    # Log clustering metrics to WandB
-                    wandb.log(clustering_metrics, step=step if 'step' in locals() else None)
-                    logging.info(f"Clustering metrics computed: {clustering_metrics}")
-                    
-                except Exception as e:
-                    logging.warning(f"Clustering metrics computation failed: {e}")
+                    # Adjusted Rand Index on all embeddings (sources: encoders vs context)
+                    ari_score = compute_adjusted_rand_index(latents_concat, source_ids_np, k=k)
+                    clustering_metrics[f"clustering/source/ari_k{k}"] = ari_score
+                
+                # Log clustering metrics to WandB
+                wandb.log(clustering_metrics, step=step if 'step' in locals() else None)
+                logging.info(f"Clustering metrics computed: {clustering_metrics}")
+                
+            except Exception as e:
+                logging.warning(f"Clustering metrics computation failed: {e}")
         else:
             fig_tsne = None
 
