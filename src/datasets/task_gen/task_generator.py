@@ -120,7 +120,6 @@ class StructPatternTaskGenerator(IterableDataset):
         # If pattern_per_task is True and we're mixing patterns, sample one pattern for this task
         if self.pattern_per_task and self.pattern in (0, None):
             self._task_pattern = random.choice((1, 2, 3))
-            print(f"DEBUG: pattern_per_task=True, sampled pattern {self._task_pattern} for this task")
         else:
             self._task_pattern = None
             if self.pattern_per_task:
