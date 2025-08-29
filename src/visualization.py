@@ -459,7 +459,14 @@ def visualize_tsne_sources(
             mask = tid_np == tid
             if np.sum(mask) >= 2:
                 centroid = emb[mask].mean(axis=0)
-                ax.annotate(str(int(tid)), centroid, xytext=(3, 3), textcoords="offset points", fontsize=9, alpha=0.9)
+                # Place label exactly at data coordinates (no offset), centered
+                ax.text(
+                    float(centroid[0]), float(centroid[1]), str(int(tid)),
+                    transform=ax.transData,
+                    ha='center', va='center', fontsize=9, alpha=0.95,
+                    bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor='none', alpha=0.7),
+                    zorder=5,
+                )
 
     # EXACTLY same title, labels, and style as train.py
     ax.set_title("t-SNE Visualization of Latent Embeddings")
