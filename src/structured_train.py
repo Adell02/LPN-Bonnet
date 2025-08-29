@@ -23,6 +23,11 @@ import time
 from functools import partial
 from typing import Optional, Sequence
 import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics import adjusted_rand_score
+from sklearn.cluster import Leiden
+import networkx as nx
 
 import chex
 import hydra
@@ -35,6 +40,11 @@ import wandb
 from flax.training.train_state import TrainState
 from jax.tree_util import tree_map
 from tqdm.auto import trange
+
+# For clustering metrics
+from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics import adjusted_rand_score
+from sklearn.cluster import Leiden
 
 from models.transformer import EncoderTransformer, DecoderTransformer
 from models.utils import DecoderTransformerConfig, EncoderTransformerConfig
@@ -54,6 +64,95 @@ from visualization import (
 
 
 logging.getLogger().setLevel(logging.INFO)
+
+
+def compute_modularity_q(embeddings, labels, k=5):
+    """
+    Compute Modularity Q metric for clustering quality.
+    
+    Args:
+        embeddings: [N, D] array of embeddings
+        labels: [N] array of cluster labels
+        k: number of neighbors for k-NN graph
+        
+    Returns:
+        float: Modularity Q score (higher is better)
+    """
+    try:
+        # Build k-NN graph
+        nbrs = NearestNeighbors(n_neighbors=k+1, algorithm='auto').fit(embeddings)
+        distances, indices = nbrs.kneighbors(embeddings)
+        
+        # Create adjacency matrix (remove self-loops)
+        N = len(embeddings)
+        A = np.zeros((N, N))
+        for i in range(N):
+            for j in range(1, k+1):  # Skip first neighbor (self)
+                A[i, indices[i, j]] = 1.0
+                A[indices[i, j], i] = 1.0  # Undirected graph
+        
+        # Compute degrees
+        k_i = np.sum(A, axis=1)
+        m = np.sum(A) / 2  # Total edge weight
+        
+        # Compute modularity Q
+        Q = 0.0
+        for i in range(N):
+            for j in range(N):
+                if i != j:
+                    expected_edges = (k_i[i] * k_i[j]) / (2 * m)
+                    actual_edges = A[i, j]
+                    same_cluster = int(labels[i] == labels[j])
+                    Q += (actual_edges - expected_edges) * same_cluster
+        
+        Q = Q / (2 * m)
+        return float(Q)
+        
+    except Exception as e:
+        logging.warning(f"Modularity Q computation failed: {e}")
+        return 0.0
+
+
+def compute_adjusted_rand_index(embeddings, true_labels, k=5):
+    """
+    Compute Adjusted Rand Index (ARI) for clustering quality.
+    
+    Args:
+        embeddings: [N, D] array of embeddings
+        true_labels: [N] array of true class labels
+        k: number of neighbors for k-NN graph
+        
+    Returns:
+        float: ARI score [-1, 1] (higher is better)
+    """
+    try:
+        # Build k-NN graph
+        nbrs = NearestNeighbors(n_neighbors=k+1, algorithm='auto').fit(embeddings)
+        distances, indices = nbrs.kneighbors(embeddings)
+        
+        # Create adjacency matrix
+        N = len(embeddings)
+        A = np.zeros((N, N))
+        for i in range(N):
+            for j in range(1, k+1):  # Skip first neighbor (self)
+                A[i, indices[i, j]] = 1.0
+                A[indices[i, j], i] = 1.0  # Undirected graph
+        
+        # Use Leiden clustering to get predicted clusters
+        # Convert to networkx graph
+        G = nx.from_numpy_array(A)
+        
+        # Apply Leiden clustering
+        leiden = Leiden(resolution_parameter=1.0)
+        predicted_labels = leiden.fit_predict(embeddings)
+        
+        # Compute ARI
+        ari = adjusted_rand_score(true_labels, predicted_labels)
+        return float(ari)
+        
+    except Exception as e:
+        logging.warning(f"ARI computation failed: {e}")
+        return 0.0
 
 
 def instantiate_config_for_mpt(transformer_cfg: omegaconf.DictConfig) -> DecoderTransformerConfig | EncoderTransformerConfig:
@@ -239,8 +338,47 @@ class StructuredTrainer:
                 shapes_all.append(s)
             
                     # Concatenate to get balanced dataset: 32 + 32 + 32 = 96 total samples
-        self.eval_grids = jnp.concatenate(grids_all, axis=0)
-        self.eval_shapes = jnp.concatenate(shapes_all, axis=0)
+            self.eval_grids = jnp.concatenate(grids_all, axis=0)
+            self.eval_shapes = jnp.concatenate(shapes_all, axis=0)
+            
+            # DEBUG: Log evaluation dataset info
+            logging.info(f"Generated balanced evaluation dataset:")
+            logging.info(f"  - Total samples: {self.eval_grids.shape[0]}")
+            logging.info(f"  - Samples per pattern: {samples_per_pattern}")
+            logging.info(f"  - Grids shape: {self.eval_grids.shape}")
+            logging.info(f"  - Shapes shape: {self.eval_shapes.shape}")
+            
+        else:
+            # Fallback: create a small balanced eval dataset even if struct_patterns_balanced=False
+            from datasets.task_gen.dataloader import make_dataset
+            total_eval_length = 96  # Total evaluation samples
+            samples_per_pattern = total_eval_length // 3  # 32 samples per pattern
+            N = int(cfg.training.get("struct_num_pairs", 4))  # Use 4 pairs like training
+            
+            grids_all, shapes_all = [], []
+            for pid in (1, 2, 3):  # Generate from all 3 patterns (O, T, L tetrominos)
+                g, s, _ = make_dataset(
+                    length=samples_per_pattern,  # 32 samples per pattern
+                    num_pairs=N,  # 4 pairs per task
+                    num_workers=0,
+                    task_generator_class="STRUCT_PATTERN",
+                    online_data_augmentation=False,
+                    seed=cfg.training.seed + pid,  # Different seed per pattern
+                    pattern=pid,  # pattern 1, 2, 3 for O, T, L tetrominos
+                )
+                grids_all.append(g)
+                shapes_all.append(s)
+            
+            # Concatenate to get balanced dataset: 32 + 32 + 32 = 96 total samples
+            self.eval_grids = jnp.concatenate(grids_all, axis=0)
+            self.eval_shapes = jnp.concatenate(shapes_all, axis=0)
+            
+            # DEBUG: Log evaluation dataset info
+            logging.info(f"Generated fallback balanced evaluation dataset:")
+            logging.info(f"  - Total samples: {self.eval_grids.shape[0]}")
+            logging.info(f"  - Samples per pattern: {samples_per_pattern}")
+            logging.info(f"  - Grids shape: {self.eval_grids.shape}")
+            logging.info(f"  - Shapes shape: {self.eval_shapes.shape}")
         
         # Load test datasets for comprehensive evaluation (like train.py)
         self.test_datasets = []
@@ -295,6 +433,14 @@ class StructuredTrainer:
                 test_name = test_name.replace("generator_generator", "generator", 1)
             
             inference_kwargs = dict_.get("inference_kwargs", {})
+            
+            # DEBUG: Log test dataset info
+            logging.info(f"Generated test dataset '{test_name}':")
+            logging.info(f"  - Grids shape: {grids.shape}")
+            logging.info(f"  - Shapes shape: {shapes.shape}")
+            logging.info(f"  - Program IDs: {np.unique(program_ids) if program_ids is not None else 'None'}")
+            logging.info(f"  - Task generator kwargs: {task_generator_kwargs}")
+            
             self.test_datasets.append({
                 "test_name": test_name,
                 "dataset_grids": grids,
@@ -540,6 +686,13 @@ class StructuredTrainer:
         # The issue is that make_leave_one_out is adding an extra dimension instead of reducing it
         # We need to manually create the leave_one_out data with correct shapes
         from data_utils import make_leave_one_out
+        
+        # DEBUG: Log what we're evaluating
+        logging.info(f"Evaluation dataset info:")
+        logging.info(f"  - eval_grids shape: {self.eval_grids.shape}")
+        logging.info(f"  - eval_shapes shape: {self.eval_shapes.shape}")
+        logging.info(f"  - Total samples: {self.eval_grids.shape[0]}")
+        logging.info(f"  - Expected: 96 samples (32 per pattern)")
         
         # Create leave_one_out data with correct shapes
         # For pairs: (L, N, R, C, 2) -> (L, N-1, R, C, 2) where N=4, so N-1=3
@@ -810,6 +963,28 @@ class StructuredTrainer:
                 max_points=max_points,
                 random_state=42
             )
+            
+            # COMPUTE CLUSTERING METRICS AND UPLOAD TO WANDB
+            try:
+                # Compute metrics for different k values to check sensitivity
+                k_values = [3, 5, 10]
+                clustering_metrics = {}
+                
+                for k in k_values:
+                    # Modularity Q (no labels needed)
+                    modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
+                    clustering_metrics[f"clustering/modularity_q_k{k}"] = modularity_q
+                    
+                    # Adjusted Rand Index (using pattern labels as ground truth)
+                    ari_score = compute_adjusted_rand_index(latents_concat, pattern_ids_concat, k=k)
+                    clustering_metrics[f"clustering/ari_k{k}"] = ari_score
+                
+                # Log clustering metrics to WandB
+                wandb.log(clustering_metrics, step=step if 'step' in locals() else None)
+                logging.info(f"Clustering metrics computed: {clustering_metrics}")
+                
+            except Exception as e:
+                logging.warning(f"Clustering metrics computation failed: {e}")
         else:
             fig_tsne = None
 
@@ -827,7 +1002,7 @@ class StructuredTrainer:
         plt.close(fig_tsne)
 
         # Release large intermediates
-        del enc_mus, enc_logvars, all_latents, latents_concat, source_ids_np, pattern_ids_concat, mus, logvars, mu_poe, poe_np
+        del all_latents, latents_concat, source_ids_np, pattern_ids_concat
         return metrics
 
     def test_dataset_submission(
@@ -1001,6 +1176,28 @@ class StructuredTrainer:
                         max_points=500,
                         random_state=42
                     )
+                    
+                    # COMPUTE CLUSTERING METRICS FOR TEST DATASETS
+                    try:
+                        # Compute metrics for different k values
+                        k_values = [3, 5, 10]
+                        test_clustering_metrics = {}
+                        
+                        for k in k_values:
+                            # Modularity Q (no labels needed)
+                            modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
+                            test_clustering_metrics[f"clustering/{test_name}/modularity_q_k{k}"] = modularity_q
+                            
+                            # Adjusted Rand Index (using pattern labels as ground truth)
+                            ari_score = compute_adjusted_rand_index(latents_concat, pattern_ids_concat, k=k)
+                            test_clustering_metrics[f"clustering/{test_name}/ari_k{k}"] = ari_score
+                        
+                        # Add clustering metrics to the main metrics dict
+                        metrics.update(test_clustering_metrics)
+                        logging.info(f"Test clustering metrics computed: {test_clustering_metrics}")
+                        
+                    except Exception as e:
+                        logging.warning(f"Test clustering metrics computation failed: {e}")
         
         return metrics, fig_gen, fig_heatmap, fig_latents, None, fig_search_progress
 
