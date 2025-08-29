@@ -60,13 +60,13 @@ training:
   prior_kl_coeff: null
   pairwise_kl_coeff: null
   total_num_steps: 5000
-  encoder_expose_steps: 5000  # number of initial gradient steps encoders are trainable
+  encoder_expose_steps: 600  # number of initial gradient steps encoders are trainable
   repulsion_kl: 0
   # STABILIZATION: Reduced from 1e-3 to prevent loss explosion
   # This coefficient controls the strength of contrastive loss
   # Lower values = more stable, higher values = more aggressive specialization
   # Current value: 1e-5 (very conservative for stability)
-  contrastive_kl: 1e-4
+  contrastive_kl: 5e-3
   log_every_n_steps: 5
   eval_every_n_logs: 20       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable
@@ -93,27 +93,27 @@ eval:
     - generator: "STRUCT_PATTERN"
       name: "pattern_1"
       num_pairs: 4
-      length: 96  # 32 samples per pattern (O, T, L)
+      length: 144  # 32 samples per pattern (O, T, L)
       task_generator_kwargs:
         pattern: 1  # O-tetromino
       batch_size: 96
-      num_tasks_to_show: 5
+      num_tasks_to_show: 3
     - generator: "STRUCT_PATTERN"
       name: "pattern_2" 
       num_pairs: 4
-      length: 96  # 32 samples per pattern (O, T, L)
+      length: 144  # 32 samples per pattern (O, T, L)
       task_generator_kwargs:
         pattern: 2  # T-tetromino
       batch_size: 96
-      num_tasks_to_show: 5
+      num_tasks_to_show: 3
     - generator: "STRUCT_PATTERN"
       name: "pattern_3"
       num_pairs: 4
-      length: 96  # 32 samples per pattern (O, T, L)
+      length: 144  # 32 samples per pattern (O, T, L)
       task_generator_kwargs:
         pattern: 3  # L-tetromino
       batch_size: 96
-      num_tasks_to_show: 5
+      num_tasks_to_show: 3
   test_datasets: []
 
 
