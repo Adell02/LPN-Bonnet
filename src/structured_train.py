@@ -43,7 +43,7 @@ from tqdm.auto import trange
 # For clustering metrics
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import adjusted_rand_score
-from sklearn.cluster import KMeans
+from sklearn.cluster import Leiden
 
 from models.transformer import EncoderTransformer, DecoderTransformer
 from models.utils import DecoderTransformerConfig, EncoderTransformerConfig
@@ -239,30 +239,11 @@ def build_params_from_artifacts(cfg: omegaconf.DictConfig, decoder_module: Decod
     enc_params_list = []
     dec_params_list = []
     model_artifacts = list(cfg.structured.artifacts.models or [])
-    
-    logging.info(f"Loading {len(model_artifacts)} model artifacts")
-    
-    for i, art in enumerate(model_artifacts):
-        logging.info(f"Loading artifact {i}: {art}")
+    for art in model_artifacts:
         full_params = load_artifact_params(art)
-        
-        # DEBUG: Log the structure of loaded params
-        logging.info(f"Artifact {i} - full_params keys: {list(full_params.keys()) if isinstance(full_params, dict) else 'Not a dict'}")
-        
         # Expect top-level keys 'encoder' and 'decoder'
         enc_params = full_params["encoder"] if "encoder" in full_params else full_params
         dec_params = full_params["decoder"] if "decoder" in full_params else full_params
-        
-        # DEBUG: Log encoder params structure
-        if isinstance(enc_params, dict):
-            logging.info(f"Artifact {i} - encoder params keys: {list(enc_params.keys())}")
-            # Check for latent projection layer
-            if "latent_projection" in enc_params:
-                proj_shape = enc_params["latent_projection"]["kernel"].shape
-                logging.info(f"Artifact {i} - latent projection shape: {proj_shape}")
-        else:
-            logging.warning(f"Artifact {i} - encoder params is not a dict: {type(enc_params)}")
-        
         enc_params_list.append(enc_params)
         dec_params_list.append(dec_params)
 
@@ -290,11 +271,6 @@ class StructuredTrainer:
         self.gradient_accumulation_steps = cfg.training.gradient_accumulation_steps
         if self.batch_size % self.gradient_accumulation_steps != 0:
             raise ValueError("batch_size must be divisible by gradient_accumulation_steps")
-        
-        # DEBUG: Log encoder configurations
-        logging.info(f"Initializing StructuredTrainer with {len(encoders)} encoders")
-        for i, encoder in enumerate(encoders):
-            logging.info(f"Encoder {i} config: {encoder.config}")
 
         # Training/eval datasets
         if cfg.training.get("struct_patterns_balanced", False):
@@ -942,10 +918,6 @@ class StructuredTrainer:
         # Add individual encoder latents (unique source_id per encoder)
         for enc_idx, enc_params in enumerate(enc_params_list):
             try:
-                # DEBUG: Log input shapes and encoder params
-                logging.info(f"Main eval - Encoder {enc_idx} - Input pairs shape: {pairs.shape}, shapes shape: {shapes.shape}")
-                logging.info(f"Main eval - Encoder {enc_idx} - Encoder params keys: {list(enc_params.keys()) if isinstance(enc_params, dict) else 'Not a dict'}")
-                
                 mu_i, logvar_i = self.encoders[enc_idx].apply(
                     {"params": enc_params}, 
                     pairs, 
@@ -953,41 +925,36 @@ class StructuredTrainer:
                     True, 
                     mutable=False
                 )
+                lat = mu_i.mean(axis=-2)  # Mean over pairs
+                lat_np = np.array(lat).reshape(-1, lat.shape[-1])
                 
-                # DEBUG: Log encoder output shapes
+                # Log the actual latent dimension from this encoder
+                actual_latent_dim = lat_np.shape[-1]
+                logging.info(f"Main eval - Encoder {enc_idx} - Input pairs shape: {pairs.shape}, shapes shape: {shapes.shape}")
+                logging.info(f"Main eval - Encoder {enc_idx} - Encoder params keys: {list(enc_params.keys())}")
                 logging.info(f"Main eval - Encoder {enc_idx} - mu_i shape: {mu_i.shape}, logvar_i shape: {logvar_i.shape}")
                 
-                # Handle different latent shapes - ensure consistent output
-                if mu_i.ndim == 3:  # (batch, pairs, latent_dim)
-                    lat = mu_i.mean(axis=-2)  # Mean over pairs
-                elif mu_i.ndim == 4:  # (batch, pairs, extra_dim, latent_dim)
-                    lat = mu_i.mean(axis=(-2, -3))  # Mean over pairs and extra dim
-                else:
-                    # Fallback: just take the last dimension as latent
-                    lat = mu_i.reshape(mu_i.shape[0], -1)
+                if actual_latent_dim != 32:
+                    logging.warning(f"Main eval - Encoder {enc_idx} has unexpected latent dim: {actual_latent_dim}, expected 32")
                 
-                # Ensure consistent latent dimension
-                if lat.shape[-1] != 72:  # Expected latent dim
-                    logging.warning(f"Main eval - Encoder {enc_idx} has unexpected latent dim: {lat.shape[-1]}, expected 72")
+                # Ensure consistent latent dimension for T-SNE
+                if actual_latent_dim != 32:
                     # Pad or truncate to match expected dimension
-                    if lat.shape[-1] < 72:
+                    if actual_latent_dim < 32:
                         # Pad with zeros
-                        padding = np.zeros((lat.shape[0], 72 - lat.shape[-1]))
-                        lat = np.concatenate([lat, padding], axis=-1)
+                        padding = np.zeros((lat_np.shape[0], 32 - actual_latent_dim))
+                        lat_np = np.concatenate([lat_np, padding], axis=1)
                     else:
                         # Truncate
-                        lat = lat[..., :72]
+                        lat_np = lat_np[:, :32]
                 
-                lat_np = np.array(lat).reshape(-1, lat.shape[-1])
                 logging.info(f"Main eval - Encoder {enc_idx} - final latent shape: {lat_np.shape}")
-                
                 all_latents.append(lat_np)
                 source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
                 sample_ids_list.append(sample_sequence)  # Same sample sequence for each encoder
                 
             except Exception as e:
-                logging.error(f"Main eval - Failed to process encoder {enc_idx}: {e}")
-                logging.error(f"Main eval - Encoder {enc_idx} params keys: {list(enc_params.keys()) if isinstance(enc_params, dict) else 'Not a dict'}")
+                logging.error(f"Main eval - Encoder {enc_idx} failed: {e}")
                 continue
         
         # Add the generation context (source_id = num_encoders)
@@ -1203,10 +1170,6 @@ class StructuredTrainer:
                 # Add encoder outputs (unique source_id per encoder)
                 for enc_idx, enc_params in enumerate(enc_params_list):
                     try:
-                        # DEBUG: Log input shapes and encoder params
-                        logging.info(f"Test eval - Encoder {enc_idx} - Input dataset_grids shape: {dataset_grids.shape}, dataset_shapes shape: {dataset_shapes.shape}")
-                        logging.info(f"Test eval - Encoder {enc_idx} - Encoder params keys: {list(enc_params.keys()) if isinstance(enc_params, dict) else 'Not a dict'}")
-                        
                         mu_i, logvar_i = self.encoders[enc_idx].apply(
                             {"params": enc_params}, 
                             dataset_grids, 
@@ -1214,41 +1177,34 @@ class StructuredTrainer:
                             True, 
                             mutable=False
                         )
+                        lat = mu_i.mean(axis=-2)  # Mean over pairs
+                        lat_np = np.array(lat).reshape(-1, lat.shape[-1])
                         
-                        # DEBUG: Log encoder output shapes
+                        # Log the actual latent dimension from this encoder
+                        actual_latent_dim = lat_np.shape[-1]
                         logging.info(f"Test eval - Encoder {enc_idx} - mu_i shape: {mu_i.shape}, logvar_i shape: {logvar_i.shape}")
                         
-                        # Handle different latent shapes - ensure consistent output
-                        if mu_i.ndim == 3:  # (batch, pairs, latent_dim)
-                            lat = mu_i.mean(axis=-2)  # Mean over pairs
-                        elif mu_i.ndim == 4:  # (batch, pairs, extra_dim, latent_dim)
-                            lat = mu_i.mean(axis=(-2, -3))  # Mean over pairs and extra dim
-                        else:
-                            # Fallback: just take the last dimension as latent
-                            lat = mu_i.reshape(mu_i.shape[0], -1)
+                        if actual_latent_dim != 32:
+                            logging.warning(f"Test eval - Encoder {enc_idx} has unexpected latent dim: {actual_latent_dim}, expected 32")
                         
-                        # Ensure consistent latent dimension
-                        if lat.shape[-1] != 72:  # Expected latent dim
-                            logging.warning(f"Test eval - Encoder {enc_idx} has unexpected latent dim: {lat.shape[-1]}, expected 72")
+                        # Ensure consistent latent dimension for T-SNE
+                        if actual_latent_dim != 32:
                             # Pad or truncate to match expected dimension
-                            if lat.shape[-1] < 72:
+                            if actual_latent_dim < 32:
                                 # Pad with zeros
-                                padding = np.zeros((lat.shape[0], 72 - lat.shape[-1]))
-                                lat = np.concatenate([lat, padding], axis=-1)
+                                padding = np.zeros((lat_np.shape[0], 32 - actual_latent_dim))
+                                lat_np = np.concatenate([lat_np, padding], axis=1)
                             else:
                                 # Truncate
-                                lat = lat[..., :72]
+                                lat_np = lat_np[:, :32]
                         
-                        lat_np = np.array(lat).reshape(-1, lat.shape[-1])
                         logging.info(f"Test eval - Encoder {enc_idx} - final latent shape: {lat_np.shape}")
-                        
                         all_latents.append(lat_np)
                         source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
                         sample_ids_list.append(program_ids)  # Sample IDs for each encoder
                         
                     except Exception as e:
-                        logging.error(f"Test eval - Failed to process encoder {enc_idx}: {e}")
-                        logging.error(f"Test eval - Encoder {enc_idx} params keys: {list(enc_params.keys()) if isinstance(enc_params, dict) else 'Not a dict'}")
+                        logging.error(f"Test eval - Encoder {enc_idx} failed: {e}")
                         continue
                 
                 # Add generation context (source_id = num_encoders)
