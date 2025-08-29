@@ -48,6 +48,7 @@ from visualization import (
     visualize_dataset_generation,
     visualize_heatmap,
     visualize_tsne,
+    visualize_tsne_sources,  # Added for source-aware T-SNE
 )
 
 
@@ -660,7 +661,15 @@ class StructuredTrainer:
         # Instead of raw encoder latents, use the context that was actually used for generation
         all_latents = []
         source_ids = []  # 0..E-1 for encoders, E for PoE, E+1 for generation context
-        task_ids_list = []  # task indices per point for color
+        pattern_ids_list = []  # pattern types (1, 2, 3) per point for color - NOT individual task IDs
+        
+        # Create pattern IDs based on how the evaluation dataset was generated
+        # We generated 32 samples per pattern: pattern 1 (O), pattern 2 (T), pattern 3 (L)
+        num_samples_per_pattern = 32
+        pattern_sequence = []
+        for pattern_id in [1, 2, 3]:  # O, T, L tetrominos
+            pattern_sequence.extend([pattern_id] * num_samples_per_pattern)
+        pattern_sequence = np.array(pattern_sequence)
         
         # Add individual encoder latents (for comparison)
         for enc_idx, enc_params in enumerate(enc_params_list):
@@ -675,7 +684,7 @@ class StructuredTrainer:
             lat_np = np.array(lat).reshape(-1, lat.shape[-1])
             all_latents.append(lat_np)
             source_ids.extend([enc_idx] * lat_np.shape[0])
-            task_ids_list.append(np.arange(lat_np.shape[0]))
+            pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for each encoder
         
         # Add PoE combined latents
         if len(enc_params_list) > 1:
@@ -702,7 +711,7 @@ class StructuredTrainer:
             poe_np = np.array(poe_lat).reshape(-1, poe_lat.shape[-1])
             all_latents.append(poe_np)
             source_ids.extend([len(enc_params_list)] * poe_np.shape[0])
-            task_ids_list.append(np.arange(poe_np.shape[0]))
+            pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for PoE
         
         # MOST IMPORTANT: Add the generation context (like train.py does)
         if "context" in info:
@@ -712,11 +721,11 @@ class StructuredTrainer:
                 context_np = np.array(generation_context).reshape(-1, generation_context.shape[-1])
                 all_latents.append(context_np)
                 source_ids.extend([len(enc_params_list) + 1] * context_np.shape[0])  # E+1 for generation context
-                task_ids_list.append(np.arange(context_np.shape[0]))
+                pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for generation context
 
         latents_concat = np.concatenate(all_latents, axis=0)
         source_ids_np = np.array(source_ids)
-        task_ids_concat = np.concatenate(task_ids_list, axis=0)
+        pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
 
         # Downsample points for t-SNE to be memory efficient
         max_points = int(cfg.eval.get("tsne_max_points", 2000))
@@ -724,10 +733,18 @@ class StructuredTrainer:
             idx = np.random.RandomState(42).choice(latents_concat.shape[0], size=max_points, replace=False)
             latents_concat = latents_concat[idx]
             source_ids_np = source_ids_np[idx]
-            task_ids_concat = task_ids_concat[idx]
+            pattern_ids_concat = pattern_ids_concat[idx]
 
-        # Compute t-SNE figure using existing visualization helper
-        fig_tsne = visualize_tsne(latents_concat, task_ids_concat)
+        # Compute t-SNE figure using visualize_tsne_sources for both markers (sources) and colors (patterns)
+        # This shows: different markers for encoder 0,1,2, PoE, generation context
+        # AND different colors for pattern types 1,2,3 (O, T, L tetrominos)
+        fig_tsne = visualize_tsne_sources(
+            latents=latents_concat,
+            program_ids=pattern_ids_concat,  # Pattern types (1, 2, 3) for colors
+            source_ids=source_ids_np,        # Source types (0,1,2 for encoders, 3 for PoE, 4 for generation) for markers
+            max_points=max_points,
+            random_state=42
+        )
 
         wandb.log({
             f"test/{test_name}/pixel_accuracy": wandb.Image(fig_heatmap),
@@ -743,7 +760,7 @@ class StructuredTrainer:
         plt.close(fig_tsne)
 
         # Release large intermediates
-        del enc_mus, enc_logvars, all_latents, latents_concat, source_ids_np, mus, logvars, mu_poe, poe_np
+        del enc_mus, enc_logvars, all_latents, latents_concat, source_ids_np, pattern_ids_concat, mus, logvars, mu_poe, poe_np
         return metrics
 
 

@@ -349,18 +349,42 @@ def visualize_tsne_sources(
         print(f"Error during t-SNE (sources): {e}")
         return None
 
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(12, 10))
     marker_list = ['o', 's', '^', 'P', 'X', 'D', 'v', '<', '>', '*']
     unique_sources = sorted(list(np.unique(src_np)))
     for src in unique_sources:
         m = src_np == src
         mk = marker_list[int(src) % len(marker_list)]
-        lbl = f"enc{src}" if src < max(unique_sources) else "poe" if src == max(unique_sources) else f"src{src}"
+        # Create better labels for structured training
+        if src == 0:
+            lbl = "Encoder 0"
+        elif src == 1:
+            lbl = "Encoder 1"
+        elif src == 2:
+            lbl = "Encoder 2"
+        elif src == 3:
+            lbl = "PoE Combined"
+        elif src == 4:
+            lbl = "Generation Context"
+        else:
+            lbl = f"Source {src}"
         ax.scatter(
             emb[m, 0], emb[m, 1],
             c=(prog_np[m] % 10), cmap=arc_cmap, norm=arc_norm,
             marker=mk, alpha=0.8, s=40, label=lbl, edgecolors='none'
         )
+    
+    ax.set_title("t-SNE Visualization: Latent Sources vs Pattern Types")
+    ax.set_xlabel("t-SNE 1")
+    ax.set_ylabel("t-SNE 2")
+    
+    # Add legend
+    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.0)
+    
+    # Adjust layout to prevent legend from being cut off
+    plt.tight_layout()
+    
+    return fig
     ax.legend(title="Source")
     ax.set_title("t-SNE Visualization of Latent Embeddings")
     ax.set_xlabel("t-SNE 1")
