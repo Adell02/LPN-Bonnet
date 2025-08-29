@@ -366,21 +366,19 @@ def visualize_tsne_sources(
     marker_list = ['o', 's', '^', 'P', 'X', 'D', 'v', '<', '>', '*']
     unique_sources = sorted(list(np.unique(src_np)))
     
+    # Create simple legend labels
+    source_labels = {
+        0: "Encoder 0",
+        1: "Encoder 1", 
+        2: "Encoder 2",
+        3: "Context"
+    }
+    
+    # Plot each source with different markers
     for src in unique_sources:
         m = src_np == src
         mk = marker_list[int(src) % len(marker_list)]
-        
-        # Create better labels for structured training
-        if src == 0:
-            lbl = "Encoder 0"
-        elif src == 1:
-            lbl = "Encoder 1"
-        elif src == 2:
-            lbl = "Encoder 2"
-        elif src == 3:
-            lbl = "Generation Context"
-        else:
-            lbl = f"Source {src}"
+        source_label = source_labels.get(src, f"Source {src}")
         
         # Plot each program ID separately with the same color scheme as train.py
         for prog_id in unique_ids:
@@ -391,11 +389,15 @@ def visualize_tsne_sources(
                     points[:, 0], points[:, 1], 
                     c=[color_map[prog_id]], 
                     marker=mk, 
-                    label=f"{lbl} - Pattern {prog_id}", 
+                    label=f"{source_label} - Sample {prog_id}", 
                     alpha=0.7, 
                     s=50,
                     edgecolors='none'
                 )
+                
+                # Add labels on samples showing sample ID
+                for i, point in enumerate(points):
+                    ax.annotate(str(prog_id), point, xytext=(3, 3), textcoords="offset points", fontsize=8, alpha=0.8)
 
     # EXACTLY same title, labels, and style as train.py
     ax.set_title("t-SNE Visualization of Latent Embeddings")
