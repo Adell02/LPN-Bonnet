@@ -951,7 +951,11 @@ class LPN(nn.Module):
             
             losses = _eval_candidates(x)
             
+            # Debug the losses and fitness calculation
+            print(f"         🔍 Gen {g}: losses shape: {losses.shape}")
+            
             fitness = -losses.mean(axis=-2) if losses.ndim >= 3 else -losses
+            print(f"         🔍 Gen {g}: fitness shape: {fitness.shape}")
             
             idx = jnp.argsort(fitness, axis=-1, descending=True)
             best_idx = idx[..., :mu]
@@ -993,8 +997,20 @@ class LPN(nn.Module):
         if track_progress:
             gen_fitness.append(fitness.max(axis=-1))
             # Track the best latent from each generation
-            best_latent_idx = fitness.argmax(axis=-1)
-            best_latent = jnp.take_along_axis(x, best_latent_idx[..., None, None], axis=-2)
+            # fitness has shape (*B, population_size), x has shape (*B, population_size, H)
+            # We need to find the best index for each batch and expand it properly
+            best_latent_idx = fitness.argmax(axis=-1)  # Shape: (*B,)
+            
+            # Debug the shapes
+            print(f"         🔍 Gen {g}: fitness shape: {fitness.shape}, x shape: {x.shape}, best_latent_idx shape: {best_latent_idx.shape}")
+            
+            # Expand best_latent_idx to match x dimensions for take_along_axis
+            # x has shape (*B, population_size, H), so we need (*B, 1, H)
+            best_latent_idx_expanded = best_latent_idx[..., None, None]  # (*B, 1, 1)
+            
+            # Use take_along_axis to get the best latent for each batch
+            best_latent = jnp.take_along_axis(x, best_latent_idx_expanded, axis=-2)  # (*B, 1, H)
+            best_latent = best_latent.squeeze(axis=-2)  # (*B, H) - remove the population dimension
             gen_best_latents.append(best_latent)
 
         final_pop = jnp.concatenate([x, mean[..., None, :]], axis=-2)
@@ -1012,6 +1028,15 @@ class LPN(nn.Module):
         )
 
         if track_progress:
+            # Debug the collected data
+            print(f"         🔍 Collected {len(gen_fitness)} fitness values")
+            print(f"         🔍 Collected {len(gen_best_latents)} latent vectors")
+            
+            if gen_fitness:
+                print(f"         🔍 gen_fitness[0] shape: {gen_fitness[0].shape}")
+            if gen_best_latents:
+                print(f"         🔍 gen_best_latents[0] shape: {gen_best_latents[0].shape}")
+            
             traj = {
                 "generation_fitness": jnp.stack(gen_fitness),
                 "final_best_fitness": gen_fitness[-1] if len(gen_fitness) > 0 else None,
