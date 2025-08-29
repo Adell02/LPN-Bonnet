@@ -20,8 +20,8 @@ training:
     class: STRUCT_PATTERN
     num_workers: 4
     num_pairs: 4
-    # Mix all three patterns by sampling per pair (pattern: 0)
-    pattern: 0
+    pattern: 0 # Mix all three patterns by sampling per pair (pattern: 0)
+    pattern_per_task: true
     num_rows: 5
     num_cols: 5
   train_datasets:
