@@ -931,6 +931,7 @@ class LPN(nn.Module):
 
         if track_progress:
             gen_fitness = []
+            gen_best_latents = []
 
         for g in range(num_generations):
             key, nk = jax.random.split(key)
@@ -989,8 +990,12 @@ class LPN(nn.Module):
             D = jnp.sqrt(jnp.maximum(evals, 1e-30))
             B = evecs
 
-            if track_progress:
-                gen_fitness.append(fitness.max(axis=-1))
+        if track_progress:
+            gen_fitness.append(fitness.max(axis=-1))
+            # Track the best latent from each generation
+            best_latent_idx = fitness.argmax(axis=-1)
+            best_latent = jnp.take_along_axis(x, best_latent_idx[..., None, None], axis=-2)
+            gen_best_latents.append(best_latent)
 
         final_pop = jnp.concatenate([x, mean[..., None, :]], axis=-2)
         final_losses = _eval_candidates(final_pop)
@@ -1010,7 +1015,11 @@ class LPN(nn.Module):
             traj = {
                 "generation_fitness": jnp.stack(gen_fitness),
                 "final_best_fitness": gen_fitness[-1] if len(gen_fitness) > 0 else None,
+                "best_latents_per_generation": jnp.stack(gen_best_latents) if gen_best_latents else None,
             }
+            print(f"         🔍 ES trajectory keys: {list(traj.keys())}")
+            if traj["best_latents_per_generation"] is not None:
+                print(f"         🔍 ES best_latents_per_generation shape: {traj['best_latents_per_generation'].shape}")
             return best_context, second_best_context, traj
 
         return best_context, second_best_context
