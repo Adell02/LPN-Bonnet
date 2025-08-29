@@ -1009,8 +1009,10 @@ class LPN(nn.Module):
         elite_size = kwargs.get("elite_size", max(1, population_size // 2))
 
         # ----- main evolutionary loop (plain Python, no extra JAX transform) -----
+        # CRITICAL: Population size is maintained at exactly population_size across all generations
+        # This prevents the stacking error that was causing "All input arrays must have the same shape"
         for gen_idx in range(num_generations):
-            print(f"         🔄 Generation {gen_idx + 1}/{num_generations} - Population shape: {population.shape}")
+            print(f"         🔄 Generation {gen_idx + 1}/{num_generations} - Population shape: {population.shape} (target: {population_size})")
             # Score current population exactly like random search
             losses = _eval_candidates(population)                     # (*B, P, C) or (*B, C) if P=1 folded inside impl
             # Reduce over pairs to get a fitness per candidate (keep batch dims)
@@ -1135,7 +1137,6 @@ class LPN(nn.Module):
                     offspring = jnp.expand_dims(offspring_rep, -3).repeat(population.shape[-3], axis=-3)
                 else:
                     offspring = offspring_rep
-                population = jnp.concatenate([elite, offspring], axis=-2)
             else:
                 # Standard isotropic mutation
                 offspring = parents + sigma * jax.random.normal(nk, parents.shape)
@@ -1153,7 +1154,44 @@ class LPN(nn.Module):
             # Concatenate: [survivors, offspring]
             population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, P, C, H) or (*B, C, H)
             print(f"         🔄 After concatenation - Population shape: {population.shape}")
-
+            
+            # CRITICAL FIX: Ensure population size stays constant at exactly population_size
+            current_size = population.shape[-2] if population.ndim >= 3 else population.shape[-1]
+            if current_size != population_size:
+                print(f"         ⚠️  Population size mismatch: current={current_size}, expected={population_size}")
+                if current_size > population_size:
+                    # Truncate to exact size (keep best individuals)
+                    if population.ndim == 4:
+                        population = population[..., :population_size, :]
+                    else:
+                        population = population[..., :population_size]
+                    print(f"         ✅ Truncated population to exact size: {population.shape}")
+                else:
+                    # Pad with copies of best individuals
+                    need_pad = population_size - current_size
+                    if population.ndim == 4:
+                        best_individuals = population[..., :min(need_pad, current_size), :]
+                        if need_pad > current_size:
+                            # Repeat best individuals to fill the gap
+                            repeats = (need_pad + current_size - 1) // current_size
+                            best_individuals = jnp.repeat(best_individuals, repeats, axis=-2)[..., :need_pad, :]
+                        population = jnp.concatenate([population, best_individuals], axis=-2)
+                    else:
+                        best_individuals = population[..., :min(need_pad, current_size)]
+                        if need_pad > current_size:
+                            # Repeat best individuals to fill the gap
+                            repeats = (need_pad + current_size - 1) // current_size
+                            best_individuals = jnp.repeat(best_individuals, repeats, axis=-1)[..., :need_pad]
+                        population = jnp.concatenate([population, best_individuals], axis=-1)
+                    print(f"         ✅ Padded population to exact size: {population.shape}")
+            
+            # Final verification of population size
+            final_size = population.shape[-2] if population.ndim >= 3 else population.shape[-1]
+            if final_size == population_size:
+                print(f"         ✅ Population size verified: {final_size} = {population_size}")
+            else:
+                print(f"         ❌ CRITICAL ERROR: Population size still wrong: {final_size} != {population_size}")
+            
             # Decay mutation standard deviation
             sigma *= decay_rate
 
