@@ -61,9 +61,9 @@ training:
   total_num_steps: 2000
   encoder_expose_steps: 200  # number of initial gradient steps encoders are trainable
   repulsion_kl: 1e-3
-  log_every_n_steps: 10
-  eval_every_n_logs: 10        # null to disable
-  save_checkpoint_every_n_logs: 100  # null to disable
+  log_every_n_steps: 5
+  eval_every_n_logs: 20       # null to disable
+  save_checkpoint_every_n_logs: null  # null to disable
   resume_from_checkpoint: null
   # Option B: balanced structured tetromino patterns (O, T, L) - now using task generator
   struct_patterns_balanced: true
