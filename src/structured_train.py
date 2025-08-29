@@ -41,19 +41,9 @@ from jax.tree_util import tree_map
 from tqdm.auto import trange
 
 # For clustering metrics
-import sklearn
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import adjusted_rand_score
-try:
-    from sklearn.cluster import Leiden
-    LEIDEN_AVAILABLE = True
-    print(f"[structured_train] ✅ Leiden clustering available (scikit-learn version: {sklearn.__version__})")
-except ImportError:
-    # Fallback for older scikit-learn versions
-    from sklearn.cluster import SpectralClustering
-    LEIDEN_AVAILABLE = False
-    print(f"[structured_train] ⚠️  Leiden clustering not available, using SpectralClustering fallback")
-    print(f"[structured_train] ℹ️  To enable Leiden clustering, upgrade scikit-learn to version 1.3.0+")
+from sklearn.cluster import Leiden
 
 from models.transformer import EncoderTransformer, DecoderTransformer
 from models.utils import DecoderTransformerConfig, EncoderTransformerConfig
@@ -88,17 +78,8 @@ def compute_modularity_q(embeddings, labels, k=5):
         float: Modularity Q score (higher is better)
     """
     try:
-        # Input validation
-        if len(embeddings) != len(labels):
-            logging.warning(f"Length mismatch: embeddings={len(embeddings)}, labels={len(labels)}")
-            return 0.0
-        
-        if len(embeddings) < 2:
-            logging.warning(f"Not enough samples for clustering: {len(embeddings)}")
-            return 0.0
-        
         # Build k-NN graph
-        nbrs = NearestNeighbors(n_neighbors=min(k+1, len(embeddings)), algorithm='auto').fit(embeddings)
+        nbrs = NearestNeighbors(n_neighbors=k+1, algorithm='auto').fit(embeddings)
         distances, indices = nbrs.kneighbors(embeddings)
         
         # Create adjacency matrix (remove self-loops)
@@ -144,17 +125,8 @@ def compute_adjusted_rand_index(embeddings, true_labels, k=5):
         float: ARI score [-1, 1] (higher is better)
     """
     try:
-        # Input validation
-        if len(embeddings) != len(true_labels):
-            logging.warning(f"Length mismatch: embeddings={len(embeddings)}, labels={len(true_labels)}")
-            return 0.0
-        
-        if len(embeddings) < 2:
-            logging.warning(f"Not enough samples for clustering: {len(embeddings)}")
-            return 0.0
-        
         # Build k-NN graph
-        nbrs = NearestNeighbors(n_neighbors=min(k+1, len(embeddings)), algorithm='auto').fit(embeddings)
+        nbrs = NearestNeighbors(n_neighbors=k+1, algorithm='auto').fit(embeddings)
         distances, indices = nbrs.kneighbors(embeddings)
         
         # Create adjacency matrix
@@ -176,12 +148,8 @@ def compute_adjusted_rand_index(embeddings, true_labels, k=5):
             predicted_labels = np.zeros(len(embeddings), dtype=int)
         
         # Compute ARI
-        try:
-            ari = adjusted_rand_score(true_labels, predicted_labels)
-            return float(ari)
-        except Exception as e:
-            logging.warning(f"ARI computation failed: {e}")
-            return 0.0
+        ari = adjusted_rand_score(true_labels, predicted_labels)
+        return float(ari)
         
     except Exception as e:
         logging.warning(f"ARI computation failed: {e}")
