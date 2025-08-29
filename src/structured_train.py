@@ -180,6 +180,10 @@ def build_model_from_cfg(cfg: omegaconf.DictConfig) -> tuple[StructuredLPN, list
     # Prefer structured.model_config if provided to match artifact shapes
     mc = getattr(cfg.structured, "model_config", None)
     if mc is not None:
+        if not getattr(mc, "variational", False):
+            raise ValueError(
+                "Encoders must be variational; set structured.model_config.variational=true."
+            )
         enc_cfg = omegaconf.OmegaConf.create({
             "_target_": "models.utils.EncoderTransformerConfig",
             "max_rows": mc.max_rows,
@@ -215,6 +219,10 @@ def build_model_from_cfg(cfg: omegaconf.DictConfig) -> tuple[StructuredLPN, list
         dec = DecoderTransformer(hydra.utils.instantiate(dec_cfg))
     else:
         # Fallback to explicit encoder/decoder configs
+        if not getattr(cfg.encoder_transformer, "variational", False):
+            raise ValueError(
+                "Encoders must be variational; set encoder_transformer.variational=true."
+            )
         if cfg.training.get("mixed_precision", False):
             enc = EncoderTransformer(instantiate_config_for_mpt(cfg.encoder_transformer))
             dec = DecoderTransformer(instantiate_config_for_mpt(cfg.decoder_transformer))
