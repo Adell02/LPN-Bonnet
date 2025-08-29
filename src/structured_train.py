@@ -1320,6 +1320,7 @@ class StructuredTrainer:
                     poe_alphas=alphas,  # Use the same alphas as main evaluation
                     encoder_params_list=state.params["encoders"],
                     decoder_params=state.params["decoder"],
+                    repulsion_kl_coeff=self.cfg.training.get("repulsion_kl"),  # repulsion_kl_coeff
                 )
                 
                 # Normalize context to 2D (num_points, latent_dim) to avoid concat shape mismatches

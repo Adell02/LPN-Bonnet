@@ -690,7 +690,7 @@ def visualize_struct_confidence_panel(
     num_pairs = int(sample_grids.shape[0])
 
     # Use constrained_layout to avoid tight_layout warnings with arbitrary num_pairs
-    fig = plt.figure(figsize=(16, 10), constrained_layout=True)
+    fig = plt.figure(figsize=(18, 10), constrained_layout=True)  # Increased width to accommodate note
     # Grid: 3 rows, C columns (C >= num_pairs)
     cols = max(num_pairs, 3)
     gs = fig.add_gridspec(3, cols, height_ratios=[1, 1, 1])
@@ -741,7 +741,7 @@ def visualize_struct_confidence_panel(
     ax_means.legend(frameon=True)
     ax_vars.legend(frameon=True)
 
-    # Add note on the right of the variance histogram showing mean variances from each encoder
+    # Add note on the right of the entire figure showing mean variances from each encoder
     # Calculate mean variances for each encoder
     encoder_mean_vars = []
     for idx, logvar in enumerate(encoder_logvars):
@@ -754,11 +754,11 @@ def visualize_struct_confidence_panel(
     for idx, (label, mean_var) in enumerate(zip(encoder_labels, encoder_mean_vars)):
         note_text += f"Var {label}: {mean_var:.4f}\n"
     
-    # Add the note to the right of the variance histogram
-    # Position the text in the upper right area of the variance subplot
-    ax_vars.text(0.98, 0.95, note_text, transform=ax_vars.transAxes, 
-                 fontsize=10, verticalalignment='top', horizontalalignment='right',
-                 bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8))
+    # Add the note to the right of the entire figure (outside all subplots)
+    # Position the text in the right margin of the figure
+    fig.text(0.98, 0.5, note_text, 
+             fontsize=11, verticalalignment='center', horizontalalignment='right',
+             bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.9, edgecolor='gray'))
 
     fig.suptitle(title, fontsize=14, fontweight='bold')
     return fig
