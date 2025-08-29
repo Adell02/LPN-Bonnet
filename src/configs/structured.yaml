@@ -10,6 +10,7 @@ encoder_transformer:
   transformer_layer:
     _target_: models.utils.TransformerLayerConfig
     dropout_rate: 0.05
+  variational: true
 
 decoder_transformer:
   _target_: models.utils.DecoderTransformerConfig

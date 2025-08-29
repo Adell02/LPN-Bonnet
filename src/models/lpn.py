@@ -1009,7 +1009,8 @@ class LPN(nn.Module):
         elite_size = kwargs.get("elite_size", max(1, population_size // 2))
 
         # ----- main evolutionary loop (plain Python, no extra JAX transform) -----
-        for _ in range(num_generations):
+        for gen_idx in range(num_generations):
+            print(f"         🔄 Generation {gen_idx + 1}/{num_generations} - Population shape: {population.shape}")
             # Score current population exactly like random search
             losses = _eval_candidates(population)                     # (*B, P, C) or (*B, C) if P=1 folded inside impl
             # Reduce over pairs to get a fitness per candidate (keep batch dims)
@@ -1038,7 +1039,13 @@ class LPN(nn.Module):
                 
                 gen_best_latents.append(best_lat)
                 # Store full population and losses for this generation (representative per batch)
-                gen_populations.append(rep)
+                # Ensure consistent shape by always taking first pair if 4D, or using as-is if 3D
+                if rep.ndim == 4:
+                    # If 4D, take first pair to ensure consistent shape across generations
+                    gen_populations.append(rep[..., 0, :, :])  # (*B, C, H)
+                else:
+                    # If 3D, use as-is
+                    gen_populations.append(rep)  # (*B, C, H)
                 # Store only the best loss per generation (not all population losses)
                 gen_losses = losses.mean(axis=-2) if losses.ndim >= 3 else losses  # (*B, C)
                 
@@ -1145,6 +1152,7 @@ class LPN(nn.Module):
             
             # Concatenate: [survivors, offspring]
             population = jnp.concatenate([survivors, offspring], axis=-2)               # (*B, P, C, H) or (*B, C, H)
+            print(f"         🔄 After concatenation - Population shape: {population.shape}")
 
             # Decay mutation standard deviation
             sigma *= decay_rate
@@ -1160,22 +1168,43 @@ class LPN(nn.Module):
 
         if track_progress:
             # Stack as (*B, G, H) for latents and (*B, G) for metrics
-            gen_best_latents_arr = jnp.stack(gen_best_latents, axis=-2) if len(gen_best_latents) > 0 else None
+            try:
+                gen_best_latents_arr = jnp.stack(gen_best_latents, axis=-2) if len(gen_best_latents) > 0 else None
+            except ValueError as e:
+                print(f"         ⚠️  Failed to stack best latents: {e}")
+                gen_best_latents_arr = None
+            
             traj = {
                 # Save best fitness per generation under clear name (fitness = -loss)
-                "generation_fitness": jnp.stack(gen_bests),
+                "generation_fitness": jnp.stack(gen_bests) if len(gen_bests) > 0 else None,
                 "final_best_fitness": best_so_far,
                 "best_latents_per_generation": gen_best_latents_arr,
             }
             if len(gen_populations) > 0:
                 # populations: list of (*B, C, H) -> (*B, G, C, H)
-                traj["populations_per_generation"] = jnp.stack(gen_populations, axis=-3)
+                # Debug: log shapes to ensure consistency
+                pop_shapes = [p.shape for p in gen_populations]
+                print(f"         🔍 Population shapes across generations: {pop_shapes}")
+                
+                # Ensure all populations have the same shape before stacking
+                try:
+                    traj["populations_per_generation"] = jnp.stack(gen_populations, axis=-3)
+                except ValueError as e:
+                    print(f"         ⚠️  Failed to stack populations: {e}")
+                    print(f"         ⚠️  Population shapes: {pop_shapes}")
+                    # Skip this metric if stacking fails
+                    traj["populations_per_generation"] = None
             if len(gen_fitnesses) > 0:
                 # best loss per generation (positive, lower is better)
-                per_gen_best_loss = jnp.stack(gen_fitnesses, axis=-1)  # (*B, G)
-                traj["losses_per_generation"] = per_gen_best_loss
-                # final best loss across generations
-                traj["final_best_loss"] = jnp.min(per_gen_best_loss, axis=-1)
+                try:
+                    per_gen_best_loss = jnp.stack(gen_fitnesses, axis=-1)  # (*B, G)
+                    traj["losses_per_generation"] = per_gen_best_loss
+                    # final best loss across generations
+                    traj["final_best_loss"] = jnp.min(per_gen_best_loss, axis=-1)
+                except ValueError as e:
+                    print(f"         ⚠️  Failed to stack fitnesses: {e}")
+                    traj["losses_per_generation"] = None
+                    traj["final_best_loss"] = None
             return best_context, second_best_context, traj
 
         return best_context, second_best_context
