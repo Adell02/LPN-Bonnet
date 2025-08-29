@@ -26,8 +26,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import adjusted_rand_score
-from sklearn.cluster import Leiden
-import networkx as nx
+from sklearn.cluster import KMeans
 
 import chex
 import hydra
@@ -138,13 +137,15 @@ def compute_adjusted_rand_index(embeddings, true_labels, k=5):
                 A[i, indices[i, j]] = 1.0
                 A[indices[i, j], i] = 1.0  # Undirected graph
         
-        # Use Leiden clustering to get predicted clusters
-        # Convert to networkx graph
-        G = nx.from_numpy_array(A)
-        
-        # Apply Leiden clustering
-        leiden = Leiden(resolution_parameter=1.0)
-        predicted_labels = leiden.fit_predict(embeddings)
+        # Use KMeans clustering to get predicted clusters
+        # Determine number of clusters based on unique true labels
+        n_clusters = len(np.unique(true_labels))
+        if n_clusters > 1:
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            predicted_labels = kmeans.fit_predict(embeddings)
+        else:
+            # If only one true label, assign all to same cluster
+            predicted_labels = np.zeros(len(embeddings), dtype=int)
         
         # Compute ARI
         ari = adjusted_rand_score(true_labels, predicted_labels)
