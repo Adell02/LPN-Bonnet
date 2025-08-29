@@ -591,8 +591,20 @@ class StructuredTrainer:
         key = jax.random.PRNGKey(cfg.training.seed)
         logging.info("Starting structured training...")
         logging.info(f"Total steps: {num_steps}, Log every: {log_every}, Batch size: {self.batch_size}")
-        logging.info(f"Training schedule: Log every {log_every} steps, Eval every {cfg.training.get('eval_every_n_logs', 'disabled')} logs, Checkpoint every {cfg.training.get('save_checkpoint_every_n_logs', 'disabled')} logs")
-        logging.info(f"With current config: Eval every {log_every * cfg.training.get('eval_every_n_logs', 0)} steps, Checkpoint every {log_every * cfg.training.get('save_checkpoint_every_n_logs', 0)} steps")
+        eval_every_n_logs = cfg.training.get('eval_every_n_logs')
+        save_checkpoint_every_n_logs = cfg.training.get('save_checkpoint_every_n_logs')
+        
+        logging.info(f"Training schedule: Log every {log_every} steps, Eval every {eval_every_n_logs or 'disabled'} logs, Checkpoint every {save_checkpoint_every_n_logs or 'disabled'} logs")
+        
+        if eval_every_n_logs is not None:
+            logging.info(f"With current config: Eval every {log_every * eval_every_n_logs} steps")
+        else:
+            logging.info("With current config: Evaluation disabled")
+            
+        if save_checkpoint_every_n_logs is not None:
+            logging.info(f"With current config: Checkpoint every {log_every * save_checkpoint_every_n_logs} steps")
+        else:
+            logging.info("With current config: Checkpointing disabled")
         logging.info(f"Encoder exposure period: {self.encoder_expose_steps} steps (encoders trainable during this period)")
         logging.info(f"Repulsion KL coefficient: {cfg.training.get('repulsion_kl', 'disabled')}")
         

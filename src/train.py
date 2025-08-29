@@ -127,6 +127,7 @@ class Trainer:
         self.pairwise_kl_coeff = cfg.training.get("pairwise_kl_coeff")
         self.train_inference_mode = cfg.training.inference_mode
         self.train_inference_kwargs = cfg.training.get("inference_kwargs") or {}
+        self.online_data_augmentation = cfg.training.online_data_augmentation
 
         def train_one_step_accumulate(state, batch, key):
             grad_acc = self.gradient_accumulation_steps
@@ -290,7 +291,6 @@ class Trainer:
             num_rows, num_cols = self.model.encoder.config.max_rows, self.model.encoder.config.max_cols
             self.init_grids = jnp.zeros((1, num_pairs, num_rows, num_cols, 2), jnp.uint8)
             self.init_shapes = jnp.ones((1, num_pairs, 2, 2), jnp.uint8)
-        self.online_data_augmentation = cfg.training.online_data_augmentation
 
         # Load eval datasets (uniform structured option)
         self.eval_datasets = []
