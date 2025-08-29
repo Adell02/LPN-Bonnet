@@ -653,3 +653,88 @@ def visualize_optimization_comparison(
     return fig
 
 
+def visualize_struct_confidence_panel(
+    sample_grids: chex.Array,
+    sample_shapes: chex.Array,
+    encoder_mus: list[chex.Array],
+    encoder_logvars: list[chex.Array],
+    poe_mu: chex.Array,
+    poe_logvar: chex.Array,
+    title: str = "Structured Confidence Panel",
+    encoder_labels: list[str] | None = None,
+) -> plt.Figure:
+    """
+    Panel with:
+    - Top: the struct (input-output pairs) for one task
+    - Bottom-left: histogram of latent means per encoder and PoE
+    - Bottom-right: histogram of latent variances per encoder and PoE
+
+    Args:
+        sample_grids: [N, R, C, 2] for a single task (pairs)
+        sample_shapes: [N, 2, 2] shapes for that task
+        encoder_mus: list of [N, D] or [N, D] means per encoder (aggregated over pair dim if needed)
+        encoder_logvars: list of [N, D] logvars per encoder (same shape as mus)
+        poe_mu: [N, D] PoE mean
+        poe_logvar: [N, D] PoE logvar
+        encoder_labels: optional labels for legend order
+    """
+    import numpy as _np
+    num_pairs = int(sample_grids.shape[0])
+
+    fig = plt.figure(figsize=(16, 10))
+    grid = plt.GridSpec(3, 3, hspace=0.6, wspace=0.3)
+
+    # Top: struct visualization spanning all columns
+    ax_top = fig.add_subplot(grid[0:2, :])
+    # Render a compact grid of pairs inside ax_top
+    # We'll create a small mosaic: 2 rows (input/output) x num_pairs columns
+    inner_grid = plt.GridSpecFromSubplotSpec(2, num_pairs, subplot_spec=grid[0:2, :], wspace=0.1, hspace=0.15)
+    for i in range(num_pairs):
+        ax_in = fig.add_subplot(inner_grid[0, i])
+        display_grid(ax_in, _np.array(sample_grids[i, :, :, 0]), _np.array(sample_shapes[i, :, 0]))
+        if i == 0:
+            ax_in.set_title("Input")
+        ax_out = fig.add_subplot(inner_grid[1, i])
+        display_grid(ax_out, _np.array(sample_grids[i, :, :, 1]), _np.array(sample_shapes[i, :, 1]))
+        if i == 0:
+            ax_out.set_title("Output")
+
+    # Bottom-left: histogram of means
+    ax_means = fig.add_subplot(grid[2, 0])
+    # Bottom-right: histogram of variances
+    ax_vars = fig.add_subplot(grid[2, 1])
+
+    # Colors for encoders + PoE (consistent and distinct)
+    enc_colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+    poe_color = '#d62728'
+
+    if encoder_labels is None:
+        encoder_labels = [f"Encoder {i}" for i in range(len(encoder_mus))]
+
+    # Plot encoder distributions
+    for idx, (mu, logvar) in enumerate(zip(encoder_mus, encoder_logvars)):
+        mu_flat = _np.asarray(mu).reshape(-1)
+        var_flat = _np.exp(_np.asarray(logvar).reshape(-1))
+        color = enc_colors[idx % len(enc_colors)]
+        ax_means.hist(mu_flat, bins=30, alpha=0.5, color=color, label=encoder_labels[idx], density=True)
+        ax_vars.hist(var_flat, bins=30, alpha=0.5, color=color, label=encoder_labels[idx], density=True)
+
+    # Plot PoE distributions
+    poe_mu_flat = _np.asarray(poe_mu).reshape(-1)
+    poe_var_flat = _np.exp(_np.asarray(poe_logvar).reshape(-1))
+    ax_means.hist(poe_mu_flat, bins=30, histtype='step', linewidth=2.0, color=poe_color, label='PoE', density=True)
+    ax_vars.hist(poe_var_flat, bins=30, histtype='step', linewidth=2.0, color=poe_color, label='PoE', density=True)
+
+    ax_means.set_title("Latent Means")
+    ax_vars.set_title("Latent Variances")
+    ax_means.set_xlabel("mean")
+    ax_vars.set_xlabel("variance")
+    ax_means.set_ylabel("density")
+    ax_vars.set_ylabel("density")
+    ax_means.legend(frameon=True)
+    ax_vars.legend(frameon=True)
+
+    fig.suptitle(title, fontsize=14, fontweight='bold')
+    fig.tight_layout()
+    return fig
+

@@ -60,6 +60,7 @@ from visualization import (
     visualize_heatmap,
     visualize_tsne,
     visualize_tsne_sources,  # For different markers (encoders vs context)
+    visualize_struct_confidence_panel,
 )
 
 
@@ -943,14 +944,35 @@ class StructuredTrainer:
             (pixels_equal.sum(axis=(0)) / (mask.sum(axis=(0)) + 1e-5)),
             (mask.sum(axis=(0)) / (mask.sum() + 1e-5)),
         )
-        # Limit number of tasks shown for memory efficiency
+        # Limit number of tasks shown for memory efficiency, but STRATIFY across patterns (1,2,3)
         num_show = int(cfg.eval.get("num_tasks_to_show", 5))
         num_show = max(1, min(num_show, int(pairs_np.shape[0])))
+        # Determine per-pattern counts (at least 1 from each if possible)
+        per_pat = max(1, num_show // 3)
+        # Build indices for each pattern in a round-robin up to num_show
+        pat_idxs = {1: [], 2: [], 3: []}
+        for pid in (1, 2, 3):
+            candidates = np.where(pattern_sequence == pid)[0]
+            pat_idxs[pid] = list(candidates[:per_pat])
+        selected = pat_idxs[1] + pat_idxs[2] + pat_idxs[3]
+        # If we still need more (e.g., num_show not divisible by 3), append next available across patterns
+        if len(selected) < num_show:
+            extra_needed = num_show - len(selected)
+            # Concatenate remaining candidates
+            remaining = np.concatenate([
+                np.where(pattern_sequence == 1)[0][per_pat:],
+                np.where(pattern_sequence == 2)[0][per_pat:],
+                np.where(pattern_sequence == 3)[0][per_pat:],
+            ])
+            if remaining.size > 0:
+                selected.extend(list(remaining[:extra_needed]))
+        selected = np.array(selected[:num_show], dtype=int)
+
         # Visualization expects predicted grids/shapes with per-pair axis; tile our single prediction across pairs
         num_pairs = int(shapes_np.shape[1])
-        pred_grids_vis = np.repeat(out_grids_np[:num_show, None, ...], num_pairs, axis=1)
-        pred_shapes_vis = np.repeat(out_shapes_np[:num_show, None, :], num_pairs, axis=1)
-        fig_gen = visualize_dataset_generation(pairs_np[:num_show], shapes_np[:num_show], pred_grids_vis, pred_shapes_vis, num_show)
+        pred_grids_vis = np.repeat(out_grids_np[selected, None, ...], num_pairs, axis=1)
+        pred_shapes_vis = np.repeat(out_shapes_np[selected, None, :], num_pairs, axis=1)
+        fig_gen = visualize_dataset_generation(pairs_np[selected], shapes_np[selected], pred_grids_vis, pred_shapes_vis, len(selected))
 
         # 5. IMPLEMENT TSNE WITH ENCODERS + CONTEXT: Show both with different markers
         # We want to see: encoder outputs vs final generation context, both colored by PATTERN TYPE
@@ -1135,6 +1157,63 @@ class StructuredTrainer:
             f"test/{test_name}/latents": wandb.Image(fig_tsne),
             **metrics,
         })
+
+        # NEW: Confidence panel per pattern (one task per pattern)
+        try:
+            # Select one example index per pattern
+            panel_indices = []
+            for pid in (1, 2, 3):
+                pid_idxs = np.where(pattern_sequence == pid)[0]
+                if pid_idxs.size > 0:
+                    panel_indices.append(int(pid_idxs[0]))
+            # For each selected example, compute encoder means/vars and PoE aggregation on encoder latents
+            for pid, idx in zip((1, 2, 3), panel_indices):
+                # Build per-encoder latents for this single task
+                enc_mus = []
+                enc_logvars = []
+                for enc_idx, enc_params in enumerate(enc_params_list):
+                    mu_i, logvar_i = self.encoders[enc_idx].apply(
+                        {"params": enc_params}, 
+                        pairs[idx:idx+1], 
+                        shapes[idx:idx+1], 
+                        True, 
+                        mutable=False
+                    )
+                    # Average over pairs dimension -> [1, D]
+                    enc_mus.append(np.array(mu_i).mean(axis=-2))
+                    enc_logvars.append(np.array(logvar_i).mean(axis=-2))
+
+                # PoE on encoder latents (diagonal Gaussians): precision add with alphas
+                alphas_np = np.asarray(alphas)
+                precisions = [np.exp(-lv) for lv in enc_logvars]  # [1, D]
+                # Weighted sum of precisions
+                poe_precision = np.zeros_like(precisions[0])
+                for a, p in zip(alphas_np, precisions):
+                    poe_precision = poe_precision + a * p
+                poe_var = 1.0 / (poe_precision + 1e-8)
+                # PoE mean for completeness (not plotted directly in hist): sum(a_i * prec_i * mu_i) / sum(a_i * prec_i)
+                num = np.zeros_like(enc_mus[0])
+                for a, p, m in zip(alphas_np, precisions, enc_mus):
+                    num = num + a * p * m
+                poe_mu = num / (poe_precision + 1e-8)
+                poe_logvar = np.log(poe_var + 1e-8)
+
+                panel_title = f"Pattern {pid} - Confidence"
+                enc_labels = [f"Encoder {i}" for i in range(len(enc_mus))]
+                fig_panel = visualize_struct_confidence_panel(
+                    sample_grids=pairs_np[idx],
+                    sample_shapes=shapes_np[idx],
+                    encoder_mus=[em.squeeze(0) for em in enc_mus],
+                    encoder_logvars=[ev.squeeze(0) for ev in enc_logvars],
+                    poe_mu=poe_mu.squeeze(0),
+                    poe_logvar=poe_logvar.squeeze(0),
+                    title=panel_title,
+                    encoder_labels=enc_labels,
+                )
+                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)})
+                plt.close(fig_panel)
+        except Exception as e:
+            logging.warning(f"Confidence panel generation failed: {e}")
 
         # Free figures to save memory
         import matplotlib.pyplot as plt
