@@ -1053,6 +1053,7 @@ class StructuredTrainer:
         all_latents = []
         source_ids = []  # 0, 1, 2 for encoders, 3 for generation context
         pattern_ids_list = []  # pattern types (1, 2, 3) for each point - same across all sources
+        task_ids_list = []  # task indices so we can label points from the same task
         
         # Create pattern-based coloring: 32 samples per pattern (O, T, L tetrominos)
         num_sets = self.eval_grids.shape[0]  # Should be 96
@@ -1065,7 +1066,12 @@ class StructuredTrainer:
             np.ones(samples_per_pattern, dtype=int) * 3   # Pattern 3 (L-tetromino)
         ])
         
-        logging.info(f"T-SNE pattern mapping: {samples_per_pattern} samples per pattern, total patterns: {np.unique(pattern_sequence)}")
+        logging.info(
+            f"T-SNE pattern mapping: {samples_per_pattern} samples per pattern, total patterns: {np.unique(pattern_sequence)}"
+        )
+
+        # Task IDs: each of the num_sets tasks contributes one point per source
+        task_id_sequence = np.arange(num_sets, dtype=int)
         
         # Add individual encoder latents (unique source_id per encoder)
         for enc_idx, enc_params in enumerate(current_enc_params_list):
@@ -1104,6 +1110,7 @@ class StructuredTrainer:
                 all_latents.append(lat_np)
                 source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
                 pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for each encoder
+                task_ids_list.append(task_id_sequence)  # Same task IDs for each encoder output
                 
             except Exception as e:
                 logging.error(f"Main eval - Encoder {enc_idx} failed: {e}")
@@ -1138,6 +1145,7 @@ class StructuredTrainer:
                 all_latents.append(context_np)
                 source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for generation context
                 pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for context
+                task_ids_list.append(task_id_sequence)  # Task IDs for context points
                 logging.info(f"Main eval - Added context to T-SNE: {len(context_np)} points")
         else:
             logging.warning(f"Main eval - No 'context' key found in info. Available keys: {list(info.keys())}")
@@ -1146,6 +1154,7 @@ class StructuredTrainer:
             latents_concat = np.concatenate(all_latents, axis=0)
             source_ids_np = np.array(source_ids)
             pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
+            task_ids_np = np.concatenate(task_ids_list, axis=0)
             
             # Log T-SNE structure: each pattern should have multiple sets with 4 points each (3 encoders + 1 context)
             total_points = latents_concat.shape[0]
@@ -1186,6 +1195,7 @@ class StructuredTrainer:
                     latents_concat = latents_concat[point_indices]
                     source_ids_np = source_ids_np[point_indices]
                     pattern_ids_concat = pattern_ids_concat[point_indices]
+                    task_ids_np = task_ids_np[point_indices]
                     
                     logging.info(f"T-SNE downsampled: {len(point_indices)} points, maintaining pattern distribution")
                 else:
@@ -1197,7 +1207,8 @@ class StructuredTrainer:
                 program_ids=pattern_ids_concat,  # Pattern types (1, 2, 3) for colors
                 source_ids=source_ids_np,        # 0,1,2 for encoders, 3 for context
                 max_points=max_points,
-                random_state=42
+                random_state=42,
+                task_ids=task_ids_np,
             )
             
             # COMPUTE CLUSTERING METRICS AND UPLOAD TO WANDB
@@ -1522,7 +1533,10 @@ class StructuredTrainer:
                 logging.info(
                     f"Test dataset pattern types: {np.unique(pattern_ids_np)}"
                 )
-                
+
+                task_id_sequence = np.arange(dataset_grids.shape[0], dtype=int)
+                task_ids_list = []
+
                 # Add encoder outputs (unique source_id per encoder)
                 for enc_idx, enc_params in enumerate(current_enc_params_list):
                     try:
@@ -1558,6 +1572,7 @@ class StructuredTrainer:
                         all_latents.append(lat_np)
                         source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
                         pattern_ids_list.append(pattern_ids_np)
+                        task_ids_list.append(task_id_sequence)
                         
                     except Exception as e:
                         logging.error(f"Test eval - Encoder {enc_idx} failed: {e}")
@@ -1587,11 +1602,13 @@ class StructuredTrainer:
                 all_latents.append(context_np)
                 source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for context
                 pattern_ids_list.append(pattern_ids_np)
+                task_ids_list.append(task_id_sequence)
                 
                 if all_latents:
                     latents_concat = np.concatenate(all_latents, axis=0)
                     source_ids_np = np.array(source_ids)
                     pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
+                    task_ids_np = np.concatenate(task_ids_list, axis=0)
                     
                     # Log T-SNE structure for test datasets
                     total_points = latents_concat.shape[0]
@@ -1608,7 +1625,8 @@ class StructuredTrainer:
                         program_ids=pattern_ids_concat,
                         source_ids=source_ids_np,
                         max_points=500,
-                        random_state=42
+                        random_state=42,
+                        task_ids=task_ids_np,
                     )
                     
                     # COMPUTE CLUSTERING METRICS FOR TEST DATASETS
