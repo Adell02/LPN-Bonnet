@@ -2451,7 +2451,8 @@ def main() -> None:
     elite_size = args.elite_size if args.elite_size is not None else max(1, pop // 2)
     print(
         f"🧬 ES config: population={pop}, generations={gens} (mutation_std={args.es_mutation_std}, mutation_decay={mutation_decay}, elite_size={elite_size})"
-    )    print(f"   🎯 ES starts from mean latent (same as GA)")
+    )    
+    print(f"   🎯 ES starts from mean latent (same as GA)")
     es_out = os.path.join(args.out_dir, "es_latents.npz")
     es_cmd = [
         sys.executable, "src/evaluate_checkpoint.py",
