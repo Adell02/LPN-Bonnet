@@ -61,7 +61,8 @@ training:
   pairwise_kl_coeff: null
   total_num_steps: 2000
   encoder_expose_steps: 1000  # number of initial gradient steps encoders are trainable
-  repulsion_kl: 1e-3
+  repulsion_kl: 0
+  constrastive_kl: 1e-4
   log_every_n_steps: 5
   eval_every_n_logs: 50       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable

@@ -83,6 +83,8 @@ class StructuredLPN(nn.Module):
         encoder_params_list: Optional[Sequence[dict]] = None,
         decoder_params: Optional[dict] = None,
         repulsion_kl_coeff: Optional[float] = None,
+        contrastive_kl_coeff: Optional[float] = None,
+        pattern_ids: Optional[chex.Array] = None,
         **mode_kwargs,
     ) -> tuple[chex.Array, dict]:
         """Forward pass mirroring LPN but with PoE latents from multiple encoders.
@@ -105,6 +107,8 @@ class StructuredLPN(nn.Module):
                 "poe_alphas_mean": jnp.array(0.0),
                 "repulsion_loss": jnp.array(0.0),
                 "repulsion_loss_weighted": jnp.array(0.0),
+                "contrastive_loss": jnp.array(0.0),
+                "contrastive_loss_weighted": jnp.array(0.0),
             }
             return dummy_loss, dummy_metrics
 
@@ -169,6 +173,24 @@ class StructuredLPN(nn.Module):
                 logging.warning(f"Encoder repulsion loss computation failed: {e}. Skipping repulsion loss.")
                 repulsion_loss = 0.0
 
+        # Compute contrastive loss to encourage encoder specialization
+        contrastive_loss = 0.0
+        if (
+            contrastive_kl_coeff is not None
+            and contrastive_kl_coeff > 0
+            and pattern_ids is not None
+        ):
+            try:
+                contrastive_loss = self._compute_contrastive_loss(
+                    mus, logvars, mu_poe, logvar_poe, pattern_ids
+                )
+                loss += contrastive_kl_coeff * contrastive_loss
+            except Exception as e:
+                logging.warning(
+                    f"Contrastive loss computation failed: {e}. Skipping contrastive loss."
+                )
+                contrastive_loss = 0.0
+
         # Add PoE-specific metrics
         metrics = dict(metrics)
         metrics.update(
@@ -176,14 +198,19 @@ class StructuredLPN(nn.Module):
             poe_num_encoders=E,
             poe_alphas_mean=jnp.mean(poe_alphas),
         )
-        
-        # Add repulsion loss metrics
+
+        # Add repulsion and contrastive loss metrics
         if repulsion_kl_coeff is not None and repulsion_kl_coeff > 0:
             metrics.update(
                 repulsion_loss=repulsion_loss,
                 repulsion_loss_weighted=repulsion_kl_coeff * repulsion_loss,
             )
-            
+        if contrastive_kl_coeff is not None and contrastive_kl_coeff > 0:
+            metrics.update(
+                contrastive_loss=contrastive_loss,
+                contrastive_loss_weighted=contrastive_kl_coeff * contrastive_loss,
+            )
+
         return loss, metrics
 
     def generate_output(
@@ -433,6 +460,33 @@ class StructuredLPN(nn.Module):
         
         # Return average KL divergence across all encoder pairs
         return total_kl / max(num_pairs, 1)
+
+    def _compute_contrastive_loss(
+        self,
+        mus: chex.Array,
+        logvars: chex.Array,
+        mu_poe: chex.Array,
+        logvar_poe: chex.Array,
+        pattern_ids: chex.Array,
+    ) -> chex.Array:
+        """Compute contrastive KL loss for encoder specialization."""
+        E = mus.shape[0]
+        if E == 0:
+            return 0.0
+        var_poe = jnp.exp(logvar_poe)
+        var_enc = jnp.exp(logvars)
+        # KL(q_e || p_poe) for each encoder e
+        kl = 0.5 * (
+            (logvar_poe[None, ...] - logvars)
+            + (var_enc + jnp.square(mus - mu_poe[None, ...])) / (var_poe[None, ...] + 1e-8)
+            - 1.0
+        )
+        kl = jnp.mean(kl, axis=(-2, -1))  # (E, B)
+
+        enc_ids = jnp.arange(1, E + 1, dtype=pattern_ids.dtype)[:, None]
+        sign = jnp.where(pattern_ids[None, :] == enc_ids, 1.0, -1.0)
+        contrastive = jnp.mean(sign * kl)
+        return contrastive
 
 
 
