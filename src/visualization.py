@@ -291,7 +291,7 @@ def visualize_tsne(latents, program_ids, perplexity=2, max_iter=1000, random_sta
     for id in unique_ids:
         mask = np.array(program_ids) == id
         points = embeddings_2d[mask]
-        ax.scatter(points[:, 0], points[:, 1], c=[color_map[id]], label=f"Program {id}", alpha=0.7, s=50)
+        ax.scatter(points[:, 0], points[:, 1], c=[color_map[id]], label=f"Program {id}", alpha=0.7, s=100)
 
         # Add numbering to each point
         for point in points:
@@ -458,7 +458,7 @@ def visualize_tsne_sources(
                     c=[color], 
                     marker=mk, 
                     alpha=0.7, 
-                    s=50,
+                    s=100,
                     edgecolors='none'
                 )
 
