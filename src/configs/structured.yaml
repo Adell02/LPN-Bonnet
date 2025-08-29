@@ -81,7 +81,7 @@ eval:
   num_tasks_to_show: 5
   tsne_max_points: 200  # Should be divisible by 4 (points per group: 3 encoders + 1 context) for clean sampling  
   # Test datasets for comprehensive evaluation across all patterns
-  test_datasets:
+  eval_datasets:
     - generator: "STRUCT_PATTERN"
       name: "pattern_1"
       num_pairs: 4
@@ -106,5 +106,6 @@ eval:
         pattern: 3  # L-tetromino
       batch_size: 96
       num_tasks_to_show: 5
+  test_datasets: []
 
 
