@@ -1265,8 +1265,18 @@ class StructuredTrainer:
         alphas = jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32)
             
         # Create leave_one_out data
-        leave_one_out_grids = make_leave_one_out(dataset_grids, axis=-4)
-        leave_one_out_shapes = make_leave_one_out(dataset_shapes, axis=-3)
+        raw_leave_one_out_grids = make_leave_one_out(dataset_grids, axis=-4)
+        raw_leave_one_out_shapes = make_leave_one_out(dataset_shapes, axis=-3)
+
+        # make_leave_one_out currently returns data with an extra dimension
+        # (L, N, N-1, ...). Slice away the redundant axis to match the
+        # expected shapes used by the model just like we do during evaluation.
+        if raw_leave_one_out_grids.shape[1] == dataset_grids.shape[1]:
+            leave_one_out_grids = raw_leave_one_out_grids[:, 0, ...]
+            leave_one_out_shapes = raw_leave_one_out_shapes[:, 0, ...]
+        else:
+            leave_one_out_grids = raw_leave_one_out_grids
+            leave_one_out_shapes = raw_leave_one_out_shapes
         
         # Process in batches
         all_output_grids = []
