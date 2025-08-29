@@ -823,7 +823,7 @@ class StructuredTrainer:
                 # Use generate_output method for evaluation (like train.py does)
                 # Use apply with method parameter and pass all arguments as keyword arguments
                 batch_output_grids, batch_output_shapes, batch_info = self.model.apply(
-                    {"params": state.params},
+                    {"params": state.params["decoder"]},
                     method=self.model.generate_output,
                     pairs=batch_leave_one_out_pairs,  # support pairs
                     grid_shapes=batch_leave_one_out_shapes, # support shapes
@@ -834,8 +834,8 @@ class StructuredTrainer:
                     mode=cfg.eval.inference_mode,  # mode
                     return_two_best=False,  # return_two_best
                     poe_alphas=alphas,  # poe_alphas
-                    encoder_params_list=enc_params_list,  # encoder_params_list
-                    decoder_params=state.params,  # decoder_params
+                    encoder_params_list=state.params["encoders"],  # encoder_params_list
+                    decoder_params=state.params["decoder"],  # decoder_params
                 )
                 
                 all_output_grids.append(batch_output_grids)
@@ -1287,7 +1287,7 @@ class StructuredTrainer:
             try:
                 # Generate output using leave_one_out approach
                 batch_output_grids, batch_output_shapes, batch_info = self.model.apply(
-                    {"params": state.params},
+                    {"params": state.params["decoder"]},
                     method=self.model.generate_output,
                     pairs=batch_leave_one_out_grids,
                     grid_shapes=batch_leave_one_out_shapes,
@@ -1298,8 +1298,8 @@ class StructuredTrainer:
                     mode=inference_mode,
                     return_two_best=False,
                     poe_alphas=alphas,  # Use the same alphas as main evaluation
-                    encoder_params_list=enc_params_list,
-                    decoder_params=state.params,
+                    encoder_params_list=state.params["encoders"],
+                    decoder_params=state.params["decoder"],
                 )
                 
                 # Normalize context to 2D (num_points, latent_dim) to avoid concat shape mismatches
