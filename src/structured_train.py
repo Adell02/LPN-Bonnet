@@ -545,6 +545,28 @@ class StructuredTrainer:
             rng = keys[i]
             
             def loss_fn(full_params, batch_pairs, batch_shapes, rng):
+                # Generate pattern_ids for contrastive loss: each batch has balanced patterns
+                # Since we have 3 patterns (O, T, L tetrominos) and batch_size samples,
+                # we need to create pattern_ids that correspond to the pattern sequence
+                # The pattern_ids should align with the encoder specialization:
+                # - Encoder 0 specializes in Pattern 1 (O-tetromino)
+                # - Encoder 1 specializes in Pattern 2 (T-tetromino) 
+                # - Encoder 2 specializes in Pattern 3 (L-tetromino)
+                batch_size = batch_pairs.shape[0]
+                
+                # Create a more robust pattern_id sequence that handles any batch size
+                # We want to ensure each pattern gets roughly equal representation
+                pattern_sequence = []
+                for i in range(batch_size):
+                    pattern_id = (i % 3) + 1  # Cycles through 1, 2, 3
+                    pattern_sequence.append(pattern_id)
+                
+                pattern_ids = jnp.array(pattern_sequence, dtype=jnp.int32)
+                
+                # Log pattern distribution for debugging
+                unique_patterns, counts = jnp.unique(pattern_ids, return_counts=True)
+                logging.debug(f"Batch pattern distribution: {dict(zip(unique_patterns, counts))}")
+                
                 loss, metrics = self.model.apply(
                     {"params": full_params["decoder"]},
                     batch_pairs,
@@ -557,7 +579,9 @@ class StructuredTrainer:
                     rngs={"dropout": rng, "latents": rng},
                     prior_kl_coeff=self.cfg.training.get("prior_kl_coeff"),
                     pairwise_kl_coeff=self.cfg.training.get("pairwise_kl_coeff"),
-                    repulsion_kl_coeff=self.cfg.training.get("repulsion_kl"),  # ADD REPULSION LOSS
+                    repulsion_kl_coeff=self.cfg.training.get("repulsion_kl"),
+                    contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),  # ADD CONTRASTIVE LOSS
+                    pattern_ids=pattern_ids,  # ADD PATTERN IDS FOR CONTRASTIVE LOSS
                     **(self.cfg.training.get("inference_kwargs") or {}),
                 )
                 return loss, metrics
@@ -583,6 +607,14 @@ class StructuredTrainer:
         # Log repulsion loss if present
         if "repulsion_loss" in avg_metrics:
             logging.info(f"Repulsion loss: {float(avg_metrics['repulsion_loss']):.6f} (weighted: {float(avg_metrics.get('repulsion_loss_weighted', 0)):.6f})")
+        
+        # Log contrastive loss if present
+        if "contrastive_loss" in avg_metrics:
+            logging.info(f"Contrastive loss: {float(avg_metrics['contrastive_loss']):.6f} (weighted: {float(avg_metrics.get('contrastive_loss_weighted', 0)):.6f})")
+            if "contrastive_kl_mean" in avg_metrics:
+                logging.info(f"  - KL mean: {float(avg_metrics['contrastive_kl_mean']):.6f}")
+            if "contrastive_sign_mean" in avg_metrics:
+                logging.info(f"  - Sign mean: {float(avg_metrics['contrastive_sign_mean']):.6f}")
         
         # Decrement exposure counter by number of gradient steps completed
         self.encoder_expose_steps = max(0, self.encoder_expose_steps - num_steps)
@@ -615,11 +647,28 @@ class StructuredTrainer:
             logging.info("With current config: Checkpointing disabled")
         logging.info(f"Encoder exposure period: {self.encoder_expose_steps} steps (encoders trainable during this period)")
         logging.info(f"Repulsion KL coefficient: {cfg.training.get('repulsion_kl', 'disabled')}")
+        logging.info(f"Contrastive KL coefficient: {cfg.training.get('contrastive_kl', 'disabled')}")
+        logging.info(f"Training with {len(cfg.structured.artifacts.models)} encoders for pattern specialization")
         
         # Test forward pass first to catch any issues early
         logging.info("Testing forward pass...")
         try:
             test_batch = self.train_grids[:self.batch_size], self.train_shapes[:self.batch_size]
+            # Generate pattern_ids for test forward pass
+            test_batch_size = test_batch[0].shape[0]
+            
+            # Create a more robust pattern_id sequence that handles any batch size
+            test_pattern_sequence = []
+            for i in range(test_batch_size):
+                pattern_id = (i % 3) + 1  # Cycles through 1, 2, 3
+                test_pattern_sequence.append(pattern_id)
+            
+            test_pattern_ids = jnp.array(test_pattern_sequence, dtype=jnp.int32)
+            
+            # Log test pattern distribution for debugging
+            unique_patterns, counts = jnp.unique(test_pattern_ids, return_counts=True)
+            logging.debug(f"Test batch pattern distribution: {dict(zip(unique_patterns, counts))}")
+            
             test_loss, test_metrics = self.model.apply(
                 {"params": state.params["decoder"]},
                 *test_batch,
@@ -631,7 +680,9 @@ class StructuredTrainer:
                 rngs={"dropout": key, "latents": key},
                 prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
                 pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
-                repulsion_kl_coeff=cfg.training.get("repulsion_kl"),  # repulsion_kl_coeff
+                repulsion_kl_coeff=cfg.training.get("repulsion_kl"),
+                contrastive_kl_coeff=cfg.training.get("contrastive_kl"),  # ADD CONTRASTIVE LOSS
+                pattern_ids=test_pattern_ids,  # ADD PATTERN IDS FOR CONTRASTIVE LOSS
                 **(cfg.training.get("inference_kwargs") or {}),
             )
             logging.info(f"Forward pass test successful: loss={float(test_loss):.4f}")
@@ -711,6 +762,17 @@ class StructuredTrainer:
                     "timing/train_time": end - start,
                     "timing/train_num_samples_per_second": throughput
                 })
+                
+                # Add contrastive loss to Charts section for better visualization
+                if "contrastive_loss" in metrics:
+                    metrics["Charts/contrastive_loss"] = metrics["contrastive_loss"]
+                    metrics["Charts/contrastive_loss_weighted"] = metrics["contrastive_loss_weighted"]
+                    # Add additional contrastive loss metrics to Charts
+                    if "contrastive_kl_mean" in metrics:
+                        metrics["Charts/contrastive_kl_mean"] = metrics["contrastive_kl_mean"]
+                    if "contrastive_sign_mean" in metrics:
+                        metrics["Charts/contrastive_sign_mean"] = metrics["contrastive_sign_mean"]
+                
                 wandb.log(metrics, step=step)
 
                 # Save checkpoint
