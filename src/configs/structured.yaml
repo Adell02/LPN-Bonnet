@@ -67,6 +67,7 @@ training:
   struct_patterns_balanced: true
   struct_num_pairs: 4          # 4 pairs per task (input + output)
   num_workers: 4               # Number of workers for data generation
+  pattern_per_task: true
   # Training: 1024 total samples (341 per pattern: O, T, L tetrominos)
   # Evaluation: 96 total samples (32 per pattern: O, T, L tetrominos)
 
