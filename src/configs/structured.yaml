@@ -60,7 +60,7 @@ training:
   prior_kl_coeff: null
   pairwise_kl_coeff: null
   total_num_steps: 2000
-  encoder_expose_steps: 500  # number of initial gradient steps encoders are trainable
+  encoder_expose_steps: 1000  # number of initial gradient steps encoders are trainable
   repulsion_kl: 1e-3
   log_every_n_steps: 5
   eval_every_n_logs: 50       # null to disable
@@ -81,7 +81,7 @@ eval:
   batch_size: 96  # batch size for evaluation (like train.py)
   inference_mode: "mean"
   inference_kwargs: {}
-  num_tasks_to_show: 5
+  num_tasks_to_show: 3
   tsne_max_points: 1536  # Should be divisible by 4 (points per group: 3 encoders + 1 context) for clean sampling  
   # Test datasets for comprehensive evaluation across all patterns
   eval_datasets:
