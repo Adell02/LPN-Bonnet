@@ -1207,28 +1207,18 @@ class StructuredTrainer:
                     decoder_params=state.params,
                 )
                 
-                # Debug: log batch info structure and shapes
-                logging.info(f"Test batch {i} - batch_info keys: {list(batch_info.keys())}")
-                if "context" in batch_info:
-                    context_shape = batch_info['context'].shape
-                    logging.info(f"Test batch {i} - context shape: {context_shape}")
-                    logging.info(f"Test batch {i} - context type: {type(batch_info['context'])}")
-                    logging.info(f"Test batch {i} - context device: {batch_info['context'].device() if hasattr(batch_info['context'], 'device') else 'N/A'}")
-                    
-                    # Check if context has unexpected dimensions
-                    if len(context_shape) > 2:
-                        logging.warning(f"Test batch {i} - Context has {len(context_shape)} dimensions, expected 2")
-                        logging.warning(f"Test batch {i} - Context shape breakdown: {context_shape}")
-                else:
-                    logging.info(f"Test batch {i} - No context key in batch_info")
-                
-                # Debug: log other batch info keys and their shapes
-                for key, value in batch_info.items():
-                    if key != "context":
-                        if hasattr(value, 'shape'):
-                            logging.info(f"Test batch {i} - {key} shape: {value.shape}")
-                        else:
-                            logging.info(f"Test batch {i} - {key} type: {type(value)}")
+                # Normalize context to 2D (num_points, latent_dim) to avoid concat shape mismatches
+                if "context" in batch_info and batch_info["context"] is not None:
+                    ctx = batch_info["context"]
+                    try:
+                        # Flatten all leading dims into one
+                        ctx = ctx.reshape(-1, ctx.shape[-1])
+                    except Exception:
+                        # As a fallback, convert to array then reshape
+                        import numpy as _np
+                        ctx = _np.array(ctx)
+                        ctx = ctx.reshape(-1, ctx.shape[-1])
+                    batch_info["context"] = ctx
                 
                 all_output_grids.append(batch_output_grids)
                 all_output_shapes.append(batch_output_shapes)
@@ -1250,35 +1240,26 @@ class StructuredTrainer:
         info = {}
         for key in all_info[0].keys():
             if key == "context":
-                contexts = [inf[key] for inf in all_info]
-                # Debug: log context dimensions before concatenation
-                logging.info(f"Test - About to concatenate {len(contexts)} contexts")
-                for i, ctx in enumerate(contexts):
-                    logging.info(f"Test batch {i} context shape: {ctx.shape}")
-                    logging.info(f"Test batch {i} context dtype: {ctx.dtype}")
-                    logging.info(f"Test batch {i} context device: {ctx.device() if hasattr(ctx, 'device') else 'N/A'}")
-                
-                # Check if all contexts have the same shape
-                shapes = [ctx.shape for ctx in contexts]
-                if len(set(shapes)) > 1:
-                    logging.error(f"Test - Context shapes are inconsistent: {shapes}")
-                    logging.error(f"Test - Cannot concatenate contexts with different shapes")
-                    # Try to reshape them to be consistent
-                    logging.info(f"Test - Attempting to reshape contexts to be consistent")
-                    for i, ctx in enumerate(contexts):
-                        if len(ctx.shape) > 2:
-                            # If context has more than 2 dimensions, try to flatten
-                            logging.info(f"Test batch {i} - Reshaping context from {ctx.shape} to {ctx.reshape(-1, ctx.shape[-1]).shape}")
-                            contexts[i] = ctx.reshape(-1, ctx.shape[-1])
-                
-                try:
+                # All batch contexts are already normalized to 2D above
+                contexts = []
+                for inf in all_info:
+                    ctx = inf.get(key)
+                    if ctx is None:
+                        continue
+                    # Ensure 2D shape
+                    if len(ctx.shape) != 2:
+                        try:
+                            ctx = ctx.reshape(-1, ctx.shape[-1])
+                        except Exception:
+                            import numpy as _np
+                            ctx = _np.array(ctx).reshape(-1, ctx.shape[-1])
+                    contexts.append(ctx)
+
+                if contexts:
                     info[key] = jnp.concatenate(contexts, axis=0)
                     logging.info(f"Test merged context shape: {info[key].shape}")
-                except Exception as e:
-                    logging.error(f"Test - Failed to concatenate contexts: {e}")
-                    logging.error(f"Test - Context shapes after reshaping: {[ctx.shape for ctx in contexts]}")
-                    # Continue without context for now
-                    continue
+                else:
+                    logging.info("Test - No context tensors to merge")
             else:
                 info[key] = all_info[0][key]
         
