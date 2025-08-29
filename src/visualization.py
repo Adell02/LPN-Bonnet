@@ -354,6 +354,9 @@ def visualize_tsne_sources(
 
     # Get unique program IDs (pattern types)
     unique_ids = np.unique(prog_np)
+    
+    # Get unique source IDs (encoders + context)
+    unique_sources = sorted(list(np.unique(src_np)))
 
     # Define colors for patterns and shapes for sources
     pattern_colors = {
