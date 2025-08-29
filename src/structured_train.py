@@ -588,8 +588,10 @@ class StructuredTrainer:
         key = jax.random.PRNGKey(cfg.training.seed)
         logging.info("Starting structured training...")
         logging.info(f"Total steps: {num_steps}, Log every: {log_every}, Batch size: {self.batch_size}")
-        logging.info(f"Training schedule: Log every {log_every} steps, Eval every {cfg.training.get('eval_every_n_logs', 'disabled')} logs, Checkpoint every {cfg.training.get('save_checkpoint_every_n_logs', 'disabled')} logs")
-        logging.info(f"With current config: Eval every {log_every * cfg.training.get('eval_every_n_logs', 0)} steps, Checkpoint every {log_every * cfg.training.get('save_checkpoint_every_n_logs', 0)} steps")
+        eval_n_logs = int(cfg.training.get("eval_every_n_logs") or 0)
+        ckpt_n_logs = int(cfg.training.get("save_checkpoint_every_n_logs") or 0)
+        logging.info(f"Training schedule: Log every {log_every} steps, Eval every {eval_n_logs} logs, Checkpoint every {ckpt_n_logs or 'disabled'} logs")
+        logging.info(f"With current config: Eval every {log_every * eval_n_logs} steps, Checkpoint every {log_every * ckpt_n_logs if ckpt_n_logs else 'disabled'} steps")
         
         # Test forward pass first to catch any issues early
         logging.info("Testing forward pass...")
