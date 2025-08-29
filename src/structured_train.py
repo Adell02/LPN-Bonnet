@@ -590,6 +590,42 @@ class StructuredTrainer:
         logging.info("Starting training loop...")
         pbar = trange(num_steps, disable=False)
         
+        # Run evaluation at step 0 (first step)
+        if cfg.training.get("eval_every_n_logs"):
+            try:
+                logging.info(f"Running evaluation at step 0 (first step)")
+                self.evaluate(state, enc_params_list)
+                
+                # Test datasets evaluation at first step
+                if hasattr(self, 'test_datasets') and self.test_datasets:
+                    for dataset_dict in self.test_datasets:
+                        try:
+                            start = time.time()
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress = self.test_dataset_submission(
+                                state, enc_params_list, **dataset_dict
+                            )
+                            test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
+                            
+                            # Upload all figures
+                            for fig, name in [
+                                (fig_grids, "generation"),
+                                (fig_heatmap, "pixel_accuracy"),
+                                (fig_latents, "latents"),
+                                (fig_latents_samples, "latents_samples"),
+                                (fig_search_progress, "search_progress"),
+                            ]:
+                                if fig is not None:
+                                    test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)
+                            
+                            wandb.log(test_metrics, step=0)
+                            plt.close('all')  # Close all figures to prevent memory leaks
+                            
+                        except Exception as e:
+                            logging.warning(f"Test dataset {dataset_dict['test_name']} failed at step 0: {e}")
+                            
+            except Exception as e:
+                logging.warning(f"Initial evaluation failed: {e}")
+        
         while step < num_steps:
             key, epoch_key = jax.random.split(key)
             # Prepare dataset for this epoch
@@ -914,15 +950,24 @@ class StructuredTrainer:
         fig_gen = visualize_dataset_generation(pairs_np[:num_show], shapes_np[:num_show], pred_grids_vis, pred_shapes_vis, num_show)
 
         # 5. IMPLEMENT TSNE WITH ENCODERS + CONTEXT: Show both with different markers
-        # We want to see: encoder outputs vs final generation context, both colored by sample index
-        # This allows us to compare how the SAME sample is represented across different sources
+        # We want to see: encoder outputs vs final generation context, both colored by PATTERN TYPE
+        # This allows us to compare how the SAME PATTERN is represented across different sources
         all_latents = []
         source_ids = []  # 0, 1, 2 for encoders, 3 for generation context
-        sample_ids_list = []  # sample indices (0-95) for each point - same across all sources
+        pattern_ids_list = []  # pattern types (1, 2, 3) for each point - same across all sources
         
-        # Create sample indices (0-95) - each sample gets a unique ID
-        num_samples = self.eval_grids.shape[0]  # Should be 96
-        sample_sequence = np.arange(num_samples)  # [0, 1, 2, ..., 95]
+        # Create pattern-based coloring: 32 samples per pattern (O, T, L tetrominos)
+        num_sets = self.eval_grids.shape[0]  # Should be 96
+        samples_per_pattern = num_sets // 3  # Should be 32
+        
+        # Pattern mapping: sets 0-31 = pattern 1 (O), sets 32-63 = pattern 2 (T), sets 64-95 = pattern 3 (L)
+        pattern_sequence = np.concatenate([
+            np.ones(samples_per_pattern, dtype=int),      # Pattern 1 (O-tetromino)
+            np.ones(samples_per_pattern, dtype=int) * 2,  # Pattern 2 (T-tetromino) 
+            np.ones(samples_per_pattern, dtype=int) * 3   # Pattern 3 (L-tetromino)
+        ])
+        
+        logging.info(f"T-SNE pattern mapping: {samples_per_pattern} samples per pattern, total patterns: {np.unique(pattern_sequence)}")
         
         # Add individual encoder latents (unique source_id per encoder)
         for enc_idx, enc_params in enumerate(enc_params_list):
@@ -960,7 +1005,7 @@ class StructuredTrainer:
                 logging.info(f"Main eval - Encoder {enc_idx} - final latent shape: {lat_np.shape}")
                 all_latents.append(lat_np)
                 source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
-                sample_ids_list.append(sample_sequence)  # Same sample sequence for each encoder
+                pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for each encoder
                 
             except Exception as e:
                 logging.error(f"Main eval - Encoder {enc_idx} failed: {e}")
@@ -972,28 +1017,75 @@ class StructuredTrainer:
             if generation_context is not None:
                 # Reshape like train.py does
                 context_np = np.array(generation_context).reshape(-1, generation_context.shape[-1])
+                
+                # Log the context latent dimension
+                context_latent_dim = context_np.shape[-1]
+                logging.info(f"Main eval - Context latent dim: {context_latent_dim}")
+                
+                if context_latent_dim != 32:
+                    logging.warning(f"Main eval - Context has unexpected latent dim: {context_latent_dim}, expected 32")
+                    
+                    # Ensure consistent latent dimension for T-SNE
+                    if context_latent_dim < 32:
+                        # Pad with zeros
+                        padding = np.zeros((context_np.shape[0], 32 - context_latent_dim))
+                        context_np = np.concatenate([context_np, padding], axis=1)
+                    else:
+                        # Truncate
+                        context_np = context_np[:, :32]
+                    
+                    logging.info(f"Main eval - Context final latent shape: {context_np.shape}")
+                
                 all_latents.append(context_np)
                 source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for generation context
-                sample_ids_list.append(sample_sequence)  # Same sample sequence for context
+                pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for context
         
         if all_latents:
             latents_concat = np.concatenate(all_latents, axis=0)
             source_ids_np = np.array(source_ids)
-            sample_ids_concat = np.concatenate(sample_ids_list, axis=0)
+            pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
+            
+            # Log T-SNE structure: each pattern should have multiple sets with 4 points each (3 encoders + 1 context)
+            total_points = latents_concat.shape[0]
+            total_patterns = 3  # O, T, L tetrominos
+            points_per_pattern = total_points // total_patterns
+            logging.info(f"T-SNE structure: {total_points} total points, {total_patterns} patterns, {points_per_pattern} points per pattern")
+            logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
             
             # Downsample points for t-SNE to be memory efficient
             max_points = int(cfg.eval.get("tsne_max_points", 500))
             if latents_concat.shape[0] > max_points:
-                idx = np.random.RandomState(42).choice(latents_concat.shape[0], size=max_points, replace=False)
-                latents_concat = latents_concat[idx]
-                source_ids_np = source_ids_np[idx]
-                sample_ids_concat = sample_ids_concat[idx]
+                # IMPORTANT: Sample by PATTERNS, not individual points, to maintain pattern relationships
+                # Each pattern has multiple sets, each with 4 points
+                points_per_pattern = total_points // total_patterns
+                max_patterns = max_points // points_per_pattern
+                if max_patterns > 0:
+                    # Sample complete patterns
+                    pattern_indices = np.random.RandomState(42).choice(total_patterns, size=max_patterns, replace=False)
+                    # For each selected pattern, get all its points
+                    point_indices = []
+                    for pattern_idx in pattern_indices:
+                        # Pattern 1: sets 0-31, Pattern 2: sets 32-63, Pattern 3: sets 64-95
+                        start_set = pattern_idx * samples_per_pattern
+                        end_set = start_set + samples_per_pattern
+                        # Each set has 4 points, so multiply by points per set
+                        start_point = start_set * (len(enc_params_list) + 1)
+                        end_point = end_set * (len(enc_params_list) + 1)
+                        point_indices.extend(range(start_point, end_point))
+                    
+                    latents_concat = latents_concat[point_indices]
+                    source_ids_np = source_ids_np[point_indices]
+                    pattern_ids_concat = pattern_ids_concat[point_indices]
+                    
+                    logging.info(f"T-SNE downsampled: {len(point_indices)} points from {max_patterns} complete patterns")
+                else:
+                    logging.warning(f"T-SNE max_points too small to sample complete patterns")
             
             # Use visualize_tsne_sources to show different markers for encoders vs context
             fig_tsne = visualize_tsne_sources(
                 latents=latents_concat,
-                program_ids=sample_ids_concat,  # Sample indices (0-95) for colors
-                source_ids=source_ids_np,        # 0 for encoders, 1 for context
+                program_ids=pattern_ids_concat,  # Pattern types (1, 2, 3) for colors
+                source_ids=source_ids_np,        # 0,1,2 for encoders, 3 for context
                 max_points=max_points,
                 random_state=42
             )
@@ -1009,8 +1101,8 @@ class StructuredTrainer:
                     modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
                     clustering_metrics[f"clustering/modularity_q_k{k}"] = modularity_q
                     
-                    # Adjusted Rand Index (using sample indices as ground truth)
-                    ari_score = compute_adjusted_rand_index(latents_concat, sample_ids_concat, k=k)
+                    # Adjusted Rand Index (using pattern types as ground truth)
+                    ari_score = compute_adjusted_rand_index(latents_concat, pattern_ids_concat, k=k)
                     clustering_metrics[f"clustering/ari_k{k}"] = ari_score
                 
                 # Log clustering metrics to WandB
@@ -1118,7 +1210,12 @@ class StructuredTrainer:
         for key in all_info[0].keys():
             if key == "context":
                 contexts = [inf[key] for inf in all_info]
+                # Debug: log context dimensions before concatenation
+                for i, ctx in enumerate(contexts):
+                    logging.info(f"Test batch {i} context shape: {ctx.shape}")
+                
                 info[key] = jnp.concatenate(contexts, axis=0)
+                logging.info(f"Test merged context shape: {info[key].shape}")
             else:
                 info[key] = all_info[0][key]
         
@@ -1174,7 +1271,18 @@ class StructuredTrainer:
                 # Show both encoder outputs and generation context
                 all_latents = []
                 source_ids = []
-                sample_ids_list = []
+                pattern_ids_list = []
+                
+                # Determine pattern type from test dataset name
+                pattern_type = 1  # Default
+                if "pattern_1" in test_name:
+                    pattern_type = 1  # O-tetromino
+                elif "pattern_2" in test_name:
+                    pattern_type = 2  # T-tetromino
+                elif "pattern_3" in test_name:
+                    pattern_type = 3  # L-tetromino
+                
+                logging.info(f"Test dataset pattern type: {pattern_type}")
                 
                 # Add encoder outputs (unique source_id per encoder)
                 for enc_idx, enc_params in enumerate(enc_params_list):
@@ -1210,7 +1318,7 @@ class StructuredTrainer:
                         logging.info(f"Test eval - Encoder {enc_idx} - final latent shape: {lat_np.shape}")
                         all_latents.append(lat_np)
                         source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
-                        sample_ids_list.append(program_ids)  # Sample IDs for each encoder
+                        pattern_ids_list.append(np.full(len(program_ids), pattern_type))  # Same pattern for all sets
                         
                     except Exception as e:
                         logging.error(f"Test eval - Encoder {enc_idx} failed: {e}")
@@ -1218,19 +1326,45 @@ class StructuredTrainer:
                 
                 # Add generation context (source_id = num_encoders)
                 context_np = np.array(context).reshape(-1, context.shape[-1])
+                
+                # Log the context latent dimension
+                context_latent_dim = context_np.shape[-1]
+                logging.info(f"Test eval - Context latent dim: {context_latent_dim}")
+                
+                if context_latent_dim != 32:
+                    logging.warning(f"Test eval - Context has unexpected latent dim: {context_latent_dim}, expected 32")
+                    
+                    # Ensure consistent latent dimension for T-SNE
+                    if context_latent_dim < 32:
+                        # Pad with zeros
+                        padding = np.zeros((context_np.shape[0], 32 - context_latent_dim))
+                        context_np = np.concatenate([context_np, padding], axis=1)
+                    else:
+                        # Truncate
+                        context_np = context_np[:, :32]
+                    
+                    logging.info(f"Test eval - Context final latent shape: {context_np.shape}")
+                
                 all_latents.append(context_np)
                 source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for context
-                sample_ids_list.append(program_ids)  # Sample IDs for context
+                pattern_ids_list.append(np.full(len(program_ids), pattern_type))  # Same pattern for all sets
                 
                 if all_latents:
                     latents_concat = np.concatenate(all_latents, axis=0)
                     source_ids_np = np.array(source_ids)
-                    sample_ids_concat = np.concatenate(sample_ids_list, axis=0)
+                    pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
+                    
+                    # Log T-SNE structure for test datasets
+                    total_points = latents_concat.shape[0]
+                    total_patterns = 1  # Each test dataset is specific to one pattern
+                    points_per_pattern = total_points // total_patterns
+                    logging.info(f"Test T-SNE structure: {total_points} total points, {total_patterns} pattern, {points_per_pattern} points per pattern")
+                    logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
                     
                     # Use visualize_tsne_sources for different markers
                     fig_latents = visualize_tsne_sources(
                         latents=latents_concat,
-                        program_ids=sample_ids_concat,
+                        program_ids=pattern_ids_concat,
                         source_ids=source_ids_np,
                         max_points=500,
                         random_state=42
@@ -1247,8 +1381,8 @@ class StructuredTrainer:
                             modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
                             test_clustering_metrics[f"clustering/{test_name}/modularity_q_k{k}"] = modularity_q
                             
-                            # Adjusted Rand Index (using sample indices as ground truth)
-                            ari_score = compute_adjusted_rand_index(latents_concat, sample_ids_concat, k=k)
+                            # Adjusted Rand Index (using pattern types as ground truth)
+                            ari_score = compute_adjusted_rand_index(latents_concat, pattern_ids_concat, k=k)
                             test_clustering_metrics[f"clustering/{test_name}/ari_k{k}"] = ari_score
                         
                         # Add clustering metrics to the main metrics dict
