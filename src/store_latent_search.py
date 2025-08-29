@@ -200,10 +200,16 @@ def _extract_pop(npz, prefix: str) -> tuple[Optional[np.ndarray], Optional[np.nd
     Extract ES population data with proper loss pairing.
     Prefer per-sample losses to ensure counts match.
     """
+    # 🔍 DEBUGGING POPULATION EXTRACTION 🔍
+    print(f"[extract_pop] 🔍 === POPULATION EXTRACTION DEBUGGING START ===")
+    print(f"[extract_pop] 🔍 Prefix: {prefix}")
+    print(f"[extract_pop] 🔍 NPZ keys: {list(npz.keys())}")
+    
     pts = gens = vals = None
     
     if f"{prefix}all_latents" in npz:
         pts = np.array(npz[f"{prefix}all_latents"])
+        print(f"[extract_pop] 🔍 Found {prefix}all_latents: {pts.shape}")
         # Don't reshape here - PCA will handle dimension reduction
     
     if f"{prefix}generation_idx" in npz:
@@ -615,22 +621,57 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     original_dims = []
     all_points = []
     
+    # 🔍 COMPREHENSIVE DEBUGGING FOR PCA FITTING 🔍
+    print(f"[plot] 🔍 === PCA FITTING DEBUGGING START ===")
+    
     # Collect all points for unified PCA fitting
     if ga.pts is not None:
         all_points.append(ga.pts)
         original_dims.append(ga.pts.shape[-1])
-    if es.pts is not None:
+        print(f"[plot] 🔍 Added GA points to PCA: {ga.pts.shape}")
+    
+    # For ES, we need to get the actual latent trajectory from the NPZ file
+    es_trajectory = None
+    if es_npz_path and os.path.exists(es_npz_path):
+        try:
+            with np.load(es_npz_path, allow_pickle=True) as f:
+                print(f"[plot] 🔍 ES NPZ keys for PCA: {list(f.keys())}")
+                if 'es_best_latents_per_generation' in f:
+                    es_trajectory = np.array(f['es_best_latents_per_generation'])
+                    print(f"[plot] 🔍 Found ES trajectory for PCA: {es_trajectory.shape}")
+                elif 'es_latents' in f:
+                    es_trajectory = np.array(f['es_latents'])
+                    print(f"[plot] 🔍 Found ES trajectory for PCA: {es_trajectory.shape}")
+                elif 'es_path' in f:
+                    es_trajectory = np.array(f['es_path'])
+                    print(f"[plot] 🔍 Found ES trajectory for PCA: {es_trajectory.shape}")
+        except Exception as e:
+            print(f"[plot] 🔍 Failed to load ES trajectory for PCA: {e}")
+    
+    if es_trajectory is not None:
+        all_points.append(es_trajectory)
+        original_dims.append(es_trajectory.shape[-1])
+        print(f"[plot] 🔍 Added ES trajectory to PCA: {es_trajectory.shape}")
+    elif es.pts is not None:
         all_points.append(es.pts)
         original_dims.append(es.pts.shape[-1])
+        print(f"[plot] 🔍 Added es.pts to PCA: {es.pts.shape}")
+    elif es.best_per_gen is not None:
+        all_points.append(es.best_per_gen)
+        original_dims.append(es.best_per_gen.shape[-1])
+        print(f"[plot] 🔍 Added es.best_per_gen to PCA: {es.best_per_gen.shape}")
+    
     if es.pop_pts is not None:
         all_points.append(es.pop_pts)
         original_dims.append(es.pop_pts.shape[-1])
-    if es.best_per_gen is not None:
-        all_points.append(es.best_per_gen)
-        original_dims.append(es.best_per_gen.shape[-1])
+        print(f"[plot] 🔍 Added es.pop_pts to PCA: {es.pop_pts.shape}")
     
     # Get the most common original dimension (or max if different)
     original_dim = max(original_dims) if original_dims else 2
+    print(f"[plot] 🔍 Total points for PCA: {len(all_points)}")
+    print(f"[plot] 🔍 Original dimensions: {original_dims}")
+    print(f"[plot] 🔍 Selected original_dim: {original_dim}")
+    print(f"[plot] 🔍 === PCA FITTING DEBUGGING END ===")
     
     # Initialize PCA transformer early to avoid scope issues
     pca_transformer = None
@@ -1130,10 +1171,45 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             else:
                 print(f"[plot] Skipping generation circles due to unavailable/mismatched generation index")
 
-    # ES selected path (best per generation if present, otherwise es.pts)
-    print(f"[plot] ES trajectory debug: best_per_gen={es.best_per_gen.shape if es.best_per_gen is not None else None}, es.pts={es.pts.shape if es.pts is not None else None}")
-    es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
-    print(f"[plot] ES selected for plotting: {es_sel.shape if es_sel is not None else None}")
+    # 🔍 COMPREHENSIVE DEBUGGING FOR ES TRAJECTORY ISSUE 🔍
+    print(f"[plot] 🔍 === ES TRAJECTORY DEBUGGING START ===")
+    print(f"[plot] 🔍 ES NPZ path: {es_npz_path}")
+    print(f"[plot] 🔍 ES NPZ exists: {os.path.exists(es_npz_path) if es_npz_path else False}")
+    print(f"[plot] 🔍 es.best_per_gen: {es.best_per_gen.shape if es.best_per_gen is not None else None}")
+    print(f"[plot] 🔍 es.pts: {es.pts.shape if es.pts is not None else None}")
+    
+    # For ES, we need to get the actual latent trajectory, not just the values
+    # The issue is that es.pts might be coming from a different source than expected
+    es_sel = None
+    
+    # First try to get the actual latent trajectory from the NPZ file
+    if es_npz_path and os.path.exists(es_npz_path):
+        try:
+            with np.load(es_npz_path, allow_pickle=True) as f:
+                print(f"[plot] 🔍 ES NPZ keys for trajectory: {list(f.keys())}")
+                
+                # Look for the actual latent trajectory
+                if 'es_best_latents_per_generation' in f:
+                    es_sel = np.array(f['es_best_latents_per_generation'])
+                    print(f"[plot] 🔍 Found ES trajectory from es_best_latents_per_generation: {es_sel.shape}")
+                elif 'es_latents' in f:
+                    es_sel = np.array(f['es_latents'])
+                    print(f"[plot] 🔍 Found ES trajectory from es_latents: {es_sel.shape}")
+                elif 'es_path' in f:
+                    es_sel = np.array(f['es_path'])
+                    print(f"[plot] 🔍 Found ES trajectory from es_path: {es_sel.shape}")
+                else:
+                    print(f"[plot] 🔍 No ES latent trajectory found in NPZ, using fallback")
+                    es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
+        except Exception as e:
+            print(f"[plot] 🔍 Failed to load ES NPZ for trajectory: {e}")
+            es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
+    else:
+        print(f"[plot] 🔍 No ES NPZ path provided, using fallback")
+        es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
+    
+    print(f"[plot] 🔍 Final ES selected for plotting: {es_sel.shape if es_sel is not None else None}")
+    print(f"[plot] 🔍 === ES TRAJECTORY DEBUGGING END ===")
     
     if es_sel is not None and es_sel.size > 0:
         # Check if we have enough trajectory points (more than 1 generation)
@@ -1144,45 +1220,74 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             print(f"[plot] Plotting ES trajectory: {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
             _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES selected", alpha=1.0)
         elif es_sel.ndim == 2 and es_sel.shape[0] > 1:
+            # 🔍 DEBUGGING ES TRAJECTORY PROJECTION 🔍
+            print(f"[plot] 🔍 ES trajectory shape: {es_sel.shape}")
+            print(f"[plot] 🔍 ES trajectory needs PCA projection: {es_sel.shape[-1]}D -> 2D")
+            print(f"[plot] 🔍 PCA transformer available: {pca_transformer is not None}")
+            
             # Check if this needs PCA projection (should be 2D for plotting)
             if es_sel.shape[-1] != 2:
-                print(f"[plot] ES trajectory needs PCA projection: {es_sel.shape} -> projecting to 2D")
+                print(f"[plot] 🔍 ES trajectory needs PCA projection: {es_sel.shape} -> projecting to 2D")
                 if pca_transformer is not None:
-                    es_sel_flat = _apply_fitted_pca(es_sel, pca_transformer, target_dim=2)
-                    print(f"[plot] ES trajectory after PCA: {es_sel_flat.shape}")
+                    try:
+                        es_sel_flat = _apply_fitted_pca(es_sel, pca_transformer, target_dim=2)
+                        print(f"[plot] 🔍 ES trajectory after PCA: {es_sel_flat.shape}")
+                        print(f"[plot] 🔍 ES trajectory range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
+                    except Exception as e:
+                        print(f"[plot] 🔍 PCA projection failed: {e}")
+                        print(f"[plot] 🔍 Skipping ES trajectory due to PCA error")
+                        es_sel_flat = None
                 else:
-                    print(f"[plot] No PCA transformer available, skipping ES trajectory")
+                    print(f"[plot] 🔍 No PCA transformer available, skipping ES trajectory")
                     es_sel_flat = None
             else:
                 # Already 2D: (G, 2)
                 es_sel_flat = es_sel
-                print(f"[plot] Plotting ES trajectory (already 2D): {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
+                print(f"[plot] 🔍 Plotting ES trajectory (already 2D): {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
             
             if es_sel_flat is not None:
                 _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES selected", alpha=1.0)
         else:
             print(f"[plot] ES trajectory plotting skipped: es_sel shape={es_sel.shape}, not enough generations")
             
+            # 🔍 DEBUGGING ES FALLBACK PLOTTING 🔍
+            print(f"[plot] 🔍 === ES FALLBACK DEBUGGING START ===")
+            
             # Fallback: try to plot ES trajectory from best_per_gen if available
             if es.best_per_gen is not None and es.best_per_gen.size > 0:
-                print(f"[plot] ES fallback: attempting to plot from best_per_gen")
+                print(f"[plot] 🔍 ES fallback: attempting to plot from best_per_gen")
+                print(f"[plot] 🔍 es.best_per_gen shape: {es.best_per_gen.shape}")
                 es_fallback = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])
+                print(f"[plot] 🔍 es_fallback after reshape: {es_fallback.shape}")
+                
                 if es_fallback.shape[0] > 1:
-                    print(f"[plot] ES fallback plotting: {es_fallback.shape}")
+                    print(f"[plot] 🔍 ES fallback plotting: {es_fallback.shape}")
                     # Check if PCA projection is needed
                     if es_fallback.shape[-1] != 2 and pca_transformer is not None:
-                        es_fallback = _apply_fitted_pca(es_fallback, pca_transformer, target_dim=2)
-                        print(f"[plot] ES fallback after PCA: {es_fallback.shape}")
+                        print(f"[plot] 🔍 ES fallback needs PCA: {es_fallback.shape[-1]}D -> 2D")
+                        try:
+                            es_fallback = _apply_fitted_pca(es_fallback, pca_transformer, target_dim=2)
+                            print(f"[plot] 🔍 ES fallback after PCA: {es_fallback.shape}")
+                        except Exception as e:
+                            print(f"[plot] 🔍 ES fallback PCA failed: {e}")
+                            es_fallback = None
                     elif es_fallback.shape[-1] != 2:
-                        print(f"[plot] ES fallback needs PCA but no transformer available, skipping")
+                        print(f"[plot] 🔍 ES fallback needs PCA but no transformer available, skipping")
                         es_fallback = None
+                    else:
+                        print(f"[plot] 🔍 ES fallback already 2D, no PCA needed")
                     
                     if es_fallback is not None:
+                        print(f"[plot] 🔍 Plotting ES fallback trajectory: {es_fallback.shape}")
                         _plot_traj(ax, es_fallback, color="#DB74DB", label="ES selected (fallback)", alpha=1.0)
+                    else:
+                        print(f"[plot] 🔍 ES fallback trajectory is None, skipping plot")
                 else:
-                    print(f"[plot] ES fallback failed: not enough points ({es_fallback.shape[0]})")
+                    print(f"[plot] 🔍 ES fallback failed: not enough points ({es_fallback.shape[0]})")
             else:
-                print(f"[plot] ES fallback: no best_per_gen available")
+                print(f"[plot] 🔍 ES fallback: no best_per_gen available")
+            
+            print(f"[plot] 🔍 === ES FALLBACK DEBUGGING END ===")
     else:
         print(f"[plot] ES trajectory plotting skipped: es_sel is None or empty")
 
@@ -1233,18 +1338,27 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         ga_visible = (ga_xmin >= xlim[0] and ga_xmax <= xlim[1] and ga_ymin >= ylim[0] and ga_ymax <= ylim[1])
         print(f"[verification] GA trajectory: x[{ga_xmin:.3f}, {ga_xmax:.3f}], y[{ga_ymin:.3f}, {ga_ymax:.3f}] - {'✅ VISIBLE' if ga_visible else '❌ OUT OF BOUNDS'}")
     
+    # 🔍 DEBUGGING ES BOUNDS VERIFICATION 🔍
+    print(f"[verification] 🔍 === ES BOUNDS VERIFICATION START ===")
+    
     # Check ES trajectory bounds
     if es.pts is not None:
+        print(f"[verification] 🔍 ES.pts shape: {es.pts.shape}")
         # Ensure ES trajectory is 2D for bounds checking
         if es.pts.shape[-1] == 2:
             es_flat = es.pts.reshape(-1, 2)
             es_xmin, es_xmax = es_flat[:, 0].min(), es_flat[:, 0].max()
             es_ymin, es_ymax = es_flat[:, 1].min(), es_flat[:, 1].max()
             es_visible = (es_xmin >= xlim[0] and es_xmax <= xlim[1] and es_ymin >= ylim[0] and es_ymax <= ylim[1])
-            print(f"[verification] ES trajectory: x[{es_xmin:.3f}, {es_xmax:.3f}], y[{es_ymin:.3f}, {es_ymax:.3f}] - {'✅ VISIBLE' if es_visible else '❌ OUT OF BOUNDS'}")
+            print(f"[verification] 🔍 ES trajectory: x[{es_xmin:.3f}, {es_xmax:.3f}], y[{es_ymin:.3f}, {es_ymax:.3f}] - {'✅ VISIBLE' if es_visible else '❌ OUT OF BOUNDS'}")
         else:
-            print(f"[verification] ES trajectory: shape {es.pts.shape} is not 2D, skipping bounds check")
+            print(f"[verification] 🔍 ES trajectory: shape {es.pts.shape} is not 2D, skipping bounds check")
             es_visible = True  # Assume visible to avoid breaking the verification
+    else:
+        print(f"[verification] 🔍 ES trajectory: no pts available for bounds check")
+        es_visible = True  # Assume visible to avoid breaking the verification
+    
+    print(f"[verification] 🔍 === ES BOUNDS VERIFICATION END ===")
     
     # Check ES population bounds
     if es.pop_pts is not None:
@@ -2533,6 +2647,9 @@ def main() -> None:
     if run is not None:
         wandb.log({"ga_return_code": ga_rc, "ga_status": "completed"})
 
+    # 🔍 DEBUGGING ES EXECUTION 🔍
+    print(f"[main] 🔍 === ES EXECUTION DEBUGGING START ===")
+    
     # Evolutionary Search config
     pop = args.es_population if args.es_population is not None else max(3, min(32, int(round(math.sqrt(args.budget)))))
     gens = args.es_generations if args.es_generations is not None else max(1, int(math.ceil(args.budget / pop)))
@@ -2540,6 +2657,11 @@ def main() -> None:
     print(f"   🎯 ES starts from mean latent (baseline, same as GA)")
     print(f"   📊 Total trajectory: {gens + 1} generations (1 baseline + {gens} optimization generations)")
     es_out = os.path.join(args.out_dir, "es_latents.npz")
+    
+    print(f"[main] 🔍 ES output path: {es_out}")
+    print(f"[main] 🔍 ES output dir exists: {os.path.dirname(es_out) if es_out else 'None'}")
+    print(f"[main] 🔍 ES output file will be: {es_out}")
+    
     es_cmd = [
         sys.executable, "src/evaluate_checkpoint.py",
         "-w", args.wandb_artifact_path,
@@ -2568,9 +2690,32 @@ def main() -> None:
     if run is not None:
         wandb.log({"es_status": "started"})
     
+    print(f"[main] 🔍 ES command: {' '.join(es_cmd)}")
     print("Running:", " ".join(es_cmd))
     es_rc = subprocess.run(es_cmd, check=False).returncode
-    print(f"ES return code: {es_rc}")
+    print(f"[main] 🔍 ES return code: {es_rc}")
+    
+    # 🔍 VERIFY ES OUTPUT FILE 🔍
+    print(f"[main] 🔍 === ES OUTPUT VERIFICATION START ===")
+    if os.path.exists(es_out):
+        print(f"[main] 🔍 ES output file exists: {es_out}")
+        print(f"[main] 🔍 ES output file size: {os.path.getsize(es_out)} bytes")
+        try:
+            with np.load(es_out, allow_pickle=True) as es_npz:
+                print(f"[main] 🔍 ES NPZ keys: {list(es_npz.keys())}")
+                for key in es_npz.keys():
+                    data = es_npz[key]
+                    if hasattr(data, 'shape'):
+                        print(f"[main] 🔍 ES {key}: {data.shape}")
+                    else:
+                        print(f"[main] 🔍 ES {key}: {type(data)}")
+        except Exception as e:
+            print(f"[main] 🔍 Error reading ES NPZ: {e}")
+    else:
+        print(f"[main] 🔍 ES output file does NOT exist: {es_out}")
+    print(f"[main] 🔍 === ES OUTPUT VERIFICATION END ===")
+    
+    print(f"[main] 🔍 === ES EXECUTION DEBUGGING END ===")
 
     # Log ES completion
     if run is not None:
@@ -2928,6 +3073,16 @@ def main() -> None:
                 ga_steps_with_baseline = ga_steps + 1  # +1 for baseline
                 es_gens_with_baseline = gens + 1       # +1 for baseline
                 
+                # 🔍 DEBUGGING PLOTTING CALL 🔍
+                print(f"[main] 🔍 === PLOTTING CALL DEBUGGING START ===")
+                print(f"[main] 🔍 GA output path: {ga_out}")
+                print(f"[main] 🔍 ES output path: {es_out}")
+                print(f"[main] 🔍 GA output exists: {os.path.exists(ga_out) if ga_out else False}")
+                print(f"[main] 🔍 ES output exists: {os.path.exists(es_out) if es_out else False}")
+                print(f"[main] 🔍 Output directory: {args.out_dir}")
+                print(f"[main] 🔍 GA steps with baseline: {ga_steps_with_baseline}")
+                print(f"[main] 🔍 ES generations with baseline: {es_gens_with_baseline}")
+                
                 trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(ga_out, es_out, args.out_dir, 
                                                       background_resolution=args.background_resolution,
                                                       background_smoothing=args.background_smoothing,
@@ -2935,6 +3090,8 @@ def main() -> None:
                                                       background_bandwidth_scale=args.background_bandwidth_scale,
                                                       background_global_mix=args.background_global_mix,
                                                           ga_steps=ga_steps_with_baseline, es_population=pop, es_generations=es_gens_with_baseline, dataset_length=args.dataset_length)
+                
+                print(f"[main] 🔍 === PLOTTING CALL DEBUGGING END ===")
             if trajectory_plot:
                 print(f"Saved trajectory plot to {trajectory_plot}")
             if loss_plot:
