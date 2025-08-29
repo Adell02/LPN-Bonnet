@@ -19,6 +19,7 @@ This eliminates the data size mismatch that was causing training to get stuck.
 # from __future__ import annotations  # Not supported in Python 3.6
 
 import logging
+import matplotlib.pyplot as plt
 import time
 from functools import partial
 from typing import Optional, Sequence

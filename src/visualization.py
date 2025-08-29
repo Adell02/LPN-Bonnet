@@ -681,28 +681,25 @@ def visualize_struct_confidence_panel(
     import numpy as _np
     num_pairs = int(sample_grids.shape[0])
 
-    fig = plt.figure(figsize=(16, 10))
-    grid = plt.GridSpec(3, 3, hspace=0.6, wspace=0.3)
-
-    # Top: struct visualization spanning all columns
-    # Create inner layout manually without GridSpecFromSubplotSpec for compatibility
-    top_axes = []
+    # Use constrained_layout to avoid tight_layout warnings with arbitrary num_pairs
+    fig = plt.figure(figsize=(16, 10), constrained_layout=True)
+    # Top two rows: a small mosaic (2 x num_pairs)
+    gs = fig.add_gridspec(3, max(num_pairs, 3), height_ratios=[1, 1, 1])
+    top_gs = gs[:2, :num_pairs]
     for i in range(num_pairs):
-        # Position subplots manually: two rows in the top section
-        # Row heights: first two rows share ~2/3 of height
-        ax_in = fig.add_subplot(3, num_pairs, i + 1)
+        ax_in = fig.add_subplot(top_gs[0, i])
         display_grid(ax_in, _np.array(sample_grids[i, :, :, 0]), _np.array(sample_shapes[i, :, 0]))
         if i == 0:
             ax_in.set_title("Input")
-        ax_out = fig.add_subplot(3, num_pairs, num_pairs + i + 1)
+        ax_out = fig.add_subplot(top_gs[1, i])
         display_grid(ax_out, _np.array(sample_grids[i, :, :, 1]), _np.array(sample_shapes[i, :, 1]))
         if i == 0:
             ax_out.set_title("Output")
 
     # Bottom-left: histogram of means
-    ax_means = fig.add_subplot(3, 3, 7)
+    ax_means = fig.add_subplot(gs[2, 0])
     # Bottom-right: histogram of variances
-    ax_vars = fig.add_subplot(3, 3, 8)
+    ax_vars = fig.add_subplot(gs[2, 1])
 
     # Colors for encoders + PoE (consistent and distinct)
     enc_colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
@@ -735,6 +732,5 @@ def visualize_struct_confidence_panel(
     ax_vars.legend(frameon=True)
 
     fig.suptitle(title, fontsize=14, fontweight='bold')
-    fig.tight_layout()
     return fig
 
