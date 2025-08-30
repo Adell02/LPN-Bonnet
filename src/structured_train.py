@@ -1161,7 +1161,7 @@ class StructuredTrainer:
                     for dataset_dict in self.test_datasets:
                         try:
                             start = time.time()
-                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_context, fig_tsne_encoders_list = self.test_dataset_submission(
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
                                 state, dataset_dict
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -1173,7 +1173,7 @@ class StructuredTrainer:
                                 (fig_latents, "latents"),
                                 (fig_latents_samples, "latents_samples"),
                                 (fig_search_progress, "search_progress"),
-                                (fig_tsne_context, "latents_context_only"),
+                                (fig_tsne_samples, "latents_samples"),
                             ]:
                                 if fig is not None:
                                     test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)
@@ -1190,8 +1190,8 @@ class StructuredTrainer:
                             wandb.log(test_metrics)
                             plt.close('all')  # Close all figures to prevent memory leaks
                             # Explicitly close additional T-SNE figures
-                            if fig_tsne_context is not None:
-                                plt.close(fig_tsne_context)
+                            if fig_tsne_samples is not None:
+                                plt.close(fig_tsne_samples)
                             # Close all pattern-specific T-SNE figures
                             for fig_tsne_encoders_single in fig_tsne_encoders_list:
                                 if fig_tsne_encoders_single is not None:
@@ -1341,7 +1341,7 @@ class StructuredTrainer:
                             for dataset_dict in self.test_datasets:
                                 try:
                                     start = time.time()
-                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_context, fig_tsne_encoders_list = self.test_dataset_submission(
+                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
                                         state, dataset_dict
                                     )
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -1353,7 +1353,7 @@ class StructuredTrainer:
                                         (fig_latents, "latents"),
                                         (fig_latents_samples, "latents_samples"),
                                         (fig_search_progress, "search_progress"),
-                                        (fig_tsne_context, "latents_context_only"),
+                                        (fig_tsne_samples, "latents_samples"),
                                     ]:
                                         if fig is not None:
                                             test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)
@@ -1370,8 +1370,8 @@ class StructuredTrainer:
                                     wandb.log(test_metrics, step=step)
                                     plt.close('all')  # Close all figures to prevent memory leaks
                                     # Explicitly close additional T-SNE figures
-                                    if fig_tsne_context is not None:
-                                        plt.close(fig_tsne_context)
+                                    if fig_tsne_samples is not None:
+                                        plt.close(fig_tsne_samples)
                                     # Close all pattern-specific T-SNE figures
                                     for fig_tsne_encoders_single in fig_tsne_encoders_list:
                                         if fig_tsne_encoders_single is not None:
@@ -1843,54 +1843,79 @@ class StructuredTrainer:
                 task_ids=task_ids_np,
             )
             
-            # 1. ADDITIONAL T-SNE: Show just the context latents (with samples from the 3 patterns)
-            context_mask = (source_ids_np == (len(enc_params_list)))
-            if np.any(context_mask):
-                context_latents = latents_concat[context_mask]
-                context_patterns = pattern_ids_concat[context_mask]
-                context_task_ids = task_ids_np[context_mask]
+            # 1. ADDITIONAL T-SNE: Show latent samples to demonstrate uncertainty (equivalent to train.py fig_latents_samples)
+            # Since structured_train doesn't have latents_samples, we'll create multiple samples from encoders
+            if len(enc_params_list) > 0:
+                # Create multiple samples by using different encoder outputs as "samples"
+                # This shows how different encoders represent the same patterns (uncertainty)
+                encoder_samples = []
+                encoder_sample_program_ids = []
+                encoder_sample_task_ids = []
                 
-                # Downsample context points for cleaner visualization
-                max_context_points = min(500, len(context_latents))
-                if len(context_latents) > max_context_points:
-                    # Stratified sampling to maintain pattern distribution
-                    context_indices = []
-                    for pattern_id in [1, 2, 3]:
-                        pattern_mask = context_patterns == pattern_id
-                        pattern_indices = np.where(pattern_mask)[0]
-                        if len(pattern_indices) > 0:
-                            # Sample up to max_context_points // 3 from each pattern
-                            max_per_pattern = max_context_points // 3
-                            if len(pattern_indices) > max_per_pattern:
-                                sampled_indices = np.random.RandomState(42).choice(
-                                    pattern_indices, size=max_per_pattern, replace=False
-                                )
-                            else:
-                                sampled_indices = pattern_indices
-                            context_indices.extend(sampled_indices)
+                # For each pattern, collect encoder outputs as samples
+                for pattern_id in [1, 2, 3]:
+                    pattern_mask = (pattern_ids_concat == pattern_id)
+                    if np.any(pattern_mask):
+                        # Get encoder points only (exclude context)
+                        encoder_mask = (source_ids_np < len(enc_params_list))
+                        combined_mask = pattern_mask & encoder_mask
+                        
+                        if np.any(combined_mask):
+                            encoder_latents = latents_concat[combined_mask]
+                            encoder_sources = source_ids_np[combined_mask]
+                            encoder_task_ids = task_ids_np[combined_mask]
+                            
+                            # Downsample for cleaner visualization
+                            max_encoder_points = min(200, len(encoder_latents))
+                            if len(encoder_latents) > max_encoder_points:
+                                # Stratified sampling to maintain encoder distribution
+                                encoder_indices = []
+                                for enc_id in range(len(enc_params_list)):
+                                    enc_mask = encoder_sources == enc_id
+                                    enc_indices = np.where(enc_mask)[0]
+                                    if len(enc_indices) > 0:
+                                        max_per_encoder = max_encoder_points // len(enc_params_list)
+                                        if len(enc_indices) > max_per_encoder:
+                                            sampled_indices = np.random.RandomState(42).choice(
+                                                enc_indices, size=max_per_encoder, replace=False
+                                            )
+                                        else:
+                                            sampled_indices = enc_indices
+                                        encoder_indices.extend(sampled_indices)
+                                
+                                # Apply sampling
+                                encoder_latents = encoder_latents[encoder_indices]
+                                encoder_sources = encoder_sources[encoder_indices]
+                                encoder_task_ids = encoder_task_ids[encoder_indices]
+                            
+                            # Add encoder outputs as samples for this pattern
+                            encoder_samples.append(encoder_latents)
+                            encoder_sample_program_ids.extend([pattern_id] * len(encoder_latents))
+                            encoder_sample_task_ids.extend(encoder_task_ids)
+                
+                if encoder_samples:
+                    # Concatenate all encoder samples
+                    all_encoder_samples = np.concatenate(encoder_samples, axis=0)
+                    all_encoder_program_ids = np.array(encoder_sample_program_ids)
+                    all_encoder_task_ids = np.array(encoder_sample_task_ids)
                     
-                    # Apply sampling
-                    context_latents = context_latents[context_indices]
-                    context_patterns = context_patterns[context_indices]
-                    context_task_ids = context_task_ids[context_indices]
-                
-                # Create T-SNE for context-only latents
-                # Use source_id = 0 for all points (will show as same marker type)
-                context_source_ids = np.zeros(len(context_latents), dtype=int)
-                
-                fig_tsne_context = visualize_tsne_sources(
-                    latents=context_latents,
-                    program_ids=context_patterns,  # Pattern types (1, 2, 3) for colors
-                    source_ids=context_source_ids,  # All 0s (same marker type)
-                    max_points=max_context_points,
-                    random_state=42,
-                    task_ids=context_task_ids,
-                )
-                
-                logging.info(f"Generated context-only T-SNE: {len(context_latents)} points")
+                    # Create T-SNE for encoder samples (showing uncertainty across encoders)
+                    fig_tsne_samples = visualize_tsne_sources(
+                        latents=all_encoder_samples,
+                        program_ids=all_encoder_program_ids,  # Pattern types (1, 2, 3) for colors
+                        source_ids=np.zeros(len(all_encoder_samples), dtype=int),  # All same source (encoder samples)
+                        max_points=min(500, len(all_encoder_samples)),
+                        random_state=42,
+                        task_ids=all_encoder_task_ids,
+                    )
+                    
+                    logging.info(f"Generated encoder samples T-SNE: {len(all_encoder_samples)} points")
+                else:
+                    fig_tsne_samples = None
+                    logging.warning("No encoder samples found for samples T-SNE")
             else:
-                fig_tsne_context = None
-                logging.warning("No context points found for context-only T-SNE")
+                fig_tsne_samples = None
+                logging.warning("No encoders available for samples T-SNE")
             
             # 2. ADDITIONAL T-SNE: Show just the 3 encoders latents for EACH pattern
             # Generate one T-SNE plot for each pattern (1, 2, 3)
@@ -1969,23 +1994,23 @@ class StructuredTrainer:
                 k_values = [3, 5, 10]
                 clustering_metrics = {}
                 
-                # OPTION 1: Context-only clustering (like train.py) - for direct comparison
-                context_mask = (source_ids_np == (len(enc_params_list)))
-                if np.any(context_mask):
-                    ctx_emb = latents_concat[context_mask]
-                    ctx_prog = pattern_ids_concat[context_mask]
-                    logging.info(f"Context-only clustering: {ctx_emb.shape[0]} points, patterns: {np.unique(ctx_prog)}")
+                # OPTION 1: Encoder samples clustering (like train.py fig_latents_samples) - for direct comparison
+                encoder_mask = (source_ids_np < len(enc_params_list))
+                if np.any(encoder_mask):
+                    enc_emb = latents_concat[encoder_mask]
+                    enc_prog = pattern_ids_concat[encoder_mask]
+                    logging.info(f"Encoder samples clustering: {enc_emb.shape[0]} points, patterns: {np.unique(enc_prog)}")
                     
                     for k in k_values:
-                        # Modularity Q on context-only (comparable to train.py)
-                        modularity_q = compute_modularity_q(ctx_emb, ctx_prog, k=k)
-                        clustering_metrics[f"clustering/context/modularity_q_k{k}"] = modularity_q
+                        # Modularity Q on encoder samples (comparable to train.py)
+                        modularity_q = compute_modularity_q(enc_emb, enc_prog, k=k)
+                        clustering_metrics[f"clustering/encoder_samples/modularity_q_k{k}"] = modularity_q
                         
-                        # Adjusted Rand Index on context-only (comparable to train.py)
-                        ari_score = compute_adjusted_rand_index(ctx_emb, ctx_prog, k=k)
-                        clustering_metrics[f"clustering/context/ari_k{k}"] = ari_score
+                        # Adjusted Rand Index on encoder samples (comparable to train.py)
+                        ari_score = compute_adjusted_rand_index(enc_emb, enc_prog, k=k)
+                        clustering_metrics[f"clustering/encoder_samples/ari_k{k}"] = ari_score
                 else:
-                    logging.warning("No context points found for context-only clustering; skipping")
+                    logging.warning("No encoder samples found for encoder samples clustering; skipping")
                 
                 # OPTION 2: Full latent space clustering (current implementation) - for source analysis
                 for k in k_values:
@@ -2011,7 +2036,7 @@ class StructuredTrainer:
             f"test/{test_name}/pixel_accuracy": wandb.Image(fig_heatmap),
             f"test/{test_name}/generation": wandb.Image(fig_gen),
             f"test/{test_name}/latents": wandb.Image(fig_tsne),
-            f"test/{test_name}/latents_context_only": wandb.Image(fig_tsne_context) if fig_tsne_context is not None else None,
+            f"test/{test_name}/latents_samples": wandb.Image(fig_tsne_samples) if fig_tsne_samples is not None else None,
             **metrics,
         }
         
@@ -2101,8 +2126,8 @@ class StructuredTrainer:
         plt.close(fig_heatmap)
         plt.close(fig_gen)
         plt.close(fig_tsne)
-        if fig_tsne_context is not None:
-            plt.close(fig_tsne_context)
+        if fig_tsne_samples is not None:
+            plt.close(fig_tsne_samples)
         if fig_tsne_encoders is not None:
             plt.close(fig_tsne_encoders)
 
@@ -2569,11 +2594,11 @@ class StructuredTrainer:
                             context_patterns = context_patterns[context_indices]
                             context_task_ids = context_task_ids[context_indices]
                         
-                        # Create T-SNE for context-only latents
+                        # Create T-SNE for encoder samples (equivalent to train.py fig_latents_samples)
                         # Use source_id = 0 for all points (will show as same marker type)
                         context_source_ids = np.zeros(len(context_latents), dtype=int)
                         
-                        fig_tsne_context = visualize_tsne_sources(
+                        fig_tsne_samples = visualize_tsne_sources(
                             latents=context_latents,
                             program_ids=context_patterns,  # Pattern types for colors
                             source_ids=context_source_ids,  # All 0s (same marker type)
@@ -2582,10 +2607,10 @@ class StructuredTrainer:
                             task_ids=context_task_ids,
                         )
                         
-                        logging.info(f"Test: Generated context-only T-SNE: {len(context_latents)} points")
+                        logging.info(f"Test: Generated encoder samples T-SNE: {len(context_latents)} points")
                     else:
-                        fig_tsne_context = None
-                        logging.warning("Test: No context points found for context-only T-SNE")
+                        fig_tsne_samples = None
+                        logging.warning("Test: No encoder samples found for samples T-SNE")
                     
                     # 2. ADDITIONAL T-SNE: Show just the 3 encoders latents for EACH pattern
                     # Generate one T-SNE plot for each pattern
@@ -2664,23 +2689,23 @@ class StructuredTrainer:
                         k_values = [3, 5, 10]
                         test_clustering_metrics = {}
                         
-                        # OPTION 1: Context-only clustering (like train.py) - for direct comparison
-                        context_mask = (source_ids_np == (len(enc_params_list)))
-                        if np.any(context_mask):
-                            ctx_emb = latents_concat[context_mask]
-                            ctx_prog = pattern_ids_concat[context_mask]
-                            logging.info(f"Test context-only clustering: {ctx_emb.shape[0]} points, patterns: {np.unique(ctx_prog)}")
+                        # OPTION 1: Encoder samples clustering (like train.py fig_latents_samples) - for direct comparison
+                        encoder_mask = (source_ids_np < len(enc_params_list))
+                        if np.any(encoder_mask):
+                            enc_emb = latents_concat[encoder_mask]
+                            enc_prog = pattern_ids_concat[encoder_mask]
+                            logging.info(f"Test encoder samples clustering: {enc_emb.shape[0]} points, patterns: {np.unique(enc_prog)}")
                             
                             for k in k_values:
-                                # Modularity Q on context-only (comparable to train.py)
-                                modularity_q = compute_modularity_q(ctx_emb, ctx_prog, k=k)
-                                test_clustering_metrics[f"clustering/{test_name}/context/modularity_q_k{k}"] = modularity_q
+                                # Modularity Q on encoder samples (comparable to train.py)
+                                modularity_q = compute_modularity_q(enc_emb, enc_prog, k=k)
+                                test_clustering_metrics[f"clustering/{test_name}/encoder_samples/modularity_q_k{k}"] = modularity_q
                                 
-                                # Adjusted Rand Index on context-only (comparable to train.py)
-                                ari_score = compute_adjusted_rand_index(ctx_emb, ctx_prog, k=k)
-                                test_clustering_metrics[f"clustering/{test_name}/context/ari_k{k}"] = ari_score
+                                # Adjusted Rand Index on encoder samples (comparable to train.py)
+                                ari_score = compute_adjusted_rand_index(enc_emb, enc_prog, k=k)
+                                test_clustering_metrics[f"clustering/{test_name}/encoder_samples/ari_k{k}"] = ari_score
                         else:
-                            logging.warning(f"Test: No context points found for context-only clustering; skipping")
+                            logging.warning(f"Test: No encoder samples found for encoder samples clustering; skipping")
                         
                         # OPTION 2: Full latent space clustering (current implementation) - for source analysis
                         for k in k_values:
@@ -2699,7 +2724,7 @@ class StructuredTrainer:
                     except Exception as e:
                         logging.warning(f"Test clustering metrics computation failed: {e}")
         
-        return metrics, fig_gen, fig_heatmap, fig_latents, None, fig_search_progress, fig_tsne_context, fig_tsne_encoders_list
+        return metrics, fig_gen, fig_heatmap, fig_latents, None, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list
 
 
 @hydra.main(config_path="configs", version_base=None, config_name="structured")
