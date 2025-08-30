@@ -378,12 +378,21 @@ class StructuredTrainer:
             self.eval_grids = jnp.concatenate(grids_all, axis=0)
             self.eval_shapes = jnp.concatenate(shapes_all, axis=0)
             
+            # CRITICAL FIX: Create explicit pattern IDs that match the concatenation order
+            # This ensures pattern IDs align with the actual data, just like in training
+            self.eval_pattern_ids = jnp.concatenate([
+                jnp.full((samples_per_pattern,), 1),  # O-tetromino (first 32 samples)
+                jnp.full((samples_per_pattern,), 2),  # T-tetromino (next 32 samples)
+                jnp.full((samples_per_pattern,), 3),  # L-tetromino (last 32 samples)
+            ], axis=0)
+            
             # DEBUG: Log evaluation dataset info
             logging.info(f"Generated balanced evaluation dataset:")
             logging.info(f"  - Total samples: {self.eval_grids.shape[0]}")
             logging.info(f"  - Samples per pattern: {samples_per_pattern}")
             logging.info(f"  - Grids shape: {self.eval_grids.shape}")
             logging.info(f"  - Shapes shape: {self.eval_shapes.shape}")
+            logging.info(f"  - Pattern IDs: {self.eval_pattern_ids[:10]}... (first 10) - should be [1,1,1,...,2,2,2,...,3,3,3,...]")
             
         else:
             # Fallback: create a small balanced eval dataset even if struct_patterns_balanced=False
@@ -410,12 +419,21 @@ class StructuredTrainer:
             self.eval_grids = jnp.concatenate(grids_all, axis=0)
             self.eval_shapes = jnp.concatenate(shapes_all, axis=0)
             
+            # CRITICAL FIX: Create explicit pattern IDs that match the concatenation order
+            # This ensures pattern IDs align with the actual data, just like in training
+            self.eval_pattern_ids = jnp.concatenate([
+                jnp.full((samples_per_pattern,), 1),  # O-tetromino (first 32 samples)
+                jnp.full((samples_per_pattern,), 2),  # T-tetromino (next 32 samples)
+                jnp.full((samples_per_pattern,), 3),  # L-tetromino (last 32 samples)
+            ], axis=0)
+            
             # DEBUG: Log evaluation dataset info
             logging.info(f"Generated fallback balanced evaluation dataset:")
             logging.info(f"  - Total samples: {self.eval_grids.shape[0]}")
             logging.info(f"  - Samples per pattern: {samples_per_pattern}")
             logging.info(f"  - Grids shape: {self.eval_grids.shape}")
             logging.info(f"  - Shapes shape: {self.eval_shapes.shape}")
+            logging.info(f"  - Pattern IDs: {self.eval_pattern_ids[:10]}... (first 10) - should be [1,1,1,...,2,2,2,...,3,3,3,...]")
         
         # Load test datasets for comprehensive evaluation (like train.py)
         self.test_datasets = []
@@ -605,6 +623,20 @@ class StructuredTrainer:
                     logging.warning(f"   Got: {pattern_distribution}")
                     logging.warning(f"   This will break contrastive loss effectiveness!")
                 
+                # CRITICAL: Conditionally disable repulsion and contrastive losses after encoder exposure
+                # During encoder exposure: use full coefficients for specialization
+                # After encoder exposure: set to 0 to only train decoder with reconstruction loss
+                if self.encoder_expose_steps > 0:
+                    # Encoders are still trainable - use full coefficients
+                    repulsion_coeff = self.cfg.training.get("repulsion_kl")
+                    contrastive_coeff = self.cfg.training.get("contrastive_kl")
+                    logging.debug(f"🔓 Encoders TRAINABLE - Using repulsion: {repulsion_coeff}, contrastive: {contrastive_coeff}")
+                else:
+                    # Encoders are frozen - disable specialization losses
+                    repulsion_coeff = 0.0
+                    contrastive_coeff = 0.0
+                    logging.debug(f"🔒 Encoders FROZEN - Disabled repulsion and contrastive losses")
+                
                 loss, metrics = self.model.apply(
                     {"params": full_params["decoder"]},
                     batch_pairs,
@@ -617,8 +649,8 @@ class StructuredTrainer:
                     rngs={"dropout": rng, "latents": rng},
                     prior_kl_coeff=self.cfg.training.get("prior_kl_coeff"),
                     pairwise_kl_coeff=self.cfg.training.get("pairwise_kl_coeff"),
-                    repulsion_kl_coeff=self.cfg.training.get("repulsion_kl"),
-                    contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),  # ADD CONTRASTIVE LOSS
+                    repulsion_kl_coeff=repulsion_coeff,  # Conditional coefficient
+                    contrastive_kl_coeff=contrastive_coeff,  # Conditional coefficient
                     pattern_ids=pattern_ids,  # ADD PATTERN IDS FOR CONTRASTIVE LOSS
                     **(self.cfg.training.get("inference_kwargs") or {}),
                 )
@@ -647,55 +679,65 @@ class StructuredTrainer:
             # Convert JAX arrays to Python types for safe logging
             repulsion_loss_val = float(np.array(avg_metrics['repulsion_loss']))
             repulsion_loss_weighted_val = float(np.array(avg_metrics.get('repulsion_loss_weighted', 0)))
-            logging.info(f"Repulsion loss: {repulsion_loss_val:.6f} (weighted: {repulsion_loss_weighted_val:.6f})")
+            
+            # Show conditional behavior
+            if self.encoder_expose_steps > 0:
+                logging.info(f"Repulsion loss: {repulsion_loss_val:.6f} (weighted: {repulsion_loss_weighted_val:.6f})")
+            else:
+                logging.info(f"Repulsion loss: {repulsion_loss_val:.6f} (DISABLED - encoders frozen)")
         
         # Log contrastive loss if present
         if "contrastive_loss" in avg_metrics:
             # Convert JAX arrays to Python types for safe logging
             contrastive_loss_val = float(np.array(avg_metrics['contrastive_loss']))
             contrastive_loss_weighted_val = float(np.array(avg_metrics.get('contrastive_loss_weighted', 0)))
-            logging.info(f"Contrastive loss: {contrastive_loss_val:.6f} (weighted: {contrastive_loss_weighted_val:.6f})")
             
-            # STABILIZATION: Adaptive coefficient adjustment suggestion
-            if abs(contrastive_loss_val) > 50.0:
-                logging.warning(f"Contrastive loss is large ({contrastive_loss_val:.2f}). Consider reducing contrastive_kl coefficient.")
-            elif abs(contrastive_loss_val) < 0.01:
-                logging.info(f"Contrastive loss is very small ({contrastive_loss_val:.6f}). Consider increasing contrastive_kl coefficient.")
-            
-            if "contrastive_kl_mean" in avg_metrics:
-                kl_mean_val = float(np.array(avg_metrics['contrastive_kl_mean']))
-                logging.info(f"  - KL mean: {kl_mean_val:.6f}")
-            if "contrastive_sign_mean" in avg_metrics:
-                sign_mean_val = float(np.array(avg_metrics['contrastive_sign_mean']))
-                logging.info(f"  - Sign mean: {sign_mean_val:.6f}")
-            
-            # NEW: Debug pattern ID effectiveness
-            if "contrastive_sign_mean" in avg_metrics:
-                sign_mean = float(np.array(avg_metrics['contrastive_sign_mean']))
-                if abs(sign_mean) < 0.1:
-                    logging.warning(f"⚠️  Contrastive sign mean is very small ({sign_mean:.6f})")
-                    logging.warning(f"   This suggests pattern IDs may not be effective")
-                    logging.warning(f"   CRITICAL CHECKS NEEDED:")
-                    logging.warning(f"   - Verify batch contains multiple pattern types")
-                    logging.warning(f"   - Check pattern_ids match actual data content")
-                    logging.warning(f"   - Ensure encoder variance outputs are different")
-                    logging.warning(f"   - Consider increasing contrastive_kl coefficient")
-                elif abs(sign_mean) > 0.9:
-                    logging.info(f"✅ Contrastive sign mean is strong ({sign_mean:.6f}) - Pattern IDs appear effective")
-                else:
-                    logging.info(f"⚠️  Contrastive sign mean is moderate ({sign_mean:.6f}) - Pattern IDs may need improvement")
-            
-            # NEW: Debug encoder specialization progress
-            if "contrastive_kl_mean" in avg_metrics:
-                kl_mean = float(np.array(avg_metrics['contrastive_kl_mean']))
-                if kl_mean < 0.01:
-                    logging.warning(f"Contrastive KL mean is very small ({kl_mean:.6f}). Encoders may not be specializing.")
-                    logging.warning(f"  - Consider increasing contrastive_kl coefficient")
-                    logging.warning(f"  - Check encoder variance outputs")
-                elif kl_mean > 1.0:
-                    logging.info(f"Contrastive KL mean is large ({kl_mean:.6f}). Encoders are actively specializing ✓")
-                else:
-                    logging.info(f"Contrastive KL mean is moderate ({kl_mean:.6f}). Encoders showing some specialization.")
+            # Show conditional behavior
+            if self.encoder_expose_steps > 0:
+                logging.info(f"Contrastive loss: {contrastive_loss_val:.6f} (weighted: {contrastive_loss_weighted_val:.6f})")
+                
+                # STABILIZATION: Adaptive coefficient adjustment suggestion
+                if abs(contrastive_loss_val) > 50.0:
+                    logging.warning(f"Contrastive loss is large ({contrastive_loss_val:.2f}). Consider reducing contrastive_kl coefficient.")
+                elif abs(contrastive_loss_val) < 0.01:
+                    logging.info(f"Contrastive loss is very small ({contrastive_loss_val:.6f}). Consider increasing contrastive_kl coefficient.")
+                
+                if "contrastive_kl_mean" in avg_metrics:
+                    kl_mean_val = float(np.array(avg_metrics['contrastive_kl_mean']))
+                    logging.info(f"  - KL mean: {kl_mean_val:.6f}")
+                if "contrastive_sign_mean" in avg_metrics:
+                    sign_mean_val = float(np.array(avg_metrics['contrastive_sign_mean']))
+                    logging.info(f"  - Sign mean: {sign_mean_val:.6f}")
+                
+                # NEW: Debug pattern ID effectiveness
+                if "contrastive_sign_mean" in avg_metrics:
+                    sign_mean = float(np.array(avg_metrics['contrastive_sign_mean']))
+                    if abs(sign_mean) < 0.1:
+                        logging.warning(f"⚠️  Contrastive sign mean is very small ({sign_mean:.6f})")
+                        logging.warning(f"   This suggests pattern IDs may not be effective")
+                        logging.warning(f"   CRITICAL CHECKS NEEDED:")
+                        logging.warning(f"   - Verify batch contains multiple pattern types")
+                        logging.warning(f"   - Check pattern_ids match actual data content")
+                        logging.warning(f"   - Ensure encoder variance outputs are different")
+                        logging.warning(f"   - Consider increasing contrastive_kl coefficient")
+                    elif abs(sign_mean) > 0.9:
+                        logging.info(f"✅ Contrastive sign mean is strong ({sign_mean:.6f}) - Pattern IDs appear effective")
+                    else:
+                        logging.info(f"⚠️  Contrastive sign mean is moderate ({sign_mean:.6f}) - Pattern IDs may need improvement")
+                
+                # NEW: Debug encoder specialization progress
+                if "contrastive_kl_mean" in avg_metrics:
+                    kl_mean = float(np.array(avg_metrics['contrastive_kl_mean']))
+                    if kl_mean < 0.01:
+                        logging.warning(f"Contrastive KL mean is very small ({kl_mean:.6f}). Encoders may not be specializing.")
+                        logging.warning(f"  - Consider increasing contrastive_kl coefficient")
+                        logging.warning(f"  - Check encoder variance outputs")
+                    elif kl_mean > 1.0:
+                        logging.info(f"Contrastive KL mean is large ({kl_mean:.6f}). Encoders are actively specializing ✓")
+                    else:
+                        logging.info(f"Contrastive KL mean is moderate ({kl_mean:.6f}). Encoders showing some specialization.")
+            else:
+                logging.info(f"Contrastive loss: {contrastive_loss_val:.6f} (DISABLED - encoders frozen)")
         
         # Log pattern distribution for this training step (for debugging)
         # With task generator, each batch contains a mix of all patterns
@@ -1180,6 +1222,13 @@ class StructuredTrainer:
             if step % 100 == 0:
                 encoder_status = "TRAINABLE" if self.encoder_expose_steps > 0 else "FROZEN"
                 logging.info(f"Step {step}/{num_steps}: Encoders {encoder_status} (exposure: {self.encoder_expose_steps} steps remaining)")
+                
+                # Log transition when encoders become frozen
+                if self.encoder_expose_steps == 0 and step >= 100:
+                    logging.info("🔒 TRANSITION: Encoders are now FROZEN!")
+                    logging.info("   - Repulsion and contrastive losses are DISABLED")
+                    logging.info("   - Only reconstruction loss will be active")
+                    logging.info("   - Training will focus on decoder optimization")
             
             dataloading_time = time.time()
             for batches in dataloader:
@@ -1632,16 +1681,25 @@ class StructuredTrainer:
         num_sets = self.eval_grids.shape[0]  # Should be 96
         samples_per_pattern = num_sets // 3  # Should be 32
         
-        # Pattern mapping: sets 0-31 = pattern 1 (O), sets 32-63 = pattern 2 (T), sets 64-95 = pattern 3 (L)
-        pattern_sequence = np.concatenate([
-            np.ones(samples_per_pattern, dtype=int),      # Pattern 1 (O-tetromino)
-            np.ones(samples_per_pattern, dtype=int) * 2,  # Pattern 2 (T-tetromino) 
-            np.ones(samples_per_pattern, dtype=int) * 3   # Pattern 3 (L-tetromino)
-        ])
+        # CRITICAL FIX: Use explicit pattern IDs from evaluation dataset instead of position-based assumption
+        # This ensures pattern IDs match the actual data content, just like in training
+        if hasattr(self, 'eval_pattern_ids') and self.eval_pattern_ids is not None:
+            # Use the explicit pattern IDs that were created during dataset generation
+            pattern_sequence = np.array(self.eval_pattern_ids)
+            logging.info(f"T-SNE pattern mapping: Using EXPLICIT pattern IDs from evaluation dataset")
+        else:
+            # Fallback to position-based assumption (should not happen with the fix above)
+            pattern_sequence = np.concatenate([
+                np.ones(samples_per_pattern, dtype=int),      # Pattern 1 (O-tetromino)
+                np.ones(samples_per_pattern, dtype=int) * 2,  # Pattern 2 (T-tetromino) 
+                np.ones(samples_per_pattern, dtype=int) * 3   # Pattern 3 (L-tetromino)
+            ])
+            logging.warning(f"T-SNE pattern mapping: Using FALLBACK position-based pattern IDs")
         
         logging.info(
             f"T-SNE pattern mapping: {samples_per_pattern} samples per pattern, total patterns: {np.unique(pattern_sequence)}"
         )
+        logging.info(f"Pattern ID distribution: {np.bincount(pattern_sequence)[1:]} (should be [32, 32, 32])")
 
         # Task IDs: each of the num_sets tasks contributes one point per source
         task_id_sequence = np.arange(num_sets, dtype=int)
