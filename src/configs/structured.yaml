@@ -60,12 +60,12 @@ training:
   prior_kl_coeff: null
   pairwise_kl_coeff: null
   total_num_steps: 5000
-  encoder_expose_steps: 50  # number of initial gradient steps encoders are trainable
+  encoder_expose_steps: 2000  # number of initial gradient steps encoders are trainable
   repulsion_kl: 1e-4 
   # This coefficient controls the strength of contrastive loss
   # Lower values = more stable, higher values = more aggressive specialization
   # Current value: 1e-5 (very conservative for stability)
-  contrastive_kl: 5e-4
+  contrastive_kl: 2e-3  # specialization effects
   log_every_n_steps: 5
   eval_every_n_logs: 20       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable

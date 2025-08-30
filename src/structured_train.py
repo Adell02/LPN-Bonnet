@@ -668,13 +668,17 @@ class StructuredTrainer:
             if "contrastive_sign_mean" in avg_metrics:
                 sign_mean = float(np.array(avg_metrics['contrastive_sign_mean']))
                 if abs(sign_mean) < 0.1:
-                    logging.warning(f"Contrastive sign mean is very small ({sign_mean:.6f}). This suggests pattern IDs may not be effective.")
-                    logging.warning(f"  - Check if pattern_ids match actual data patterns")
-                    logging.warning(f"  - Verify encoder variance outputs are different")
+                    logging.warning(f"⚠️  Contrastive sign mean is very small ({sign_mean:.6f})")
+                    logging.warning(f"   This suggests pattern IDs may not be effective")
+                    logging.warning(f"   CRITICAL CHECKS NEEDED:")
+                    logging.warning(f"   - Verify batch contains multiple pattern types")
+                    logging.warning(f"   - Check pattern_ids match actual data content")
+                    logging.warning(f"   - Ensure encoder variance outputs are different")
+                    logging.warning(f"   - Consider increasing contrastive_kl coefficient")
                 elif abs(sign_mean) > 0.9:
-                    logging.info(f"Contrastive sign mean is strong ({sign_mean:.6f}). Pattern IDs appear effective ✓")
+                    logging.info(f"✅ Contrastive sign mean is strong ({sign_mean:.6f}) - Pattern IDs appear effective")
                 else:
-                    logging.info(f"Contrastive sign mean is moderate ({sign_mean:.6f}). Pattern IDs may need improvement.")
+                    logging.info(f"⚠️  Contrastive sign mean is moderate ({sign_mean:.6f}) - Pattern IDs may need improvement")
             
             # NEW: Debug encoder specialization progress
             if "contrastive_kl_mean" in avg_metrics:
@@ -1017,6 +1021,14 @@ class StructuredTrainer:
             logging.info(f"  - Batch size: {test_batch_size}")
             logging.info(f"  - True pattern distribution: {pattern_distribution}")
             logging.info(f"  - Pattern IDs: {[int(p) for p in test_pattern_ids[:10]]}... (first 10)")
+            
+            # CRITICAL: Verify pattern diversity for contrastive loss effectiveness
+            if len(unique_patterns) < 2:
+                logging.warning(f"⚠️  ONLY {len(unique_patterns)} UNIQUE PATTERN(S) IN BATCH!")
+                logging.warning(f"   Contrastive loss requires multiple patterns to work effectively")
+                logging.warning(f"   Consider increasing batch size or checking data generation")
+            else:
+                logging.info(f"✅ Batch contains {len(unique_patterns)} unique patterns - contrastive loss should work")
             
             # CRITICAL: Validate encoder variance outputs before training
             self._validate_encoder_variance_outputs(state, test_batch)
