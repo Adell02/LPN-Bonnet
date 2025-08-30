@@ -152,6 +152,8 @@ class EncoderTransformer(nn.Module):
             dtype=config.dtype,
             name="channels_embed",
         )(channels_input)
+        # Expand channels_embed to match the grid dimensions for proper broadcasting
+        channels_embed = channels_embed[None, None, :, :]  # (1, 1, 2, H)
 
         # Combine all the embeddings into a sequence x of shape (*B, 1+2*(R*C), H)
         x = colors_embed + pos_embed + channels_embed
@@ -187,33 +189,27 @@ class EncoderTransformer(nn.Module):
             print(f"  grid_shapes_embed batch dims: {grid_shapes_embed.shape[:-2]}")
             print(f"  x batch dims: {x.shape[:-2]}")
             
-            # Handle tetro_pattern case: x has 5D, grid_shapes_embed has 4D
-            if len(grid_shapes_embed.shape) == 4 and len(x.shape) == 5:
-                # grid_shapes_embed: (B, 1, 4, H) -> need to reshape to match x: (B, R, C, 4, H)
-                B = grid_shapes_embed.shape[0]
-                num_tokens = grid_shapes_embed.shape[2]  # Should be 4 (grid shape tokens)
-                H = grid_shapes_embed.shape[-1]
+            # Simple approach: just expand dimensions to match
+            x_batch_dims = len(x.shape[:-2])
+            grid_batch_dims = len(grid_shapes_embed.shape[:-2])
+            dims_to_add = x_batch_dims - grid_batch_dims
+            
+            if dims_to_add > 0:
+                # Add missing dimensions by expanding
+                for _ in range(dims_to_add):
+                    grid_shapes_embed = grid_shapes_embed[None, ...]
+                print(f"  After expanding dimensions: {grid_shapes_embed.shape}")
                 
-                # Reshape to match x's batch structure: (B, R, C, 4, H)
-                R, C = x.shape[1], x.shape[2]
-                target_shape = (B, R, C, num_tokens, H)
-                
-                print(f"  Reshaping grid_shapes_embed from {grid_shapes_embed.shape} to {target_shape}")
-                # Reshape: (B, 1, 4, H) -> (B, 1, 1, 4, H) -> (B, R, C, 4, H)
-                grid_shapes_embed = grid_shapes_embed.reshape(B, 1, 1, num_tokens, H)
-                grid_shapes_embed = jnp.broadcast_to(grid_shapes_embed, target_shape)
-                print(f"  After reshaping: {grid_shapes_embed.shape}")
-            else:
-                # Fallback: try to broadcast if possible
+                # Now try broadcasting to final shape
                 try:
                     target_shape = (*x.shape[:-2], *grid_shapes_embed.shape[-2:])
-                    print(f"  Attempting to broadcast grid_shapes_embed to: {target_shape}")
                     grid_shapes_embed = jnp.broadcast_to(grid_shapes_embed, target_shape)
                     print(f"  After broadcasting: {grid_shapes_embed.shape}")
                 except Exception as e:
                     print(f"  Broadcasting failed: {e}")
-                    print(f"  This indicates an incompatible tensor structure that needs special handling")
-                    raise ValueError(f"Cannot handle tensor dimension mismatch: grid_shapes_embed {grid_shapes_embed.shape} vs x {x.shape}")
+                    raise ValueError(f"Cannot handle tensor dimension mismatch after expansion")
+            else:
+                raise ValueError(f"Cannot handle tensor dimension mismatch: grid_shapes_embed {grid_shapes_embed.shape} vs x {x.shape}")
         
         x = jnp.concatenate([grid_shapes_embed, x], axis=-2)  # (*B, 4+2*R*C, H)
 

@@ -783,6 +783,14 @@ def visualize_struct_confidence_panel(
     if encoder_labels is None:
         encoder_labels = [f"Encoder {i}" for i in range(len(encoder_mus))]
 
+    # Determine which encoder is most confident based on mean variance
+    mean_vars = []
+    for logvar in encoder_logvars:
+        var_flat = _np.exp(_np.asarray(logvar).reshape(-1))
+        mean_vars.append(float(_np.mean(var_flat)))
+    most_confident_idx = int(_np.argmin(mean_vars))
+
+    # Plot encoder distributions, highlighting the most confident encoder
     # Plot PoE distributions FIRST (at the back) if available
     if poe_mu is not None and poe_logvar is not None:
         poe_mu_flat = _np.asarray(poe_mu).reshape(-1)
@@ -794,9 +802,12 @@ def visualize_struct_confidence_panel(
     for idx, (mu, logvar) in enumerate(zip(encoder_mus, encoder_logvars)):
         mu_flat = _np.asarray(mu).reshape(-1)
         var_flat = _np.exp(_np.asarray(logvar).reshape(-1))
-        color = enc_colors[idx % len(enc_colors)]
-        ax_means.hist(mu_flat, bins=30, alpha=0.7, color=color, label=encoder_labels[idx], density=True)
-        ax_vars.hist(var_flat, bins=30, alpha=0.7, color=color, label=encoder_labels[idx], density=True)
+        is_confident = idx == most_confident_idx
+        color = enc_colors[idx % len(enc_colors)] if is_confident else '#bbbbbb'
+        alpha = 0.9 if is_confident else 0.4
+        label = encoder_labels[idx] + (" (selected)" if is_confident else "")
+        ax_means.hist(mu_flat, bins=30, alpha=alpha, color=color, label=label, density=True)
+        ax_vars.hist(var_flat, bins=30, alpha=alpha, color=color, label=label, density=True)
 
     ax_means.set_title("Latent Means")
     ax_vars.set_title("Latent Variances")
@@ -810,17 +821,10 @@ def visualize_struct_confidence_panel(
 
     
     # Add note on the right of the entire figure showing mean variances from each encoder
-    # Calculate mean variances for each encoder
-    encoder_mean_vars = []
-    for idx, logvar in enumerate(encoder_logvars):
-        var_flat = _np.exp(_np.asarray(logvar).reshape(-1))
-        mean_var = _np.mean(var_flat)
-        encoder_mean_vars.append(mean_var)
-    
-    # Create text for the note
     note_text = "Mean Variances:\n"
-    for idx, (label, mean_var) in enumerate(zip(encoder_labels, encoder_mean_vars)):
+    for idx, (label, mean_var) in enumerate(zip(encoder_labels, mean_vars)):
         note_text += f"Var {label}: {mean_var:.4f}\n"
+    note_text += f"Selected: {encoder_labels[most_confident_idx]}\n"
     
     # Add the note to the right of the entire figure (outside all subplots)
     # Position the text in the right margin of the figure
