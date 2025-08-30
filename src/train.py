@@ -805,10 +805,7 @@ class Trainer:
                         # Create T-SNE plot using the existing visualize_tsne function
                         fig_context_latents = visualize_tsne(
                             context_np, 
-                            program_ids_sampled,
-                            max_points=max_context_points,
-                            random_state=42,
-                            task_ids=task_ids
+                            program_ids_sampled
                         )
                         
                         logging.info(f"Generated context-only T-SNE: {len(context_np)} points")
@@ -1223,7 +1220,7 @@ class Trainer:
             if num_logs_per_epoch == 0:
                 raise ValueError(
                     "The number of logs per epoch is 0 because the dataset size is "
-                    f"{self.train_dataset_grids.shape[0]} < {self.batch_size=} * {log_every_n_steps=}."
+                    f"{self.train_dataset_grids.shape[0]} < {self.batch_size} * {log_every_n_steps}."
                 )
             num_steps_per_epoch = num_logs_per_epoch * log_every_n_steps
             num_epochs = math.ceil(total_num_steps / num_steps_per_epoch)

@@ -11,6 +11,7 @@ training:
   save_checkpoint_every_n_logs: 10  # null to disable checkpointing
   learning_rate: 4e-4
   prior_kl_coeff: 1e-3
+  
   pairwise_kl_coeff: null
   mixed_precision: False  # if True, uses bfloat16 activations
   online_data_augmentation: False
