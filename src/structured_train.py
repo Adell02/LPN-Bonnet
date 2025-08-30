@@ -568,25 +568,26 @@ class StructuredTrainer:
         shapes = shapes.reshape(num_logs, log_every_n_steps, self.batch_size, *shapes.shape[2:])
         return grids, shapes
 
-    def train_n_steps(self, state: TrainState, batches: tuple[chex.Array, chex.Array], key: chex.PRNGKey) -> tuple[TrainState, dict]:
+    def train_n_steps(self, state: TrainState, batches: tuple[chex.Array, chex.Array, chex.Array], key: chex.PRNGKey) -> tuple[TrainState, dict]:
         """Process log_every_n_steps batches and return updated state and metrics."""
         num_steps = batches[0].shape[0]  # Should be log_every_n_steps
         keys = jax.random.split(key, num_steps)
+        
+        # CRITICAL: Extract explicit pattern IDs from balanced batches
+        explicit_pattern_ids = batches[2]  # (batch_size,) - explicit pattern IDs aligned with data
         
         # Process each batch sequentially (since we don't have pmap)
         all_metrics = []
         for i in range(num_steps):
             batch_pairs, batch_shapes = batches[0][i], batches[1][i]
+            batch_pattern_ids = explicit_pattern_ids  # Same pattern IDs for all steps
             rng = keys[i]
             
             def loss_fn(full_params, batch_pairs, batch_shapes, rng):
-                # CRITICAL FIX: Extract TRUE pattern IDs from actual data content
-                # The task generator creates random patterns, so we must analyze the data
-                batch_size = batch_pairs.shape[0]
-                
-                # Extract true pattern IDs by analyzing the actual output grids
-                # This ensures pattern_ids match the REAL data, not assumed ordering
-                pattern_ids = self._extract_true_pattern_ids_from_data(batch_pairs, batch_shapes)
+                # CRITICAL FIX: Use EXPLICIT pattern IDs that are aligned with balanced data
+                # These pattern IDs are guaranteed to match the data ordering:
+                # [O-tetromino x42, T-tetromino x42, L-tetromino x42]
+                pattern_ids = batch_pattern_ids  # Use explicit, aligned pattern IDs
                 
                 # Validate pattern distribution
                 unique_patterns, counts = jnp.unique(pattern_ids, return_counts=True)
@@ -594,11 +595,15 @@ class StructuredTrainer:
                 unique_patterns_py = [int(p) for p in unique_patterns]
                 counts_py = [int(c) for c in counts]
                 pattern_distribution = dict(zip(unique_patterns_py, counts_py))
-                logging.debug(f"True pattern distribution: {pattern_distribution}")
+                logging.debug(f"EXPLICIT pattern distribution: {pattern_distribution}")
                 
-                # Ensure we have multiple patterns for contrastive loss to work
-                if len(unique_patterns) < 2:
-                    logging.warning(f"Only {len(unique_patterns)} unique patterns found. Contrastive loss may be ineffective.")
+                # CRITICAL: Verify we have the expected balanced distribution
+                expected_distribution = {1: 42, 2: 42, 3: 42}  # 42 samples per pattern
+                if pattern_distribution != expected_distribution:
+                    logging.warning(f"⚠️  Pattern distribution mismatch!")
+                    logging.warning(f"   Expected: {expected_distribution}")
+                    logging.warning(f"   Got: {pattern_distribution}")
+                    logging.warning(f"   This will break contrastive loss effectiveness!")
                 
                 loss, metrics = self.model.apply(
                     {"params": full_params["decoder"]},
@@ -763,19 +768,28 @@ class StructuredTrainer:
             grids_list.append(g)
             shapes_list.append(s)
         
+        # CRITICAL FIX: Align pattern generation with pattern IDs
+        # Create explicit pattern IDs that match the concatenation order
+        pattern_ids = jnp.concatenate([
+            jnp.full((samples_per_pattern,), 1),  # O-tetromino
+            jnp.full((samples_per_pattern,), 2),  # T-tetromino  
+            jnp.full((samples_per_pattern,), 3),  # L-tetromino
+        ], axis=0)
+        
         # Concatenate all patterns to create balanced batch
         balanced_grids = jnp.concatenate(grids_list, axis=0)
         balanced_shapes = jnp.concatenate(shapes_list, axis=0)
         
-        # DEBUG: Log the final concatenated shapes
+        # DEBUG: Log the final concatenated shapes and pattern alignment
         logging.debug(f"Final balanced batch - grids shape: {balanced_grids.shape}, shapes shape: {balanced_shapes.shape}")
+        logging.debug(f"Pattern IDs: {pattern_ids[:10]}... (first 10) - should be [1,1,1,...,2,2,2,...,3,3,3,...]")
         
         # Increment batch counter for different seeds
         if not hasattr(self, '_batch_counter'):
             self._batch_counter = 0
         self._batch_counter += 1
         
-        return balanced_grids, balanced_shapes
+        return balanced_grids, balanced_shapes, pattern_ids
 
     def _create_balanced_dataloader(self, log_every_n_steps: int):
         """
@@ -793,7 +807,7 @@ class StructuredTrainer:
         
         for step in range(log_every_n_steps):
             # Generate a balanced batch for this step
-            balanced_grids, balanced_shapes = self._create_balanced_pattern_batch(
+            balanced_grids, balanced_shapes, pattern_ids = self._create_balanced_pattern_batch(
                 self.batch_size, 
                 self.samples_per_pattern_per_batch
             )
@@ -804,8 +818,16 @@ class StructuredTrainer:
         stacked_grids = jnp.stack(all_grids, axis=0)  # (log_every_n_steps, batch_size, ...)
         stacked_shapes = jnp.stack(all_shapes, axis=0)  # (log_every_n_steps, batch_size, ...)
         
-        # Yield the stacked batches in the expected format
-        yield (stacked_grids, stacked_shapes)
+        # CRITICAL: Use explicit pattern IDs that are aligned with the data
+        # Pattern IDs are the same for all steps since we generate balanced batches
+        explicit_pattern_ids = jnp.concatenate([
+            jnp.full((self.samples_per_pattern_per_batch,), 1),  # O-tetromino
+            jnp.full((self.samples_per_pattern_per_batch,), 2),  # T-tetromino  
+            jnp.full((self.samples_per_pattern_per_batch,), 3),  # L-tetromino
+        ], axis=0)
+        
+        # Yield the stacked batches with explicit pattern IDs
+        yield (stacked_grids, stacked_shapes, explicit_pattern_ids)
 
     def _extract_true_pattern_ids_from_data(self, batch_pairs: chex.Array, batch_shapes: chex.Array) -> chex.Array:
         """
@@ -1141,14 +1163,28 @@ class StructuredTrainer:
                 key, train_key = jax.random.split(key)
                 start = time.time()
                 
-                # Log pattern distribution for current batch (safe to do outside JAX context)
-                batch_size = batches[0].shape[1] if hasattr(batches[0], 'shape') and len(batches[0].shape) > 1 else len(batches[0])
+                # CRITICAL: Extract explicit pattern IDs from balanced dataloader
+                if hasattr(self, 'task_generator') and self.task_generator:
+                    # Balanced dataloader provides (grids, shapes, pattern_ids)
+                    grids, shapes, explicit_pattern_ids = batches
+                    logging.info(f"✅ Using EXPLICIT pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
+                    logging.info(f"   Pattern distribution: {[int(p) for p in jnp.unique(explicit_pattern_ids)]}")
+                else:
+                    # Fixed dataset - extract pattern IDs from data content
+                    grids, shapes = batches
+                    explicit_pattern_ids = self._extract_true_pattern_ids_from_data(grids[0], shapes[0])
+                    logging.info(f"⚠️  Using EXTRACTED pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
+                
+                # Log pattern distribution for current batch
+                batch_size = grids.shape[1] if hasattr(grids, 'shape') and len(grids.shape) > 1 else len(grids)
                 samples_per_pattern = batch_size // 3
                 logging.debug(f"Processing balanced batch with {batch_size} samples")
                 logging.debug(f"Pattern distribution: {samples_per_pattern} samples per pattern (O, T, L tetrominos)")
                 logging.debug(f"Pattern structure: [O-tetromino x{samples_per_pattern}, T-tetromino x{samples_per_pattern}, L-tetromino x{samples_per_pattern}]")
                 
-                state, metrics = self.train_n_steps(state, batches, train_key)
+                # Pass explicit pattern IDs to training
+                batches_with_patterns = (grids, shapes, explicit_pattern_ids)
+                state, metrics = self.train_n_steps(state, batches_with_patterns, train_key)
                 end = time.time()
                 
                 pbar.update(log_every)

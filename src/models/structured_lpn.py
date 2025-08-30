@@ -521,39 +521,24 @@ class StructuredLPN(nn.Module):
         kl_clip_threshold = 10.0  # Reasonable upper bound for KL divergence
         kl = jnp.clip(kl, -kl_clip_threshold, kl_clip_threshold)
 
-        # CRITICAL FIX: Pattern assignment must be dynamic based on actual data content
-        # Instead of fixed encoder→pattern mapping, we need to identify which encoder
-        # should specialize in which pattern based on the current batch
+        # CRITICAL FIX: Use STABLE pattern assignment for consistent encoder specialization
+        # Since we now have explicit, aligned pattern IDs, we can use a stable mapping:
+        # Encoder 0 → Pattern 1 (O-tetromino), Encoder 1 → Pattern 2 (T-tetromino), Encoder 2 → Pattern 3 (L-tetromino)
         
-        # Strategy: For each pattern in the batch, assign it to the encoder with lowest KL
-        # This creates a dynamic specialization that adapts to the actual data
+        # Create stable encoder→pattern mapping
+        enc_ids = jnp.arange(1, E + 1, dtype=pattern_ids.dtype)[:, None]  # [1, 2, 3] for encoders [0, 1, 2]
         
-        # Get unique patterns in this batch
-        unique_patterns = jnp.unique(pattern_ids)
-        num_patterns = len(unique_patterns)
+        # Create sign matrix: 
+        # +1 if pattern matches encoder specialization (encourage lower KL, lower variance)
+        # -1 if pattern doesn't match (encourage higher KL, higher variance)
+        sign = jnp.where(pattern_ids[None, :] == enc_ids, 1.0, -1.0)
         
-        if num_patterns == 0:
-            # Fallback: use fixed assignment if no patterns detected
-            enc_ids = jnp.arange(1, E + 1, dtype=pattern_ids.dtype)[:, None]
-            sign = jnp.where(pattern_ids[None, :] == enc_ids, 1.0, -1.0)
-        else:
-            # Dynamic pattern assignment: each pattern gets assigned to best-matching encoder
-            # Initialize sign matrix with negative values (penalize all initially)
-            sign = jnp.full((E, pattern_ids.shape[0]), -1.0)
-            
-            # For each unique pattern, find the encoder with lowest KL and assign it
-            for pattern_id in unique_patterns:
-                # Find samples with this pattern
-                pattern_mask = pattern_ids == pattern_id
-                if jnp.any(pattern_mask):
-                    # Get KL values for this pattern across all encoders
-                    pattern_kl = kl[:, pattern_mask]  # (E, num_samples_with_pattern)
-                    
-                    # Find encoder with lowest KL for this pattern
-                    best_encoder_idx = jnp.argmin(jnp.mean(pattern_kl, axis=1))
-                    
-                    # Assign positive sign for this encoder-pattern combination
-                    sign = sign.at[best_encoder_idx, pattern_mask].set(1.0)
+        # DEBUG: Log pattern assignment for monitoring
+        # This should show clear +1/-1 pattern for each encoder
+        logging.debug(f"Pattern assignment matrix:")
+        logging.debug(f"  Encoder 0 (should specialize in Pattern 1): {sign[0, :10]}... (first 10)")
+        logging.debug(f"  Encoder 1 (should specialize in Pattern 2): {sign[1, :10]}... (first 10)")
+        logging.debug(f"  Encoder 2 (should specialize in Pattern 3): {sign[2, :10]}... (first 10)")
         
         # Compute contrastive loss: 
         # - Positive sign * KL: encourages encoders to have lower KL for their specialized patterns
