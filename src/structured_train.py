@@ -783,7 +783,7 @@ class StructuredTrainer:
                     for dataset_dict in self.test_datasets:
                         try:
                             start = time.time()
-                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_context, fig_tsne_encoders = self.test_dataset_submission(
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_context, fig_tsne_encoders_list = self.test_dataset_submission(
                                 state, dataset_dict
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -796,18 +796,28 @@ class StructuredTrainer:
                                 (fig_latents_samples, "latents_samples"),
                                 (fig_search_progress, "search_progress"),
                                 (fig_tsne_context, "latents_context_only"),
-                                (fig_tsne_encoders, "latents_encoders_pattern1"),
                             ]:
                                 if fig is not None:
                                     test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)
+                            
+                            # Upload all pattern-specific T-SNE plots
+                            pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+                            for pattern_idx, fig_tsne_encoders_single in enumerate(fig_tsne_encoders_list, 1):
+                                if fig_tsne_encoders_single is not None:
+                                    test_metrics[f"test/{dataset_dict['test_name']}/latents_encoders_pattern{pattern_idx}"] = wandb.Image(fig_tsne_encoders_single)
+                                    logging.info(f"Logged T-SNE for pattern {pattern_idx} ({pattern_names[pattern_idx]})")
+                                else:
+                                    logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                             
                             wandb.log(test_metrics)
                             plt.close('all')  # Close all figures to prevent memory leaks
                             # Explicitly close additional T-SNE figures
                             if fig_tsne_context is not None:
                                 plt.close(fig_tsne_context)
-                            if fig_tsne_encoders is not None:
-                                plt.close(fig_tsne_encoders)
+                            # Close all pattern-specific T-SNE figures
+                            for fig_tsne_encoders_single in fig_tsne_encoders_list:
+                                if fig_tsne_encoders_single is not None:
+                                    plt.close(fig_tsne_encoders_single)
                             
                         except Exception as e:
                             logging.warning(f"Test dataset {dataset_dict['test_name']} failed at step 0: {e}")
@@ -901,7 +911,7 @@ class StructuredTrainer:
                             for dataset_dict in self.test_datasets:
                                 try:
                                     start = time.time()
-                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_context, fig_tsne_encoders = self.test_dataset_submission(
+                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_context, fig_tsne_encoders_list = self.test_dataset_submission(
                                         state, dataset_dict
                                     )
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -914,18 +924,28 @@ class StructuredTrainer:
                                         (fig_latents_samples, "latents_samples"),
                                         (fig_search_progress, "search_progress"),
                                         (fig_tsne_context, "latents_context_only"),
-                                        (fig_tsne_encoders, "latents_encoders_pattern1"),
                                     ]:
                                         if fig is not None:
                                             test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)
+                                    
+                                    # Upload all pattern-specific T-SNE plots
+                                    pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+                                    for pattern_idx, fig_tsne_encoders_single in enumerate(fig_tsne_encoders_list, 1):
+                                        if fig_tsne_encoders_single is not None:
+                                            test_metrics[f"test/{dataset_dict['test_name']}/latents_encoders_pattern{pattern_idx}"] = wandb.Image(fig_tsne_encoders_single)
+                                            logging.info(f"Logged T-SNE for pattern {pattern_idx} ({pattern_names[pattern_idx]})")
+                                        else:
+                                            logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                                     
                                     wandb.log(test_metrics, step=step)
                                     plt.close('all')  # Close all figures to prevent memory leaks
                                     # Explicitly close additional T-SNE figures
                                     if fig_tsne_context is not None:
                                         plt.close(fig_tsne_context)
-                                    if fig_tsne_encoders is not None:
-                                        plt.close(fig_tsne_encoders)
+                                    # Close all pattern-specific T-SNE figures
+                                    for fig_tsne_encoders_single in fig_tsne_encoders_list:
+                                        if fig_tsne_encoders_single is not None:
+                                            plt.close(fig_tsne_encoders_single)
                                     
                                 except Exception as e:
                                     logging.warning(f"Test dataset {dataset_dict['test_name']} failed: {e}")
@@ -1433,65 +1453,81 @@ class StructuredTrainer:
                 fig_tsne_context = None
                 logging.warning("No context points found for context-only T-SNE")
             
-            # 2. ADDITIONAL T-SNE: Show just the 3 encoders latents for 1 pattern only
-            # Select pattern 1 (O-tetromino) for this visualization
-            target_pattern = 1
-            pattern_mask = (pattern_ids_concat == target_pattern)
+            # 2. ADDITIONAL T-SNE: Show just the 3 encoders latents for EACH pattern
+            # Generate one T-SNE plot for each pattern (1, 2, 3)
+            fig_tsne_encoders_list = []
             
-            if np.any(pattern_mask):
-                # Get encoder points only (exclude context)
-                encoder_mask = (source_ids_np < len(enc_params_list))
-                combined_mask = pattern_mask & encoder_mask
+            for target_pattern in [1, 2, 3]:
+                pattern_mask = (pattern_ids_concat == target_pattern)
                 
-                if np.any(combined_mask):
-                    encoder_latents = latents_concat[combined_mask]
-                    encoder_sources = source_ids_np[combined_mask]
-                    encoder_task_ids = task_ids_np[combined_mask]
+                if np.any(pattern_mask):
+                    # Get encoder points only (exclude context)
+                    encoder_mask = (source_ids_np < len(enc_params_list))
+                    combined_mask = pattern_mask & encoder_mask
                     
-                    # Downsample encoder points for cleaner visualization
-                    max_encoder_points = min(300, len(encoder_latents))
-                    if len(encoder_latents) > max_encoder_points:
-                        # Stratified sampling to maintain encoder distribution
-                        encoder_indices = []
-                        for enc_id in range(len(enc_params_list)):
-                            enc_mask = encoder_sources == enc_id
-                            enc_indices = np.where(enc_mask)[0]
-                            if len(enc_indices) > 0:
-                                # Sample up to max_encoder_points // num_encoders from each encoder
-                                max_per_encoder = max_encoder_points // len(enc_params_list)
-                                if len(enc_indices) > max_per_encoder:
-                                    sampled_indices = np.random.RandomState(42).choice(
-                                        enc_indices, size=max_per_encoder, replace=False
-                                    )
-                                else:
-                                    sampled_indices = enc_indices
-                                encoder_indices.extend(sampled_indices)
+                    if np.any(combined_mask):
+                        encoder_latents = latents_concat[combined_mask]
+                        encoder_sources = source_ids_np[combined_mask]
+                        encoder_task_ids = task_ids_np[combined_mask]
                         
-                        # Apply sampling
-                        encoder_latents = encoder_latents[encoder_indices]
-                        encoder_sources = encoder_sources[encoder_indices]
-                        encoder_task_ids = encoder_task_ids[encoder_indices]
-                    
-                    # Create T-SNE for encoder-only latents (pattern 1 only)
-                    # Use pattern_id = 1 for all points (will show as same color)
-                    encoder_patterns = np.full(len(encoder_latents), target_pattern, dtype=int)
-                    
-                    fig_tsne_encoders = visualize_tsne_sources(
-                        latents=encoder_latents,
-                        program_ids=encoder_patterns,  # All pattern 1 (same color)
-                        source_ids=encoder_sources,    # 0,1,2 for different encoders (different markers)
-                        max_points=max_encoder_points,
-                        random_state=42,
-                        task_ids=encoder_task_ids,
-                    )
-                    
-                    logging.info(f"Generated encoder-only T-SNE (pattern {target_pattern}): {len(encoder_latents)} points")
+                        # Downsample encoder points for cleaner visualization
+                        max_encoder_points = min(300, len(encoder_latents))
+                        if len(encoder_latents) > max_encoder_points:
+                            # Stratified sampling to maintain encoder distribution
+                            encoder_indices = []
+                            for enc_id in range(len(enc_params_list)):
+                                enc_mask = encoder_sources == enc_id
+                                enc_indices = np.where(enc_mask)[0]
+                                if len(enc_indices) > 0:
+                                    # Sample up to max_encoder_points // num_encoders from each encoder
+                                    max_per_encoder = max_encoder_points // len(enc_params_list)
+                                    if len(enc_indices) > max_per_encoder:
+                                        sampled_indices = np.random.RandomState(42).choice(
+                                            enc_indices, size=max_per_encoder, replace=False
+                                        )
+                                    else:
+                                        sampled_indices = enc_indices
+                                    encoder_indices.extend(sampled_indices)
+                            
+                            # Apply sampling
+                            encoder_latents = encoder_latents[encoder_indices]
+                            encoder_sources = encoder_sources[encoder_indices]
+                            encoder_task_ids = encoder_task_ids[encoder_indices]
+                        
+                        # Create T-SNE for encoder-only latents (specific pattern)
+                        # Use pattern_id = target_pattern for all points (will show as same color)
+                        encoder_patterns = np.full(len(encoder_latents), target_pattern, dtype=int)
+                        
+                        # Create custom title for this pattern-specific T-SNE
+                        pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+                        custom_title = f"t-SNE Visualisation of Latent Embeddings: Pattern {target_pattern}"
+                        
+                        # Use a custom visualization function that allows title customization
+                        # For now, we'll use the existing function but we'll need to modify the title later
+                        fig_tsne_encoders_single = visualize_tsne_sources(
+                            latents=encoder_latents,
+                            program_ids=encoder_patterns,  # All same pattern (same color)
+                            source_ids=encoder_sources,    # 0,1,2 for different encoders (different markers + colors)
+                            max_points=max_encoder_points,
+                            random_state=42,
+                            task_ids=encoder_task_ids,
+                        )
+                        
+                        # Customize the title for this pattern
+                        if fig_tsne_encoders_single is not None:
+                            fig_tsne_encoders_single.suptitle(custom_title, fontsize=16, fontweight='bold')
+                        
+                        fig_tsne_encoders_list.append(fig_tsne_encoders_single)
+                        logging.info(f"Generated encoder-only T-SNE (pattern {target_pattern}): {len(encoder_latents)} points")
+                    else:
+                        fig_tsne_encoders_list.append(None)
+                        logging.warning(f"No encoder points found for pattern {target_pattern}")
                 else:
-                    fig_tsne_encoders = None
-                    logging.warning(f"No encoder points found for pattern {target_pattern}")
-            else:
-                fig_tsne_encoders = None
-                logging.warning(f"No points found for pattern {target_pattern}")
+                    fig_tsne_encoders_list.append(None)
+                    logging.warning(f"No points found for pattern {target_pattern}")
+            
+            # For backward compatibility, keep the first pattern T-SNE as the main one
+            fig_tsne_encoders = fig_tsne_encoders_list[0] if fig_tsne_encoders_list else None
             
             # COMPUTE CLUSTERING METRICS AND UPLOAD TO WANDB
             try:
@@ -1536,14 +1572,29 @@ class StructuredTrainer:
         else:
             fig_tsne = None
 
-        wandb.log({
+        # Log all T-SNE plots to wandb
+        wandb_log_data = {
             f"test/{test_name}/pixel_accuracy": wandb.Image(fig_heatmap),
             f"test/{test_name}/generation": wandb.Image(fig_gen),
             f"test/{test_name}/latents": wandb.Image(fig_tsne),
             f"test/{test_name}/latents_context_only": wandb.Image(fig_tsne_context) if fig_tsne_context is not None else None,
-            f"test/{test_name}/latents_encoders_pattern1": wandb.Image(fig_tsne_encoders) if fig_tsne_encoders is not None else None,
             **metrics,
-        })
+        }
+        
+        # Log all pattern-specific T-SNE plots
+        pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+        for pattern_idx, fig_tsne_encoders_single in enumerate(fig_tsne_encoders_list, 1):
+            if fig_tsne_encoders_single is not None:
+                wandb_log_data[f"test/{test_name}/latents_encoders_pattern{pattern_idx}"] = wandb.Image(fig_tsne_encoders_single)
+                logging.info(f"Logged T-SNE for pattern {pattern_idx} ({pattern_names[pattern_idx]})")
+            else:
+                logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
+        
+        # For backward compatibility, also log the first pattern T-SNE as the main one
+        if fig_tsne_encoders is not None:
+            wandb_log_data[f"test/{test_name}/latents_encoders_pattern1"] = wandb.Image(fig_tsne_encoders)
+        
+        wandb.log(wandb_log_data)
 
         # NEW: Confidence panel per pattern (one task per pattern)
         try:
@@ -1628,10 +1679,20 @@ class StructuredTrainer:
         num_tasks_to_show: int = 5,
         inference_mode: str = "mean",
         inference_kwargs: dict = None,
-    ) -> tuple[dict[str, float], Optional[plt.Figure], plt.Figure, Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure]]:
+    ) -> tuple[dict[str, float], Optional[plt.Figure], plt.Figure, Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure], list[Optional[plt.Figure]]]:
         """
         Test dataset submission method for structured training (similar to train.py).
         Generates outputs using leave-one-out approach and computes metrics.
+        
+        Returns:
+            - A dictionary containing the metrics.
+            - A figure containing the visualization of the generated grids.
+            - A figure containing the visualization of the pixel accuracy heatmap.
+            - A figure containing the visualization of the latents (T-SNE).
+            - A figure containing the visualization of the latents samples (None for structured training).
+            - A figure containing the visualization of the search progress (None if not applicable).
+            - A figure containing the visualization of the context-only T-SNE.
+            - A list of figures containing the visualization of the encoder-only T-SNE for each pattern.
         """
         # Use current encoder weights from state.params, not the original artifact weights
         current_enc_params_list = state.params["encoders"]
@@ -1967,11 +2028,12 @@ class StructuredTrainer:
                         fig_tsne_context = None
                         logging.warning("Test: No context points found for context-only T-SNE")
                     
-                    # 2. ADDITIONAL T-SNE: Show just the 3 encoders latents for 1 pattern only
-                    # Select the first available pattern for this visualization
+                    # 2. ADDITIONAL T-SNE: Show just the 3 encoders latents for EACH pattern
+                    # Generate one T-SNE plot for each pattern
+                    fig_tsne_encoders_list = []
                     available_patterns = np.unique(pattern_ids_concat)
-                    if len(available_patterns) > 0:
-                        target_pattern = available_patterns[0]  # Use first available pattern
+                    
+                    for target_pattern in available_patterns:
                         pattern_mask = (pattern_ids_concat == target_pattern)
                         
                         if np.any(pattern_mask):
@@ -2008,29 +2070,37 @@ class StructuredTrainer:
                                     encoder_sources = encoder_sources[encoder_indices]
                                     encoder_task_ids = encoder_task_ids[encoder_indices]
                                 
-                                # Create T-SNE for encoder-only latents (single pattern only)
+                                # Create T-SNE for encoder-only latents (specific pattern)
                                 # Use pattern_id = target_pattern for all points (will show as same color)
                                 encoder_patterns = np.full(len(encoder_latents), target_pattern, dtype=int)
                                 
-                                fig_tsne_encoders = visualize_tsne_sources(
+                                # Create custom title for this pattern-specific T-SNE
+                                custom_title = f"t-SNE Visualisation of Latent Embeddings: Pattern {target_pattern}"
+                                
+                                fig_tsne_encoders_single = visualize_tsne_sources(
                                     latents=encoder_latents,
                                     program_ids=encoder_patterns,  # All same pattern (same color)
-                                    source_ids=encoder_sources,    # 0,1,2 for different encoders (different markers)
+                                    source_ids=encoder_sources,    # 0,1,2 for different encoders (different markers + colors)
                                     max_points=max_encoder_points,
                                     random_state=42,
                                     task_ids=encoder_task_ids,
                                 )
                                 
+                                # Customize the title for this pattern
+                                if fig_tsne_encoders_single is not None:
+                                    fig_tsne_encoders_single.suptitle(custom_title, fontsize=16, fontweight='bold')
+                                
+                                fig_tsne_encoders_list.append(fig_tsne_encoders_single)
                                 logging.info(f"Test: Generated encoder-only T-SNE (pattern {target_pattern}): {len(encoder_latents)} points")
                             else:
-                                fig_tsne_encoders = None
+                                fig_tsne_encoders_list.append(None)
                                 logging.warning(f"Test: No encoder points found for pattern {target_pattern}")
                         else:
-                            fig_tsne_encoders = None
+                            fig_tsne_encoders_list.append(None)
                             logging.warning(f"Test: No points found for pattern {target_pattern}")
-                    else:
-                        fig_tsne_encoders = None
-                        logging.warning("Test: No patterns available for encoder-only T-SNE")
+                    
+                    # For backward compatibility, keep the first pattern T-SNE as the main one
+                    fig_tsne_encoders = fig_tsne_encoders_list[0] if fig_tsne_encoders_list else None
                     
                     # COMPUTE CLUSTERING METRICS FOR TEST DATASETS
                     try:
@@ -2073,7 +2143,7 @@ class StructuredTrainer:
                     except Exception as e:
                         logging.warning(f"Test clustering metrics computation failed: {e}")
         
-        return metrics, fig_gen, fig_heatmap, fig_latents, None, fig_search_progress, fig_tsne_context, fig_tsne_encoders
+        return metrics, fig_gen, fig_heatmap, fig_latents, None, fig_search_progress, fig_tsne_context, fig_tsne_encoders_list
 
 
 @hydra.main(config_path="configs", version_base=None, config_name="structured")
