@@ -56,6 +56,7 @@ from data_utils import (
     data_augmentation_fn,
     make_leave_one_out,
 )
+from datasets.task_gen.dataloader import make_task_gen_dataloader
 from visualization import (
     visualize_dataset_generation,
     visualize_heatmap,
@@ -293,85 +294,45 @@ class StructuredTrainer:
         # Optional: expose/unfreeze encoders for the first N gradient steps
         self.encoder_expose_steps = int(cfg.training.get("encoder_expose_steps", 0) or 0)
 
-        # Training/eval datasets
+        # Training/eval datasets - Use task generator like train.py for on-the-fly generation
         if cfg.training.get("struct_patterns_balanced", False):
-            # Build a balanced dataset by concatenating equal-sized splits from the 3 struct patterns
-            from datasets.task_gen.dataloader import make_dataset
-            total_train_length = 1024  # Total training samples
-            samples_per_pattern = total_train_length // 3  # ~341 samples per pattern
-            N = int(cfg.training.get("struct_num_pairs", 4))  # Use 4 pairs like config
+            # Use task generator for on-the-fly sample generation (like train.py)
+            logging.info("Using task generator for on-the-fly sample generation (like train.py)")
+            self.task_generator = True
+            self.task_generator_kwargs = {
+                "num_workers": cfg.training.get("num_workers", 4),
+                "num_pairs": int(cfg.training.get("struct_num_pairs", 4)),
+                "class": "STRUCT_PATTERN",
+                "pattern": 0,  # pattern=0 mixes all 3 patterns uniformly
+                "pattern_per_task": True,
+                "num_rows": 5,
+                "num_cols": 5,
+                "online_data_augmentation": cfg.training.online_data_augmentation,
+            }
             
-            grids_all, shapes_all = [], []
-            pattern_ids = []  # Track pattern IDs for shuffling
+            # Initialize dummy grids/shapes for model initialization (like train.py)
+            num_pairs = self.task_generator_kwargs["num_pairs"]
+            num_rows, num_cols = 5, 5  # Default grid size
+            self.init_grids = jnp.zeros((1, num_pairs, num_rows, num_cols, 2), jnp.uint8)
+            self.init_shapes = jnp.ones((1, num_pairs, 2, 2), jnp.uint8)
             
-            for pid in (1, 2, 3):  # Generate from all 3 patterns (O, T, L tetrominos)
-                g, s, _ = make_dataset(
-                    length=samples_per_pattern,  # ~341 samples per pattern
-                    num_pairs=N,  # 4 pairs per task
-                    num_workers=cfg.training.get("num_workers", 4),
-                    task_generator_class="STRUCT_PATTERN",
-                    online_data_augmentation=cfg.training.online_data_augmentation,
-                    seed=cfg.training.seed + pid,  # Different seed per pattern
-                    pattern=pid,  # pattern 1, 2, 3 for O, T, L tetrominos
-                )
-                grids_all.append(g)
-                shapes_all.append(s)
-                # Add pattern IDs for this batch
-                pattern_ids.extend([pid] * g.shape[0])
+            # No fixed dataset - samples generated on-the-fly
+            self.train_grids = None
+            self.train_shapes = None
+            self.shuffled_pattern_ids = None
             
-            # Concatenate to get balanced dataset: ~341 + ~341 + ~341 = 1024 total samples
-            self.train_grids = jnp.concatenate(grids_all, axis=0)
-            self.train_shapes = jnp.concatenate(shapes_all, axis=0)
+            # CRITICAL: Configure uniform pattern distribution
+            self.batch_size = cfg.training.batch_size
+            self.samples_per_pattern_per_batch = self.batch_size // 3  # Ensure divisible by 3
+            if self.batch_size % 3 != 0:
+                logging.warning(f"Batch size {self.batch_size} not divisible by 3, adjusting for uniform pattern distribution")
+                self.batch_size = (self.batch_size // 3) * 3
+                logging.info(f"Adjusted batch size to {self.batch_size} for uniform pattern distribution")
             
-            # CRITICAL FIX: Shuffle patterns uniformly to prevent encoder specialization bias
-            # This ensures each encoder sees all patterns equally during training
-            logging.info("Shuffling training data patterns uniformly to prevent encoder specialization bias...")
-            
-            # Create shuffle indices that maintain pattern balance
-            import numpy as np
-            pattern_ids_np = np.array(pattern_ids)
-            
-            # Create interleaved pattern sequence: 1,2,3,1,2,3,1,2,3,...
-            # This ensures each batch contains samples from all patterns
-            total_samples = len(pattern_ids_np)
-            interleaved_patterns = []
-            for i in range(total_samples):
-                pattern_idx = i % 3  # 0,1,2 for patterns 1,2,3
-                interleaved_patterns.append(pattern_idx + 1)  # Convert to 1,2,3
-            
-            # Find indices for each pattern in the original data
-            pattern_1_indices = np.where(pattern_ids_np == 1)[0]
-            pattern_2_indices = np.where(pattern_ids_np == 2)[0]
-            pattern_3_indices = np.where(pattern_ids_np == 3)[0]
-            
-            # Create shuffled indices that achieve the interleaved pattern
-            shuffled_indices = []
-            samples_per_pattern_actual = min(len(pattern_1_indices), len(pattern_2_indices), len(pattern_3_indices))
-            
-            for i in range(samples_per_pattern_actual):
-                # Take one sample from each pattern in round-robin fashion
-                if i < len(pattern_1_indices):
-                    shuffled_indices.append(pattern_1_indices[i])
-                if i < len(pattern_2_indices):
-                    shuffled_indices.append(pattern_2_indices[i])
-                if i < len(pattern_3_indices):
-                    shuffled_indices.append(pattern_3_indices[i])
-            
-            # Apply shuffling to both grids and shapes
-            # Convert shuffled_indices to JAX array for proper indexing
-            shuffled_indices_jax = jnp.array(shuffled_indices, dtype=jnp.int32)
-            self.train_grids = self.train_grids[shuffled_indices_jax]
-            self.train_shapes = self.train_shapes[shuffled_indices_jax]
-            
-            # Log the new pattern distribution
-            new_pattern_ids = [pattern_ids_np[i] for i in shuffled_indices]
-            pattern_counts = {1: new_pattern_ids.count(1), 2: new_pattern_ids.count(2), 3: new_pattern_ids.count(3)}
-            logging.info(f"Training data shuffled - Pattern distribution: {pattern_counts}")
-            logging.info(f"Pattern sequence (first 20): {new_pattern_ids[:20]}")
-            
-            # Store shuffled pattern IDs for pattern_id generation during training
-            self.shuffled_pattern_ids = new_pattern_ids
+            logging.info(f"Task generator configured: {self.task_generator_kwargs}")
+            logging.info(f"Uniform pattern distribution: {self.samples_per_pattern_per_batch} samples per pattern per batch")
         else:
+            # Fallback to fixed datasets if specified
             train_datasets = cfg.training.train_datasets
             if isinstance(train_datasets, str) and train_datasets:
                 train_datasets = [train_datasets]
@@ -382,6 +343,7 @@ class StructuredTrainer:
                     shapes.append(shapes_i)
                 self.train_grids = jnp.concat(grids, axis=0)
                 self.train_shapes = jnp.concat(shapes, axis=0)
+                self.task_generator = False
             else:
                 raise ValueError("No training data specified: set training.train_datasets or enable struct_patterns_balanced")
 
@@ -605,41 +567,26 @@ class StructuredTrainer:
             
             def loss_fn(full_params, batch_pairs, batch_shapes, rng):
                 # Generate pattern_ids for contrastive loss: use ACTUAL pattern information
-                # The data is organized as: samples 0-340=Pattern1, 341-681=Pattern2, 682-1023=Pattern3
-                # We need to extract the actual pattern for each sample in the batch
+                # With balanced batch generation, we know the exact pattern distribution
                 batch_size = batch_pairs.shape[0]
                 
-                # Get the global indices for this batch to determine actual patterns
-                # Since we're processing batches sequentially, we need to track the global position
-                # This assumes the data is not shuffled between epochs (only within epochs)
+                # CRITICAL: Use actual pattern structure from balanced batch
+                # Each batch contains: [pattern1_samples, pattern2_samples, pattern3_samples]
+                # This ensures pattern IDs match the actual data content exactly
+                samples_per_pattern = batch_size // 3
                 
-                # Calculate the starting index for this batch in the global dataset
-                # We need to track this across the training loop
-                if not hasattr(self, '_current_batch_start_idx'):
-                    self._current_batch_start_idx = 0
-                
-                # Generate pattern_ids based on SHUFFLED data organization
-                # This ensures each encoder sees all patterns equally during training
+                # Create pattern IDs that match the actual data structure
                 pattern_sequence = []
                 for i in range(batch_size):
-                    global_idx = self._current_batch_start_idx + i
-                    if hasattr(self, 'shuffled_pattern_ids') and global_idx < len(self.shuffled_pattern_ids):
-                        # Use the shuffled pattern IDs for uniform pattern distribution
-                        pattern_id = self.shuffled_pattern_ids[global_idx]
+                    if i < samples_per_pattern:
+                        pattern_id = 1  # First samples: O-tetromino
+                    elif i < 2 * samples_per_pattern:
+                        pattern_id = 2  # Middle samples: T-tetromino
                     else:
-                        # Fallback to sequential logic if shuffling not available
-                        if global_idx < 341:  # First 341 samples: Pattern 1 (O-tetromino)
-                            pattern_id = 1
-                        elif global_idx < 682:  # Next 341 samples: Pattern 2 (T-tetromino) 
-                            pattern_id = 2
-                        else:  # Remaining samples: Pattern 3 (L-tetromino)
-                            pattern_id = 3
+                        pattern_id = 3  # Last samples: L-tetromino
                     pattern_sequence.append(pattern_id)
                 
                 pattern_ids = jnp.array(pattern_sequence, dtype=jnp.int32)
-                
-                # Update the batch start index for next iteration
-                self._current_batch_start_idx += batch_size
                 
                 # Note: Removed debug logging from inside JAX-compiled function
                 # as it can cause issues with JAX arrays
@@ -710,29 +657,82 @@ class StructuredTrainer:
                 logging.info(f"  - Sign mean: {sign_mean_val:.6f}")
         
         # Log pattern distribution for this training step (for debugging)
-        if hasattr(self, '_current_batch_start_idx'):
-            logging.debug(f"Current batch start index: {self._current_batch_start_idx}")
-            # Calculate which patterns were processed in this step
-            step_start = max(0, self._current_batch_start_idx - num_steps * self.batch_size)
-            step_end = self._current_batch_start_idx
-            if step_start < 341:
-                pattern1_samples = min(341, step_end) - step_start
-            else:
-                pattern1_samples = 0
-            if step_start < 682 and step_end > 341:
-                pattern2_samples = min(682, step_end) - max(341, step_start)
-            else:
-                pattern2_samples = 0
-            if step_end > 682:
-                pattern3_samples = step_end - max(682, step_start)
-            else:
-                pattern3_samples = 0
-            
-            logging.debug(f"Pattern distribution in this step: Pattern1={pattern1_samples}, Pattern2={pattern2_samples}, Pattern3={pattern3_samples}")
+        # With task generator, each batch contains a mix of all patterns
+        logging.debug(f"Training step completed: {num_steps} steps, batch size: {self.batch_size}")
+        logging.debug(f"Pattern distribution: Each batch contains samples from all 3 patterns (O, T, L tetrominos)")
         
         # Decrement exposure counter by number of gradient steps completed
         self.encoder_expose_steps = max(0, self.encoder_expose_steps - num_steps)
         return state, avg_metrics
+
+    def _create_balanced_pattern_batch(self, batch_size: int, samples_per_pattern: int) -> tuple[list, list]:
+        """
+        Create a balanced batch with equal representation from all 3 patterns.
+        
+        This ensures each batch contains exactly the same number of samples from each pattern,
+        which is crucial for proper contrastive loss computation.
+        
+        Args:
+            batch_size: Total batch size (must be divisible by 3)
+            samples_per_pattern: Number of samples per pattern per batch
+            
+        Returns:
+            Tuple of (grids_list, shapes_list) with balanced pattern distribution
+        """
+        if batch_size % 3 != 0:
+            raise ValueError(f"Batch size {batch_size} must be divisible by 3 for uniform pattern distribution")
+        
+        # Generate samples for each pattern
+        grids_list = []
+        shapes_list = []
+        
+        for pattern_id in [1, 2, 3]:  # O-tetromino, T-tetromino, L-tetromino
+            # Generate samples_per_pattern samples for this pattern
+            from datasets.task_gen.dataloader import make_dataset
+            g, s, _ = make_dataset(
+                length=samples_per_pattern,
+                num_pairs=self.task_generator_kwargs["num_pairs"],
+                num_workers=0,  # No workers for single batch generation
+                task_generator_class="STRUCT_PATTERN",
+                online_data_augmentation=self.cfg.training.online_data_augmentation,
+                seed=self.cfg.training.seed + pattern_id + (self._batch_counter if hasattr(self, '_batch_counter') else 0),
+                pattern=pattern_id,  # Specific pattern
+                pattern_per_task=True,
+            )
+            grids_list.append(g)
+            shapes_list.append(g)
+        
+        # Concatenate all patterns to create balanced batch
+        balanced_grids = jnp.concatenate(grids_list, axis=0)
+        balanced_shapes = jnp.concatenate(shapes_list, axis=0)
+        
+        # Increment batch counter for different seeds
+        if not hasattr(self, '_batch_counter'):
+            self._batch_counter = 0
+        self._batch_counter += 1
+        
+        return balanced_grids, balanced_shapes
+
+    def _create_balanced_dataloader(self, log_every_n_steps: int):
+        """
+        Create a dataloader that generates balanced batches with uniform pattern distribution.
+        
+        Args:
+            log_every_n_steps: Number of steps to log
+            
+        Returns:
+            Generator that yields balanced batches
+        """
+        for step in range(log_every_n_steps):
+            # Generate a balanced batch for this step
+            balanced_grids, balanced_shapes = self._create_balanced_pattern_batch(
+                self.batch_size, 
+                self.samples_per_pattern_per_batch
+            )
+            
+            # Reshape to match expected format: (log_every_n_steps, batch_size, ...)
+            # For now, we'll yield a single batch per step
+            yield (balanced_grids, balanced_shapes)
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
@@ -767,24 +767,32 @@ class StructuredTrainer:
         # Test forward pass first to catch any issues early
         logging.info("Testing forward pass...")
         try:
-            test_batch = self.train_grids[:self.batch_size], self.train_shapes[:self.batch_size]
+            # Generate a balanced test batch with uniform pattern distribution
+            if hasattr(self, 'task_generator') and self.task_generator:
+                test_grids, test_shapes = self._create_balanced_pattern_batch(
+                    self.batch_size, 
+                    self.samples_per_pattern_per_batch
+                )
+                test_batch = test_grids, test_shapes
+            else:
+                # Fallback to fixed dataset
+                test_batch = self.train_grids[:self.batch_size], self.train_shapes[:self.batch_size]
+            
             # Generate pattern_ids for test forward pass: use ACTUAL pattern information
             test_batch_size = test_batch[0].shape[0]
             
-            # For test forward pass, use the shuffled pattern IDs for uniform pattern distribution
+            # CRITICAL: Use actual pattern structure from balanced test batch
+            samples_per_pattern = test_batch_size // 3
+            
+            # Create pattern IDs that match the actual data structure
             test_pattern_sequence = []
             for i in range(test_batch_size):
-                if hasattr(self, 'shuffled_pattern_ids') and i < len(self.shuffled_pattern_ids):
-                    # Use the shuffled pattern IDs for uniform pattern distribution
-                    pattern_id = self.shuffled_pattern_ids[i]
+                if i < samples_per_pattern:
+                    pattern_id = 1  # First samples: O-tetromino
+                elif i < 2 * samples_per_pattern:
+                    pattern_id = 2  # Middle samples: T-tetromino
                 else:
-                    # Fallback to sequential logic if shuffling not available
-                    if i < 341:  # First 341 samples: Pattern 1 (O-tetromino)
-                        pattern_id = 1
-                    elif i < 682:  # Next 341 samples: Pattern 2 (T-tetromino) 
-                        pattern_id = 2
-                    else:  # Remaining samples: Pattern 3 (L-tetromino)
-                        pattern_id = 3
+                    pattern_id = 3  # Last samples: L-tetromino
                 test_pattern_sequence.append(pattern_id)
             
             test_pattern_ids = jnp.array(test_pattern_sequence, dtype=jnp.int32)
@@ -798,15 +806,11 @@ class StructuredTrainer:
             logging.debug(f"  - Unique values: {jnp.unique(test_pattern_ids)}")
             
             # Log pattern distribution for test forward pass (safe to do outside JAX context)
-            # Count actual patterns in the test batch
-            pattern_counts = {}
-            for pattern_id in test_pattern_sequence:
-                pattern_counts[pattern_id] = pattern_counts.get(pattern_id, 0) + 1
-            
-            logging.info(f"Test forward pass pattern distribution:")
-            for pattern_id in sorted(pattern_counts.keys()):
-                pattern_name = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}[pattern_id]
-                logging.info(f"  - Pattern {pattern_id} ({pattern_name}): {pattern_counts[pattern_id]} samples")
+            # With balanced batch generation, we have exact pattern distribution
+            logging.info(f"Test forward pass: Using balanced pattern generation")
+            logging.info(f"  - Batch size: {test_batch_size}")
+            logging.info(f"  - Pattern structure: [O-tetromino x{samples_per_pattern}, T-tetromino x{samples_per_pattern}, L-tetromino x{samples_per_pattern}]")
+            logging.info(f"  - Pattern IDs: {test_pattern_sequence[:10]}... (first 10)")
             
             test_loss, test_metrics = self.model.apply(
                 {"params": state.params["decoder"]},
@@ -890,9 +894,18 @@ class StructuredTrainer:
         
         while step < num_steps:
             key, epoch_key = jax.random.split(key)
-            # Prepare dataset for this epoch
-            grids, shapes = self.prepare_train_dataset_for_epoch(epoch_key, log_every)
-            dataloader = zip(grids, shapes)
+            
+            # Prepare dataset for this epoch - Use balanced pattern generation
+            if hasattr(self, 'task_generator') and self.task_generator:
+                # Use balanced pattern generation for uniform distribution
+                logging.info(f"Using balanced pattern generation for epoch {epoch}")
+                # Create a simple dataloader that generates balanced batches
+                dataloader = self._create_balanced_dataloader(log_every)
+            else:
+                # Fallback to fixed dataset (if specified)
+                grids, shapes = self.prepare_train_dataset_for_epoch(epoch_key, log_every)
+                dataloader = zip(grids, shapes)
+                logging.info(f"Using fixed dataset for epoch {epoch}")
             
             # Log current step and encoder status
             if step % 100 == 0:
@@ -908,9 +921,11 @@ class StructuredTrainer:
                 start = time.time()
                 
                 # Log pattern distribution for current batch (safe to do outside JAX context)
-                batch_size = batches[0].shape[1]  # Get batch size from first batch
+                batch_size = batches[0].shape[1] if hasattr(batches[0], 'shape') and len(batches[0].shape) > 1 else len(batches[0])
                 samples_per_pattern = batch_size // 3
-                logging.debug(f"Processing batch with {batch_size} samples, ~{samples_per_pattern} per pattern")
+                logging.debug(f"Processing balanced batch with {batch_size} samples")
+                logging.debug(f"Pattern distribution: {samples_per_pattern} samples per pattern (O, T, L tetrominos)")
+                logging.debug(f"Pattern structure: [O-tetromino x{samples_per_pattern}, T-tetromino x{samples_per_pattern}, L-tetromino x{samples_per_pattern}]")
                 
                 state, metrics = self.train_n_steps(state, batches, train_key)
                 end = time.time()
