@@ -164,10 +164,12 @@ class StructuredLPN(nn.Module):
         repulsion_loss = 0.0
         if repulsion_kl_coeff is not None and repulsion_kl_coeff > 0 and E > 1:
             try:
-                # Compute KL divergence between pairs of encoder latents
-                # This encourages encoders to produce different latent representations
+                # CRITICAL FIX: Repulsion loss should SUBTRACT from total loss to spread encoders apart
+                # A positive coefficient on repulsion_loss drives encoders toward similarity (wrong!)
+                # We want to minimize total loss, so we subtract repulsion_loss to drive KL divergence UP
+                # This encourages encoders to become more different (higher KL between them)
                 repulsion_loss = self._compute_encoder_repulsion_loss(mus, logvars)
-                loss += repulsion_kl_coeff * repulsion_loss
+                loss -= repulsion_kl_coeff * repulsion_loss  # SUBTRACT to spread encoders apart
             except Exception as e:
                 # Gracefully handle any memory or computation errors
                 logging.warning(f"Encoder repulsion loss computation failed: {e}. Skipping repulsion loss.")
@@ -181,11 +183,14 @@ class StructuredLPN(nn.Module):
             and pattern_ids is not None
         ):
             try:
-                # Note: Removed debug logging from inside JAX-compiled function
-                # as it can cause issues with JAX traced arrays
+                # CRITICAL FIX: Block gradients to PoE to prevent "moving together"
+                # This ensures each encoder must independently match the fixed PoE target
+                # instead of being able to shift the shared PoE distribution
+                mu_poe_fixed = jax.lax.stop_gradient(mu_poe)
+                logvar_poe_fixed = jax.lax.stop_gradient(logvar_poe)
                 
                 contrastive_loss, kl_mean, sign_mean = self._compute_contrastive_loss(
-                    mus, logvars, mu_poe, logvar_poe, pattern_ids
+                    mus, logvars, mu_poe_fixed, logvar_poe_fixed, pattern_ids
                 )
                 loss += contrastive_kl_coeff * contrastive_loss
             except Exception as e:
@@ -206,7 +211,7 @@ class StructuredLPN(nn.Module):
         if repulsion_kl_coeff is not None and repulsion_kl_coeff > 0:
             metrics.update(
                 repulsion_loss=repulsion_loss,
-                repulsion_loss_weighted=repulsion_kl_coeff * repulsion_loss,
+                repulsion_loss_weighted=-repulsion_kl_coeff * repulsion_loss,  # Negative because we subtract from loss
             )
         if contrastive_kl_coeff is not None and contrastive_kl_coeff > 0:
             metrics.update(
@@ -471,8 +476,8 @@ class StructuredLPN(nn.Module):
         self,
         mus: chex.Array,
         logvars: chex.Array,
-        mu_poe: chex.Array,
-        logvar_poe: chex.Array,
+        mu_poe: chex.Array,  # Should be stop_gradient'd before calling this function
+        logvar_poe: chex.Array,  # Should be stop_gradient'd before calling this function
         pattern_ids: chex.Array,
     ) -> chex.Array:
         """Compute contrastive KL loss for encoder specialization.
