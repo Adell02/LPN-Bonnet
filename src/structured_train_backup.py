@@ -1011,79 +1011,6 @@ class StructuredTrainer:
         except Exception as e:
             logging.error(f"Encoder variance validation failed: {e}")
 
-    def _validate_contrastive_loss_patterns(self, batch_pattern_ids: chex.Array, batch_size: int) -> None:
-        """
-        CRITICAL: Validate that contrastive loss is receiving correct pattern distribution.
-        
-        This ensures that the contrastive loss can effectively drive encoder specialization
-        by having samples from each pattern in the same batch.
-        
-        Args:
-            batch_pattern_ids: Pattern IDs for the current batch
-            batch_size: Total batch size
-        """
-        logging.info("Validating contrastive loss pattern distribution...")
-        
-        try:
-            # Convert to numpy for analysis
-            pattern_ids_np = np.array(batch_pattern_ids)
-            
-            # Check pattern distribution
-            unique_patterns, counts = np.unique(pattern_ids_np, return_counts=True)
-            pattern_distribution = dict(zip(unique_patterns, counts))
-            
-            logging.info(f"Batch pattern distribution: {pattern_distribution}")
-            logging.info(f"Batch size: {batch_size}")
-            
-            # Validate expected distribution
-            expected_samples_per_pattern = batch_size // 3
-            expected_distribution = {
-                1: expected_samples_per_pattern,  # O-tetromino
-                2: expected_samples_per_pattern,  # T-tetromino  
-                3: expected_samples_per_pattern   # L-tetromino
-            }
-            
-            if pattern_distribution == expected_distribution:
-                logging.info("✅ Pattern distribution is PERFECT for contrastive loss!")
-                logging.info(f"   - Each pattern has exactly {expected_samples_per_pattern} samples")
-                logging.info(f"   - Contrastive loss can effectively compare patterns within the same batch")
-            else:
-                logging.warning("⚠️  Pattern distribution is NOT optimal for contrastive loss!")
-                logging.warning(f"   - Expected: {expected_distribution}")
-                logging.warning(f"   - Got: {pattern_distribution}")
-                logging.warning(f"   - This may reduce contrastive loss effectiveness")
-                
-                # Check if we still have multiple patterns
-                if len(unique_patterns) >= 2:
-                    logging.info("   - Still have multiple patterns, contrastive loss may work partially")
-                else:
-                    logging.error("   - Only one pattern type! Contrastive loss will NOT work!")
-            
-            # Check for pattern diversity within batch
-            if len(unique_patterns) >= 2:
-                logging.info("✅ Batch contains multiple pattern types - contrastive loss can work")
-                
-                # Check if patterns are well-mixed (not clustered)
-                pattern_sequence = pattern_ids_np
-                pattern_changes = np.sum(pattern_sequence[1:] != pattern_sequence[:-1])
-                total_possible_changes = len(pattern_sequence) - 1
-                mixing_ratio = pattern_changes / total_possible_changes if total_possible_changes > 0 else 0
-                
-                if mixing_ratio > 0.5:
-                    logging.info(f"✅ Patterns are well-mixed (mixing ratio: {mixing_ratio:.3f})")
-                else:
-                    logging.warning(f"⚠️  Patterns may be clustered (mixing ratio: {mixing_ratio:.3f})")
-                    logging.warning("   - Consider improving data shuffling for better contrastive loss")
-            else:
-                logging.error("❌ Batch contains only one pattern type!")
-                logging.error("   - Contrastive loss cannot work without pattern diversity")
-                logging.error("   - Check data generation and batch construction")
-            
-            logging.info("Contrastive loss pattern validation completed")
-            
-        except Exception as e:
-            logging.error(f"Contrastive loss pattern validation failed: {e}")
-
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
         num_steps = cfg.training.total_num_steps
@@ -1328,10 +1255,6 @@ class StructuredTrainer:
                             logging.error(f"   Full got: {explicit_pattern_ids}")
                         else:
                             logging.info(f"✅ Pattern IDs match expected structure")
-                        
-                        # NEW: Validate contrastive loss pattern distribution
-                        if step % 100 == 0:  # Validate every 100 steps to avoid spam
-                            self._validate_contrastive_loss_patterns(explicit_pattern_ids, self.batch_size)
                     else:
                         # Fallback if dataloader doesn't provide pattern_ids
                         grids, shapes = batches
@@ -1701,7 +1624,6 @@ class StructuredTrainer:
             f"test/{test_name}/pixel_correctness": float(np.mean(pixel_correctness)),
             f"test/{test_name}/accuracy": float(np.mean(accuracy)),
             **search_metrics,  # Include search trajectory metrics
-            **encoder_variance_metrics,  # Include encoder variance metrics for each pattern
         }
 
         # Figures
@@ -1782,9 +1704,6 @@ class StructuredTrainer:
         # Task IDs: each of the num_sets tasks contributes one point per source
         task_id_sequence = np.arange(num_sets, dtype=int)
         
-        # NEW: Track encoder variances for each pattern to monitor specialization
-        encoder_variance_metrics = {}
-        
         # Add individual encoder latents (unique source_id per encoder)
         for enc_idx, enc_params in enumerate(current_enc_params_list):
             try:
@@ -1797,31 +1716,6 @@ class StructuredTrainer:
                 )
                 lat = mu_i.mean(axis=-2)  # Mean over pairs
                 lat_np = np.array(lat).reshape(-1, lat.shape[-1])
-                
-                # CRITICAL: Compute and track encoder variances for each pattern
-                # This shows how well each encoder specializes in different patterns
-                var_i = np.exp(np.array(logvar_i))  # Convert logvar to variance
-                var_i_flat = var_i.reshape(-1, var_i.shape[-1])  # Flatten to [num_tasks, latent_dim]
-                
-                # Compute mean variance per task for this encoder
-                mean_var_per_task = np.mean(var_i_flat, axis=1)  # [num_tasks]
-                
-                # Group variances by pattern for detailed analysis
-                for pattern_id in [1, 2, 3]:
-                    pattern_mask = (pattern_sequence == pattern_id)
-                    if np.any(pattern_mask):
-                        pattern_variances = mean_var_per_task[pattern_mask]
-                        pattern_mean_var = float(np.mean(pattern_variances))
-                        pattern_std_var = float(np.std(pattern_variances))
-                        
-                        # Store metrics for WandB logging
-                        metric_key = f"encoder_{enc_idx}_pattern_{pattern_id}"
-                        encoder_variance_metrics[f"{metric_key}_mean_variance"] = pattern_mean_var
-                        encoder_variance_metrics[f"{metric_key}_std_variance"] = pattern_std_var
-                        encoder_variance_metrics[f"{metric_key}_num_samples"] = int(np.sum(pattern_mask))
-                        
-                        # Log specialization progress
-                        logging.info(f"Encoder {enc_idx} - Pattern {pattern_id}: mean_var={pattern_mean_var:.6f}, std_var={pattern_std_var:.6f}, samples={np.sum(pattern_mask)}")
                 
                 # Log the actual latent dimension from this encoder
                 actual_latent_dim = lat_np.shape[-1]
@@ -1950,15 +1844,14 @@ class StructuredTrainer:
             )
             
             # 1. ADDITIONAL T-SNE: Show latent samples to demonstrate uncertainty (equivalent to train.py fig_latents_samples)
-            # Since structured_train doesn't have latents_samples, we'll create multiple samples from encoders
-            if len(enc_params_list) > 0:
-                # Create multiple samples by using different encoder outputs as "samples"
-                # This shows how different encoders represent the same patterns (uncertainty)
-                encoder_samples = []
-                encoder_sample_program_ids = []
-                encoder_sample_task_ids = []
+            # Since structured_train doesn't have latents_samples, we'll use PoE-combined contexts as samples
+            # This shows the ensemble uncertainty by using the PoE-combined context
+            if len(enc_params_list) > 0 and "context" in info:
+                # Use the PoE-combined context as our "samples" - this represents the ensemble behavior
+                # Each context point is the result of PoE combination across all encoders
+                context_np = np.array(info["context"]).reshape(-1, info["context"].shape[-1])
                 
-                # For each pattern, collect encoder outputs as samples
+                # Ensure consistent latent dimension for T-SNE
                 for pattern_id in [1, 2, 3]:
                     pattern_mask = (pattern_ids_concat == pattern_id)
                     if np.any(pattern_mask):
@@ -2021,7 +1914,10 @@ class StructuredTrainer:
                     logging.warning("No encoder samples found for samples T-SNE")
             else:
                 fig_tsne_samples = None
-                logging.warning("No encoders available for samples T-SNE")
+                if len(enc_params_list) == 0:
+                    logging.warning("No encoders available for PoE context samples T-SNE")
+                else:
+                    logging.warning("No context found in info for PoE context samples T-SNE")
             
             # 2. ADDITIONAL T-SNE: Show just the 3 encoders latents for EACH pattern
             # Generate one T-SNE plot for each pattern (1, 2, 3)
@@ -2558,7 +2454,6 @@ class StructuredTrainer:
             f"test/{test_name}/correct_shapes": float(np.mean(correct_shapes)),
             f"test/{test_name}/pixel_correctness": float(np.mean(pixel_correctness)),
             f"test/{test_name}/accuracy": float(np.mean(accuracy)),
-            **test_encoder_variance_metrics,  # Include test encoder variance metrics for each pattern
         }
         
         # Create visualizations
@@ -2595,9 +2490,6 @@ class StructuredTrainer:
                 task_id_sequence = np.arange(dataset_grids.shape[0], dtype=int)
                 task_ids_list = []
 
-                # NEW: Track encoder variances for each pattern in test datasets
-                test_encoder_variance_metrics = {}
-                
                 # Add encoder outputs (unique source_id per encoder)
                 for enc_idx, enc_params in enumerate(current_enc_params_list):
                     try:
@@ -2610,31 +2502,6 @@ class StructuredTrainer:
                         )
                         lat = mu_i.mean(axis=-2)  # Mean over pairs
                         lat_np = np.array(lat).reshape(-1, lat.shape[-1])
-                        
-                        # CRITICAL: Compute and track encoder variances for each pattern in test datasets
-                        # This shows how well each encoder specializes in different patterns during testing
-                        var_i = np.exp(np.array(logvar_i))  # Convert logvar to variance
-                        var_i_flat = var_i.reshape(-1, var_i.shape[-1])  # Flatten to [num_tasks, latent_dim]
-                        
-                        # Compute mean variance per task for this encoder
-                        mean_var_per_task = np.mean(var_i_flat, axis=1)  # [num_tasks]
-                        
-                        # Group variances by pattern for detailed analysis
-                        for pattern_id in np.unique(pattern_ids_np):
-                            pattern_mask = (pattern_ids_np == pattern_id)
-                            if np.any(pattern_mask):
-                                pattern_variances = mean_var_per_task[pattern_mask]
-                                pattern_mean_var = float(np.mean(pattern_variances))
-                                pattern_std_var = float(np.std(pattern_variances))
-                                
-                                # Store metrics for WandB logging
-                                metric_key = f"test_{test_name}_encoder_{enc_idx}_pattern_{pattern_id}"
-                                test_encoder_variance_metrics[f"{metric_key}_mean_variance"] = pattern_mean_var
-                                test_encoder_variance_metrics[f"{metric_key}_std_variance"] = pattern_std_var
-                                test_encoder_variance_metrics[f"{metric_key}_num_samples"] = int(np.sum(pattern_mask))
-                                
-                                # Log specialization progress for test datasets
-                                logging.info(f"Test: Encoder {enc_idx} - Pattern {pattern_id}: mean_var={pattern_mean_var:.6f}, std_var={pattern_std_var:.6f}, samples={np.sum(pattern_mask)}")
                         
                         # Log the actual latent dimension from this encoder
                         actual_latent_dim = lat_np.shape[-1]
