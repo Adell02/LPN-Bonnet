@@ -1,5 +1,10 @@
 from functools import partial
-from typing import Any, Iterator, Literal, Optional, Tuple
+from typing import Any, Iterator, Optional, Tuple
+try:
+    from typing import Literal
+except ImportError:
+    # Fallback for Python 3.6
+    Literal = str
 
 import chex
 import jax
@@ -72,7 +77,10 @@ class JAXDataLoader:
                 self.key, augmentation_key = jax.random.split(self.key)
                 batch = self.data_augmentation_fn(*batch, augmentation_key)
             if self.return_info:
-                yield *batch, info
+                # Python 3.6 compatible unpacking
+                batch_list = list(batch)
+                batch_list.append(info)
+                yield tuple(batch_list)
             else:
                 yield batch
 
