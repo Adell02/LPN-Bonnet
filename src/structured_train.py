@@ -1737,11 +1737,11 @@ class StructuredTrainer:
         """
         Create a custom T-SNE visualization for pattern-specific plots with source color coding.
         
-        This method creates T-SNE plots that match the style of other T-SNEs in the codebase:
+        This method creates T-SNE plots that match EXACTLY the style of visualize_tsne_sources:
+        - Same color palette, size, shapes, legend title, title style, axes style
         - All points have the same pattern (same color)
         - Different sources (encoders) have different colors and markers
-        - The title is set on the T-SNE plot, not the figure
-        - Legend shows actual shapes/markers for different sources
+        - EXACTLY matches test/structured_mean/latents_context_only styling
         
         Args:
             latents: [N, D] array of latent embeddings
@@ -1771,14 +1771,14 @@ class StructuredTrainer:
             source_ids = source_ids[indices]
             task_ids = task_ids[indices]
         
-        # Perform T-SNE
-        tsne = TSNE(n_components=2, random_state=random_state, perplexity=min(30, len(latents)-1))
+        # Perform T-SNE - EXACTLY like visualize_tsne_sources
+        tsne = TSNE(n_components=2, perplexity=2, max_iter=1000, random_state=random_state)
         latents_2d = tsne.fit_transform(latents)
         
-        # Create figure - EXACTLY like other T-SNEs in the codebase
+        # Create figure - EXACTLY like visualize_tsne_sources
         fig, ax = plt.subplots(figsize=(15, 12))
         
-        # Use the SAME color scheme and markers as visualize_tsne_sources
+        # Use the EXACT SAME color scheme and markers as visualize_tsne_sources
         source_colors = {
             0: '#1f77b4',  # Blue
             1: '#ff7f0e',  # Orange
@@ -1795,7 +1795,7 @@ class StructuredTrainer:
             2: "Encoder 2"
         }
         
-        # Plot points for each source
+        # Plot points for each source - EXACTLY like visualize_tsne_sources
         unique_sources = sorted(list(np.unique(source_ids)))
         
         for source_id in unique_sources:
@@ -1804,7 +1804,7 @@ class StructuredTrainer:
                 color = source_colors.get(source_id, '#AAAAAA')
                 marker = source_markers.get(source_id, 'o')
                 
-                # Plot points for this source
+                # Plot points for this source - EXACTLY like visualize_tsne_sources
                 ax.scatter(
                     latents_2d[mask, 0], 
                     latents_2d[mask, 1],
@@ -1812,31 +1812,29 @@ class StructuredTrainer:
                     marker=marker,
                     alpha=0.7,
                     s=100,
-                    edgecolors='none',
-                    label=source_labels.get(source_id, f"Source {source_id}")
+                    edgecolors='none'
                 )
         
-        # Set title on the T-SNE plot (not figure title) - EXACTLY like other T-SNEs
+        # Set title and labels - EXACTLY like visualize_tsne_sources
         ax.set_title(title, fontsize=16, fontweight='bold')
         ax.set_xlabel("t-SNE 1", fontsize=12)
         ax.set_ylabel("t-SNE 2", fontsize=12)
         
-        # Build legend with ACTUAL shapes/markers for different sources - EXACTLY like visualize_tsne_sources
+        # Build legend - EXACTLY like visualize_tsne_sources
         shape_handles = []
         for src in unique_sources:
             marker = source_markers.get(src, 'o')
             label = source_labels.get(src, f"Source {src}")
             shape_handles.append(
                 Line2D([0], [0], marker=marker, linestyle='None', color='black',
-                       markerfacecolor=source_colors.get(src, '#AAAAAA'), markeredgecolor='black', 
-                       markersize=10, label=label)
+                       markerfacecolor='white', markeredgecolor='black', markersize=10, label=label)
             )
         
-        # Add legend - EXACTLY like other T-SNEs
+        # Add legend - EXACTLY like visualize_tsne_sources
         ax.legend(handles=shape_handles, bbox_to_anchor=(1.05, 1), loc="upper left", 
-                  borderaxespad=0.0, title="Sources (shape + color)")
+                  borderaxespad=0.0, title="Sources (shape)")
         
-        # Set tight layout - EXACTLY like other T-SNEs
+        # Set tight layout - EXACTLY like visualize_tsne_sources
         plt.tight_layout()
         
         return fig
