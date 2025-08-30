@@ -706,7 +706,7 @@ class StructuredTrainer:
         self.encoder_expose_steps = max(0, self.encoder_expose_steps - num_steps)
         return state, avg_metrics
 
-    def _create_balanced_pattern_batch(self, batch_size: int, samples_per_pattern: int) -> tuple[list, list]:
+    def _create_balanced_pattern_batch(self, batch_size: int, samples_per_pattern: int) -> tuple[chex.Array, chex.Array, chex.Array]:
         """
         Create a balanced batch with equal representation from all 3 patterns.
         
@@ -1002,15 +1002,21 @@ class StructuredTrainer:
         try:
             # Generate a balanced test batch with uniform pattern distribution
             if hasattr(self, 'task_generator') and self.task_generator:
-                test_grids, test_shapes = self._create_balanced_pattern_batch(
+                test_grids, test_shapes, test_pattern_ids = self._create_balanced_pattern_batch(
                     self.batch_size, 
                     self.samples_per_pattern_per_batch
                 )
                 test_batch = test_grids, test_shapes
+                logging.info(f"✅ Test forward pass: Using EXPLICIT pattern IDs from balanced generation")
+                logging.info(f"   Pattern IDs: {test_pattern_ids[:10]}... (first 10)")
+                logging.info(f"   Expected: [1,1,1,...,2,2,2,...,3,3,3,...]")
             else:
                 # Fallback to fixed dataset
                 if hasattr(self, 'train_grids') and self.train_grids is not None:
                     test_batch = self.train_grids[:self.batch_size], self.train_shapes[:self.batch_size]
+                    # Extract pattern IDs from data content for fixed dataset
+                    test_pattern_ids = self._extract_true_pattern_ids_from_data(test_batch[0], test_batch[1])
+                    logging.info(f"⚠️  Test forward pass: Using EXTRACTED pattern IDs from fixed dataset")
                 else:
                     # No fixed dataset available, create a minimal test batch
                     logging.warning("No fixed dataset available for test forward pass, creating minimal test batch")
@@ -1018,12 +1024,16 @@ class StructuredTrainer:
                     test_grids = jnp.zeros((self.batch_size, num_pairs, 5, 5, 2), jnp.uint8)
                     test_shapes = jnp.ones((self.batch_size, num_pairs, 2, 2), jnp.uint8)
                     test_batch = test_grids, test_shapes
+                    # Create dummy pattern IDs for minimal test batch
+                    test_pattern_ids = jnp.concatenate([
+                        jnp.full((self.batch_size // 3,), 1),
+                        jnp.full((self.batch_size // 3,), 2),
+                        jnp.full((self.batch_size - 2 * (self.batch_size // 3),), 3)
+                    ], axis=0)
+                    logging.info(f"⚠️  Test forward pass: Using DUMMY pattern IDs for minimal test batch")
             
-            # CRITICAL FIX: Extract TRUE pattern IDs from actual test data
+            # CRITICAL FIX: Use explicit pattern IDs (no more extraction needed)
             test_batch_size = test_batch[0].shape[0]
-            
-            # Extract true pattern IDs by analyzing the actual data content
-            test_pattern_ids = self._extract_true_pattern_ids_from_data(test_batch[0], test_batch[1])
             
             # Validate pattern_ids
             logging.debug(f"Pattern IDs validation:")
@@ -1033,15 +1043,14 @@ class StructuredTrainer:
             logging.debug(f"  - Max value: {int(jnp.max(test_pattern_ids))}")
             logging.debug(f"  - Unique values: {jnp.unique(test_pattern_ids)}")
             
-            # Log true pattern distribution from actual data analysis
+            # Log pattern distribution from explicit pattern IDs
             unique_patterns, counts = jnp.unique(test_pattern_ids, return_counts=True)
             # Convert JAX arrays to Python types for safe dictionary creation
             unique_patterns_py = [int(p) for p in unique_patterns]
             counts_py = [int(c) for c in counts]
             pattern_distribution = dict(zip(unique_patterns_py, counts_py))
-            logging.info(f"Test forward pass: Using TRUE pattern extraction from data")
+            logging.info(f"Test forward pass: Pattern distribution: {pattern_distribution}")
             logging.info(f"  - Batch size: {test_batch_size}")
-            logging.info(f"  - True pattern distribution: {pattern_distribution}")
             logging.info(f"  - Pattern IDs: {[int(p) for p in test_pattern_ids[:10]]}... (first 10)")
             
             # CRITICAL: Verify pattern diversity for contrastive loss effectiveness
@@ -1075,8 +1084,23 @@ class StructuredTrainer:
         except Exception as e:
             logging.error(f"Forward pass test failed: {e}")
             logging.error(f"Error details: {type(e).__name__}: {str(e)}")
-            logging.error(f"Test batch shapes: grids={test_batch[0].shape}, shapes={test_batch[1].shape}")
-            logging.error(f"Pattern IDs shape: {test_pattern_ids.shape}, dtype: {test_pattern_ids.dtype}")
+            # Safely log test batch info if available
+            if 'test_batch' in locals():
+                try:
+                    logging.error(f"Test batch shapes: grids={test_batch[0].shape}, shapes={test_batch[1].shape}")
+                except Exception as batch_error:
+                    logging.error(f"Could not log test batch shapes: {batch_error}")
+            else:
+                logging.error("Test batch not yet created when error occurred")
+            
+            # Safely log pattern IDs info if available
+            if 'test_pattern_ids' in locals():
+                try:
+                    logging.error(f"Pattern IDs shape: {test_pattern_ids.shape}, dtype: {test_pattern_ids.dtype}")
+                except Exception as pattern_error:
+                    logging.error(f"Could not log pattern IDs info: {pattern_error}")
+            else:
+                logging.error("Pattern IDs not yet created when error occurred")
             raise
         
         logging.info("Starting training loop...")
@@ -1166,9 +1190,19 @@ class StructuredTrainer:
                 # CRITICAL: Extract explicit pattern IDs from balanced dataloader
                 if hasattr(self, 'task_generator') and self.task_generator:
                     # Balanced dataloader provides (grids, shapes, pattern_ids)
-                    grids, shapes, explicit_pattern_ids = batches
-                    logging.info(f"✅ Using EXPLICIT pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
-                    logging.info(f"   Pattern distribution: {[int(p) for p in jnp.unique(explicit_pattern_ids)]}")
+                    if len(batches) == 3:
+                        grids, shapes, explicit_pattern_ids = batches
+                        logging.info(f"✅ Using EXPLICIT pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
+                        logging.info(f"   Pattern distribution: {[int(p) for p in jnp.unique(explicit_pattern_ids)]}")
+                    else:
+                        # Fallback if dataloader doesn't provide pattern_ids
+                        grids, shapes = batches
+                        explicit_pattern_ids = jnp.concatenate([
+                            jnp.full((self.samples_per_pattern_per_batch,), 1),  # O-tetromino
+                            jnp.full((self.samples_per_pattern_per_batch,), 2),  # T-tetromino  
+                            jnp.full((self.samples_per_pattern_per_batch,), 3),  # L-tetromino
+                        ], axis=0)
+                        logging.warning(f"⚠️  Balanced dataloader didn't provide pattern_ids, using fallback")
                 else:
                     # Fixed dataset - extract pattern IDs from data content
                     grids, shapes = batches
