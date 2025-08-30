@@ -302,6 +302,8 @@ class StructuredTrainer:
             N = int(cfg.training.get("struct_num_pairs", 4))  # Use 4 pairs like config
             
             grids_all, shapes_all = [], []
+            pattern_ids = []  # Track pattern IDs for shuffling
+            
             for pid in (1, 2, 3):  # Generate from all 3 patterns (O, T, L tetrominos)
                 g, s, _ = make_dataset(
                     length=samples_per_pattern,  # ~341 samples per pattern
@@ -314,10 +316,59 @@ class StructuredTrainer:
                 )
                 grids_all.append(g)
                 shapes_all.append(s)
+                # Add pattern IDs for this batch
+                pattern_ids.extend([pid] * g.shape[0])
             
             # Concatenate to get balanced dataset: ~341 + ~341 + ~341 = 1024 total samples
             self.train_grids = jnp.concatenate(grids_all, axis=0)
             self.train_shapes = jnp.concatenate(shapes_all, axis=0)
+            
+            # CRITICAL FIX: Shuffle patterns uniformly to prevent encoder specialization bias
+            # This ensures each encoder sees all patterns equally during training
+            logging.info("Shuffling training data patterns uniformly to prevent encoder specialization bias...")
+            
+            # Create shuffle indices that maintain pattern balance
+            import numpy as np
+            pattern_ids_np = np.array(pattern_ids)
+            
+            # Create interleaved pattern sequence: 1,2,3,1,2,3,1,2,3,...
+            # This ensures each batch contains samples from all patterns
+            total_samples = len(pattern_ids_np)
+            interleaved_patterns = []
+            for i in range(total_samples):
+                pattern_idx = i % 3  # 0,1,2 for patterns 1,2,3
+                interleaved_patterns.append(pattern_idx + 1)  # Convert to 1,2,3
+            
+            # Find indices for each pattern in the original data
+            pattern_1_indices = np.where(pattern_ids_np == 1)[0]
+            pattern_2_indices = np.where(pattern_ids_np == 2)[0]
+            pattern_3_indices = np.where(pattern_ids_np == 3)[0]
+            
+            # Create shuffled indices that achieve the interleaved pattern
+            shuffled_indices = []
+            samples_per_pattern_actual = min(len(pattern_1_indices), len(pattern_2_indices), len(pattern_3_indices))
+            
+            for i in range(samples_per_pattern_actual):
+                # Take one sample from each pattern in round-robin fashion
+                if i < len(pattern_1_indices):
+                    shuffled_indices.append(pattern_1_indices[i])
+                if i < len(pattern_2_indices):
+                    shuffled_indices.append(pattern_2_indices[i])
+                if i < len(pattern_3_indices):
+                    shuffled_indices.append(pattern_3_indices[i])
+            
+            # Apply shuffling to both grids and shapes
+            self.train_grids = self.train_grids[shuffled_indices]
+            self.train_shapes = self.train_shapes[shuffled_indices]
+            
+            # Log the new pattern distribution
+            new_pattern_ids = [pattern_ids_np[i] for i in shuffled_indices]
+            pattern_counts = {1: new_pattern_ids.count(1), 2: new_pattern_ids.count(2), 3: new_pattern_ids.count(3)}
+            logging.info(f"Training data shuffled - Pattern distribution: {pattern_counts}")
+            logging.info(f"Pattern sequence (first 20): {new_pattern_ids[:20]}")
+            
+            # Store shuffled pattern IDs for pattern_id generation during training
+            self.shuffled_pattern_ids = new_pattern_ids
         else:
             train_datasets = cfg.training.train_datasets
             if isinstance(train_datasets, str) and train_datasets:
@@ -565,16 +616,22 @@ class StructuredTrainer:
                 if not hasattr(self, '_current_batch_start_idx'):
                     self._current_batch_start_idx = 0
                 
-                # Generate pattern_ids based on actual data organization
+                # Generate pattern_ids based on SHUFFLED data organization
+                # This ensures each encoder sees all patterns equally during training
                 pattern_sequence = []
                 for i in range(batch_size):
                     global_idx = self._current_batch_start_idx + i
-                    if global_idx < 341:  # First 341 samples: Pattern 1 (O-tetromino)
-                        pattern_id = 1
-                    elif global_idx < 682:  # Next 341 samples: Pattern 2 (T-tetromino) 
-                        pattern_id = 2
-                    else:  # Remaining samples: Pattern 3 (L-tetromino)
-                        pattern_id = 3
+                    if hasattr(self, 'shuffled_pattern_ids') and global_idx < len(self.shuffled_pattern_ids):
+                        # Use the shuffled pattern IDs for uniform pattern distribution
+                        pattern_id = self.shuffled_pattern_ids[global_idx]
+                    else:
+                        # Fallback to sequential logic if shuffling not available
+                        if global_idx < 341:  # First 341 samples: Pattern 1 (O-tetromino)
+                            pattern_id = 1
+                        elif global_idx < 682:  # Next 341 samples: Pattern 2 (T-tetromino) 
+                            pattern_id = 2
+                        else:  # Remaining samples: Pattern 3 (L-tetromino)
+                            pattern_id = 3
                     pattern_sequence.append(pattern_id)
                 
                 pattern_ids = jnp.array(pattern_sequence, dtype=jnp.int32)
@@ -712,16 +769,20 @@ class StructuredTrainer:
             # Generate pattern_ids for test forward pass: use ACTUAL pattern information
             test_batch_size = test_batch[0].shape[0]
             
-            # For test forward pass, use the first batch_size samples which should be Pattern 1 (O-tetromino)
-            # since the data is organized as: samples 0-340=Pattern1, 341-681=Pattern2, 682-1023=Pattern3
+            # For test forward pass, use the shuffled pattern IDs for uniform pattern distribution
             test_pattern_sequence = []
             for i in range(test_batch_size):
-                if i < 341:  # First 341 samples: Pattern 1 (O-tetromino)
-                    pattern_id = 1
-                elif i < 682:  # Next 341 samples: Pattern 2 (T-tetromino) 
-                    pattern_id = 2
-                else:  # Remaining samples: Pattern 3 (L-tetromino)
-                    pattern_id = 3
+                if hasattr(self, 'shuffled_pattern_ids') and i < len(self.shuffled_pattern_ids):
+                    # Use the shuffled pattern IDs for uniform pattern distribution
+                    pattern_id = self.shuffled_pattern_ids[i]
+                else:
+                    # Fallback to sequential logic if shuffling not available
+                    if i < 341:  # First 341 samples: Pattern 1 (O-tetromino)
+                        pattern_id = 1
+                    elif i < 682:  # Next 341 samples: Pattern 2 (T-tetromino) 
+                        pattern_id = 2
+                    else:  # Remaining samples: Pattern 3 (L-tetromino)
+                        pattern_id = 3
                 test_pattern_sequence.append(pattern_id)
             
             test_pattern_ids = jnp.array(test_pattern_sequence, dtype=jnp.int32)
@@ -1674,11 +1735,11 @@ class StructuredTrainer:
         """
         Create a custom T-SNE visualization for pattern-specific plots with source color coding.
         
-        This method creates T-SNE plots where:
+        This method creates T-SNE plots that match the style of other T-SNEs in the codebase:
         - All points have the same pattern (same color)
         - Different sources (encoders) have different colors and markers
         - The title is set on the T-SNE plot, not the figure
-        - A custom legend shows colors and shapes for different sources
+        - Legend shows actual shapes/markers for different sources
         
         Args:
             latents: [N, D] array of latent embeddings
@@ -1694,7 +1755,7 @@ class StructuredTrainer:
         try:
             from sklearn.manifold import TSNE
             import matplotlib.pyplot as plt
-            import matplotlib.patches as mpatches
+            from matplotlib.lines import Line2D
         except ImportError:
             logging.warning("sklearn or matplotlib not available for T-SNE visualization")
             return None
@@ -1712,22 +1773,34 @@ class StructuredTrainer:
         tsne = TSNE(n_components=2, random_state=random_state, perplexity=min(30, len(latents)-1))
         latents_2d = tsne.fit_transform(latents)
         
-        # Create figure
-        fig, ax = plt.subplots(figsize=(10, 8))
+        # Create figure - EXACTLY like other T-SNEs in the codebase
+        fig, ax = plt.subplots(figsize=(15, 12))
         
-        # Define colors and markers for different sources
-        source_colors = ['#1f77b4', '#ff7f0e', '#2ca02c']  # Blue, Orange, Green
-        source_markers = ['o', 's', '^']  # Circle, Square, Triangle
+        # Use the SAME color scheme and markers as visualize_tsne_sources
+        source_colors = {
+            0: '#1f77b4',  # Blue
+            1: '#ff7f0e',  # Orange
+            2: '#2ca02c'   # Green
+        }
+        source_markers = {
+            0: 'o',    # Encoder 0 - Circle
+            1: 's',    # Encoder 1 - Square
+            2: '^'     # Encoder 2 - Triangle
+        }
+        source_labels = {
+            0: "Encoder 0",
+            1: "Encoder 1", 
+            2: "Encoder 2"
+        }
         
         # Plot points for each source
-        unique_sources = np.unique(source_ids)
-        legend_elements = []
+        unique_sources = sorted(list(np.unique(source_ids)))
         
         for source_id in unique_sources:
             mask = source_ids == source_id
             if np.any(mask):
-                color = source_colors[source_id % len(source_colors)]
-                marker = source_markers[source_id % len(source_markers)]
+                color = source_colors.get(source_id, '#AAAAAA')
+                marker = source_markers.get(source_id, 'o')
                 
                 # Plot points for this source
                 ax.scatter(
@@ -1735,33 +1808,33 @@ class StructuredTrainer:
                     latents_2d[mask, 1],
                     c=[color], 
                     marker=marker,
-                    s=50,
                     alpha=0.7,
-                    label=f'Encoder {source_id}'
-                )
-                
-                # Create legend element
-                legend_elements.append(
-                    mpatches.Patch(
-                        color=color,
-                        label=f'Encoder {source_id}'
-                    )
+                    s=100,
+                    edgecolors='none',
+                    label=source_labels.get(source_id, f"Source {source_id}")
                 )
         
-        # Set title on the T-SNE plot (not figure title)
-        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+        # Set title on the T-SNE plot (not figure title) - EXACTLY like other T-SNEs
+        ax.set_title(title, fontsize=16, fontweight='bold')
+        ax.set_xlabel("t-SNE 1", fontsize=12)
+        ax.set_ylabel("t-SNE 2", fontsize=12)
         
-        # Set axis labels
-        ax.set_xlabel('t-SNE 1', fontsize=12)
-        ax.set_ylabel('t-SNE 2', fontsize=12)
+        # Build legend with ACTUAL shapes/markers for different sources - EXACTLY like visualize_tsne_sources
+        shape_handles = []
+        for src in unique_sources:
+            marker = source_markers.get(src, 'o')
+            label = source_labels.get(src, f"Source {src}")
+            shape_handles.append(
+                Line2D([0], [0], marker=marker, linestyle='None', color='black',
+                       markerfacecolor=source_colors.get(src, '#AAAAAA'), markeredgecolor='black', 
+                       markersize=10, label=label)
+            )
         
-        # Add legend showing colors for different sources
-        ax.legend(handles=legend_elements, loc='upper right', fontsize=10)
+        # Add legend - EXACTLY like other T-SNEs
+        ax.legend(handles=shape_handles, bbox_to_anchor=(1.05, 1), loc="upper left", 
+                  borderaxespad=0.0, title="Sources (shape + color)")
         
-        # Remove grid for cleaner look
-        ax.grid(False)
-        
-        # Set tight layout
+        # Set tight layout - EXACTLY like other T-SNEs
         plt.tight_layout()
         
         return fig
