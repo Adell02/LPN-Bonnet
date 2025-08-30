@@ -9,7 +9,7 @@ The patterns are distributed uniformly:
 - Pattern 3 (L tetromino): 33 tasks
 
 Each task uses the same pattern type for all 4 pairs to maintain consistency.
-The dataset is compatible with store_latent_search.py and follows the same format as pattern_4.
+The dataset follows the same format as pattern_4 but with 5x5 grids containing tetromino patterns.
 """
 
 import numpy as np
@@ -48,7 +48,7 @@ def generate_tetro_pattern_dataset(length=99, num_pairs=4, seed=42):
     # Set random seed
     random.seed(seed)
     
-    # Initialize arrays
+    # Initialize arrays - same format as pattern4 but with 5x5 grids
     grids = np.zeros((length, num_pairs, 5, 5, 2), dtype=np.uint8)
     shapes = np.zeros((length, num_pairs, 2), dtype=np.uint8)
     program_ids = np.zeros(length, dtype=np.uint32)
@@ -96,7 +96,7 @@ def generate_tetro_pattern_dataset(length=99, num_pairs=4, seed=42):
                 for k, (dr, dc) in enumerate(pattern_info['offsets']):
                     output_grid[top + dr, left + dc] = colors[k % len(colors)]
                 
-                # Store in arrays
+                # Store in arrays - same format as pattern4
                 grids[task_idx, pair, :, :, 0] = input_grid
                 grids[task_idx, pair, :, :, 1] = output_grid
                 shapes[task_idx, pair, 0] = 5  # num_rows
@@ -126,7 +126,7 @@ def generate_tetro_pattern_dataset(length=99, num_pairs=4, seed=42):
 
 def save_tetro_pattern_dataset(grids, shapes, program_ids, output_dir="src/datasets/tetro_pattern"):
     """
-    Save the generated dataset to NPY files.
+    Save the generated dataset to NPY files - same format as pattern4.
     
     Args:
         grids: Grid array
@@ -137,7 +137,7 @@ def save_tetro_pattern_dataset(grids, shapes, program_ids, output_dir="src/datas
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
-    # Save each component
+    # Save each component - same format as pattern4
     grids_path = os.path.join(output_dir, "grids.npy")
     shapes_path = os.path.join(output_dir, "shapes.npy")
     program_ids_path = os.path.join(output_dir, "program_ids.npy")
@@ -182,6 +182,10 @@ def main():
         print("\n" + "=" * 70)
         print("✅ TETRO_PATTERN DATASET GENERATED SUCCESSFULLY!")
         print("=" * 70)
+        print("\nDataset format matches pattern4:")
+        print("  - grids.npy: (length, num_pairs, 5, 5, 2)")
+        print("  - shapes.npy: (length, num_pairs, 2)")
+        print("  - program_ids.npy: (length,)")
         print("\nYou can now use this dataset with store_latent_search.py:")
         print("python src/store_latent_search.py \\")
         print("    --wandb_artifact_path \"your_artifact_path\" \\")

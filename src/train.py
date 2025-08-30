@@ -784,6 +784,12 @@ class Trainer:
                         # Extract context latents and reshape to 2D
                         context_np = np.array(context).reshape(-1, context.shape[-1])
                         
+                        # DEBUG: Log shapes to understand the mismatch
+                        logging.info(f"DEBUG T-SNE: context_np shape: {context_np.shape}")
+                        logging.info(f"DEBUG T-SNE: program_ids shape: {program_ids.shape}")
+                        logging.info(f"DEBUG T-SNE: context_np length: {len(context_np)}")
+                        logging.info(f"DEBUG T-SNE: program_ids length: {len(program_ids)}")
+                        
                         # Create T-SNE visualization of context latents only
                         # Use program_ids for coloring (same as main T-SNE)
                         # Use task indices for ID labels
@@ -798,9 +804,27 @@ class Trainer:
                             )
                             context_np = context_np[indices]
                             task_ids = task_ids[indices]
-                            program_ids_sampled = program_ids[indices]
+                            # CRITICAL FIX: program_ids and context_np may have different lengths
+                            # We need to handle this properly by repeating program_ids to match context length
+                            if len(program_ids) != len(context_np):
+                                # Repeat program_ids to match the original context length before sampling
+                                repeats_needed = len(context_np) // len(program_ids)
+                                if len(context_np) % len(program_ids) != 0:
+                                    repeats_needed += 1
+                                program_ids_expanded = np.repeat(program_ids, repeats_needed)[:len(context_np)]
+                                program_ids_sampled = program_ids_expanded[indices]
+                            else:
+                                program_ids_sampled = program_ids[indices]
                         else:
-                            program_ids_sampled = program_ids
+                            # CRITICAL FIX: Handle case where program_ids and context_np have different lengths
+                            if len(program_ids) != len(context_np):
+                                # Repeat program_ids to match context length
+                                repeats_needed = len(context_np) // len(program_ids)
+                                if len(context_np) % len(program_ids) != 0:
+                                    repeats_needed += 1
+                                program_ids_sampled = np.repeat(program_ids, repeats_needed)[:len(context_np)]
+                            else:
+                                program_ids_sampled = program_ids
                         
                         # Create T-SNE plot using the existing visualize_tsne function
                         fig_context_latents = visualize_tsne(

@@ -723,27 +723,22 @@ def visualize_struct_confidence_panel(
     sample_shapes: chex.Array,
     encoder_mus: list[chex.Array],
     encoder_logvars: list[chex.Array],
-    poe_mu: chex.Array,
-    poe_logvar: chex.Array,
     title: str = "Structured Confidence Panel",
     encoder_labels: list[str] | None = None,
-    combined_label: str = "PoE",
-    pattern_id: int | None = None,  # NEW: Pattern ID for filtering
-    pattern_name: str | None = None,  # NEW: Pattern name for display
+    pattern_id: int | None = None,  # Pattern ID for filtering
+    pattern_name: str | None = None,  # Pattern name for display
 ) -> plt.Figure:
     """
     Panel with:
     - Top: the struct (input-output pairs) for one task
-    - Bottom-left: histogram of latent means per encoder and PoE
-    - Bottom-right: histogram of latent variances per encoder and PoE
+    - Bottom-left: histogram of latent means per encoder
+    - Bottom-right: histogram of latent variances per encoder
 
     Args:
         sample_grids: [N, R, C, 2] for a single task (pairs)
         sample_shapes: [N, 2, 2] shapes for that task
-        encoder_mus: list of [N, D] or [N, D] means per encoder (aggregated over pair dim if needed)
+        encoder_mus: list of [N, D] means per encoder (aggregated over pair dim if needed)
         encoder_logvars: list of [N, D] logvars per encoder (same shape as mus)
-        poe_mu: [N, D] PoE mean
-        poe_logvar: [N, D] PoE logvar
         encoder_labels: optional labels for legend order
         pattern_id: Pattern ID (1, 2, 3) for filtering variances
         pattern_name: Pattern name (O-tetromino, T-tetromino, L-tetromino) for display
@@ -778,26 +773,19 @@ def visualize_struct_confidence_panel(
     # Bottom-right: histogram of variances
     ax_vars = fig.add_subplot(gs[2, 1])
 
-    # Colors for encoders + PoE (consistent and distinct)
+    # Colors for encoders (consistent and distinct)
     enc_colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
-    poe_color = '#d62728'
 
     if encoder_labels is None:
         encoder_labels = [f"Encoder {i}" for i in range(len(encoder_mus))]
 
-    # Plot combined (PoE or Context) distributions FIRST (at the back)
-    poe_mu_flat = _np.asarray(poe_mu).reshape(-1)
-    poe_var_flat = _np.exp(_np.asarray(poe_logvar).reshape(-1))
-    ax_means.hist(poe_mu_flat, bins=30, histtype='step', linewidth=2.0, color=poe_color, label=combined_label, density=True)
-    ax_vars.hist(poe_var_flat, bins=30, histtype='step', linewidth=2.0, color=poe_color, label=combined_label, density=True)
-
-    # Plot encoder distributions SECOND (on top of PoE)
+    # Plot encoder distributions (no PoE aggregation)
     for idx, (mu, logvar) in enumerate(zip(encoder_mus, encoder_logvars)):
         mu_flat = _np.asarray(mu).reshape(-1)
         var_flat = _np.exp(_np.asarray(logvar).reshape(-1))
         color = enc_colors[idx % len(enc_colors)]
-        ax_means.hist(mu_flat, bins=30, alpha=0.5, color=color, label=encoder_labels[idx], density=True)
-        ax_vars.hist(var_flat, bins=30, alpha=0.5, color=color, label=encoder_labels[idx], density=True)
+        ax_means.hist(mu_flat, bins=30, alpha=0.7, color=color, label=encoder_labels[idx], density=True)
+        ax_vars.hist(var_flat, bins=30, alpha=0.7, color=color, label=encoder_labels[idx], density=True)
 
     ax_means.set_title("Latent Means")
     ax_vars.set_title("Latent Variances")
@@ -808,12 +796,12 @@ def visualize_struct_confidence_panel(
     ax_means.legend(frameon=True)
     ax_vars.legend(frameon=True)
 
-    # CRITICAL: Add pattern-specific variance filtering note
+    # Add pattern-specific note
     if pattern_id is not None:
-        pattern_note = f"⚠️  PATTERN-SPECIFIC VARIANCES\nPattern {pattern_id}: {pattern_name or 'Unknown'}\nOnly showing variances for this pattern type"
+        pattern_note = f"📊 PATTERN-SPECIFIC ENCODER STATISTICS\nPattern {pattern_id}: {pattern_name or 'Unknown'}\nIndividual encoder variances for this pattern type"
         fig.text(0.02, 0.12, pattern_note,
                  fontsize=10, verticalalignment='bottom', horizontalalignment='left',
-                 bbox=dict(boxstyle='round,pad=0.5', facecolor='yellow', alpha=0.9, edgecolor='orange'))
+                 bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.9, edgecolor='blue'))
     
     # Add note on the right of the entire figure showing mean variances from each encoder
     # Calculate mean variances for each encoder

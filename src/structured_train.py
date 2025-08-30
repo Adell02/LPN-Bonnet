@@ -2030,12 +2030,16 @@ class StructuredTrainer:
         
         wandb.log(wandb_log_data)
 
-        # NEW: Single confidence panel for all patterns combined
+        # NEW: Confidence panel per pattern (one task per pattern)
         try:
-            # Select one example from the dataset (not pattern-specific)
-            if len(pairs_np) > 0:
-                idx = 0  # Use first example
-                
+            # Select one example index per pattern
+            panel_indices = []
+            for pid in (1, 2, 3):
+                pid_idxs = np.where(pattern_sequence == pid)[0]
+                if pid_idxs.size > 0:
+                    panel_indices.append(int(pid_idxs[0]))
+            # For each selected example, compute encoder means/vars and PoE aggregation on encoder latents
+            for pid, idx in zip((1, 2, 3), panel_indices):
                 # Build per-encoder latents for this single task
                 enc_mus = []
                 enc_logvars = []
@@ -2047,7 +2051,9 @@ class StructuredTrainer:
                         True, 
                         mutable=False
                     )
-                    
+                    # CRITICAL FIX: Use ALL pairs to show pattern-specific variance structure
+                    mu_i_np = np.array(mu_i)
+                    logvar_i_np = np.array(logvar_i)
                     # Shape: [1, num_pairs, latent_dim] -> [num_pairs, latent_dim]
                     mu_i_np = np.array(mu_i).squeeze(0)  # Remove batch dimension
                     logvar_i_np = np.array(logvar_i).squeeze(0)  # Remove batch dimension
@@ -2055,42 +2061,36 @@ class StructuredTrainer:
                     # Store all pairs for this encoder
                     enc_mus.append(mu_i_np)  # [num_pairs, latent_dim]
                     enc_logvars.append(logvar_i_np)  # [num_pairs, latent_dim]
+                    
+                    # DEBUG: Log variance statistics for this encoder and pattern
+                    var_i = np.exp(logvar_i_np)  # [num_pairs, latent_dim]
+                    mean_var = np.mean(var_i)
+                    std_var = np.std(var_i)
+                    logging.info(f"Pattern {pid} - Encoder {enc_idx}: mean_var={mean_var:.6f}, std_var={std_var:.6f}")
 
-                # Compute PoE across all pairs to show aggregated confidence
-                # Average across pairs for each encoder, then compute PoE
-                avg_enc_mus = [np.mean(em, axis=0) for em in enc_mus]  # [latent_dim] per encoder
-                avg_enc_logvars = [np.mean(lv, axis=0) for lv in enc_logvars]  # [latent_dim] per encoder
-                
-                alphas_np = np.asarray(alphas)
-                precisions = [np.exp(-lv) for lv in avg_enc_logvars]  # [latent_dim] per encoder
-                poe_precision = np.zeros_like(precisions[0])
-                for a, p in zip(alphas_np, precisions):
-                    poe_precision = poe_precision + a * p
-                poe_var = 1.0 / (poe_precision + 1e-8)
-                num = np.zeros_like(avg_enc_mus[0])
-                for a, p, m in zip(alphas_np, precisions, avg_enc_mus):
-                    num = num + a * p * m
-                poe_mu = num / (poe_precision + 1e-8)
-                poe_logvar = np.log(poe_var + 1e-8)
+                # REMOVED: PoE aggregation across encoders - we only need individual encoder statistics
+                # Keep raw encoder statistics for each pattern without averaging
 
-                panel_title = "Confidence Panel (All Patterns Combined)"
+                panel_title = f"Pattern {pid} - Confidence (All Pairs)"
                 enc_labels = [f"Encoder {i}" for i in range(len(enc_mus))]
                 
+                # CRITICAL: Pass all pairs to show pattern-specific variance structure
+                # Also pass pattern information for proper variance filtering
+                pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
                 fig_panel = visualize_struct_confidence_panel(
                     sample_grids=pairs_np[idx],
                     sample_shapes=shapes_np[idx],
                     encoder_mus=enc_mus,  # [num_pairs, latent_dim] per encoder
                     encoder_logvars=enc_logvars,  # [num_pairs, latent_dim] per encoder
-                    poe_mu=poe_mu,  # [latent_dim]
-                    poe_logvar=poe_logvar,  # [latent_dim]
                     title=panel_title,
                     encoder_labels=enc_labels,
-                    combined_label="PoE",
+                    pattern_id=pid,  # Pattern ID for filtering
+                    pattern_name=pattern_names.get(pid, f"Pattern {pid}"),  # Pattern name
                 )
-                wandb.log({f"test/{test_name}/confidence_panel": wandb.Image(fig_panel)})
+                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)})
                 plt.close(fig_panel)
                 
-                logging.info(f"Generated confidence panel with {len(enc_mus[0])} pairs")
+                logging.info(f"Generated confidence panel for pattern {pid} with {len(enc_mus[0])} pairs")
         except Exception as e:
             logging.warning(f"Confidence panel generation failed: {e}")
             logging.error(f"Error details: {type(e).__name__}: {str(e)}")
