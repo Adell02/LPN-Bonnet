@@ -805,9 +805,19 @@ class StructuredTrainer:
         all_grids = []
         all_shapes = []
         
-        for step in range(log_every_n_steps):
+        # Generate the first batch to get the pattern IDs (they're the same for all steps)
+        first_batch = self._create_balanced_pattern_batch(
+            self.batch_size, 
+            self.samples_per_pattern_per_batch
+        )
+        first_grids, first_shapes, first_pattern_ids = first_batch
+        all_grids.append(first_grids)
+        all_shapes.append(first_shapes)
+        
+        # Generate remaining batches (without regenerating pattern IDs)
+        for step in range(1, log_every_n_steps):
             # Generate a balanced batch for this step
-            balanced_grids, balanced_shapes, pattern_ids = self._create_balanced_pattern_batch(
+            balanced_grids, balanced_shapes, _ = self._create_balanced_pattern_batch(
                 self.batch_size, 
                 self.samples_per_pattern_per_batch
             )
@@ -818,16 +828,8 @@ class StructuredTrainer:
         stacked_grids = jnp.stack(all_grids, axis=0)  # (log_every_n_steps, batch_size, ...)
         stacked_shapes = jnp.stack(all_shapes, axis=0)  # (log_every_n_steps, batch_size, ...)
         
-        # CRITICAL: Use explicit pattern IDs that are aligned with the data
-        # Pattern IDs are the same for all steps since we generate balanced batches
-        explicit_pattern_ids = jnp.concatenate([
-            jnp.full((self.samples_per_pattern_per_batch,), 1),  # O-tetromino
-            jnp.full((self.samples_per_pattern_per_batch,), 2),  # T-tetromino  
-            jnp.full((self.samples_per_pattern_per_batch,), 3),  # L-tetromino
-        ], axis=0)
-        
-        # Yield the stacked batches with explicit pattern IDs
-        yield (stacked_grids, stacked_shapes, explicit_pattern_ids)
+        # Yield the stacked batches with the correct pattern IDs from the first batch
+        yield (stacked_grids, stacked_shapes, first_pattern_ids)
 
     def _extract_true_pattern_ids_from_data(self, batch_pairs: chex.Array, batch_shapes: chex.Array) -> chex.Array:
         """
@@ -1194,6 +1196,16 @@ class StructuredTrainer:
                         grids, shapes, explicit_pattern_ids = batches
                         logging.info(f"✅ Using EXPLICIT pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
                         logging.info(f"   Pattern distribution: {[int(p) for p in jnp.unique(explicit_pattern_ids)]}")
+                        # DEBUG: Verify pattern ID structure
+                        expected_patterns = [1] * self.samples_per_pattern_per_batch + [2] * self.samples_per_pattern_per_batch + [3] * self.samples_per_pattern_per_batch
+                        if not jnp.array_equal(explicit_pattern_ids, jnp.array(expected_patterns)):
+                            logging.error(f"❌ PATTERN ID MISMATCH!")
+                            logging.error(f"   Expected: {expected_patterns[:10]}... (first 10)")
+                            logging.error(f"   Got: {explicit_pattern_ids[:10]}... (first 10)")
+                            logging.error(f"   Full expected: {expected_patterns}")
+                            logging.error(f"   Full got: {explicit_pattern_ids}")
+                        else:
+                            logging.info(f"✅ Pattern IDs match expected structure")
                     else:
                         # Fallback if dataloader doesn't provide pattern_ids
                         grids, shapes = batches
