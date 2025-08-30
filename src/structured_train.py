@@ -602,9 +602,10 @@ class StructuredTrainer:
                 
                 pattern_ids = jnp.array(pattern_sequence, dtype=jnp.int32)
                 
-                # Note: Removed debug logging from inside JAX-compiled function
-                # as it can cause issues with JAX arrays
-                # Pattern IDs are validated by the model's contrastive loss computation
+                # DEBUG: Log pattern_ids shape and content (safe to do outside JAX context)
+                logging.debug(f"Generated pattern_ids: shape={pattern_ids.shape}, content={pattern_ids[:10]}... (first 10)")
+                logging.debug(f"Batch size: {batch_size}, samples_per_pattern: {samples_per_pattern}")
+                logging.debug(f"Expected pattern distribution: {samples_per_pattern} samples each for patterns 1, 2, 3")
                 
                 loss, metrics = self.model.apply(
                     {"params": full_params["decoder"]},
@@ -763,18 +764,27 @@ class StructuredTrainer:
             log_every_n_steps: Number of steps to log
             
         Returns:
-            Generator that yields balanced batches
+            Generator that yields balanced batches in the expected format
         """
+        # Generate all batches for this epoch
+        all_grids = []
+        all_shapes = []
+        
         for step in range(log_every_n_steps):
             # Generate a balanced batch for this step
             balanced_grids, balanced_shapes = self._create_balanced_pattern_batch(
                 self.batch_size, 
                 self.samples_per_pattern_per_batch
             )
-            
-            # Reshape to match expected format: (log_every_n_steps, batch_size, ...)
-            # For now, we'll yield a single batch per step
-            yield (balanced_grids, balanced_shapes)
+            all_grids.append(balanced_grids)
+            all_shapes.append(balanced_shapes)
+        
+        # Stack all batches to create the expected format: (log_every_n_steps, batch_size, ...)
+        stacked_grids = jnp.stack(all_grids, axis=0)  # (log_every_n_steps, batch_size, ...)
+        stacked_shapes = jnp.stack(all_shapes, axis=0)  # (log_every_n_steps, batch_size, ...)
+        
+        # Yield the stacked batches in the expected format
+        yield (stacked_grids, stacked_shapes)
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
