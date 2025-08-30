@@ -515,6 +515,10 @@ class StructuredTrainer:
             self.train_grids, self.train_shapes, self.batch_size, shuffle_key
         )
 
+        # Reset the batch index counter for proper pattern tracking
+        # This ensures pattern_ids are correctly aligned with the actual data patterns
+        self._current_batch_start_idx = 0
+
         num_batches = grids.shape[0]
         if num_batches < log_every_n_steps:
             raise ValueError(
@@ -547,23 +551,36 @@ class StructuredTrainer:
             rng = keys[i]
             
             def loss_fn(full_params, batch_pairs, batch_shapes, rng):
-                # Generate pattern_ids for contrastive loss: each batch has balanced patterns
-                # Since we have 3 patterns (O, T, L tetrominos) and batch_size samples,
-                # we need to create pattern_ids that correspond to the pattern sequence
-                # The pattern_ids should align with the encoder specialization:
-                # - Encoder 0 specializes in Pattern 1 (O-tetromino)
-                # - Encoder 1 specializes in Pattern 2 (T-tetromino) 
-                # - Encoder 2 specializes in Pattern 3 (L-tetromino)
+                # Generate pattern_ids for contrastive loss: use ACTUAL pattern information
+                # The data is organized as: samples 0-340=Pattern1, 341-681=Pattern2, 682-1023=Pattern3
+                # We need to extract the actual pattern for each sample in the batch
                 batch_size = batch_pairs.shape[0]
                 
-                # Create a more robust pattern_id sequence that handles any batch size
-                # We want to ensure each pattern gets roughly equal representation
+                # Get the global indices for this batch to determine actual patterns
+                # Since we're processing batches sequentially, we need to track the global position
+                # This assumes the data is not shuffled between epochs (only within epochs)
+                
+                # Calculate the starting index for this batch in the global dataset
+                # We need to track this across the training loop
+                if not hasattr(self, '_current_batch_start_idx'):
+                    self._current_batch_start_idx = 0
+                
+                # Generate pattern_ids based on actual data organization
                 pattern_sequence = []
                 for i in range(batch_size):
-                    pattern_id = (i % 3) + 1  # Cycles through 1, 2, 3
+                    global_idx = self._current_batch_start_idx + i
+                    if global_idx < 341:  # First 341 samples: Pattern 1 (O-tetromino)
+                        pattern_id = 1
+                    elif global_idx < 682:  # Next 341 samples: Pattern 2 (T-tetromino) 
+                        pattern_id = 2
+                    else:  # Remaining samples: Pattern 3 (L-tetromino)
+                        pattern_id = 3
                     pattern_sequence.append(pattern_id)
                 
                 pattern_ids = jnp.array(pattern_sequence, dtype=jnp.int32)
+                
+                # Update the batch start index for next iteration
+                self._current_batch_start_idx += batch_size
                 
                 # Note: Removed debug logging from inside JAX-compiled function
                 # as it can cause issues with JAX arrays
@@ -633,6 +650,27 @@ class StructuredTrainer:
                 sign_mean_val = float(np.array(avg_metrics['contrastive_sign_mean']))
                 logging.info(f"  - Sign mean: {sign_mean_val:.6f}")
         
+        # Log pattern distribution for this training step (for debugging)
+        if hasattr(self, '_current_batch_start_idx'):
+            logging.debug(f"Current batch start index: {self._current_batch_start_idx}")
+            # Calculate which patterns were processed in this step
+            step_start = max(0, self._current_batch_start_idx - num_steps * self.batch_size)
+            step_end = self._current_batch_start_idx
+            if step_start < 341:
+                pattern1_samples = min(341, step_end) - step_start
+            else:
+                pattern1_samples = 0
+            if step_start < 682 and step_end > 341:
+                pattern2_samples = min(682, step_end) - max(341, step_start)
+            else:
+                pattern2_samples = 0
+            if step_end > 682:
+                pattern3_samples = step_end - max(682, step_start)
+            else:
+                pattern3_samples = 0
+            
+            logging.debug(f"Pattern distribution in this step: Pattern1={pattern1_samples}, Pattern2={pattern2_samples}, Pattern3={pattern3_samples}")
+        
         # Decrement exposure counter by number of gradient steps completed
         self.encoder_expose_steps = max(0, self.encoder_expose_steps - num_steps)
         return state, avg_metrics
@@ -671,13 +709,19 @@ class StructuredTrainer:
         logging.info("Testing forward pass...")
         try:
             test_batch = self.train_grids[:self.batch_size], self.train_shapes[:self.batch_size]
-            # Generate pattern_ids for test forward pass
+            # Generate pattern_ids for test forward pass: use ACTUAL pattern information
             test_batch_size = test_batch[0].shape[0]
             
-            # Create a more robust pattern_id sequence that handles any batch size
+            # For test forward pass, use the first batch_size samples which should be Pattern 1 (O-tetromino)
+            # since the data is organized as: samples 0-340=Pattern1, 341-681=Pattern2, 682-1023=Pattern3
             test_pattern_sequence = []
             for i in range(test_batch_size):
-                pattern_id = (i % 3) + 1  # Cycles through 1, 2, 3
+                if i < 341:  # First 341 samples: Pattern 1 (O-tetromino)
+                    pattern_id = 1
+                elif i < 682:  # Next 341 samples: Pattern 2 (T-tetromino) 
+                    pattern_id = 2
+                else:  # Remaining samples: Pattern 3 (L-tetromino)
+                    pattern_id = 3
                 test_pattern_sequence.append(pattern_id)
             
             test_pattern_ids = jnp.array(test_pattern_sequence, dtype=jnp.int32)
@@ -691,8 +735,15 @@ class StructuredTrainer:
             logging.debug(f"  - Unique values: {jnp.unique(test_pattern_ids)}")
             
             # Log pattern distribution for test forward pass (safe to do outside JAX context)
-            samples_per_pattern = test_batch_size // 3
-            logging.debug(f"Test forward pass: {test_batch_size} samples, ~{samples_per_pattern} per pattern")
+            # Count actual patterns in the test batch
+            pattern_counts = {}
+            for pattern_id in test_pattern_sequence:
+                pattern_counts[pattern_id] = pattern_counts.get(pattern_id, 0) + 1
+            
+            logging.info(f"Test forward pass pattern distribution:")
+            for pattern_id in sorted(pattern_counts.keys()):
+                pattern_name = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}[pattern_id]
+                logging.info(f"  - Pattern {pattern_id} ({pattern_name}): {pattern_counts[pattern_id]} samples")
             
             test_loss, test_metrics = self.model.apply(
                 {"params": state.params["decoder"]},
