@@ -179,18 +179,18 @@ class EncoderTransformer(nn.Module):
             
             # Handle tetro_pattern case: x has 5D, grid_shapes_embed has 4D
             if len(grid_shapes_embed.shape) == 4 and len(x.shape) == 5:
-                # grid_shapes_embed: (B, 1, 4, H) -> need to reshape to match x: (B, R, C, N, H)
+                # grid_shapes_embed: (B, 1, 4, H) -> need to reshape to match x: (B, R, C, 4, H)
                 B = grid_shapes_embed.shape[0]
-                N = grid_shapes_embed.shape[1]  # Should be 1 from fallback
+                num_tokens = grid_shapes_embed.shape[2]  # Should be 4 (grid shape tokens)
                 H = grid_shapes_embed.shape[-1]
                 
-                # Reshape to match x's batch structure: (B, R, C, N, H)
+                # Reshape to match x's batch structure: (B, R, C, 4, H)
                 R, C = x.shape[1], x.shape[2]
-                target_shape = (B, R, C, N, H)
+                target_shape = (B, R, C, num_tokens, H)
                 
                 print(f"  Reshaping grid_shapes_embed from {grid_shapes_embed.shape} to {target_shape}")
-                # Reshape and repeat to fill the R, C dimensions
-                grid_shapes_embed = grid_shapes_embed.reshape(B, 1, 1, N, H)
+                # Reshape: (B, 1, 4, H) -> (B, 1, 1, 4, H) -> (B, R, C, 4, H)
+                grid_shapes_embed = grid_shapes_embed.reshape(B, 1, 1, num_tokens, H)
                 grid_shapes_embed = jnp.broadcast_to(grid_shapes_embed, target_shape)
                 print(f"  After reshaping: {grid_shapes_embed.shape}")
             else:
