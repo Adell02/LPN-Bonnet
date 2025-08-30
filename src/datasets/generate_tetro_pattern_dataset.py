@@ -9,12 +9,12 @@ The patterns are distributed uniformly:
 - Pattern 3 (L tetromino): 33 tasks
 
 Each task uses the same pattern type for all 4 pairs to maintain consistency.
-The dataset follows the same format as pattern_4 by using the standardized make_dataset() function.
+The dataset is compatible with store_latent_search.py and follows the same format as pattern_4.
 """
 
 import numpy as np
 import os
-from datasets.task_gen.dataloader import make_dataset
+import random
 
 def generate_tetro_pattern_dataset(length=99, num_pairs=4, seed=42):
     """
@@ -45,23 +45,66 @@ def generate_tetro_pattern_dataset(length=99, num_pairs=4, seed=42):
     tasks_per_pattern = length // 3
     print("  Tasks per pattern: {}".format(tasks_per_pattern))
     
-    # Use the standardized PATTERN task generator to ensure correct data dimensions
-    # We'll use pattern_size=3 since tetrominoes fit within 3x3 patterns
-    # and embed them in 5x5 grids for visibility
-    print("  Using standardized PATTERN task generator for consistent data format")
+    # Set random seed
+    random.seed(seed)
     
-    # Generate the dataset using the PATTERN task generator (same as pattern4)
-    grids, shapes, program_ids = make_dataset(
-        length=length, 
-        num_pairs=num_pairs, 
-        num_workers=0,  # Single-threaded for reproducibility
-        task_generator_class='PATTERN',
-        pattern_size=3,  # 3x3 patterns (tetrominoes fit within this)
-        num_rows=5,      # 5 rows (grid size)
-        num_cols=5,      # 5 columns (grid size)
-        online_data_augmentation=False, 
-        seed=seed
-    )
+    # Initialize arrays
+    grids = np.zeros((length, num_pairs, 5, 5, 2), dtype=np.uint8)
+    shapes = np.zeros((length, num_pairs, 2), dtype=np.uint8)
+    program_ids = np.zeros(length, dtype=np.uint32)
+    
+    # Define pattern offsets and bounding boxes
+    pattern_definitions = {
+        0: {  # O tetromino (2x2) - PATTERN generator uses 0-based indexing
+            'offsets': [(0, 0), (0, 1), (1, 0), (1, 1)],
+            'box_h': 2, 'box_w': 2
+        },
+        1: {  # T tetromino (2x3 box)
+            'offsets': [(0, 0), (0, 1), (0, 2), (1, 1)],
+            'box_h': 2, 'box_w': 3
+        },
+        2: {  # L tetromino (3x2 box)
+            'offsets': [(0, 0), (1, 0), (2, 0), (2, 1)],
+            'box_h': 3, 'box_w': 2
+        }
+    }
+    
+    task_idx = 0
+    for pattern_id in [0, 1, 2]:  # Use 0-based indexing to match PATTERN generator
+        pattern_info = pattern_definitions[pattern_id]
+        print("  Generating {} tasks for pattern {}...".format(tasks_per_pattern, pattern_id))
+        
+        for task in range(tasks_per_pattern):
+            # Sample colors for this task (consistent across all pairs)
+            colors = [random.randint(1, 9) for _ in range(4)]
+            
+            for pair in range(num_pairs):
+                # Generate input grid with single anchor point
+                input_grid = np.zeros((5, 5), dtype=np.uint8)
+                output_grid = np.zeros((5, 5), dtype=np.uint8)
+                
+                # Choose random position for pattern
+                max_row = 5 - pattern_info['box_h']
+                max_col = 5 - pattern_info['box_w']
+                top = random.randint(0, max_row)
+                left = random.randint(0, max_col)
+                
+                # Mark anchor in input
+                input_grid[top, left] = 1
+                
+                # Draw pattern in output
+                for k, (dr, dc) in enumerate(pattern_info['offsets']):
+                    output_grid[top + dr, left + dc] = colors[k % len(colors)]
+                
+                # Store in arrays
+                grids[task_idx, pair, :, :, 0] = input_grid
+                grids[task_idx, pair, :, :, 1] = output_grid
+                shapes[task_idx, pair, 0] = 5  # num_rows
+                shapes[task_idx, pair, 1] = 5  # num_cols
+            
+            # Set program ID to pattern type
+            program_ids[task_idx] = pattern_id
+            task_idx += 1
     
     print("\nGenerated dataset:")
     print("  Total grids shape: {} (should be ({}, {}, 5, 5, 2))".format(grids.shape, length, num_pairs))
@@ -76,14 +119,14 @@ def generate_tetro_pattern_dataset(length=99, num_pairs=4, seed=42):
     
     print("\nPattern distribution:")
     for pattern_type, count in sorted(pattern_counts.items()):
-        pattern_names = {1: "O tetromino", 2: "T tetromino", 3: "L tetromino"}
+        pattern_names = {0: "O tetromino", 1: "T tetromino", 2: "L tetromino"}
         print("  Pattern {} ({}): {} tasks".format(pattern_type, pattern_names[pattern_type], count))
     
     return grids, shapes, program_ids
 
 def save_tetro_pattern_dataset(grids, shapes, program_ids, output_dir="src/datasets/tetro_pattern"):
     """
-    Save the generated dataset to NPY files - same format as pattern4.
+    Save the generated dataset to NPY files.
     
     Args:
         grids: Grid array
@@ -94,7 +137,7 @@ def save_tetro_pattern_dataset(grids, shapes, program_ids, output_dir="src/datas
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
-    # Save each component - same format as pattern4
+    # Save each component
     grids_path = os.path.join(output_dir, "grids.npy")
     shapes_path = os.path.join(output_dir, "shapes.npy")
     program_ids_path = os.path.join(output_dir, "program_ids.npy")
@@ -139,14 +182,6 @@ def main():
         print("\n" + "=" * 70)
         print("✅ TETRO_PATTERN DATASET GENERATED SUCCESSFULLY!")
         print("=" * 70)
-        print("\nDataset format matches pattern4:")
-        print("  - grids.npy: (length, num_pairs, 5, 5, 2)")
-        print("  - shapes.npy: (length, num_pairs, 2)")
-        print("  - program_ids.npy: (length,)")
-        print("\nKey improvements:")
-        print("  ✅ Uses standardized PATTERN task generator (same as pattern4)")
-        print("  ✅ Ensures correct data dimensions for model compatibility")
-        print("  ✅ Avoids dimension mismatch issues from custom generation")
         print("\nYou can now use this dataset with store_latent_search.py:")
         print("python src/store_latent_search.py \\")
         print("    --wandb_artifact_path \"your_artifact_path\" \\")

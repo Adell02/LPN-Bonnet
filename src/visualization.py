@@ -723,6 +723,8 @@ def visualize_struct_confidence_panel(
     sample_shapes: chex.Array,
     encoder_mus: list[chex.Array],
     encoder_logvars: list[chex.Array],
+    poe_mu: chex.Array | None = None,
+    poe_logvar: chex.Array | None = None,
     title: str = "Structured Confidence Panel",
     encoder_labels: list[str] | None = None,
     pattern_id: int | None = None,  # Pattern ID for filtering
@@ -731,14 +733,16 @@ def visualize_struct_confidence_panel(
     """
     Panel with:
     - Top: the struct (input-output pairs) for one task
-    - Bottom-left: histogram of latent means per encoder
-    - Bottom-right: histogram of latent variances per encoder
+    - Bottom-left: histogram of latent means per encoder and PoE
+    - Bottom-right: histogram of latent variances per encoder and PoE
 
     Args:
         sample_grids: [N, R, C, 2] for a single task (pairs)
         sample_shapes: [N, 2, 2] shapes for that task
         encoder_mus: list of [N, D] means per encoder (aggregated over pair dim if needed)
         encoder_logvars: list of [N, D] logvars per encoder (same shape as mus)
+        poe_mu: [N, D] PoE mean (optional)
+        poe_logvar: [N, D] PoE logvar (optional)
         encoder_labels: optional labels for legend order
         pattern_id: Pattern ID (1, 2, 3) for filtering variances
         pattern_name: Pattern name (O-tetromino, T-tetromino, L-tetromino) for display
@@ -773,13 +777,20 @@ def visualize_struct_confidence_panel(
     # Bottom-right: histogram of variances
     ax_vars = fig.add_subplot(gs[2, 1])
 
-    # Colors for encoders (consistent and distinct)
-    enc_colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+    # Colors for encoders (matching the palette from structured_train.py)
+    enc_colors = ['#FBB998', '#DB74DB', '#5361E5', '#2ca02c']  # Orange, Pink, Blue, Green
 
     if encoder_labels is None:
         encoder_labels = [f"Encoder {i}" for i in range(len(encoder_mus))]
 
-    # Plot encoder distributions (no PoE aggregation)
+    # Plot PoE distributions FIRST (at the back) if available
+    if poe_mu is not None and poe_logvar is not None:
+        poe_mu_flat = _np.asarray(poe_mu).reshape(-1)
+        poe_var_flat = _np.exp(_np.asarray(poe_logvar).reshape(-1))
+        ax_means.hist(poe_mu_flat, bins=30, histtype='step', linewidth=2.0, color='#d62728', label='PoE', density=True)
+        ax_vars.hist(poe_var_flat, bins=30, histtype='step', linewidth=2.0, color='#d62728', label='PoE', density=True)
+
+    # Plot encoder distributions SECOND (on top of PoE)
     for idx, (mu, logvar) in enumerate(zip(encoder_mus, encoder_logvars)):
         mu_flat = _np.asarray(mu).reshape(-1)
         var_flat = _np.exp(_np.asarray(logvar).reshape(-1))

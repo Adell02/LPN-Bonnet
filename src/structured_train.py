@@ -2093,8 +2093,22 @@ class StructuredTrainer:
                     std_var = np.std(var_i)
                     logging.info(f"Pattern {pid} - Encoder {enc_idx}: mean_var={mean_var:.6f}, std_var={std_var:.6f}")
 
-                # REMOVED: PoE aggregation across encoders - we only need individual encoder statistics
-                # Keep raw encoder statistics for each pattern without averaging
+                # Compute PoE across all pairs to show aggregated confidence
+                # Average across pairs for each encoder, then compute PoE
+                avg_enc_mus = [np.mean(em, axis=0) for em in enc_mus]  # [latent_dim] per encoder
+                avg_enc_logvars = [np.mean(lv, axis=0) for lv in enc_logvars]  # [latent_dim] per encoder
+                
+                alphas_np = np.asarray(alphas)
+                precisions = [np.exp(-lv) for lv in avg_enc_logvars]  # [latent_dim] per encoder
+                poe_precision = np.zeros_like(precisions[0])
+                for a, p in zip(alphas_np, precisions):
+                    poe_precision = poe_precision + a * p
+                poe_var = 1.0 / (poe_precision + 1e-8)
+                num = np.zeros_like(avg_enc_mus[0])
+                for a, p, m in zip(alphas_np, precisions, avg_enc_mus):
+                    num = num + a * p * m
+                poe_mu = num / (poe_precision + 1e-8)
+                poe_logvar = np.log(poe_var + 1e-8)
 
                 panel_title = f"Pattern {pid} - Confidence (All Pairs)"
                 enc_labels = [f"Encoder {i}" for i in range(len(enc_mus))]
@@ -2107,6 +2121,8 @@ class StructuredTrainer:
                     sample_shapes=shapes_np[idx],
                     encoder_mus=enc_mus,  # [num_pairs, latent_dim] per encoder
                     encoder_logvars=enc_logvars,  # [num_pairs, latent_dim] per encoder
+                    poe_mu=poe_mu,  # [latent_dim] - PoE aggregated mean
+                    poe_logvar=poe_logvar,  # [latent_dim] - PoE aggregated logvar
                     title=panel_title,
                     encoder_labels=enc_labels,
                     pattern_id=pid,  # Pattern ID for filtering
@@ -2193,18 +2209,20 @@ class StructuredTrainer:
         source_colors = {
             0: '#FBB998',  # Encoder 0 - ORANGE (same as visualize_tsne_sources)
             1: '#DB74DB',  # Encoder 1 - PINK (same as visualize_tsne_sources)
-            2: '#5361E5'   # Encoder 2 - blue (same as visualize_tsne_sources)
-
+            2: '#5361E5',  # Encoder 2 - BLUE (same as visualize_tsne_sources)
+            3: '#2ca02c'   # Encoder 3 - GREEN (4th option)
         }
         source_markers = {
             0: 'o',    # Encoder 0 - Circle (same as visualize_tsne_sources)
             1: 's',    # Encoder 1 - Square (same as visualize_tsne_sources)
-            2: '^'     # Encoder 2 - Triangle (same as visualize_tsne_sources)
+            2: '^',    # Encoder 2 - Triangle (same as visualize_tsne_sources)
+            3: 'D'     # Encoder 3 - Diamond (4th option)
         }
         source_labels = {
             0: "Encoder 0",
             1: "Encoder 1", 
-            2: "Encoder 2"
+            2: "Encoder 2",
+            3: "Encoder 3"
         }
         
         # Plot points for each source - EXACTLY like visualize_tsne_sources
