@@ -702,23 +702,44 @@ class StructuredTrainer:
         
         for pattern_id in [1, 2, 3]:  # O-tetromino, T-tetromino, L-tetromino
             # Generate samples_per_pattern samples for this pattern
-            from datasets.task_gen.dataloader import make_dataset
-            g, s, _ = make_dataset(
-                length=samples_per_pattern,
+            # Use task generator directly instead of make_dataset to avoid shape issues
+            from datasets.task_gen.dataloader import make_task_gen_dataloader
+            from datasets.task_gen.struct_pattern import StructPatternTaskGenerator
+            
+            # Create task generator for this specific pattern
+            task_gen = StructPatternTaskGenerator(
                 num_pairs=self.task_generator_kwargs["num_pairs"],
-                num_workers=0,  # No workers for single batch generation
-                task_generator_class="STRUCT_PATTERN",
-                online_data_augmentation=self.cfg.training.online_data_augmentation,
                 seed=self.cfg.training.seed + pattern_id + (self._batch_counter if hasattr(self, '_batch_counter') else 0),
                 pattern=pattern_id,  # Specific pattern
                 pattern_per_task=True,
+                num_rows=self.task_generator_kwargs.get("num_rows", 5),
+                num_cols=self.task_generator_kwargs.get("num_cols", 5),
             )
+            
+            # Generate samples directly
+            grids_list_pattern = []
+            shapes_list_pattern = []
+            for _ in range(samples_per_pattern):
+                grids, shapes = task_gen.generate_task()
+                grids_list_pattern.append(grids)
+                shapes_list_pattern.append(shapes)
+            
+            # Stack the samples for this pattern
+            g = jnp.stack(grids_list_pattern, axis=0)
+            s = jnp.stack(shapes_list_pattern, axis=0)
+            
+            # DEBUG: Log the actual shapes returned by direct task generation
+            logging.debug(f"Pattern {pattern_id} - grids shape: {g.shape}, shapes shape: {s.shape}")
+            
             grids_list.append(g)
-            shapes_list.append(g)
+            shapes_list.append(s)
         
         # Concatenate all patterns to create balanced batch
         balanced_grids = jnp.concatenate(grids_list, axis=0)
         balanced_shapes = jnp.concatenate(shapes_list, axis=0)
+        
+        # DEBUG: Log the final concatenated shapes
+        logging.debug(f"Final balanced batch - grids shape: {balanced_grids.shape}, shapes shape: {balanced_shapes.shape}")
         
         # Increment batch counter for different seeds
         if not hasattr(self, '_batch_counter'):
