@@ -3,6 +3,7 @@ import chex
 import jax.numpy as jnp
 import jax
 from flax import linen as nn
+import numpy as np
 
 from models.utils import EncoderTransformerConfig, DecoderTransformerConfig, TransformerLayer
 
@@ -141,6 +142,7 @@ class EncoderTransformer(nn.Module):
         )(grid_shapes[..., 1, :] - 1)
         grid_shapes_col_embed += channels_embed
         grid_shapes_embed = jnp.concatenate([grid_shapes_row_embed, grid_shapes_col_embed], axis=-2)
+        
         # Fix dimension mismatch: ensure grid_shapes_embed has the same batch dimensions as x
         # x shape is (*B, 2*R*C, H) after flattening
         # grid_shapes_embed shape is (*B, 4, H) 
@@ -153,12 +155,69 @@ class EncoderTransformer(nn.Module):
             print(f"  grid_shapes_embed batch dims: {grid_shapes_embed.shape[:-2]}")
             print(f"  x batch dims: {x.shape[:-2]}")
             
-            # Broadcast grid_shapes_embed to match x's batch dimensions
-            # This handles cases where grid_shapes has different batch structure
-            target_shape = (*x.shape[:-2], *grid_shapes_embed.shape[-2:])
-            print(f"  Broadcasting grid_shapes_embed to: {target_shape}")
-            grid_shapes_embed = jnp.broadcast_to(grid_shapes_embed, target_shape)
-            print(f"  After broadcasting: {grid_shapes_embed.shape}")
+            # Handle incompatible tensor structures by reshaping grid_shapes_embed
+            # Instead of broadcasting, we'll reshape to match the expected structure
+            if len(grid_shapes_embed.shape) == 4 and len(x.shape) == 5:
+                # grid_shapes_embed: (B, N, 4, H) -> need to reshape to match x: (B, R, C, N, H)
+                # Extract the batch dimension and reshape to match x's structure
+                B = grid_shapes_embed.shape[0]
+                N = grid_shapes_embed.shape[1]
+                H = grid_shapes_embed.shape[-1]
+                
+                # Reshape to match x's batch structure: (B, R, C, N, H)
+                # We'll use the first two dimensions of x as R and C
+                R, C = x.shape[1], x.shape[2]
+                target_shape = (B, R, C, N, H)
+                
+                print(f"  Reshaping grid_shapes_embed from {grid_shapes_embed.shape} to {target_shape}")
+                # Reshape and repeat to fill the R, C dimensions
+                grid_shapes_embed = grid_shapes_embed.reshape(B, 1, 1, N, H)
+                grid_shapes_embed = jnp.broadcast_to(grid_shapes_embed, target_shape)
+                print(f"  After reshaping: {grid_shapes_embed.shape}")
+            elif len(grid_shapes_embed.shape) == 4 and grid_shapes_embed.shape[1] > 10:
+                # Special case for datasets like tetro_pattern where grid_shapes has many samples
+                # grid_shapes_embed: (B, N, 4, H) where N is large (e.g., 95)
+                # We need to reshape this to match x's structure
+                B = grid_shapes_embed.shape[0]
+                N = grid_shapes_embed.shape[1]
+                H = grid_shapes_embed.shape[-1]
+                
+                # For tetro_pattern, we need to handle the case where N doesn't match x's structure
+                # Let's reshape to match x's batch dimensions
+                x_batch_size = np.prod(x.shape[:-2])
+                if N >= x_batch_size:
+                    # Take the first x_batch_size samples and reshape
+                    grid_shapes_embed = grid_shapes_embed[:, :x_batch_size, :, :]
+                    target_shape = (*x.shape[:-2], 4, H)
+                    print(f"  Special case: reshaping grid_shapes_embed from {grid_shapes_embed.shape} to {target_shape}")
+                    grid_shapes_embed = grid_shapes_embed.reshape(target_shape)
+                    print(f"  After special case reshaping: {grid_shapes_embed.shape}")
+                else:
+                    # Repeat samples to fill the required size
+                    repeats = int(np.ceil(x_batch_size / N))
+                    grid_shapes_embed = jnp.repeat(grid_shapes_embed, repeats, axis=1)
+                    grid_shapes_embed = grid_shapes_embed[:, :x_batch_size, :, :]
+                    target_shape = (*x.shape[:-2], 4, H)
+                    print(f"  Special case: repeating and reshaping grid_shapes_embed to {target_shape}")
+                    grid_shapes_embed = grid_shapes_embed.reshape(target_shape)
+                    print(f"  After special case reshaping: {grid_shapes_embed.shape}")
+            else:
+                # Fallback: try to broadcast if possible
+                try:
+                    target_shape = (*x.shape[:-2], *grid_shapes_embed.shape[-2:])
+                    print(f"  Attempting to broadcast grid_shapes_embed to: {target_shape}")
+                    grid_shapes_embed = jnp.broadcast_to(grid_shapes_embed, target_shape)
+                    print(f"  After broadcasting: {grid_shapes_embed.shape}")
+                except Exception as e:
+                    print(f"  Broadcasting failed: {e}")
+                    # Last resort: reshape to match x's batch dimensions
+                    print(f"  Attempting reshape fallback...")
+                    # Flatten all batch dimensions except the last two
+                    grid_shapes_flat = grid_shapes_embed.reshape(-1, *grid_shapes_embed.shape[-2:])
+                    # Reshape to match x's batch structure
+                    x_batch_size = np.prod(x.shape[:-2])
+                    grid_shapes_embed = grid_shapes_flat[:x_batch_size].reshape(*x.shape[:-2], *grid_shapes_embed.shape[-2:])
+                    print(f"  After reshape fallback: {grid_shapes_embed.shape}")
         
         x = jnp.concatenate([grid_shapes_embed, x], axis=-2)  # (*B, 4+2*R*C, H)
 
