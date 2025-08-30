@@ -1502,20 +1502,15 @@ class StructuredTrainer:
                         pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
                         custom_title = f"t-SNE Visualisation of Latent Embeddings: Pattern {target_pattern}"
                         
-                        # Use a custom visualization function that allows title customization
-                        # For now, we'll use the existing function but we'll need to modify the title later
-                        fig_tsne_encoders_single = visualize_tsne_sources(
+                        # Create a custom T-SNE visualization for pattern-specific plots with source color coding
+                        fig_tsne_encoders_single = self._create_pattern_specific_tsne(
                             latents=encoder_latents,
-                            program_ids=encoder_patterns,  # All same pattern (same color)
-                            source_ids=encoder_sources,    # 0,1,2 for different encoders (different markers + colors)
-                            max_points=max_encoder_points,
-                            random_state=42,
+                            source_ids=encoder_sources,    # 0,1,2 for different encoders
                             task_ids=encoder_task_ids,
+                            title=custom_title,
+                            max_points=max_encoder_points,
+                            random_state=42
                         )
-                        
-                        # Customize the title for this pattern
-                        if fig_tsne_encoders_single is not None:
-                            fig_tsne_encoders_single.suptitle(custom_title, fontsize=16, fontweight='bold')
                         
                         fig_tsne_encoders_list.append(fig_tsne_encoders_single)
                         logging.info(f"Generated encoder-only T-SNE (pattern {target_pattern}): {len(encoder_latents)} points")
@@ -1667,6 +1662,110 @@ class StructuredTrainer:
         del all_latents, latents_concat, source_ids_np, pattern_ids_concat
         return metrics
 
+    def _create_pattern_specific_tsne(
+        self,
+        latents: np.ndarray,
+        source_ids: np.ndarray,
+        task_ids: np.ndarray,
+        title: str,
+        max_points: int = 300,
+        random_state: int = 42
+    ) -> Optional[plt.Figure]:
+        """
+        Create a custom T-SNE visualization for pattern-specific plots with source color coding.
+        
+        This method creates T-SNE plots where:
+        - All points have the same pattern (same color)
+        - Different sources (encoders) have different colors and markers
+        - The title is set on the T-SNE plot, not the figure
+        - A custom legend shows colors and shapes for different sources
+        
+        Args:
+            latents: [N, D] array of latent embeddings
+            source_ids: [N] array of source IDs (0, 1, 2 for encoders)
+            task_ids: [N] array of task IDs
+            title: Title for the T-SNE plot
+            max_points: Maximum number of points to show
+            random_state: Random state for T-SNE
+            
+        Returns:
+            matplotlib Figure with the T-SNE visualization
+        """
+        try:
+            from sklearn.manifold import TSNE
+            import matplotlib.pyplot as plt
+            import matplotlib.patches as mpatches
+        except ImportError:
+            logging.warning("sklearn or matplotlib not available for T-SNE visualization")
+            return None
+        
+        # Downsample if needed
+        if len(latents) > max_points:
+            indices = np.random.RandomState(random_state).choice(
+                len(latents), size=max_points, replace=False
+            )
+            latents = latents[indices]
+            source_ids = source_ids[indices]
+            task_ids = task_ids[indices]
+        
+        # Perform T-SNE
+        tsne = TSNE(n_components=2, random_state=random_state, perplexity=min(30, len(latents)-1))
+        latents_2d = tsne.fit_transform(latents)
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(10, 8))
+        
+        # Define colors and markers for different sources
+        source_colors = ['#1f77b4', '#ff7f0e', '#2ca02c']  # Blue, Orange, Green
+        source_markers = ['o', 's', '^']  # Circle, Square, Triangle
+        
+        # Plot points for each source
+        unique_sources = np.unique(source_ids)
+        legend_elements = []
+        
+        for source_id in unique_sources:
+            mask = source_ids == source_id
+            if np.any(mask):
+                color = source_colors[source_id % len(source_colors)]
+                marker = source_markers[source_id % len(source_markers)]
+                
+                # Plot points for this source
+                ax.scatter(
+                    latents_2d[mask, 0], 
+                    latents_2d[mask, 1],
+                    c=[color], 
+                    marker=marker,
+                    s=50,
+                    alpha=0.7,
+                    label=f'Encoder {source_id}'
+                )
+                
+                # Create legend element
+                legend_elements.append(
+                    mpatches.Patch(
+                        color=color,
+                        label=f'Encoder {source_id}'
+                    )
+                )
+        
+        # Set title on the T-SNE plot (not figure title)
+        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+        
+        # Set axis labels
+        ax.set_xlabel('t-SNE 1', fontsize=12)
+        ax.set_ylabel('t-SNE 2', fontsize=12)
+        
+        # Add legend showing colors for different sources
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=10)
+        
+        # Remove grid for cleaner look
+        ax.grid(False)
+        
+        # Set tight layout
+        plt.tight_layout()
+        
+        return fig
+        
     def test_dataset_submission(
         self,
         state: TrainState,
@@ -2077,18 +2176,15 @@ class StructuredTrainer:
                                 # Create custom title for this pattern-specific T-SNE
                                 custom_title = f"t-SNE Visualisation of Latent Embeddings: Pattern {target_pattern}"
                                 
-                                fig_tsne_encoders_single = visualize_tsne_sources(
+                                # Create a custom T-SNE visualization for pattern-specific plots with source color coding
+                                fig_tsne_encoders_single = self._create_pattern_specific_tsne(
                                     latents=encoder_latents,
-                                    program_ids=encoder_patterns,  # All same pattern (same color)
-                                    source_ids=encoder_sources,    # 0,1,2 for different encoders (different markers + colors)
-                                    max_points=max_encoder_points,
-                                    random_state=42,
+                                    source_ids=encoder_sources,    # 0,1,2 for different encoders
                                     task_ids=encoder_task_ids,
+                                    title=custom_title,
+                                    max_points=max_encoder_points,
+                                    random_state=42
                                 )
-                                
-                                # Customize the title for this pattern
-                                if fig_tsne_encoders_single is not None:
-                                    fig_tsne_encoders_single.suptitle(custom_title, fontsize=16, fontweight='bold')
                                 
                                 fig_tsne_encoders_list.append(fig_tsne_encoders_single)
                                 logging.info(f"Test: Generated encoder-only T-SNE (pattern {target_pattern}): {len(encoder_latents)} points")
