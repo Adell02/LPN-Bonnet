@@ -580,32 +580,23 @@ class StructuredTrainer:
             rng = keys[i]
             
             def loss_fn(full_params, batch_pairs, batch_shapes, rng):
-                # Generate pattern_ids for contrastive loss: use ACTUAL pattern information
-                # With balanced batch generation, we know the exact pattern distribution
+                # CRITICAL FIX: Extract TRUE pattern IDs from actual data content
+                # The task generator creates random patterns, so we must analyze the data
                 batch_size = batch_pairs.shape[0]
                 
-                # CRITICAL: Use actual pattern structure from balanced batch
-                # Each batch contains: [pattern1_samples, pattern2_samples, pattern3_samples]
-                # This ensures pattern IDs match the actual data content exactly
-                samples_per_pattern = batch_size // 3
+                # Extract true pattern IDs by analyzing the actual output grids
+                # This ensures pattern_ids match the REAL data, not assumed ordering
+                pattern_ids = self._extract_true_pattern_ids_from_data(batch_pairs, batch_shapes)
                 
-                # Create pattern IDs that match the actual data structure
-                pattern_sequence = []
-                for i in range(batch_size):
-                    if i < samples_per_pattern:
-                        pattern_id = 1  # First samples: O-tetromino
-                    elif i < 2 * samples_per_pattern:
-                        pattern_id = 2  # Middle samples: T-tetromino
-                    else:
-                        pattern_id = 3  # Last samples: L-tetromino
-                    pattern_sequence.append(pattern_id)
+                # Validate pattern distribution
+                unique_patterns, counts = jnp.unique(pattern_ids, return_counts=True)
+                logging.debug(f"True pattern distribution: {dict(zip(unique_patterns, counts))}")
                 
-                pattern_ids = jnp.array(pattern_sequence, dtype=jnp.int32)
+                # Ensure we have multiple patterns for contrastive loss to work
+                if len(unique_patterns) < 2:
+                    logging.warning(f"Only {len(unique_patterns)} unique patterns found. Contrastive loss may be ineffective.")
                 
-                # DEBUG: Log pattern_ids shape and content (safe to do outside JAX context)
-                logging.debug(f"Generated pattern_ids: shape={pattern_ids.shape}, content={pattern_ids[:10]}... (first 10)")
-                logging.debug(f"Batch size: {batch_size}, samples_per_pattern: {samples_per_pattern}")
-                logging.debug(f"Expected pattern distribution: {samples_per_pattern} samples each for patterns 1, 2, 3")
+                return pattern_ids
                 
                 loss, metrics = self.model.apply(
                     {"params": full_params["decoder"]},
@@ -670,6 +661,30 @@ class StructuredTrainer:
             if "contrastive_sign_mean" in avg_metrics:
                 sign_mean_val = float(np.array(avg_metrics['contrastive_sign_mean']))
                 logging.info(f"  - Sign mean: {sign_mean_val:.6f}")
+            
+            # NEW: Debug pattern ID effectiveness
+            if "contrastive_sign_mean" in avg_metrics:
+                sign_mean = float(np.array(avg_metrics['contrastive_sign_mean']))
+                if abs(sign_mean) < 0.1:
+                    logging.warning(f"Contrastive sign mean is very small ({sign_mean:.6f}). This suggests pattern IDs may not be effective.")
+                    logging.warning(f"  - Check if pattern_ids match actual data patterns")
+                    logging.warning(f"  - Verify encoder variance outputs are different")
+                elif abs(sign_mean) > 0.9:
+                    logging.info(f"Contrastive sign mean is strong ({sign_mean:.6f}). Pattern IDs appear effective ✓")
+                else:
+                    logging.info(f"Contrastive sign mean is moderate ({sign_mean:.6f}). Pattern IDs may need improvement.")
+            
+            # NEW: Debug encoder specialization progress
+            if "contrastive_kl_mean" in avg_metrics:
+                kl_mean = float(np.array(avg_metrics['contrastive_kl_mean']))
+                if kl_mean < 0.01:
+                    logging.warning(f"Contrastive KL mean is very small ({kl_mean:.6f}). Encoders may not be specializing.")
+                    logging.warning(f"  - Consider increasing contrastive_kl coefficient")
+                    logging.warning(f"  - Check encoder variance outputs")
+                elif kl_mean > 1.0:
+                    logging.info(f"Contrastive KL mean is large ({kl_mean:.6f}). Encoders are actively specializing ✓")
+                else:
+                    logging.info(f"Contrastive KL mean is moderate ({kl_mean:.6f}). Encoders showing some specialization.")
         
         # Log pattern distribution for this training step (for debugging)
         # With task generator, each batch contains a mix of all patterns
@@ -786,6 +801,144 @@ class StructuredTrainer:
         # Yield the stacked batches in the expected format
         yield (stacked_grids, stacked_shapes)
 
+    def _extract_true_pattern_ids_from_data(self, batch_pairs: chex.Array, batch_shapes: chex.Array) -> chex.Array:
+        """
+        CRITICAL: Extract true pattern IDs by analyzing the actual data content.
+        
+        This method analyzes the output grids to determine the actual tetromino pattern
+        for each sample, ensuring pattern_ids match the REAL data.
+        
+        Args:
+            batch_pairs: Shape (batch_size, num_pairs, rows, cols, 2) - input/output grids
+            batch_shapes: Shape (batch_size, num_pairs, 2) - grid dimensions
+            
+        Returns:
+            pattern_ids: Shape (batch_size,) - true pattern IDs (1=O, 2=T, 3=L)
+        """
+        batch_size = batch_pairs.shape[0]
+        pattern_ids = []
+        
+        for i in range(batch_size):
+            # Get the output grid for this sample (use first pair as representative)
+            output_grid = batch_pairs[i, 0, :, :, 1]  # Shape: (rows, cols)
+            
+            # Analyze the pattern by counting active pixels and their distribution
+            active_pixels = jnp.where(output_grid > 0, 1, 0)
+            num_active = jnp.sum(active_pixels)
+            
+            # Tetrominos always have exactly 4 active pixels
+            if num_active != 4:
+                logging.warning(f"Sample {i} has {num_active} active pixels, expected 4. Using fallback pattern ID.")
+                pattern_ids.append(1)  # Fallback to O-tetromino
+                continue
+            
+            # Find the bounding box of active pixels
+            active_coords = jnp.where(active_pixels == 1)
+            if len(active_coords[0]) == 0:
+                pattern_ids.append(1)  # Fallback
+                continue
+                
+            min_row, max_row = jnp.min(active_coords[0]), jnp.max(active_coords[0])
+            min_col, max_col = jnp.min(active_coords[1]), jnp.max(active_coords[1])
+            
+            # Calculate dimensions of the bounding box
+            height = max_row - min_row + 1
+            width = max_col - min_col + 1
+            
+            # Pattern classification based on bounding box dimensions and pixel distribution
+            if height == 2 and width == 2:
+                # 2x2 box: O-tetromino
+                pattern_id = 1
+            elif (height == 2 and width == 3) or (height == 3 and width == 2):
+                # 2x3 or 3x2 box: T or L tetromino
+                # Further classify by checking if it's T (centered) or L (corner)
+                if height == 2:  # 2x3 box
+                    # Check if middle column has pixel (T-tetromino characteristic)
+                    middle_col = min_col + 1
+                    if jnp.any(active_coords[1] == middle_col):
+                        pattern_id = 2  # T-tetromino
+                    else:
+                        pattern_id = 3  # L-tetromino
+                else:  # 3x2 box
+                    # Check if bottom row has 2 pixels (L-tetromino characteristic)
+                    bottom_row = max_row
+                    bottom_pixels = jnp.sum(active_coords[1] == bottom_row)
+                    if bottom_pixels == 2:
+                        pattern_id = 3  # L-tetromino
+                    else:
+                        pattern_id = 2  # T-tetromino
+            else:
+                # Unexpected dimensions, use fallback
+                logging.warning(f"Sample {i} has unexpected bounding box {height}x{width}. Using fallback pattern ID.")
+                pattern_id = 1  # Fallback to O-tetromino
+            
+            pattern_ids.append(pattern_id)
+        
+        return jnp.array(pattern_ids, dtype=jnp.int32)
+
+    def _validate_encoder_variance_outputs(self, state: TrainState, test_batch: tuple) -> None:
+        """
+        CRITICAL: Validate that encoders are outputting proper variance terms.
+        
+        This ensures that the contrastive loss can drive encoder specialization
+        through different certainty levels.
+        
+        Args:
+            state: Current training state
+            test_batch: Test batch for validation
+        """
+        logging.info("Validating encoder variance outputs...")
+        
+        try:
+            # Test encoder outputs on a small batch
+            test_pairs, test_shapes = test_batch
+            test_batch_size = min(4, test_pairs.shape[0])  # Use small batch for validation
+            test_pairs_small = test_pairs[:test_batch_size]
+            test_shapes_small = test_shapes[:test_batch_size]
+            
+            # Check each encoder's output
+            for enc_idx, enc_params in enumerate(state.params["encoders"]):
+                try:
+                    # Get encoder outputs
+                    mu_i, logvar_i = self.encoders[enc_idx].apply(
+                        {"params": enc_params}, 
+                        test_pairs_small, 
+                        test_shapes_small, 
+                        True,  # training mode
+                        mutable=False
+                    )
+                    
+                    # Check shapes
+                    logging.info(f"Encoder {enc_idx} outputs:")
+                    logging.info(f"  - mu_i shape: {mu_i.shape}")
+                    logging.info(f"  - logvar_i shape: {logvar_i.shape}")
+                    
+                    # Check variance values
+                    var_i = jnp.exp(logvar_i)
+                    min_var = float(jnp.min(var_i))
+                    max_var = float(jnp.max(var_i))
+                    mean_var = float(jnp.mean(var_i))
+                    
+                    logging.info(f"  - Variance range: [{min_var:.6f}, {max_var:.6f}]")
+                    logging.info(f"  - Mean variance: {mean_var:.6f}")
+                    
+                    # Check for fixed variance (indicating non-variational behavior)
+                    if max_var - min_var < 1e-6:
+                        logging.warning(f"Encoder {enc_idx} has nearly fixed variance! This will prevent specialization.")
+                        logging.warning(f"  - All variance values are approximately {mean_var:.6f}")
+                        logging.warning(f"  - Consider checking encoder configuration or training history")
+                    else:
+                        logging.info(f"  - Encoder {enc_idx} has variable variance ✓")
+                        
+                except Exception as e:
+                    logging.error(f"Failed to validate encoder {enc_idx}: {e}")
+                    continue
+            
+            logging.info("Encoder variance validation completed")
+            
+        except Exception as e:
+            logging.error(f"Encoder variance validation failed: {e}")
+
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
         num_steps = cfg.training.total_num_steps
@@ -838,24 +991,11 @@ class StructuredTrainer:
                     test_shapes = jnp.ones((self.batch_size, num_pairs, 2, 2), jnp.uint8)
                     test_batch = test_grids, test_shapes
             
-            # Generate pattern_ids for test forward pass: use ACTUAL pattern information
+            # CRITICAL FIX: Extract TRUE pattern IDs from actual test data
             test_batch_size = test_batch[0].shape[0]
             
-            # CRITICAL: Use actual pattern structure from balanced test batch
-            samples_per_pattern = test_batch_size // 3
-            
-            # Create pattern IDs that match the actual data structure
-            test_pattern_sequence = []
-            for i in range(test_batch_size):
-                if i < samples_per_pattern:
-                    pattern_id = 1  # First samples: O-tetromino
-                elif i < 2 * samples_per_pattern:
-                    pattern_id = 2  # Middle samples: T-tetromino
-                else:
-                    pattern_id = 3  # Last samples: L-tetromino
-                test_pattern_sequence.append(pattern_id)
-            
-            test_pattern_ids = jnp.array(test_pattern_sequence, dtype=jnp.int32)
+            # Extract true pattern IDs by analyzing the actual data content
+            test_pattern_ids = self._extract_true_pattern_ids_from_data(test_batch[0], test_batch[1])
             
             # Validate pattern_ids
             logging.debug(f"Pattern IDs validation:")
@@ -865,12 +1005,16 @@ class StructuredTrainer:
             logging.debug(f"  - Max value: {int(jnp.max(test_pattern_ids))}")
             logging.debug(f"  - Unique values: {jnp.unique(test_pattern_ids)}")
             
-            # Log pattern distribution for test forward pass (safe to do outside JAX context)
-            # With balanced batch generation, we have exact pattern distribution
-            logging.info(f"Test forward pass: Using balanced pattern generation")
+            # Log true pattern distribution from actual data analysis
+            unique_patterns, counts = jnp.unique(test_pattern_ids, return_counts=True)
+            pattern_distribution = dict(zip(unique_patterns, counts))
+            logging.info(f"Test forward pass: Using TRUE pattern extraction from data")
             logging.info(f"  - Batch size: {test_batch_size}")
-            logging.info(f"  - Pattern structure: [O-tetromino x{samples_per_pattern}, T-tetromino x{samples_per_pattern}, L-tetromino x{samples_per_pattern}]")
-            logging.info(f"  - Pattern IDs: {test_pattern_sequence[:10]}... (first 10)")
+            logging.info(f"  - True pattern distribution: {pattern_distribution}")
+            logging.info(f"  - Pattern IDs: {test_pattern_ids[:10]}... (first 10)")
+            
+            # CRITICAL: Validate encoder variance outputs before training
+            self._validate_encoder_variance_outputs(state, test_batch)
             
             test_loss, test_metrics = self.model.apply(
                 {"params": state.params["decoder"]},
@@ -1854,15 +1998,17 @@ class StructuredTrainer:
         fig, ax = plt.subplots(figsize=(15, 12))
         
         # Use the EXACT SAME color scheme and markers as visualize_tsne_sources
+        # For pattern-specific T-SNE: all points have the same pattern, so use encoder colors
         source_colors = {
-            0: '#1f77b4',  # Blue
-            1: '#ff7f0e',  # Orange
-            2: '#2ca02c'   # Green
+            0: '#FBB998',  # Encoder 0 - ORANGE (same as visualize_tsne_sources)
+            1: '#DB74DB',  # Encoder 1 - PINK (same as visualize_tsne_sources)
+            2: '#5361E5'   # Encoder 2 - blue (same as visualize_tsne_sources)
+
         }
         source_markers = {
-            0: 'o',    # Encoder 0 - Circle
-            1: 's',    # Encoder 1 - Square
-            2: '^'     # Encoder 2 - Triangle
+            0: 'o',    # Encoder 0 - Circle (same as visualize_tsne_sources)
+            1: 's',    # Encoder 1 - Square (same as visualize_tsne_sources)
+            2: '^'     # Encoder 2 - Triangle (same as visualize_tsne_sources)
         }
         source_labels = {
             0: "Encoder 0",

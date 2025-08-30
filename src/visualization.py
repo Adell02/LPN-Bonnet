@@ -417,9 +417,9 @@ def visualize_tsne_sources(
 
     # Define colors for patterns and shapes for sources
     pattern_colors = {
-        1: '#FBB998',  # O-tetromino - Blue
-        2: '#DB74DB',  # T-tetromino - Green  
-        3: '#5361E5'   # L-tetromino - Red
+        1: '#FBB998',  # O-tetromino - ORANGE
+        2: '#DB74DB',  # T-tetromino - PURPLE  
+        3: '#5361E5'   # L-tetromino - BLUE
     }
     
     source_markers = {
