@@ -358,8 +358,10 @@ class StructuredTrainer:
                     shuffled_indices.append(pattern_3_indices[i])
             
             # Apply shuffling to both grids and shapes
-            self.train_grids = self.train_grids[shuffled_indices]
-            self.train_shapes = self.train_shapes[shuffled_indices]
+            # Convert shuffled_indices to JAX array for proper indexing
+            shuffled_indices_jax = jnp.array(shuffled_indices, dtype=jnp.int32)
+            self.train_grids = self.train_grids[shuffled_indices_jax]
+            self.train_shapes = self.train_shapes[shuffled_indices_jax]
             
             # Log the new pattern distribution
             new_pattern_ids = [pattern_ids_np[i] for i in shuffled_indices]
