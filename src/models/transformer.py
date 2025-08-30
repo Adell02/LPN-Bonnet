@@ -229,6 +229,15 @@ class EncoderTransformer(nn.Module):
         Returns:
             pad mask of shape (*B, 1, T, T) with T = 1 + 4 + 2 * max_rows * max_cols.
         """
+        # Handle case where grid_shapes has extra dimensions from fallback
+        # Expected: (*B, 2, 2), but fallback creates (*B, 1, 2, 2)
+        if len(grid_shapes.shape) > 3 and grid_shapes.shape[-3] == 1:
+            print(f"[make_pad_mask] Detecting extra dimension in grid_shapes: {grid_shapes.shape}")
+            print(f"[make_pad_mask] Squeezing extra dimension to get expected shape")
+            # Squeeze the extra dimension: (*B, 1, 2, 2) -> (*B, 2, 2)
+            grid_shapes = grid_shapes.squeeze(-3)
+            print(f"[make_pad_mask] After squeezing: {grid_shapes.shape}")
+        
         batch_ndims = len(grid_shapes.shape[:-2])
         row_arange_broadcast = jnp.arange(self.config.max_rows).reshape(
             (*batch_ndims * (1,), self.config.max_rows, 1)
