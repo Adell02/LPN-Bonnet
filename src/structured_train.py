@@ -590,13 +590,15 @@ class StructuredTrainer:
                 
                 # Validate pattern distribution
                 unique_patterns, counts = jnp.unique(pattern_ids, return_counts=True)
-                logging.debug(f"True pattern distribution: {dict(zip(unique_patterns, counts))}")
+                # Convert JAX arrays to Python types for safe logging
+                unique_patterns_py = [int(p) for p in unique_patterns]
+                counts_py = [int(c) for c in counts]
+                pattern_distribution = dict(zip(unique_patterns_py, counts_py))
+                logging.debug(f"True pattern distribution: {pattern_distribution}")
                 
                 # Ensure we have multiple patterns for contrastive loss to work
                 if len(unique_patterns) < 2:
                     logging.warning(f"Only {len(unique_patterns)} unique patterns found. Contrastive loss may be ineffective.")
-                
-                return pattern_ids
                 
                 loss, metrics = self.model.apply(
                     {"params": full_params["decoder"]},
@@ -1007,11 +1009,14 @@ class StructuredTrainer:
             
             # Log true pattern distribution from actual data analysis
             unique_patterns, counts = jnp.unique(test_pattern_ids, return_counts=True)
-            pattern_distribution = dict(zip(unique_patterns, counts))
+            # Convert JAX arrays to Python types for safe dictionary creation
+            unique_patterns_py = [int(p) for p in unique_patterns]
+            counts_py = [int(c) for c in counts]
+            pattern_distribution = dict(zip(unique_patterns_py, counts_py))
             logging.info(f"Test forward pass: Using TRUE pattern extraction from data")
             logging.info(f"  - Batch size: {test_batch_size}")
             logging.info(f"  - True pattern distribution: {pattern_distribution}")
-            logging.info(f"  - Pattern IDs: {test_pattern_ids[:10]}... (first 10)")
+            logging.info(f"  - Pattern IDs: {[int(p) for p in test_pattern_ids[:10]]}... (first 10)")
             
             # CRITICAL: Validate encoder variance outputs before training
             self._validate_encoder_variance_outputs(state, test_batch)
