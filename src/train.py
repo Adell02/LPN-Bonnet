@@ -762,65 +762,65 @@ class Trainer:
             except Exception as e:
                 logging.warning(f"Community metrics computation failed: {e}")
             
-                    # FIXED: Use original program_ids and actual latents_samples from generated_info
-        if 'latents_samples' in generated_info:
-            fig_latents_samples = visualize_latents_samples(
-                dataset_grids, 
-                dataset_shapes, 
-                program_ids,  # Use original program_ids (not repeated)
-                generated_info['latents_samples'],  # Use actual latents samples
-                num_tasks=min(num_tasks_to_show, 5),
-                num_samples_per_task=3
-            )
-        else:
-            fig_latents_samples = None
-            
-        # NEW: Create T-SNE plot of context latents only
-        fig_context_latents = None
-        if program_ids is not None and 'context' in generated_info:
-            try:
-                context = generated_info['context']
-                if context is not None:
-                    # Extract context latents and reshape to 2D
-                    context_np = np.array(context).reshape(-1, context.shape[-1])
-                    
-                    # Create T-SNE visualization of context latents only
-                    # Use program_ids for coloring (same as main T-SNE)
-                    # Use task indices for ID labels
-                    task_ids = np.arange(len(program_ids))
-                    
-                    # Downsample if too many points for T-SNE
-                    max_context_points = 500
-                    if len(context_np) > max_context_points:
-                        # Simple random sampling while preserving program distribution
-                        indices = np.random.RandomState(42).choice(
-                            len(context_np), size=max_context_points, replace=False
+            # FIXED: Use original program_ids and actual latents_samples from generated_info
+            if 'latents_samples' in generated_info:
+                fig_latents_samples = visualize_latents_samples(
+                    dataset_grids, 
+                    dataset_shapes, 
+                    program_ids,  # Use original program_ids (not repeated)
+                    generated_info['latents_samples'],  # Use actual latents samples
+                    num_tasks=min(num_tasks_to_show, 5),
+                    num_samples_per_task=3
+                )
+            else:
+                fig_latents_samples = None
+                
+            # NEW: Create T-SNE plot of context latents only
+            fig_context_latents = None
+            if 'context' in generated_info:
+                try:
+                    context = generated_info['context']
+                    if context is not None:
+                        # Extract context latents and reshape to 2D
+                        context_np = np.array(context).reshape(-1, context.shape[-1])
+                        
+                        # Create T-SNE visualization of context latents only
+                        # Use program_ids for coloring (same as main T-SNE)
+                        # Use task indices for ID labels
+                        task_ids = np.arange(len(program_ids))
+                        
+                        # Downsample if too many points for T-SNE
+                        max_context_points = 500
+                        if len(context_np) > max_context_points:
+                            # Simple random sampling while preserving program distribution
+                            indices = np.random.RandomState(42).choice(
+                                len(context_np), size=max_context_points, replace=False
+                            )
+                            context_np = context_np[indices]
+                            task_ids = task_ids[indices]
+                            program_ids_sampled = program_ids[indices]
+                        else:
+                            program_ids_sampled = program_ids
+                        
+                        # Create T-SNE plot using the existing visualize_tsne function
+                        fig_context_latents = visualize_tsne(
+                            context_np, 
+                            program_ids_sampled,
+                            max_points=max_context_points,
+                            random_state=42,
+                            task_ids=task_ids
                         )
-                        context_np = context_np[indices]
-                        task_ids = task_ids[indices]
-                        program_ids_sampled = program_ids[indices]
+                        
+                        logging.info(f"Generated context-only T-SNE: {len(context_np)} points")
                     else:
-                        program_ids_sampled = program_ids
-                    
-                    # Create T-SNE plot using the existing visualize_tsne function
-                    fig_context_latents = visualize_tsne(
-                        context_np, 
-                        program_ids_sampled,
-                        max_points=max_context_points,
-                        random_state=42,
-                        task_ids=task_ids
-                    )
-                    
-                    logging.info(f"Generated context-only T-SNE: {len(context_np)} points")
-                else:
-                    logging.warning("Context is None, skipping context-only T-SNE")
-            except Exception as e:
-                logging.warning(f"Failed to generate context-only T-SNE: {e}")
-                fig_context_latents = None
-    else:
-        fig_latents = None
-        fig_latents_samples = None
-        fig_context_latents = None
+                        logging.warning("Context is None, skipping context-only T-SNE")
+                except Exception as e:
+                    logging.warning(f"Failed to generate context-only T-SNE: {e}")
+                    fig_context_latents = None
+        else:
+            fig_latents = None
+            fig_latents_samples = None
+            fig_context_latents = None
 
         # Simplified: Just log basic optimization metrics for plotting
         optimization_metrics = {}

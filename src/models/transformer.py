@@ -74,7 +74,6 @@ class EncoderTransformer(nn.Module):
         
         print(f"[embed_grids] Input pairs shape: {pairs.shape}")
         print(f"[embed_grids] Input grid_shapes shape: {grid_shapes.shape}")
-        print(f"[embed_grids] Input grid_shapes content: {grid_shapes}")
         print(f"[embed_grids] config.max_rows: {config.max_rows}, config.max_cols: {config.max_cols}")
         print(f"[embed_grids] config.max_len: {config.max_len}")
         
@@ -123,8 +122,6 @@ class EncoderTransformer(nn.Module):
         else:
             pos_row_input = jnp.arange(config.max_rows, dtype=jnp.uint8)
             pos_col_input = jnp.arange(config.max_cols, dtype=jnp.uint8)
-            print(f"[embed_grids] pos_row_input: {pos_row_input}")
-            print(f"[embed_grids] pos_col_input: {pos_col_input}")
             
             pos_row_embed = nn.Embed(
                 num_embeddings=config.max_rows,
@@ -140,36 +137,27 @@ class EncoderTransformer(nn.Module):
             )(pos_col_input)
             pos_embed = pos_row_embed[:, None, None, :] + pos_col_embed[None, :, None, :]
 
-        print(f"[embed_grids] pos_embed shape: {pos_embed.shape}")
-
         # Colors embedding block.
-        print(f"[embed_grids] pairs input to colors_embed: {pairs}")
         colors_embed = nn.Embed(
             num_embeddings=config.vocab_size,
             features=config.emb_dim,
             dtype=config.dtype,
             name="colors_embed",
         )(pairs)
-        print(f"[embed_grids] colors_embed shape: {colors_embed.shape}")
-
         # Channels embedding block.
         channels_input = jnp.arange(2, dtype=jnp.uint8)
-        print(f"[embed_grids] channels_input: {channels_input}")
         channels_embed = nn.Embed(
             num_embeddings=2,
             features=config.emb_dim,
             dtype=config.dtype,
             name="channels_embed",
         )(channels_input)
-        print(f"[embed_grids] channels_embed shape: {channels_embed.shape}")
 
         # Combine all the embeddings into a sequence x of shape (*B, 1+2*(R*C), H)
         x = colors_embed + pos_embed + channels_embed
-        print(f"[embed_grids] x after combining embeddings: {x.shape}")
         
         # Flatten the rows, columns and channels.
         x = jnp.reshape(x, (*x.shape[:-4], -1, x.shape[-1]))  # (*B, 2*R*C, H)
-        print(f"[embed_grids] x after flattening: {x.shape}")
 
         # Embed the grid shape tokens.
         # TODO: potentially switch grid_shapes embeddings to linear embedding for better interpolation
@@ -179,10 +167,7 @@ class EncoderTransformer(nn.Module):
             dtype=config.dtype,
             name="grid_shapes_row_embed",
         )(grid_shapes[..., 0, :] - 1)
-        print(f"[embed_grids] grid_shapes[..., 0, :] - 1: {grid_shapes[..., 0, :] - 1}")
-        print(f"[embed_grids] grid_shapes_row_embed after embedding: {grid_shapes_row_embed.shape}")
         grid_shapes_row_embed += channels_embed
-        print(f"[embed_grids] grid_shapes_row_embed after adding channels: {grid_shapes_row_embed.shape}")
         
         grid_shapes_col_embed = nn.Embed(
             num_embeddings=config.max_cols,
@@ -190,12 +175,8 @@ class EncoderTransformer(nn.Module):
             dtype=config.dtype,
             name="grid_shapes_col_embed",
         )(grid_shapes[..., 1, :] - 1)
-        print(f"[embed_grids] grid_shapes[..., 1, :] - 1: {grid_shapes[..., 1, :] - 1}")
-        print(f"[embed_grids] grid_shapes_col_embed after embedding: {grid_shapes_col_embed.shape}")
         grid_shapes_col_embed += channels_embed
-        print(f"[embed_grids] grid_shapes_col_embed after adding channels: {grid_shapes_col_embed.shape}")
         grid_shapes_embed = jnp.concatenate([grid_shapes_row_embed, grid_shapes_col_embed], axis=-2)
-        print(f"[embed_grids] grid_shapes_embed after concatenation: {grid_shapes_embed.shape}")
         
         # Fix dimension mismatch: ensure grid_shapes_embed has compatible dimensions with x
         # This handles cases like tetro_pattern where x has extra dimensions
@@ -235,7 +216,6 @@ class EncoderTransformer(nn.Module):
                     raise ValueError(f"Cannot handle tensor dimension mismatch: grid_shapes_embed {grid_shapes_embed.shape} vs x {x.shape}")
         
         x = jnp.concatenate([grid_shapes_embed, x], axis=-2)  # (*B, 4+2*R*C, H)
-        print(f"[embed_grids] x after adding grid_shapes_embed: {x.shape}")
 
         # Add the cls token.
         cls_token = nn.Embed(
@@ -245,7 +225,6 @@ class EncoderTransformer(nn.Module):
             name="cls_token",
         )(jnp.zeros_like(x[..., 0:1, 0], jnp.uint8))
         x = jnp.concatenate([cls_token, x], axis=-2)  # (*B, 1+4+2*R*C, H)
-        print(f"[embed_grids] x after adding cls_token: {x.shape}")
         
         # CRITICAL FIX: Check sequence length and provide better error messages
         actual_seq_len = x.shape[-2]
@@ -269,8 +248,8 @@ class EncoderTransformer(nn.Module):
         
         # Use a more flexible assertion that allows for dimension mismatches
         if actual_seq_len != expected_seq_len:
-            print(f"[embed_grids] Sequence length mismatch - this may cause attention mask issues")
-            print(f"[embed_grids] Proceeding with actual sequence length: {actual_seq_len}")
+            print(f"[embed_grids] WARNING: Sequence length mismatch - this may cause attention mask issues")
+            print(f"[embed_grids] Expected: {expected_seq_len}, Actual: {actual_seq_len}")
         else:
             print(f"[embed_grids] Sequence length check passed: {actual_seq_len}")
         
@@ -287,88 +266,57 @@ class EncoderTransformer(nn.Module):
         Returns:
             pad mask of shape (*B, 1, T, T) with T = 1 + 4 + 2 * max_rows * max_cols.
         """
-        print(f"[make_pad_mask] Input grid_shapes: {grid_shapes.shape}")
-        print(f"[make_pad_mask] grid_shapes content: {grid_shapes}")
-        print(f"[make_pad_mask] config.max_rows: {self.config.max_rows}, config.max_cols: {self.config.max_cols}")
-        
         # Handle case where grid_shapes has extra dimensions from fallback
         # Expected: (*B, 2, 2), but fallback creates (*B, 1, 2, 2)
         if len(grid_shapes.shape) > 3 and grid_shapes.shape[-3] == 1:
             print(f"[make_pad_mask] Detecting extra dimension in grid_shapes: {grid_shapes.shape}")
-            print(f"[make_pad_mask] Squeezing extra dimension to get expected shape")
             # Squeeze the extra dimension: (*B, 1, 2, 2) -> (*B, 2, 2)
             grid_shapes = grid_shapes.squeeze(-3)
-            print(f"[make_pad_mask] After squeezing: {grid_shapes.shape}")
         
         batch_ndims = len(grid_shapes.shape[:-2])
-        print(f"[make_pad_mask] batch_ndims: {batch_ndims}")
         
         row_arange_broadcast = jnp.arange(self.config.max_rows).reshape(
             (*batch_ndims * (1,), self.config.max_rows, 1)
         )
-        print(f"[make_pad_mask] row_arange_broadcast shape: {row_arange_broadcast.shape}")
-        
         row_mask = row_arange_broadcast < grid_shapes[..., 0:1, :]
-        print(f"[make_pad_mask] row_mask shape: {row_mask.shape}")
         
         col_arange_broadcast = jnp.arange(self.config.max_cols).reshape(
             (*batch_ndims * (1,), self.config.max_cols, 1)
         )
-        print(f"[make_pad_mask] col_arange_broadcast shape: {col_arange_broadcast.shape}")
-        
         col_mask = col_arange_broadcast < grid_shapes[..., 1:2, :]
-        print(f"[make_pad_mask] col_mask shape: {col_mask.shape}")
         
         pad_mask = row_mask[..., :, None, :] & col_mask[..., None, :, :]
-        print(f"[make_pad_mask] pad_mask before reshape: {pad_mask.shape}")
         
         # Flatten the rows, columns and channels.
         pad_mask = jnp.reshape(pad_mask, (*pad_mask.shape[:-3], 1, -1))
-        print(f"[make_pad_mask] pad_mask after reshape: {pad_mask.shape}")
         
         # Add the masks corresponding to the cls token and grid shapes tokens.
         pad_mask = jnp.concatenate([jnp.ones((*pad_mask.shape[:-1], 1 + 4), bool), pad_mask], axis=-1)
-        print(f"[make_pad_mask] pad_mask after concatenation: {pad_mask.shape}")
         
         # CRITICAL FIX: Ensure the mask has the correct sequence length
-        # The expected sequence length should be 1 + 4 + 2 * max_rows * max_cols
         expected_seq_len = 1 + 4 + 2 * self.config.max_rows * self.config.max_cols
         actual_seq_len = pad_mask.shape[-1]
         
-        print(f"[make_pad_mask] Sequence length check:")
-        print(f"[make_pad_mask] Expected: {expected_seq_len} (1 + 4 + 2 * {self.config.max_rows} * {self.config.max_cols})")
-        print(f"[make_pad_mask] Actual: {actual_seq_len}")
-        
         if actual_seq_len != expected_seq_len:
-            print(f"[make_pad_mask] WARNING: Sequence length mismatch!")
-            print(f"[make_pad_mask] This suggests grid_shapes has unexpected dimensions")
+            print(f"[make_pad_mask] WARNING: Sequence length mismatch! Expected: {expected_seq_len}, Actual: {actual_seq_len}")
             
             # Try to fix by using the actual grid dimensions from grid_shapes
             if grid_shapes.size > 0:
-                # Get the actual max dimensions from grid_shapes
                 actual_max_rows = int(jnp.max(grid_shapes[..., 0, :]))
                 actual_max_cols = int(jnp.max(grid_shapes[..., 1, :]))
-                print(f"[make_pad_mask] Using actual dimensions: rows={actual_max_rows}, cols={actual_max_cols}")
-                
-                # Recalculate expected sequence length
                 expected_seq_len = 1 + 4 + 2 * actual_max_rows * actual_max_cols
-                print(f"[make_pad_mask] Recalculated expected sequence length: {expected_seq_len}")
                 
                 # If still mismatched, create a mask with the correct size
                 if actual_seq_len != expected_seq_len:
                     print(f"[make_pad_mask] Creating corrected mask with size {expected_seq_len}")
-                    # Create a new mask with the correct size
                     batch_shape = pad_mask.shape[:-1]
                     new_mask = jnp.ones((*batch_shape, expected_seq_len), dtype=bool)
-                    # Copy the valid part of the old mask
                     copy_len = min(actual_seq_len, expected_seq_len)
                     new_mask = new_mask.at[..., :copy_len].set(pad_mask[..., :copy_len])
                     pad_mask = new_mask
-                    print(f"[make_pad_mask] Corrected mask shape: {pad_mask.shape}")
         
         # Outer product to make the self-attention mask.
         pad_mask = pad_mask[..., :, None] & pad_mask[..., None, :]
-        print(f"[make_pad_mask] Final pad_mask shape: {pad_mask.shape}")
         return pad_mask
 
 
