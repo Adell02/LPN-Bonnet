@@ -65,6 +65,33 @@ USAGE EXAMPLES:
      --es_ga_step_length 0.5 \
      --es_trust_region_radius 2.0 \
      --only_n_tasks 20
+
+8. OPTIMIZATION MECHANISM TUNING (customize decay, elite size, and other parameters):
+   python3 src/evaluate_all_checkpoints.py \
+     --run_name "winter-fire-132" \
+     --plot_methods gradient_ascent evolutionary_search \
+     --json_challenges json/arc-agi_evaluation_challenges.json \
+     --json_solutions json/arc-agi_evaluation_solutions.json \
+     --ga_decay 0.95 \
+     --ga_elite_size 3 \
+     --ga_momentum 0.1 \
+     --es_decay 0.9 \
+     --es_elite_size 5 \
+     --es_crossover_rate 0.7 \
+     --es_tournament_size 4 \
+     --only_n_tasks 10
+
+9. ADVANCED OPTIMIZATION FEATURES (enable specialized mechanisms):
+   python3 src/evaluate_all_checkpoints.py \
+     --run_name "winter-fire-132" \
+     --plot_methods gradient_ascent \
+     --json_challenges json/arc-agi_evaluation_challenges.json \
+     --json_solutions json/arc-agi_evaluation_solutions.json \
+     --ga_accumulate_gradients_decoder_pairs \
+     --ga_scan_gradients_latents \
+     --ga_include_mean_latent \
+     --ga_random_perturbation 0.01 \
+     --only_n_tasks 15
 """
 
 import os

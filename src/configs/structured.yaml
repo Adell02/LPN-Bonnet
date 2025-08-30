@@ -5,8 +5,8 @@ wandb:
 encoder_transformer:
   _target_: models.utils.EncoderTransformerConfig
   vocab_size: 10
-  max_rows: 30
-  max_cols: 30
+  max_rows: 5
+  max_cols: 5
   transformer_layer:
     _target_: models.utils.TransformerLayerConfig
     dropout_rate: 0.05
@@ -15,8 +15,8 @@ encoder_transformer:
 decoder_transformer:
   _target_: models.utils.DecoderTransformerConfig
   vocab_size: 10
-  max_rows: 30
-  max_cols: 30
+  max_rows: 5
+  max_cols: 5
   transformer_layer:
     _target_: models.utils.TransformerLayerConfig
     dropout_rate: 0.05
@@ -61,11 +61,11 @@ training:
   pairwise_kl_coeff: null
   total_num_steps: 5000
   encoder_expose_steps: 2000  # number of initial gradient steps encoders are trainable
-  repulsion_kl: 0e-6 
+  repulsion_kl: 1e-6 
   # This coefficient controls the strength of contrastive loss
   # Lower values = more stable, higher values = more aggressive specialization
   # Current value: 1e-5 (very conservative for stability)
-  contrastive_kl: 5e-3  # specialization effects
+  contrastive_kl: 1e-2  # specialization effects
   log_every_n_steps: 5
   eval_every_n_logs: 20       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable

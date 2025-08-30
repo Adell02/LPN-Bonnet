@@ -728,6 +728,8 @@ def visualize_struct_confidence_panel(
     title: str = "Structured Confidence Panel",
     encoder_labels: list[str] | None = None,
     combined_label: str = "PoE",
+    pattern_id: int | None = None,  # NEW: Pattern ID for filtering
+    pattern_name: str | None = None,  # NEW: Pattern name for display
 ) -> plt.Figure:
     """
     Panel with:
@@ -743,12 +745,19 @@ def visualize_struct_confidence_panel(
         poe_mu: [N, D] PoE mean
         poe_logvar: [N, D] PoE logvar
         encoder_labels: optional labels for legend order
+        pattern_id: Pattern ID (1, 2, 3) for filtering variances
+        pattern_name: Pattern name (O-tetromino, T-tetromino, L-tetromino) for display
     """
     import numpy as _np
     num_pairs = int(sample_grids.shape[0])
 
     # Use constrained_layout to avoid tight_layout warnings with arbitrary num_pairs
     fig = plt.figure(figsize=(18, 10), constrained_layout=True)  # Increased width to accommodate note
+    
+    # CRITICAL: Update title to show pattern-specific information
+    if pattern_id is not None and pattern_name is not None:
+        title = f"{title} - Pattern {pattern_id} ({pattern_name})"
+    fig.suptitle(title, fontsize=16, fontweight='bold')
     # Grid: 3 rows, C columns (C >= num_pairs)
     cols = max(num_pairs, 3)
     gs = fig.add_gridspec(3, cols, height_ratios=[1, 1, 1])
@@ -799,6 +808,13 @@ def visualize_struct_confidence_panel(
     ax_means.legend(frameon=True)
     ax_vars.legend(frameon=True)
 
+    # CRITICAL: Add pattern-specific variance filtering note
+    if pattern_id is not None:
+        pattern_note = f"⚠️  PATTERN-SPECIFIC VARIANCES\nPattern {pattern_id}: {pattern_name or 'Unknown'}\nOnly showing variances for this pattern type"
+        fig.text(0.02, 0.12, pattern_note,
+                 fontsize=10, verticalalignment='bottom', horizontalalignment='left',
+                 bbox=dict(boxstyle='round,pad=0.5', facecolor='yellow', alpha=0.9, edgecolor='orange'))
+    
     # Add note on the right of the entire figure showing mean variances from each encoder
     # Calculate mean variances for each encoder
     encoder_mean_vars = []

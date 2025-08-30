@@ -640,7 +640,7 @@ class Trainer:
         batch_size: int,
         key: chex.PRNGKey,
         num_tasks_to_show: int = 5,
-    ) -> tuple[dict[str, float], Optional[plt.Figure], plt.Figure, Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure]]:
+    ) -> tuple[dict[str, float], Optional[plt.Figure], plt.Figure, Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure]]:
         """
         Generate the output grids for each task in the dataset by leaving one (input, output) pair out.
         Does this by masking each of the N (input, output) pairs for each task.
@@ -662,6 +662,9 @@ class Trainer:
             - A figure containing the visualization of the generated grids.
             - A figure containing the visualization of the pixel accuracy heatmap.
             - A figure containing the visualization of the latents (T-SNE).
+            - A figure containing the visualization of the latents samples.
+            - A figure containing the visualization of the search progress.
+            - A figure containing the visualization of the context latents (T-SNE).
         """
         leave_one_out_grids = jax.jit(partial(make_leave_one_out, axis=-4), backend="cpu")(dataset_grids)
         leave_one_out_shapes = jax.jit(partial(make_leave_one_out, axis=-3), backend="cpu")(dataset_shapes)
@@ -759,21 +762,65 @@ class Trainer:
             except Exception as e:
                 logging.warning(f"Community metrics computation failed: {e}")
             
-            # FIXED: Use original program_ids and actual latents_samples from generated_info
-            if 'latents_samples' in generated_info:
-                fig_latents_samples = visualize_latents_samples(
-                    dataset_grids, 
-                    dataset_shapes, 
-                    program_ids,  # Use original program_ids (not repeated)
-                    generated_info['latents_samples'],  # Use actual latents samples
-                    num_tasks=min(num_tasks_to_show, 5),
-                    num_samples_per_task=3
-                )
-            else:
-                fig_latents_samples = None
+                    # FIXED: Use original program_ids and actual latents_samples from generated_info
+        if 'latents_samples' in generated_info:
+            fig_latents_samples = visualize_latents_samples(
+                dataset_grids, 
+                dataset_shapes, 
+                program_ids,  # Use original program_ids (not repeated)
+                generated_info['latents_samples'],  # Use actual latents samples
+                num_tasks=min(num_tasks_to_show, 5),
+                num_samples_per_task=3
+            )
         else:
-            fig_latents = None
             fig_latents_samples = None
+            
+        # NEW: Create T-SNE plot of context latents only
+        fig_context_latents = None
+        if program_ids is not None and 'context' in generated_info:
+            try:
+                context = generated_info['context']
+                if context is not None:
+                    # Extract context latents and reshape to 2D
+                    context_np = np.array(context).reshape(-1, context.shape[-1])
+                    
+                    # Create T-SNE visualization of context latents only
+                    # Use program_ids for coloring (same as main T-SNE)
+                    # Use task indices for ID labels
+                    task_ids = np.arange(len(program_ids))
+                    
+                    # Downsample if too many points for T-SNE
+                    max_context_points = 500
+                    if len(context_np) > max_context_points:
+                        # Simple random sampling while preserving program distribution
+                        indices = np.random.RandomState(42).choice(
+                            len(context_np), size=max_context_points, replace=False
+                        )
+                        context_np = context_np[indices]
+                        task_ids = task_ids[indices]
+                        program_ids_sampled = program_ids[indices]
+                    else:
+                        program_ids_sampled = program_ids
+                    
+                    # Create T-SNE plot using the existing visualize_tsne function
+                    fig_context_latents = visualize_tsne(
+                        context_np, 
+                        program_ids_sampled,
+                        max_points=max_context_points,
+                        random_state=42,
+                        task_ids=task_ids
+                    )
+                    
+                    logging.info(f"Generated context-only T-SNE: {len(context_np)} points")
+                else:
+                    logging.warning("Context is None, skipping context-only T-SNE")
+            except Exception as e:
+                logging.warning(f"Failed to generate context-only T-SNE: {e}")
+                fig_context_latents = None
+    else:
+        fig_latents = None
+        fig_latents_samples = None
+        fig_context_latents = None
 
         # Simplified: Just log basic optimization metrics for plotting
         optimization_metrics = {}
@@ -856,7 +903,7 @@ class Trainer:
                 'accs': best_progression,
             }
         
-        return metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress
+        return metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_context_latents
 
     def _find_convergence_step(self, accuracies):
         """Find the step where accuracy improvement becomes < 1%"""
@@ -1034,18 +1081,19 @@ class Trainer:
                 # Dataset test with enhanced search progress tracking
                 for dataset_dict in self.test_datasets:
                     start = time.time()
-                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress = self.test_dataset_submission(
+                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_context_latents = self.test_dataset_submission(
                         state, key=test_key, **dataset_dict
                     )
                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                     
-                    # Upload all figures including search progress
+                    # Upload all figures including search progress and context latents
                     for fig, name in [
                         (fig_grids, "generation"),
                         (fig_heatmap, "pixel_accuracy"),
                         (fig_latents, "latents"),
                         (fig_latents_samples, "latents_samples"),
                         (fig_search_progress, "search_progress"),  # NEW
+                        (fig_context_latents, "context_latents"),  # NEW: Context-only T-SNE
                     ]:
                         if fig is not None:
                             test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)

@@ -2089,6 +2089,8 @@ class StructuredTrainer:
                 enc_labels = [f"Encoder {i}" for i in range(len(enc_mus))]
                 
                 # CRITICAL: Pass all pairs to show pattern-specific variance structure
+                # Also pass pattern information for proper variance filtering
+                pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
                 fig_panel = visualize_struct_confidence_panel(
                     sample_grids=pairs_np[idx],
                     sample_shapes=shapes_np[idx],
@@ -2099,6 +2101,8 @@ class StructuredTrainer:
                     title=panel_title,
                     encoder_labels=enc_labels,
                     combined_label="PoE",
+                    pattern_id=pid,  # NEW: Pass pattern ID for filtering
+                    pattern_name=pattern_names.get(pid, f"Pattern {pid}"),  # NEW: Pass pattern name
                 )
                 wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)})
                 plt.close(fig_panel)
