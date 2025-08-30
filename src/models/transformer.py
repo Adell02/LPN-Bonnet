@@ -141,15 +141,24 @@ class EncoderTransformer(nn.Module):
         )(grid_shapes[..., 1, :] - 1)
         grid_shapes_col_embed += channels_embed
         grid_shapes_embed = jnp.concatenate([grid_shapes_row_embed, grid_shapes_col_embed], axis=-2)
-        
         # Fix dimension mismatch: ensure grid_shapes_embed has the same batch dimensions as x
         # x shape is (*B, 2*R*C, H) after flattening
         # grid_shapes_embed shape is (*B, 4, H) 
         # We need to ensure they have compatible shapes for concatenation
         if grid_shapes_embed.shape[:-2] != x.shape[:-2]:
+            # Debug logging for dimension mismatch
+            print(f"[embed_grids] Dimension mismatch detected:")
+            print(f"  grid_shapes_embed shape: {grid_shapes_embed.shape}")
+            print(f"  x shape: {x.shape}")
+            print(f"  grid_shapes_embed batch dims: {grid_shapes_embed.shape[:-2]}")
+            print(f"  x batch dims: {x.shape[:-2]}")
+            
             # Broadcast grid_shapes_embed to match x's batch dimensions
             # This handles cases where grid_shapes has different batch structure
-            grid_shapes_embed = jnp.broadcast_to(grid_shapes_embed, (*x.shape[:-2], *grid_shapes_embed.shape[-2:]))
+            target_shape = (*x.shape[:-2], *grid_shapes_embed.shape[-2:])
+            print(f"  Broadcasting grid_shapes_embed to: {target_shape}")
+            grid_shapes_embed = jnp.broadcast_to(grid_shapes_embed, target_shape)
+            print(f"  After broadcasting: {grid_shapes_embed.shape}")
         
         x = jnp.concatenate([grid_shapes_embed, x], axis=-2)  # (*B, 4+2*R*C, H)
 

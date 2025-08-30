@@ -490,10 +490,20 @@ class StructuredTrainer:
             })
 
     def init_state(self, key: chex.PRNGKey, enc_params_list: list[dict], avg_decoder_params: dict) -> TrainState:
+        # Use appropriate initialization data based on whether we have fixed dataset or task generator
+        if hasattr(self, 'task_generator') and self.task_generator:
+            # Use init_grids/shapes for task generator (these are properly initialized)
+            init_grids = self.init_grids
+            init_shapes = self.init_shapes
+        else:
+            # Use train_grids/shapes for fixed dataset
+            init_grids = self.train_grids[:1]
+            init_shapes = self.train_shapes[:1]
+        
         variables = self.model.init(
             key,
-            self.train_grids[:1],
-            self.train_shapes[:1],
+            init_grids,
+            init_shapes,
             dropout_eval=False,
             mode=self.cfg.training.inference_mode,
             poe_alphas=jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32),
@@ -525,6 +535,10 @@ class StructuredTrainer:
 
     def prepare_train_dataset_for_epoch(self, key: chex.PRNGKey, log_every_n_steps: int) -> tuple[chex.Array, chex.Array]:
         """Shuffle the dataset and reshape it to (num_logs, log_every_n_steps, batch_size, *)."""
+        # This method is only used for fixed datasets, not task generators
+        if not hasattr(self, 'train_grids') or self.train_grids is None:
+            raise ValueError("prepare_train_dataset_for_epoch called but no fixed dataset available. Use task generator instead.")
+        
         shuffle_key, augmentation_key = jax.random.split(key)
         grids, shapes = shuffle_dataset_into_batches(
             self.train_grids, self.train_shapes, self.batch_size, shuffle_key
@@ -776,7 +790,15 @@ class StructuredTrainer:
                 test_batch = test_grids, test_shapes
             else:
                 # Fallback to fixed dataset
-                test_batch = self.train_grids[:self.batch_size], self.train_shapes[:self.batch_size]
+                if hasattr(self, 'train_grids') and self.train_grids is not None:
+                    test_batch = self.train_grids[:self.batch_size], self.train_shapes[:self.batch_size]
+                else:
+                    # No fixed dataset available, create a minimal test batch
+                    logging.warning("No fixed dataset available for test forward pass, creating minimal test batch")
+                    num_pairs = self.task_generator_kwargs["num_pairs"]
+                    test_grids = jnp.zeros((self.batch_size, num_pairs, 5, 5, 2), jnp.uint8)
+                    test_shapes = jnp.ones((self.batch_size, num_pairs, 2, 2), jnp.uint8)
+                    test_batch = test_grids, test_shapes
             
             # Generate pattern_ids for test forward pass: use ACTUAL pattern information
             test_batch_size = test_batch[0].shape[0]
