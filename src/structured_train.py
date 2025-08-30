@@ -702,13 +702,17 @@ class StructuredTrainer:
         
         for pattern_id in [1, 2, 3]:  # O-tetromino, T-tetromino, L-tetromino
             # Generate samples_per_pattern samples for this pattern
-            # Use task generator directly instead of make_dataset to avoid shape issues
+            # Use make_task_gen_dataloader directly since make_dataset doesn't support STRUCT_PATTERN
             from datasets.task_gen.dataloader import make_task_gen_dataloader
-            from datasets.task_gen.struct_pattern import StructPatternTaskGenerator
             
-            # Create task generator for this specific pattern
-            task_gen = StructPatternTaskGenerator(
+            # Create dataloader for this specific pattern
+            dataloader = make_task_gen_dataloader(
+                batch_size=1,
+                log_every_n_steps=1,
+                num_workers=0,  # No workers for single batch generation
+                task_generator_class="STRUCT_PATTERN",
                 num_pairs=self.task_generator_kwargs["num_pairs"],
+                online_data_augmentation=self.cfg.training.online_data_augmentation,
                 seed=self.cfg.training.seed + pattern_id + (self._batch_counter if hasattr(self, '_batch_counter') else 0),
                 pattern=pattern_id,  # Specific pattern
                 pattern_per_task=True,
@@ -716,19 +720,22 @@ class StructuredTrainer:
                 num_cols=self.task_generator_kwargs.get("num_cols", 5),
             )
             
-            # Generate samples directly
+            # Generate samples using the dataloader
             grids_list_pattern = []
             shapes_list_pattern = []
-            for _ in range(samples_per_pattern):
-                grids, shapes = task_gen.generate_task()
-                grids_list_pattern.append(grids)
-                shapes_list_pattern.append(shapes)
+            for i, ((grids, shapes), _) in enumerate(zip(dataloader, range(samples_per_pattern))):
+                # The dataloader returns (log_every_n_steps, batch_size, ...) format
+                # Since we set batch_size=1 and log_every_n_steps=1, extract the actual data
+                # grids shape: (1, 1, num_pairs, max_rows, max_cols, 2) -> (num_pairs, max_rows, max_cols, 2)
+                # shapes shape: (1, 1, num_pairs, 2, 2) -> (num_pairs, 2, 2)
+                grids_list_pattern.append(grids[0, 0])  # Extract from batch format
+                shapes_list_pattern.append(shapes[0, 0])  # Extract from batch format
             
             # Stack the samples for this pattern
             g = jnp.stack(grids_list_pattern, axis=0)
             s = jnp.stack(shapes_list_pattern, axis=0)
             
-            # DEBUG: Log the actual shapes returned by direct task generation
+            # DEBUG: Log the actual shapes returned by direct dataloader
             logging.debug(f"Pattern {pattern_id} - grids shape: {g.shape}, shapes shape: {s.shape}")
             
             grids_list.append(g)
