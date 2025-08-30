@@ -796,12 +796,7 @@ def visualize_struct_confidence_panel(
     ax_means.legend(frameon=True)
     ax_vars.legend(frameon=True)
 
-    # Add pattern-specific note
-    if pattern_id is not None:
-        pattern_note = f"📊 PATTERN-SPECIFIC ENCODER STATISTICS\nPattern {pattern_id}: {pattern_name or 'Unknown'}\nIndividual encoder variances for this pattern type"
-        fig.text(0.02, 0.12, pattern_note,
-                 fontsize=10, verticalalignment='bottom', horizontalalignment='left',
-                 bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.9, edgecolor='blue'))
+
     
     # Add note on the right of the entire figure showing mean variances from each encoder
     # Calculate mean variances for each encoder
