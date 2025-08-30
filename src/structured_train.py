@@ -2051,42 +2051,64 @@ class StructuredTrainer:
                         True, 
                         mutable=False
                     )
-                    # Use QUERY PAIR ONLY (pair index 0) -> shape [1, D]
+                    # CRITICAL FIX: Use ALL pairs to show pattern-specific variance structure
                     mu_i_np = np.array(mu_i)
                     logvar_i_np = np.array(logvar_i)
-                    enc_mus.append(mu_i_np[:, 0, :])
-                    enc_logvars.append(logvar_i_np[:, 0, :])
+                    # Shape: [1, num_pairs, latent_dim] -> [num_pairs, latent_dim]
+                    mu_i_np = np.array(mu_i).squeeze(0)  # Remove batch dimension
+                    logvar_i_np = np.array(logvar_i).squeeze(0)  # Remove batch dimension
+                    
+                    # Store all pairs for this encoder
+                    enc_mus.append(mu_i_np)  # [num_pairs, latent_dim]
+                    enc_logvars.append(logvar_i_np)  # [num_pairs, latent_dim]
+                    
+                    # DEBUG: Log variance statistics for this encoder and pattern
+                    var_i = np.exp(logvar_i_np)  # [num_pairs, latent_dim]
+                    mean_var = np.mean(var_i)
+                    std_var = np.std(var_i)
+                    logging.info(f"Pattern {pid} - Encoder {enc_idx}: mean_var={mean_var:.6f}, std_var={std_var:.6f}")
 
-                # Compute PoE (precision-weighted) from encoder posteriors for the combined curve
+                # CRITICAL: Compute PoE across all pairs to show aggregated confidence
+                # Average across pairs for each encoder, then compute PoE
+                avg_enc_mus = [np.mean(em, axis=0) for em in enc_mus]  # [latent_dim] per encoder
+                avg_enc_logvars = [np.mean(lv, axis=0) for lv in enc_logvars]  # [latent_dim] per encoder
+                
                 alphas_np = np.asarray(alphas)
-                precisions = [np.exp(-lv) for lv in enc_logvars]  # [1, D]
+                precisions = [np.exp(-lv) for lv in avg_enc_logvars]  # [latent_dim] per encoder
                 poe_precision = np.zeros_like(precisions[0])
                 for a, p in zip(alphas_np, precisions):
                     poe_precision = poe_precision + a * p
                 poe_var = 1.0 / (poe_precision + 1e-8)
-                num = np.zeros_like(enc_mus[0])
-                for a, p, m in zip(alphas_np, precisions, enc_mus):
+                num = np.zeros_like(avg_enc_mus[0])
+                for a, p, m in zip(alphas_np, precisions, avg_enc_mus):
                     num = num + a * p * m
                 poe_mu = num / (poe_precision + 1e-8)
                 poe_logvar = np.log(poe_var + 1e-8)
 
-                panel_title = f"Pattern {pid} - Confidence"
+                panel_title = f"Pattern {pid} - Confidence (All Pairs)"
                 enc_labels = [f"Encoder {i}" for i in range(len(enc_mus))]
+                
+                # CRITICAL: Pass all pairs to show pattern-specific variance structure
                 fig_panel = visualize_struct_confidence_panel(
                     sample_grids=pairs_np[idx],
                     sample_shapes=shapes_np[idx],
-                    encoder_mus=[em.squeeze(0) for em in enc_mus],
-                    encoder_logvars=[ev.squeeze(0) for ev in enc_logvars],
-                    poe_mu=poe_mu.squeeze(0),
-                    poe_logvar=poe_logvar.squeeze(0),
+                    encoder_mus=enc_mus,  # [num_pairs, latent_dim] per encoder
+                    encoder_logvars=enc_logvars,  # [num_pairs, latent_dim] per encoder
+                    poe_mu=poe_mu,  # [latent_dim]
+                    poe_logvar=poe_logvar,  # [latent_dim]
                     title=panel_title,
                     encoder_labels=enc_labels,
                     combined_label="PoE",
                 )
                 wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)})
                 plt.close(fig_panel)
+                
+                logging.info(f"Generated confidence panel for pattern {pid} with {len(enc_mus[0])} pairs")
         except Exception as e:
             logging.warning(f"Confidence panel generation failed: {e}")
+            logging.error(f"Error details: {type(e).__name__}: {str(e)}")
+            import traceback
+            logging.error(f"Traceback: {traceback.format_exc()}")
 
         # Free figures to save memory
         plt.close(fig_heatmap)
