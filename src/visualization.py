@@ -727,6 +727,7 @@ def visualize_struct_confidence_panel(
     poe_logvar: chex.Array | None = None,
     title: str = "Structured Confidence Panel",
     encoder_labels: list[str] | None = None,
+    encoder_indices: list[int] | None = None,
     pattern_id: int | None = None,  # Pattern ID for filtering
     pattern_name: str | None = None,  # Pattern name for display
 ) -> plt.Figure:
@@ -744,6 +745,7 @@ def visualize_struct_confidence_panel(
         poe_mu: [N, D] PoE mean (optional)
         poe_logvar: [N, D] PoE logvar (optional)
         encoder_labels: optional labels for legend order
+        encoder_indices: optional list mapping each encoder to a global index for color coding
         pattern_id: Pattern ID (1, 2, 3) for filtering variances
         pattern_name: Pattern name (O-tetromino, T-tetromino, L-tetromino) for display
     """
@@ -777,11 +779,14 @@ def visualize_struct_confidence_panel(
     # Bottom-right: histogram of variances
     ax_vars = fig.add_subplot(gs[2, 1])
 
-    # Colors for encoders (matching the palette from structured_train.py)
-    enc_colors = ['#FBB998', '#DB74DB', '#5361E5', '#2ca02c']  # Orange, Pink, Blue, Green
+    # Colors for encoders (matching visualize_tsne_sources)
+    base_colors = ['#FBB998', '#DB74DB', '#5361E5', '#2ca02c']  # Orange, Pink, Blue, Green
 
     if encoder_labels is None:
         encoder_labels = [f"Encoder {i}" for i in range(len(encoder_mus))]
+    if encoder_indices is None:
+        encoder_indices = list(range(len(encoder_mus)))
+    enc_colors = [base_colors[i % len(base_colors)] for i in encoder_indices]
 
     # Determine which encoder is most confident based on mean variance
     mean_vars = []
@@ -803,7 +808,7 @@ def visualize_struct_confidence_panel(
         mu_flat = _np.asarray(mu).reshape(-1)
         var_flat = _np.exp(_np.asarray(logvar).reshape(-1))
         is_confident = idx == most_confident_idx
-        color = enc_colors[idx % len(enc_colors)] if is_confident else '#bbbbbb'
+        color = enc_colors[idx]
         alpha = 0.9 if is_confident else 0.4
         label = encoder_labels[idx] + (" (selected)" if is_confident else "")
         ax_means.hist(mu_flat, bins=30, alpha=alpha, color=color, label=label, density=True)

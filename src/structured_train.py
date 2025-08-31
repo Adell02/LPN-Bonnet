@@ -1249,22 +1249,40 @@ class StructuredTrainer:
                 # Update state
                 state = state.replace(params=new_params)
                 
-                # Log essential metrics to WandB (replicating train.py + minimal contrastive tracking)
+                # Log essential metrics to WandB with proper tab organization
                 if step % 10 == 0:  # Log more frequently
                     current_global_step = self.phase_a_global_step + step
+                    
+                    # Organize metrics into proper WandB tabs
                     wandb.log({
-                        # Core training metrics (like train.py)
-                        f"phase_a/encoder_{enc_idx}/total_loss": float(total_loss),
-                        f"phase_a/encoder_{enc_idx}/step": current_global_step,
+                        # Core training metrics (like train.py) - goes to phase_a_losses tab
+                        f"phase_a_losses/encoder_{enc_idx}/total_loss": float(total_loss),
+                        f"phase_a_losses/encoder_{enc_idx}/step": current_global_step,
                         
-                        # Essential contrastive loss tracking
-                        f"phase_a/encoder_{enc_idx}/contrastive_loss": float(contrastive_loss),
-                        f"phase_a/encoder_{enc_idx}/contrastive_loss_weighted": float(contrastive_loss * self.cfg.training.get("contrastive_kl", 0.5)),
+                        # Essential contrastive loss tracking - goes to phase_a_losses tab
+                        f"phase_a_losses/encoder_{enc_idx}/contrastive_loss": float(contrastive_loss),
+                        f"phase_a_losses/encoder_{enc_idx}/contrastive_loss_weighted": float(contrastive_loss * self.cfg.training.get("contrastive_kl", 0.5)),
+                        f"phase_a_losses/encoder_{enc_idx}/reg_loss": float(reg_loss),
                         
-                        # Encoder variance per pattern (essential for specialization monitoring)
-                        f"phase_a/encoder_{enc_idx}/target_pattern_mean_variance": float(avg_target_var),
-                        f"phase_a/encoder_{enc_idx}/other_patterns_mean_variance": float(avg_other_var),
-                        f"phase_a/encoder_{enc_idx}/specialization_ratio": float(avg_other_var / (avg_target_var + 1e-8)),
+                        # Summary metrics for phase_a_losses tab
+                        f"phase_a_losses/encoder_{enc_idx}/loss_breakdown": {
+                            "contrastive": float(contrastive_loss),
+                            "regularization": float(reg_loss),
+                            "total": float(total_loss)
+                        },
+                        
+                        # Encoder variance per pattern (essential for specialization monitoring) - goes to encoder_[i] tab
+                        f"encoder_{enc_idx}/target_pattern_mean_variance": float(avg_target_var),
+                        f"encoder_{enc_idx}/other_patterns_mean_variance": float(avg_other_var),
+                        f"encoder_{enc_idx}/specialization_ratio": float(avg_other_var / (avg_target_var + 1e-8)),
+                        f"encoder_{enc_idx}/specialization_score": float(jnp.log(avg_other_var / (avg_target_var + 1e-8) + 1e-8)),
+                        
+                        # Additional encoder metrics for comprehensive monitoring
+                        f"encoder_{enc_idx}/training_step": step,
+                        f"encoder_{enc_idx}/target_pattern": target_pattern,
+                        f"encoder_{enc_idx}/batch_size": len(batch[0]),
+                        f"encoder_{enc_idx}/target_samples_count": int(jnp.sum(target_mask)),
+                        f"encoder_{enc_idx}/other_samples_count": int(jnp.sum(other_mask)),
                     }, step=current_global_step)
                 
                 if step % 50 == 0:
@@ -1348,6 +1366,34 @@ class StructuredTrainer:
                 'max': float(jnp.max(variances)),
                 'variances': variances
             }
+
+            # Generate certainty figure for this pattern
+            try:
+                pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+                fig_cert = visualize_struct_confidence_panel(
+                    sample_grids=np.array(eval_grids[0]),
+                    sample_shapes=np.array(eval_shapes[0]),
+                    encoder_mus=[np.array(mu)],
+                    encoder_logvars=[np.array(logvar)],
+                    poe_mu=None,
+                    poe_logvar=None,
+                    title=f"Encoder {enc_idx} Certainty",
+                    encoder_labels=[f"Encoder {enc_idx}"],
+                    encoder_indices=[enc_idx],
+                    pattern_id=pattern_id,
+                    pattern_name=pattern_names.get(pattern_id, f"Pattern {pattern_id}"),
+                )
+                wandb.log(
+                    {
+                        f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/certainty_panel": wandb.Image(fig_cert)
+                    },
+                    step=self.phase_a_global_step + 200,
+                )
+                plt.close(fig_cert)
+            except Exception as e:
+                logging.warning(
+                    f"Certainty panel generation failed for encoder {enc_idx}, pattern {pattern_id}: {e}"
+                )
         
         # Log essential encoder variance metrics (scaled and minimal)
         current_global_step = self.phase_a_global_step + 200  # After training
@@ -1355,7 +1401,7 @@ class StructuredTrainer:
         # Only log mean variance per pattern (essential for specialization monitoring)
         for pattern_id, stats in pattern_variances.items():
             wandb.log({
-                f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/mean_variance": stats['mean'],
+                f"encoder_{enc_idx}/pattern_{pattern_id}/mean_variance": stats['mean'],
             }, step=current_global_step)
         
         # Create essential T-SNE visualization only (like train.py)
@@ -1365,16 +1411,17 @@ class StructuredTrainer:
         logging.info(f"     ✅ Evaluation completed for Encoder {enc_idx}")
     
     def _create_encoder_tsne(self, enc_idx: int, encoder_params: dict, eval_data: dict, global_step: int):
-        """Create T-SNE visualization for encoder latents."""
+        """Create T-SNE visualization for encoder latents - matching train.py style exactly."""
         try:
             # Collect latents from all patterns
             all_latents = []
             all_patterns = []
             
             for pattern_id, (grids, shapes, pattern_ids) in eval_data.items():
-                # Sample subset for T-SNE
-                if len(grids) > 100:
-                    indices = np.random.choice(len(grids), 100, replace=False)
+                # Sample subset for T-SNE (match train.py's 2000 max points approach)
+                max_samples_per_pattern = 667  # 2000/3 patterns = ~667 per pattern
+                if len(grids) > max_samples_per_pattern:
+                    indices = np.random.choice(len(grids), max_samples_per_pattern, replace=False)
                     sample_grids = grids[indices]
                     sample_shapes = shapes[indices]
                 else:
@@ -1396,30 +1443,12 @@ class StructuredTrainer:
             all_latents = jnp.concatenate(all_latents, axis=0)
             all_latents_flat = all_latents.reshape(all_latents.shape[0], -1)
             
-            # T-SNE
-            from sklearn.manifold import TSNE
-            tsne = TSNE(n_components=2, random_state=42)
-            latents_2d = tsne.fit_transform(np.array(all_latents_flat))
-            
-            # Create plot
-            import matplotlib.pyplot as plt
-            fig, ax = plt.subplots(figsize=(10, 8))
-            
-            colors = ['red', 'blue', 'green']
-            for pattern_id in [1, 2, 3]:
-                mask = np.array(all_patterns) == pattern_id
-                ax.scatter(latents_2d[mask, 0], latents_2d[mask, 1], 
-                          c=colors[pattern_id-1], label=f'Pattern {pattern_id}', alpha=0.7)
-            
-            ax.set_title(f'Encoder {enc_idx} Latent Space T-SNE')
-            ax.set_xlabel('TSNE 1')
-            ax.set_ylabel('TSNE 2')
-            ax.legend()
-            ax.grid(True, alpha=0.3)
+            # Use visualize_tsne function to match train.py style exactly
+            fig_latents = visualize_tsne(all_latents_flat, np.array(all_patterns))
             
             # Log to WandB
-            wandb.log({f"phase_a/encoder_{enc_idx}/tsne_plot": wandb.Image(fig)}, step=global_step)
-            plt.close(fig)
+            wandb.log({f"encoder_{enc_idx}/tsne_plot": wandb.Image(fig_latents)}, step=global_step)
+            plt.close(fig_latents)
             
         except Exception as e:
             logging.warning(f"T-SNE creation failed for Encoder {enc_idx}: {e}")
@@ -2406,11 +2435,11 @@ class StructuredTrainer:
                 key, train_key = jax.random.split(key)
                 start = time.time()
                 
-                            # CRITICAL: Extract explicit pattern IDs from balanced dataloader
-            if hasattr(self, 'task_generator') and self.task_generator:
-                # Balanced dataloader provides (grids, shapes, pattern_ids)
-                if len(batches) == 3:
-                    grids, shapes, explicit_pattern_ids = batches
+                # CRITICAL: Extract explicit pattern IDs from balanced dataloader
+                if hasattr(self, 'task_generator') and self.task_generator:
+                    # Balanced dataloader provides (grids, shapes, pattern_ids)
+                    if len(batches) == 3:
+                        grids, shapes, explicit_pattern_ids = batches
                     logging.info(f"✅ Using EXPLICIT pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
                     logging.info(f"   Pattern distribution: {[int(p) for p in jnp.unique(explicit_pattern_ids)]}")
                     # DEBUG: Verify pattern ID structure
@@ -2456,35 +2485,36 @@ class StructuredTrainer:
                 logging.warning(f"⚠️  Still in Phase 1 during main training loop - this shouldn't happen")
                 batches_with_patterns = (grids, shapes, explicit_pattern_ids)
                 state, metrics = self.train_n_steps(state, batches_with_patterns, train_key)
-                end = time.time()
+            
+            end = time.time()
+            
+            pbar.update(log_every)
+            step += log_every
                 
-                pbar.update(log_every)
-                step += log_every
+            # Log essential encoder status
+            if step % 100 == 0:
+                encoder_status = "TRAINABLE" if self.encoder_expose_steps > 0 else "FROZEN"
+                logging.info(f"Step {step}/{num_steps}: Encoders {encoder_status}")
+            throughput = log_every * self.batch_size / (end - start)
+            metrics.update({
+                "timing/train_time": end - start,
+                "timing/train_num_samples_per_second": throughput
+            })
                 
-                # Log essential encoder status
-                if step % 100 == 0:
-                    encoder_status = "TRAINABLE" if self.encoder_expose_steps > 0 else "FROZEN"
-                    logging.info(f"Step {step}/{num_steps}: Encoders {encoder_status}")
-                throughput = log_every * self.batch_size / (end - start)
-                metrics.update({
-                    "timing/train_time": end - start,
-                    "timing/train_num_samples_per_second": throughput
-                })
+            # Add essential contrastive loss to Charts section (like train.py)
+            if "contrastive_loss" in metrics:
+                metrics["Charts/contrastive_loss"] = metrics["contrastive_loss"]
+                if "contrastive_loss_weighted" in metrics:
+                    metrics["Charts/contrastive_loss_weighted"] = metrics["contrastive_loss_weighted"]
                 
-                # Add essential contrastive loss to Charts section (like train.py)
-                if "contrastive_loss" in metrics:
-                    metrics["Charts/contrastive_loss"] = metrics["contrastive_loss"]
-                    if "contrastive_loss_weighted" in metrics:
-                        metrics["Charts/contrastive_loss_weighted"] = metrics["contrastive_loss_weighted"]
-                
-                # Organize Phase 2 metrics for better WandB visualization
-                if self.phase1_completed:
-                    # Phase 2: Organize metrics by category
-                    organized_metrics = self._organize_phase2_metrics_for_wandb(metrics)
-                    wandb.log(organized_metrics, step=step)
-                else:
-                    # Phase 1: Log metrics as is
-                    wandb.log(metrics, step=step)
+            # Organize Phase 2 metrics for better WandB visualization
+            if self.phase1_completed:
+                # Phase 2: Organize metrics by category
+                organized_metrics = self._organize_phase2_metrics_for_wandb(metrics)
+                wandb.log(organized_metrics, step=step)
+            else:
+                # Phase 1: Log metrics as is
+                wandb.log(metrics, step=step)
 
                 # Save checkpoint
                 if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
@@ -2992,8 +3022,8 @@ class StructuredTrainer:
             logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
             logging.info(f"Generating 3 T-SNE visualizations: main (encoders+context), context-only, encoders-only (pattern 1)")
             
-            # Downsample points for t-SNE to be memory efficient
-            max_points = int(cfg.eval.get("tsne_max_points", 500))
+            # Downsample points for t-SNE to be memory efficient (match train.py default)
+            max_points = int(cfg.eval.get("tsne_max_points", 2000))
             if latents_concat.shape[0] > max_points:
                 # Simple random sampling while preserving pattern distribution
                 # Since we have 3 patterns, ensure we keep some from each
@@ -3101,7 +3131,7 @@ class StructuredTrainer:
                         latents=all_encoder_samples,
                         program_ids=all_encoder_program_ids,  # Pattern types (1, 2, 3) for colors
                         source_ids=np.zeros(len(all_encoder_samples), dtype=int),  # All same source (encoder samples)
-                        max_points=min(500, len(all_encoder_samples)),
+                        max_points=min(2000, len(all_encoder_samples)),
                         random_state=42,
                         task_ids=all_encoder_task_ids,
                     )
@@ -3802,7 +3832,7 @@ class StructuredTrainer:
                         latents=latents_concat,
                         program_ids=pattern_ids_concat,
                         source_ids=source_ids_np,
-                        max_points=500,
+                        max_points=2000,
                         random_state=42,
                         task_ids=task_ids_np,
                     )
