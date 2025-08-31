@@ -1237,9 +1237,9 @@ class StructuredTrainer:
             loss = jnp.mean((mu - 0.0) ** 2)  # Dummy loss
             
             # Compute gradients and update
-            grads = jax.grad(lambda p: encoder.apply(
+            grads = jax.grad(lambda p: jnp.mean(encoder.apply(
                 {"params": p}, batch[0], batch[1], dropout_eval=False, mutable=False
-            )[0] ** 2)(encoder_params)
+            )[0] ** 2))(encoder_params)
             
             # Update encoder parameters
             new_encoder_params = jax.tree_util.tree_map(
