@@ -711,11 +711,27 @@ class LPN(nn.Module):
             print(f"         🔍   latents.shape = {latents.shape}")
             print(f"         🔍   input_seq.shape = {input_seq.shape}")
             print(f"         🔍   output_seq.shape = {output_seq.shape}")
+            print(f"         🔍   latents.ndim = {latents.ndim}")
+            print(f"         🔍   input_seq.ndim = {input_seq.ndim}")
+            print(f"         🔍   output_seq.ndim = {output_seq.ndim}")
+            
+            # CRITICAL DEBUG: Show what the vmap is doing to the tensors
+            print(f"         🔍 DEBUG: Vmap tensor analysis:")
+            print(f"         🔍   - latents batch shape: {latents.shape[:-1] if latents.ndim > 0 else 'scalar'}")
+            print(f"         🔍   - input_seq batch shape: {input_seq.shape[:-2] if input_seq.ndim > 1 else 'no batch'}")
+            print(f"         🔍   - output_seq batch shape: {output_seq.shape[:-2] if output_seq.ndim > 1 else 'no batch'}")
             
             # Use the same latent for all pairs of the same task.
             latents = latents[..., None, :].repeat(output_seq.shape[-2], axis=-2)
             print(f"         🔍 DEBUG: After repeat:")
             print(f"         🔍   latents.shape = {latents.shape}")
+            print(f"         🔍   latents.ndim = {latents.ndim}")
+            
+            # CRITICAL DEBUG: Show what we're passing to the decoder
+            print(f"         🔍 DEBUG: Decoder input analysis:")
+            print(f"         🔍   - latents for decoder: {latents.shape}")
+            print(f"         🔍   - input_seq for decoder: {input_seq.shape}")
+            print(f"         🔍   - output_seq for decoder: {output_seq.shape}")
             
             row_logits, col_logits, grid_logits = decoder(input_seq, output_seq, latents, dropout_eval=True)
             log_probs = self._compute_log_probs(row_logits, col_logits, grid_logits, output_seq)
@@ -751,26 +767,27 @@ class LPN(nn.Module):
         
         vmap_log_probs_fn = jax.vmap(log_probs_fn, in_axes=(-2, None, None, None), out_axes=-1)
         
-        # Only apply batch vmaps if there's a mismatch in batch dimensions
+        # CRITICAL FIX: Always apply batch vmaps when we have batch dimensions
+        # The issue is that even when shapes are compatible, vmap needs to preserve batch structure
         if input_seq_ndim > 0 and latents_ndim > 2:
             # Check if we need to add batch vmaps
             print(f"         🔍 DEBUG: Checking if batch vmaps are needed...")
             print(f"         🔍   input_seq batch shape: {input_seq.shape[:-2]}")
             print(f"         🔍   latents batch shape: {latents.shape[:-2]}")
             
-            # Only apply batch vmaps if the batch shapes are actually different
-            if input_seq.shape[:-2] != latents.shape[:-2]:
-                print(f"         🔍 DEBUG: Batch shapes differ, applying vmaps...")
-                for batch_dim in range(input_seq_ndim):
-                    print(f"         🔍 DEBUG: Adding vmap for batch dimension {batch_dim}")
-                    value_and_grad_log_probs_fn = jax.vmap(value_and_grad_log_probs_fn, in_axes=(0, 0, 0, None))
-                    vmap_log_probs_fn = jax.vmap(vmap_log_probs_fn, in_axes=(0, 0, 0, None))
-            else:
-                print(f"         🔍 DEBUG: Batch shapes are compatible, no vmaps needed")
+            # CRITICAL: Always apply batch vmaps when we have batch dimensions
+            # This ensures the batch structure is preserved through the vmap operations
+            print(f"         🔍 DEBUG: Applying batch vmaps to preserve batch structure...")
+            for batch_dim in range(input_seq_ndim):
+                print(f"         🔍 DEBUG: Adding vmap for batch dimension {batch_dim}")
+                value_and_grad_log_probs_fn = jax.vmap(value_and_grad_log_probs_fn, in_axes=(0, 0, 0, None))
+                vmap_log_probs_fn = jax.vmap(vmap_log_probs_fn, in_axes=(0, 0, 0, None))
+        else:
+            print(f"         🔍 DEBUG: No batch vmaps needed (input_seq_ndim={input_seq_ndim}, latents_ndim={latents_ndim})")
         
         # Count actual vmaps applied
         actual_vmaps = 0
-        if input_seq_ndim > 0 and latents_ndim > 2 and input_seq.shape[:-2] != latents.shape[:-2]:
+        if input_seq_ndim > 0 and latents_ndim > 2:
             actual_vmaps = input_seq_ndim
         
         print(f"         🔍 DEBUG: Vmap functions created:")
@@ -959,6 +976,13 @@ class LPN(nn.Module):
             print(f"         🔍 ERROR: Batch shapes still don't match after reshape!")
             print(f"         🔍   This will cause broadcasting errors in the decoder")
             raise ValueError(f"Batch shape mismatch: input_seq {input_seq.shape[:-2]} vs latents {initial_latents_for_eval.shape[:-1]}")
+        
+        # CRITICAL DEBUG: Show what we're calling vmap with
+        print(f"         🔍 DEBUG: About to call vmap_log_probs_fn with:")
+        print(f"         🔍   - latents: {initial_latents_for_eval.shape}")
+        print(f"         🔍   - input_seq: {input_seq.shape}")
+        print(f"         🔍   - output_seq: {output_seq.shape}")
+        print(f"         🔍   - vmap function created with {actual_vmaps} batch vmaps")
         
         initial_log_probs = vmap_log_probs_fn(initial_latents_for_eval, input_seq, output_seq, self.decoder)
 
