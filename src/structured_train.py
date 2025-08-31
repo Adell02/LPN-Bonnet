@@ -1112,8 +1112,10 @@ class StructuredTrainer:
         logging.info(f"   - Focus: pattern specialization through contrastive learning")
         
         # Store original parameters for restoration
-        self.original_encoder_params = [enc_params.copy() for enc_params in enc_params_list]
-        self.original_decoder_params = state.params["decoder"].copy()
+        # Use tree_map to create deep copies of JAX parameters
+        from jax.tree_util import tree_map
+        self.original_encoder_params = [tree_map(lambda x: x, enc_params) for enc_params in enc_params_list]
+        self.original_decoder_params = tree_map(lambda x: x, state.params["decoder"])
         
         # Create individual training states for each encoder
         specialized_encoders = []
@@ -1122,17 +1124,19 @@ class StructuredTrainer:
             logging.info(f"🔓 Specializing Encoder {enc_idx}...")
             
             # Create individual model with this encoder + original decoder
+            # Ensure encoders is a tuple as expected by StructuredLPN
             individual_model = StructuredLPN(
-                encoders=(self.encoders[enc_idx],),  # Single encoder
+                encoders=(self.encoders[enc_idx],),  # Single encoder as tuple
                 decoder=self.decoder
             )
             
             # Create individual training state
+            # Ensure parameter structure matches the individual model
             individual_state = TrainState.create(
                 apply_fn=individual_model.apply,
                 tx=optax.adamw(self.cfg.training.learning_rate),
                 params={
-                    "encoders": (enc_params,),
+                    "encoders": (enc_params,),  # Single encoder as tuple
                     "decoder": self.original_decoder_params
                 }
             )
@@ -1189,35 +1193,62 @@ class StructuredTrainer:
             batch = self._sample_specialized_batch(specialized_data, target_pattern)
             
             # Forward pass with contrastive loss
+            # batch is (grids, shapes, pattern_ids) but model expects (pairs, grid_shapes, ...)
+            # grids should be treated as pairs (input/output grids)
+            # shapes should be treated as grid_shapes
+            # Pass encoder parameters explicitly for the individual model
             loss, metrics = model.apply(
                 {"params": state.params},
-                *batch,
+                pairs=batch[0],  # grids as pairs
+                grid_shapes=batch[1],  # shapes as grid_shapes
                 dropout_eval=False,
                 mode=self.cfg.training.inference_mode,
                 rngs={"dropout": key, "latents": key},
                 contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
                 pattern_ids=batch[2],  # pattern IDs
-                method=model.compute_loss
+                encoder_params_list=[state.params["encoders"][0]],  # Single encoder params
+                decoder_params=state.params["decoder"],  # Decoder params
             )
             
             # Compute gradients and update
             grads = jax.grad(lambda p: model.apply(
-                {"params": p}, *batch, dropout_eval=False,
+                {"params": p}, 
+                pairs=batch[0],  # grids as pairs
+                grid_shapes=batch[1],  # shapes as grid_shapes
+                dropout_eval=False,
                 mode=self.cfg.training.inference_mode,
                 rngs={"dropout": key, "latents": key},
                 contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
                 pattern_ids=batch[2],
-                method=model.compute_loss
+                encoder_params_list=[p["encoders"][0]],  # Single encoder params
+                decoder_params=p["decoder"],  # Decoder params
             )[0])(state.params)
             
             # Update only encoder parameters
-            encoder_grads = {"encoders": grads["encoders"], "decoder": jnp.zeros_like(grads["decoder"])}
-            state = state.apply_gradients(grads=encoder_grads)
+            # Ensure gradient structure matches the state parameters
+            if "encoders" in grads and "decoder" in grads:
+                encoder_grads = {"encoders": grads["encoders"], "decoder": jnp.zeros_like(grads["decoder"])}
+                state = state.apply_gradients(grads=encoder_grads)
+            else:
+                logging.warning(f"Encoder {enc_idx} - Unexpected gradient structure: {list(grads.keys())}")
+                # Try to handle unexpected gradient structure
+                if "encoders" in grads:
+                    # Only encoder gradients available
+                    encoder_grads = {"encoders": grads["encoders"], "decoder": jnp.zeros_like(state.params["decoder"])}
+                    state = state.apply_gradients(grads=encoder_grads)
+                else:
+                    logging.error(f"Encoder {enc_idx} - No encoder gradients found, skipping update")
             
             if step % 50 == 0:
                 logging.info(f"     Encoder {enc_idx} - Step {step}/{num_steps} - Loss: {float(loss):.6f}")
         
-        return state.params["encoders"][0]  # Return trained encoder params
+        # Return trained encoder params
+        if "encoders" in state.params and len(state.params["encoders"]) > 0:
+            return state.params["encoders"][0]  # Return first (and only) encoder params
+        else:
+            logging.error(f"Encoder {enc_idx} - No encoder parameters found in state after training")
+            # Return original parameters as fallback
+            return self.original_encoder_params[enc_idx]
     
     def _sample_specialized_batch(self, specialized_data: tuple, target_pattern: int) -> tuple:
         """
@@ -1372,10 +1403,31 @@ class StructuredTrainer:
                 shapes_list.append(shapes)
                 pattern_ids_list.append(pattern_id)
         
-        # Stack and return
-        grids = jnp.stack(grids_list, axis=0)
-        shapes = jnp.stack(shapes_list, axis=0)
-        pattern_ids = jnp.array(pattern_ids_list)
+        # Stack and return - ensure all samples have the same shape
+        if grids_list:
+            # Get the expected shape from the first sample
+            expected_grid_shape = grids_list[0].shape
+            expected_shape_shape = shapes_list[0].shape
+            
+            # Validate all samples have the same shape
+            for i, (g, s) in enumerate(zip(grids_list, shapes_list)):
+                if g.shape != expected_grid_shape:
+                    logging.warning(f"Sample {i} has unexpected grid shape: {g.shape}, expected {expected_grid_shape}")
+                if s.shape != expected_shape_shape:
+                    logging.warning(f"Sample {i} has unexpected shape: {s.shape}, expected {expected_shape_shape}")
+            
+            # Stack all samples
+            grids = jnp.stack(grids_list, axis=0)
+            shapes = jnp.stack(shapes_list, axis=0)
+            pattern_ids = jnp.array(pattern_ids_list)
+        else:
+            # Fallback if no samples were generated
+            logging.error("No samples were generated for specialized training data")
+            # Create dummy data with expected shapes
+            num_pairs = self.task_generator_kwargs["num_pairs"]
+            grids = jnp.zeros((1, num_pairs, 5, 5, 2), jnp.uint8)
+            shapes = jnp.ones((1, num_pairs, 2, 2), jnp.uint8)
+            pattern_ids = jnp.array([target_pattern])
         
         logging.info(f"     Generated {len(grids_list)} samples: {target_samples} target, {other_samples} others")
         return grids, shapes, pattern_ids
@@ -1408,7 +1460,11 @@ class StructuredTrainer:
         )
         
         # Extract single sample
-        for (grids, shapes), _ in dataloader:
+        for i, ((grids, shapes), _) in enumerate(zip(dataloader, range(1))):
+            # The dataloader returns (log_every_n_steps, batch_size, ...) format
+            # Since we set batch_size=1 and log_every_n_steps=1, extract the actual data
+            # grids shape: (1, 1, num_pairs, max_rows, max_cols, 2) -> (num_pairs, max_rows, max_cols, 2)
+            # shapes shape: (1, 1, num_pairs, 2, 2) -> (num_pairs, 2, 2)
             return grids[0, 0], shapes[0, 0], pattern_id
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
@@ -1672,13 +1728,11 @@ class StructuredTrainer:
             
             dataloading_time = time.time()
             for batches in dataloader:
-                wandb.log({"timing/dataloading_time": time.time() - dataloading_time})
-                
                 # Training - process log_every_n_steps batches at once
                 key, train_key = jax.random.split(key)
                 start = time.time()
                 
-                            # CRITICAL: Extract explicit pattern IDs from balanced dataloader
+                # CRITICAL: Extract explicit pattern IDs from balanced dataloader
             if hasattr(self, 'task_generator') and self.task_generator:
                 # Balanced dataloader provides (grids, shapes, pattern_ids)
                 if len(batches) == 3:
@@ -1727,6 +1781,100 @@ class StructuredTrainer:
                 logging.debug(f"🔒 Phase 2: Joint decoder training (encoders frozen)")
                 batches_with_patterns = (grids, shapes, explicit_pattern_ids)
                 state, metrics = self.train_n_steps_phase2(state, batches_with_patterns, train_key)
+                
+                # Update progress for Phase 2
+                end = time.time()
+                pbar.update(log_every)
+                step += log_every
+                
+                # Log encoder status after step update
+                if step % 100 == 0:
+                    encoder_status = "FROZEN"  # Phase 2: encoders are always frozen
+                    logging.info(f"Step {step}/{num_steps}: Encoders {encoder_status} (Phase 2: Joint decoder training)")
+                
+                # Phase 2: Log metrics and handle checkpointing/evaluation
+                throughput = log_every * self.batch_size / (end - start)
+                metrics.update({
+                    "timing/train_time": end - start,
+                    "timing/train_num_samples_per_second": throughput,
+                    "timing/dataloading_time": time.time() - dataloading_time
+                })
+                
+                # Phase 2: No contrastive loss (encoders frozen)
+                logging.debug(f"Phase 2: No contrastive loss (encoders frozen)")
+                
+                wandb.log(metrics, step=step)
+                
+                # Save checkpoint
+                if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
+                    try:
+                        logging.info(f"Saving checkpoint at step {step}")
+                        from flax.serialization import msgpack_serialize, to_state_dict
+                        with open("state.msgpack", "wb") as outfile:
+                            outfile.write(msgpack_serialize(to_state_dict(state)))
+                        wandb.save("state.msgpack")
+                    except Exception as e:
+                        logging.warning(f"Checkpoint save failed: {e}")
+                
+                # Evaluation - Phase 2 uses standard evaluation interval
+                eval_interval = cfg.training.get("eval_every_n_logs", 0)
+                if eval_interval and (step // log_every) % eval_interval == 0:
+                    try:
+                        logging.info(f"Running evaluation at step {step}")
+                        self.evaluate(state, enc_params_list)
+                        
+                        # Test datasets evaluation (like train.py)
+                        if hasattr(self, 'test_datasets') and self.test_datasets:
+                            for dataset_dict in self.test_datasets:
+                                try:
+                                    start = time.time()
+                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                                        state, dataset_dict
+                                    )
+                                    test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
+                                    
+                                    # Upload all figures
+                                    for fig, name in [
+                                        (fig_grids, "generation"),
+                                        (fig_heatmap, "pixel_accuracy"),
+                                        (fig_latents, "latents"),
+                                        (fig_latents_samples, "latents_samples"),
+                                        (fig_search_progress, "search_progress"),
+                                        (fig_tsne_samples, "latents_samples"),
+                                    ]:
+                                        if fig is not None:
+                                            test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)
+                                    
+                                    # Upload all pattern-specific T-SNE plots
+                                    pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+                                    for pattern_idx, fig_tsne_encoders_single in enumerate(fig_tsne_encoders_list, 1):
+                                        if fig_tsne_encoders_single is not None:
+                                            test_metrics[f"test/{dataset_dict['test_name']}/latents_encoders_pattern{pattern_idx}"] = wandb.Image(fig_tsne_encoders_single)
+                                            logging.info(f"Logged T-SNE for pattern {pattern_idx} ({pattern_names[pattern_idx]})")
+                                        else:
+                                            logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
+                                    
+                                    wandb.log(test_metrics, step=step)
+                                    plt.close('all')  # Close all figures to prevent memory leaks
+                                    # Explicitly close additional T-SNE figures
+                                    if fig_tsne_samples is not None:
+                                        plt.close(fig_tsne_samples)
+                                    # Close all pattern-specific T-SNE figures
+                                    for fig_tsne_encoders_single in fig_tsne_encoders_list:
+                                        if fig_tsne_encoders_single is not None:
+                                            plt.close(fig_tsne_encoders_single)
+                                    
+                                except Exception as e:
+                                    logging.warning(f"Test dataset {dataset_dict['test_name']} failed: {e}")
+                        
+                    except Exception as e:
+                        logging.warning(f"Eval failed: {e}")
+                
+                # Exit if the total number of steps is reached
+                if step >= num_steps:
+                    break
+                
+                dataloading_time = time.time()
             else:
                 # Phase 1: Individual encoder training (should not reach here after Phase 1)
                 logging.warning(f"⚠️  Still in Phase 1 during main training loop - this shouldn't happen")
@@ -1744,7 +1892,8 @@ class StructuredTrainer:
                 throughput = log_every * self.batch_size / (end - start)
                 metrics.update({
                     "timing/train_time": end - start,
-                    "timing/train_num_samples_per_second": throughput
+                    "timing/train_num_samples_per_second": throughput,
+                    "timing/dataloading_time": time.time() - dataloading_time
                 })
                 
                 # Add contrastive loss to Charts section for better visualization
