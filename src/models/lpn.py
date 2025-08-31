@@ -695,14 +695,28 @@ class LPN(nn.Module):
             include_mean_latent, include_all_latents, latents, random_perturbation, key
         )
 
-        # Flatten input/output for decoding likelihood
+                # Flatten input/output for decoding likelihood
         input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
-
+        
+        print(f"         🔍 DEBUG: After flattening:")
+        print(f"         🔍   input_seq.shape = {input_seq.shape}")
+        print(f"         🔍   output_seq.shape = {output_seq.shape}")
+        print(f"         🔍   latents.shape = {latents.shape}")
+        print(f"         🔍   latents.ndim = {latents.ndim}")
+        
         def log_probs_fn(
             latents: chex.Array, input_seq: chex.Array, output_seq: chex.Array, decoder: DecoderTransformer
         ) -> chex.Array:
+            print(f"         🔍 DEBUG: Inside log_probs_fn:")
+            print(f"         🔍   latents.shape = {latents.shape}")
+            print(f"         🔍   input_seq.shape = {input_seq.shape}")
+            print(f"         🔍   output_seq.shape = {output_seq.shape}")
+            
             # Use the same latent for all pairs of the same task.
             latents = latents[..., None, :].repeat(output_seq.shape[-2], axis=-2)
+            print(f"         🔍 DEBUG: After repeat:")
+            print(f"         🔍   latents.shape = {latents.shape}")
+            
             row_logits, col_logits, grid_logits = decoder(input_seq, output_seq, latents, dropout_eval=True)
             log_probs = self._compute_log_probs(row_logits, col_logits, grid_logits, output_seq)
             return log_probs
@@ -713,13 +727,21 @@ class LPN(nn.Module):
         
         # Add vmaps for batch dimensions - handle case where input_seq has no batch dims
         input_seq_ndim = input_seq[..., 0, 0].ndim
+        print(f"         🔍 DEBUG: Vmap setup:")
+        print(f"         🔍   input_seq_ndim = {input_seq_ndim}")
+        print(f"         🔍   input_seq[..., 0, 0].shape = {input_seq[..., 0, 0].shape}")
         
         if input_seq_ndim > 0:
             # Add vmaps for batch dimensions
             for batch_dim in range(input_seq_ndim):
+                print(f"         🔍 DEBUG: Adding vmap for batch dimension {batch_dim}")
                 value_and_grad_log_probs_fn = jax.vmap(value_and_grad_log_probs_fn, in_axes=(0, 0, 0, None))
 
         vmap_log_probs_fn = jax.vmap(log_probs_fn, in_axes=(-2, None, None, None), out_axes=-1)
+        
+        print(f"         🔍 DEBUG: Vmap functions created:")
+        print(f"         🔍   value_and_grad_log_probs_fn created with {input_seq_ndim} batch vmaps")
+        print(f"         🔍   vmap_log_probs_fn created")
 
         if accumulate_gradients_decoder_pairs:
 
@@ -847,7 +869,20 @@ class LPN(nn.Module):
         
         # FIX: Include initial mean latent evaluation for trajectory tracking
         # This ensures GA and ES start from the same point
+        print(f"         🔍 DEBUG: Before initial evaluation:")
+        print(f"         🔍   latents.shape = {latents.shape}")
+        print(f"         🔍   latents[..., 0, :].shape = {latents[..., 0, :].shape}")
+        print(f"         🔍   input_seq.shape = {input_seq.shape}")
+        print(f"         🔍   output_seq.shape = {output_seq.shape}")
+        
         initial_latents_for_eval = latents[..., 0, :]  # (*B, C, H) - initial mean latent
+        print(f"         🔍 DEBUG: initial_latents_for_eval.shape = {initial_latents_for_eval.shape}")
+        
+        print(f"         🔍 DEBUG: About to call vmap_log_probs_fn:")
+        print(f"         🔍   initial_latents_for_eval.shape = {initial_latents_for_eval.shape}")
+        print(f"         🔍   input_seq.shape = {input_seq.shape}")
+        print(f"         🔍   output_seq.shape = {output_seq.shape}")
+        
         initial_log_probs = vmap_log_probs_fn(initial_latents_for_eval, input_seq, output_seq, self.decoder)
 
         best_context, second_best_context = self._select_best_and_second_best_latents(log_probs, latents)

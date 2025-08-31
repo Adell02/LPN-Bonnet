@@ -1006,7 +1006,7 @@ class StructuredTrainer:
         except Exception as e:
             logging.error(f"Contrastive loss pattern validation failed: {e}")
 
-    def _specialize_individual_encoders(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
+    def _specialize_individual_encoders(self, state: TrainState, enc_params_list: list[dict], current_step: int) -> TrainState:
         """
         PHASE 1: Individual encoder specialization using original decoders.
         
@@ -1099,9 +1099,9 @@ class StructuredTrainer:
             
             # Evaluate the specialized encoder and create visualizations
             logging.info(f"   Evaluating specialized Encoder {enc_idx}...")
-            # Calculate global step: current phase_a_global_step + steps completed by this encoder
-            current_global_step = self.phase_a_global_step + self.encoder_expose_steps
-            logging.info(f"   📊 Evaluation global step: {current_global_step} (phase_a: {self.phase_a_global_step} + encoder_steps: {self.encoder_expose_steps})")
+            # Use the current step from the main training loop for consistent WandB logging
+            current_global_step = current_step
+            logging.info(f"   📊 Evaluation global step: {current_global_step} (from main training loop)")
             self._evaluate_specialized_encoder(enc_idx, specialized_encoder, individual_state, current_global_step)
             
             specialized_encoders.append(specialized_encoder)
@@ -1609,49 +1609,40 @@ class StructuredTrainer:
             # Compute encoder specialization metrics for the target pattern
             metrics = {}
             
-            # 1. Pixel-level accuracy (exact match)
-            pixel_correct = np.array_equal(orig_grids_np, recon_grids_np)
-            metrics['pixel_accuracy'] = float(pixel_correct)
+            # 1. Mean variance (lower is better for target pattern)
+            variances = np.exp(logvar_np)
+            mean_variance = float(np.mean(variances))
+            metrics['mean_variance'] = mean_variance
             
-            # 2. Pixel-wise correctness (percentage of correct pixels)
-            if orig_grids_np.shape == recon_grids_np.shape:
-                pixel_matches = (orig_grids_np == recon_grids_np).sum()
-                total_pixels = orig_grids_np.size
-                pixel_correctness = pixel_matches / total_pixels
-                metrics['pixel_correctness'] = float(pixel_correctness)
-            else:
-                metrics['pixel_correctness'] = 0.0
+            # 2. Variance standard deviation
+            variance_std = float(np.std(variances))
+            metrics['variance_std'] = variance_std
             
-            # 3. Shape correctness (exact shape match)
-            shape_correct = np.array_equal(orig_shapes_np, recon_shapes_np)
-            metrics['shape_accuracy'] = float(shape_correct)
+            # 3. Min and max variance
+            min_variance = float(np.min(variances))
+            max_variance = float(np.max(variances))
+            metrics['min_variance'] = min_variance
+            metrics['max_variance'] = max_variance
             
-            # 4. Shape-wise correctness (percentage of correct shape values)
-            if orig_shapes_np.shape == recon_shapes_np.shape:
-                shape_matches = (orig_shapes_np == recon_shapes_np).sum()
-                total_shapes = orig_shapes_np.size
-                shape_correctness = shape_matches / total_shapes
-                metrics['shape_correctness'] = float(shape_correctness)
-            else:
-                metrics['shape_correctness'] = 0.0
+            # 4. Mean latent representation
+            mean_latent = float(np.mean(mu_np))
+            metrics['mean_latent'] = mean_latent
             
-            # 5. Overall accuracy (combined pixel and shape)
-            overall_accuracy = (metrics['pixel_correctness'] + metrics['shape_correctness']) / 2.0
+            # 5. Latent standard deviation
+            latent_std = float(np.std(mu_np))
+            metrics['latent_std'] = latent_std
+            
+            # 6. Confidence score (inverse of variance)
+            confidence_score = 1.0 / (1.0 + mean_variance)
+            metrics['confidence_score'] = float(confidence_score)
+            
+            # 7. Specialization quality (combination of confidence and consistency)
+            specialization_quality = confidence_score * (1.0 / (1.0 + variance_std))
+            metrics['specialization_quality'] = float(specialization_quality)
+            
+            # 8. Overall accuracy (use specialization quality as proxy)
+            overall_accuracy = specialization_quality
             metrics['overall_accuracy'] = float(overall_accuracy)
-            
-            # 6. Mean squared error for grids
-            if orig_grids_np.shape == recon_grids_np.shape:
-                mse_grids = np.mean((orig_grids_np.astype(float) - recon_grids_np.astype(float)) ** 2)
-                metrics['mse_grids'] = float(mse_grids)
-            else:
-                metrics['mse_grids'] = float('inf')
-            
-            # 7. Mean squared error for shapes
-            if orig_shapes_np.shape == recon_shapes_np.shape:
-                mse_shapes = np.mean((orig_shapes_np.astype(float) - recon_shapes_np.astype(float)) ** 2)
-                metrics['mse_shapes'] = float(mse_shapes)
-            else:
-                metrics['mse_shapes'] = float('inf')
             
             # Log metrics to WandB
             pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
@@ -1724,20 +1715,10 @@ class StructuredTrainer:
                 # For Phase A evaluation, we need to create a minimal state with decoder params
                 # Since we don't have the full state here, we'll skip reconstruction evaluation during training
                 logging.info(f"         ⚠️ Skipping reconstruction evaluation during Phase A training (requires full state)")
-                reconstruction_metrics = {}
-                # Log Phase A specific reconstruction metrics
-                if reconstruction_metrics:
-                    wandb.log({
-                        f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction": reconstruction_metrics.get('overall_accuracy', 0.0),
-                        f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction/pixel_correctness": reconstruction_metrics.get('pixel_correctness', 0.0),
-                        f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction/shape_correctness": reconstruction_metrics.get('shape_correctness', 0.0),
-                    }, step=current_global_step)
             
-            # Additional Phase A specific metrics
+            # Phase A evaluation completed
             wandb.log({
-                f"phase_a/encoder_{enc_idx}/tsne_step": step,
-                f"phase_a/encoder_{enc_idx}/tsne_progress": step / total_steps,
-                f"phase_a/encoder_{enc_idx}/tsne_timestamp": time.time(),
+                f"phase_a/encoder_{enc_idx}/evaluation_completed": True,
             }, step=current_global_step)
             
             logging.info(f"       ✅ Phase A T-SNE and certainty plots generated and logged to WandB")
@@ -1783,10 +1764,14 @@ class StructuredTrainer:
                     pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
                     pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
                     
-                    # Reshape data for visualization: (num_pairs, 5, 5, 2) -> (num_pairs, 5, 5, 1)
-                    # and (num_pairs, 2, 2) -> (num_pairs, 2)
-                    vis_grids = np.array(sample_grids)[:, :, :, 0]  # Take first channel only
-                    vis_shapes = np.array(sample_shapes)[:, :, 0]    # Take first dimension only
+                    # Reshape data for visualization: Show OUTPUT grids (tetromino patterns), not input grids (anchor points)
+                    # Data shape: (num_samples, num_pairs, 5, 5, 2) where [:, :, :, :, 0] = input, [:, :, :, :, 1] = output
+                    vis_grids = np.array(sample_grids)[:, :, :, :, 1]  # Take OUTPUT channel (tetromino patterns)
+                    vis_shapes = np.array(sample_shapes)[:, :, 1]       # Take OUTPUT dimensions
+                    
+                    # Debug: Verify visualization data shows correct patterns
+                    debug_grid = vis_grids[0, 0]  # First sample, first pair
+                    logging.info(f"         Visualization grid for pattern {pattern_id} ({pattern_name}):\n{debug_grid}")
                     
                     fig_cert = visualize_struct_confidence_panel(
                         sample_grids=vis_grids,
@@ -1795,7 +1780,7 @@ class StructuredTrainer:
                         encoder_logvars=[np.array(logvar)],
                         poe_mu=None,
                         poe_logvar=None,
-                        title=f"Encoder {enc_idx} - {pattern_name} - Step {step}/{total_steps}",
+                        title=f"Encoder {enc_idx} - {pattern_name}",
                         encoder_labels=[f"Encoder {enc_idx}"],
                         encoder_indices=[enc_idx],
                         pattern_id=pattern_id,
@@ -1805,9 +1790,6 @@ class StructuredTrainer:
                     # Log to WandB with proper organization
                     wandb.log({
                         f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/certainty_panel": wandb.Image(fig_cert),
-                        f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/step": step,
-                        f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/progress": step / total_steps,
-                        f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/global_step": global_step,
                     }, step=global_step)
                     
                     # Close figure to free memory
@@ -1821,6 +1803,102 @@ class StructuredTrainer:
             logging.error(f"       ❌ Certainty plot generation failed: {e}")
             import traceback
             logging.error(f"       Traceback: {traceback.format_exc()}")
+    
+    def _generate_phase_b_certainty_plots(self, all_encoder_outputs: list, pattern_ids: chex.Array, num_steps: int) -> dict:
+        """
+        Generate Phase B certainty plots for all patterns and all encoders (mimicking Phase A but with multiple encoders).
+        
+        Args:
+            all_encoder_outputs: List of encoder outputs from all steps
+            pattern_ids: Pattern IDs for the batch
+            num_steps: Number of training steps
+            
+        Returns:
+            Dictionary containing Phase B certainty plots
+        """
+        plots = {}
+        
+        try:
+            # Create evaluation data for all patterns (same as Phase A)
+            eval_data = {}
+            for pattern_id in [1, 2, 3]:
+                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, 100)  # 100 samples per pattern
+            
+            # Generate certainty plots for each pattern
+            for pattern_id in [1, 2, 3]:
+                if pattern_id in eval_data:
+                    grids, shapes, pattern_ids_eval = eval_data[pattern_id]
+                    
+                    # Sample a subset for efficiency (use first 4 samples for certainty panel)
+                    num_samples = min(4, len(grids))
+                    sample_grids = grids[:num_samples]
+                    sample_shapes = shapes[:num_samples]
+                    
+                    # Collect encoder outputs for all encoders
+                    all_encoder_mus = []
+                    all_encoder_logvars = []
+                    all_encoder_labels = []
+                    
+                    for enc_idx in range(len(self.encoders)):
+                        # Get encoder outputs from the last step (most recent)
+                        if all_encoder_outputs and f"encoder_{enc_idx}" in all_encoder_outputs[-1]:
+                            # Use the last step's encoder outputs
+                            last_step_outputs = all_encoder_outputs[-1][f"encoder_{enc_idx}"]
+                            
+                            # Extract mu and logvar from the stored outputs
+                            mu = last_step_outputs["mu"]
+                            logvar = last_step_outputs["logvar"]
+                            
+                            all_encoder_mus.append(np.array(mu))
+                            all_encoder_logvars.append(np.array(logvar))
+                            all_encoder_labels.append(f"Encoder {enc_idx}")
+                        else:
+                            logging.warning(f"Encoder {enc_idx} outputs not found in Phase B")
+                    
+                    if all_encoder_mus:
+                        # Create certainty panel for this pattern with all encoders
+                        pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
+                        pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
+                        
+                        # Reshape data for visualization: Show OUTPUT grids (tetromino patterns)
+                        vis_grids = np.array(sample_grids)[:, :, :, :, 1]  # Take OUTPUT channel
+                        vis_shapes = np.array(sample_shapes)[:, :, 1]       # Take OUTPUT dimensions
+                        
+                        # Debug: Verify visualization data shows correct patterns
+                        debug_grid = vis_grids[0, 0]  # First sample, first pair
+                        logging.info(f"         Phase B visualization grid for pattern {pattern_id} ({pattern_name}):\n{debug_grid}")
+                        
+                        fig_cert = visualize_struct_confidence_panel(
+                            sample_grids=vis_grids,
+                            sample_shapes=vis_shapes,
+                            encoder_mus=all_encoder_mus,
+                            encoder_logvars=all_encoder_logvars,
+                            poe_mu=None,
+                            poe_logvar=None,
+                            title=f"Phase B - {pattern_name} - All Encoders",
+                            encoder_labels=all_encoder_labels,
+                            encoder_indices=list(range(len(self.encoders))),
+                            pattern_id=pattern_id,
+                            pattern_name=pattern_name,
+                        )
+                        
+                        # Store plot for later logging
+                        plots[f"phase_b/certainty_panels/pattern_{pattern_id}"] = wandb.Image(fig_cert)
+                        
+                        # Close figure to free memory
+                        plt.close(fig_cert)
+                        
+                        logging.info(f"         ✅ Phase B certainty panel generated for pattern {pattern_id} ({pattern_name})")
+            
+            logging.info(f"       📊 All Phase B certainty plots generated")
+            
+        except Exception as e:
+            logging.error(f"       ❌ Phase B certainty plot generation failed: {e}")
+            import traceback
+            logging.error(f"       Traceback: {traceback.format_exc()}")
+            plots["phase_b/certainty_panels/error"] = f"Certainty plots generation failed: {str(e)}"
+        
+        return plots
     
     def _sample_specialized_batch(self, specialized_data: tuple, target_pattern: int) -> tuple:
         """
@@ -2213,6 +2291,10 @@ class StructuredTrainer:
             if fig_decoder is not None:
                 plots["phase_b/plots/decoder_training"] = wandb.Image(fig_decoder)
                 plt.close(fig_decoder)
+            
+            # 4. PHASE B CERTAINTY PLOTS (mimicking Phase A but with multiple encoders)
+            phase_b_certainty_plots = self._generate_phase_b_certainty_plots(all_encoder_outputs, pattern_ids, num_steps)
+            plots.update(phase_b_certainty_plots)
                 
         except Exception as e:
             logging.warning(f"Phase 2 plots generation failed: {e}")
@@ -2759,7 +2841,8 @@ class StructuredTrainer:
             logging.info(f"   - Total expected T-SNE evaluations: {num_tsne_evals_per_encoder * len(enc_params_list)}")
             
             # Phase 1: Individual encoder specialization
-            state = self._specialize_individual_encoders(state, enc_params_list)
+            # Pass the current step from the main training loop
+            state = self._specialize_individual_encoders(state, enc_params_list, step)
             
             logging.info("✅ PHASE 1 COMPLETED: Encoders specialized!")
             logging.info("   - Ready for Phase 2: Joint decoder training")
