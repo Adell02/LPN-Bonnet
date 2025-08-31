@@ -1211,6 +1211,7 @@ class StructuredTrainer:
                 rngs={"dropout": key, "latents": key},
                 contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
                 pattern_ids=batch[2],  # pattern IDs
+                encoder_params_list=state.params["encoders"],  # Pass encoder parameters explicitly
             )
             
             # Compute gradients and update
@@ -1220,6 +1221,7 @@ class StructuredTrainer:
                 rngs={"dropout": key, "latents": key},
                 contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
                 pattern_ids=batch[2],
+                encoder_params_list=p["encoders"],  # Pass encoder parameters explicitly
             )[0])(state.params)
             
             # Update only encoder parameters
