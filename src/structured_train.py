@@ -1440,7 +1440,7 @@ class StructuredTrainer:
                     {
                         f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/certainty_panel": wandb.Image(fig_cert)
                     },
-                    step=self.phase_a_global_step,
+                    step=global_step,
                 )
                 plt.close(fig_cert)
             except Exception as e:
@@ -2785,7 +2785,7 @@ class StructuredTrainer:
                         try:
                             start = time.time()
                             test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
-                                state, dataset_dict
+                                state, dataset_dict, step=step
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                             
@@ -2810,7 +2810,7 @@ class StructuredTrainer:
                                 else:
                                     logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                             
-                            wandb.log(test_metrics)
+                            wandb.log(test_metrics, step=step)
                             plt.close('all')  # Close all figures to prevent memory leaks
                             # Explicitly close additional T-SNE figures
                             if fig_tsne_samples is not None:
@@ -2852,7 +2852,7 @@ class StructuredTrainer:
             
             dataloading_time = time.time()
             for batches in dataloader:
-                wandb.log({"timing/dataloading_time": time.time() - dataloading_time})
+                wandb.log({"timing/dataloading_time": time.time() - dataloading_time}, step=step)
                 
                 # Training - process log_every_n_steps batches at once
                 key, train_key = jax.random.split(key)
@@ -2963,7 +2963,7 @@ class StructuredTrainer:
                                 try:
                                     start = time.time()
                                     test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
-                                        state, dataset_dict
+                                        state, dataset_dict, step=step
                                     )
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                                     
@@ -3711,7 +3711,10 @@ class StructuredTrainer:
                     clustering_metrics[f"clustering/source/ari_k{k}"] = ari_score
                 
                 # Log clustering metrics to WandB
-                wandb.log(clustering_metrics, step=step if 'step' in locals() else None)
+                if step is not None:
+                    wandb.log(clustering_metrics, step=step)
+                else:
+                    wandb.log(clustering_metrics)
                 logging.info(f"Clustering metrics computed: {clustering_metrics}")
                 
             except Exception as e:
@@ -3741,7 +3744,10 @@ class StructuredTrainer:
         if fig_tsne_encoders is not None:
             wandb_log_data[f"test/{test_name}/latents_encoders_pattern1"] = wandb.Image(fig_tsne_encoders)
         
-        wandb.log(wandb_log_data)
+        if step is not None:
+            wandb.log(wandb_log_data, step=step)
+        else:
+            wandb.log(wandb_log_data)
 
         # NEW: Confidence panel per pattern (one task per pattern)
         try:
@@ -3816,7 +3822,10 @@ class StructuredTrainer:
                     pattern_id=pid,  # Pattern ID for filtering
                     pattern_name=pattern_names.get(pid, f"Pattern {pid}"),  # Pattern name
                 )
-                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)})
+                if step is not None:
+                    wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)}, step=step)
+                else:
+                    wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)})
                 plt.close(fig_panel)
                 
                 logging.info(f"Generated confidence panel for pattern {pid} with {len(enc_mus[0])} pairs")
@@ -3969,6 +3978,7 @@ class StructuredTrainer:
         num_tasks_to_show: int = 5,
         inference_mode: str = "mean",
         inference_kwargs: dict = None,
+        step: int = None,
     ) -> tuple[dict[str, float], Optional[plt.Figure], plt.Figure, Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure], list[Optional[plt.Figure]]]:
         """
         Test dataset submission method for structured training (similar to train.py).

@@ -719,6 +719,18 @@ class LPN(nn.Module):
             
             row_logits, col_logits, grid_logits = decoder(input_seq, output_seq, latents, dropout_eval=True)
             log_probs = self._compute_log_probs(row_logits, col_logits, grid_logits, output_seq)
+            
+            print(f"         🔍 DEBUG: Raw log_probs from _compute_log_probs:")
+            print(f"         🔍   log_probs.shape = {log_probs.shape}")
+            print(f"         🔍   log_probs.ndim = {log_probs.ndim}")
+            
+            # CRITICAL FIX: Ensure we return a scalar for gradient computation
+            # If log_probs has batch dimensions, aggregate them
+            if log_probs.ndim > 0:
+                # Sum over all batch dimensions to get a scalar
+                log_probs = jnp.sum(log_probs)
+                print(f"         🔍 DEBUG: Aggregated log_probs to scalar: {log_probs.shape}")
+            
             return log_probs
 
         # SIMPLER APPROACH: Only apply batch vmaps when the tensors actually have different batch dimensions
