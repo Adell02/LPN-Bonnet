@@ -296,6 +296,9 @@ class StructuredTrainer:
         self.encoder_expose_steps = int(cfg.training.get("encoder_expose_steps", 0) or 0)
         self.phase1_completed = False  # Track if individual encoder specialization is done
         
+        # Phase A global step counter for WandB metrics
+        self.phase_a_global_step = 0
+        
         # Store original encoder params for individual training
         self.original_encoder_params = None
         self.original_decoder_params = None
@@ -1168,6 +1171,9 @@ class StructuredTrainer:
             
             specialized_encoders.append(specialized_encoder)
             logging.info(f"✅ Encoder {enc_idx} specialization completed")
+            
+            # Update global step counter for next encoder
+            self.phase_a_global_step += self.encoder_expose_steps
         
         # Update the main state with specialized encoders
         new_params = dict(state.params)
