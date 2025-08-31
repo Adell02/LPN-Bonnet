@@ -1490,6 +1490,13 @@ class StructuredTrainer:
         logging.info(f"       Creating T-SNE plot for Encoder {enc_idx}...")
         self._create_encoder_tsne(enc_idx, encoder_params, eval_data, current_global_step)
         
+        # Evaluate target pattern reconstruction quality
+        logging.info(f"       Evaluating target pattern reconstruction for Encoder {enc_idx}...")
+        target_pattern = enc_idx + 1  # Encoder 0 -> Pattern 1, Encoder 1 -> Pattern 2, Encoder 2 -> Pattern 3
+        reconstruction_metrics = self._evaluate_target_pattern_reconstruction(
+            enc_idx, encoder_params, target_pattern, eval_data[target_pattern], current_global_step
+        )
+        
         logging.info(f"     ✅ Evaluation completed for Encoder {enc_idx}")
     
     def _create_encoder_tsne(self, enc_idx: int, encoder_params: dict, eval_data: dict, global_step: int):
@@ -1550,6 +1557,167 @@ class StructuredTrainer:
         except Exception as e:
             logging.warning(f"T-SNE creation failed for Encoder {enc_idx}: {e}")
     
+    def _evaluate_target_pattern_reconstruction(self, enc_idx: int, encoder_params: dict, target_pattern: int, 
+                                             target_data: tuple, global_step: int) -> dict:
+        """
+        Evaluate reconstruction quality for an encoder's target pattern.
+        
+        Args:
+            enc_idx: Index of the encoder being evaluated
+            encoder_params: Current encoder parameters
+            target_pattern: Target pattern ID for this encoder
+            target_data: Tuple of (grids, shapes, pattern_ids) for target pattern
+            global_step: Current global training step
+            
+        Returns:
+            dict: Dictionary containing reconstruction metrics
+        """
+        try:
+            grids, shapes, pattern_ids = target_data
+            
+            # Sample subset for evaluation (use first 50 samples for efficiency)
+            num_eval_samples = min(50, len(grids))
+            eval_grids = grids[:num_eval_samples]
+            eval_shapes = shapes[:num_eval_samples]
+            
+            # Create a temporary model for reconstruction evaluation
+            temp_model = StructuredLPN(
+                encoders=(self.encoders[enc_idx],),
+                decoder=self.decoder
+            )
+            
+            # Get encoder outputs (latents)
+            mu, logvar = self.encoders[enc_idx].apply(
+                {"params": encoder_params},
+                eval_grids,
+                eval_shapes,
+                dropout_eval=False,
+                mutable=False,
+            )
+            
+            # Generate reconstructions using the decoder
+            # Note: We need to handle the batch dimension properly for the decoder
+            batch_size = eval_grids.shape[0]
+            num_pairs = eval_grids.shape[1] if len(eval_grids.shape) > 3 else 1
+            
+            # Reshape for decoder input if needed
+            if len(eval_grids.shape) > 3:
+                # Flatten batch and pairs dimensions
+                flat_grids = eval_grids.reshape(-1, *eval_grids.shape[2:])
+                flat_shapes = eval_shapes.reshape(-1, *eval_shapes.shape[2:])
+                flat_mu = mu.reshape(-1, *mu.shape[2:])
+                flat_logvar = logvar.reshape(-1, *logvar.shape[2:])
+            else:
+                flat_grids = eval_grids
+                flat_shapes = eval_shapes
+                flat_mu = mu
+                flat_logvar = logvar
+            
+            # Generate reconstructions
+            reconstructed_grids, reconstructed_shapes, _ = temp_model.apply(
+                {"params": {"encoders": [encoder_params], "decoder": self.state.params["decoder"]}},
+                method=temp_model.generate_output,
+                pairs=flat_grids,
+                grid_shapes=flat_shapes,
+                input=flat_grids[:, 0, ..., 0] if len(flat_grids.shape) > 3 else flat_grids[..., 0],
+                input_grid_shape=flat_shapes[:, 0, ..., 0] if len(flat_shapes.shape) > 3 else flat_shapes[..., 0],
+                key=jax.random.PRNGKey(0),  # Fixed key for deterministic evaluation
+                dropout_eval=True,
+                mode="inference",
+                return_two_best=False,
+                poe_alphas=None,
+                encoder_params_list=[encoder_params],
+                decoder_params=self.state.params["decoder"],
+                repulsion_kl_coeff=None,
+            )
+            
+            # Convert to numpy for evaluation
+            orig_grids_np = np.array(eval_grids)
+            orig_shapes_np = np.array(eval_shapes)
+            recon_grids_np = np.array(reconstructed_grids)
+            recon_shapes_np = np.array(reconstructed_shapes)
+            
+            # Reshape back to original dimensions if needed
+            if len(eval_grids.shape) > 3:
+                recon_grids_np = recon_grids_np.reshape(eval_grids.shape)
+                recon_shapes_np = recon_shapes_np.reshape(eval_shapes.shape)
+            
+            # Compute reconstruction metrics
+            metrics = {}
+            
+            # 1. Pixel-level accuracy (exact match)
+            pixel_correct = np.array_equal(orig_grids_np, recon_grids_np)
+            metrics['pixel_accuracy'] = float(pixel_correct)
+            
+            # 2. Pixel-wise correctness (percentage of correct pixels)
+            if orig_grids_np.shape == recon_grids_np.shape:
+                pixel_matches = (orig_grids_np == recon_grids_np).sum()
+                total_pixels = orig_grids_np.size
+                pixel_correctness = pixel_matches / total_pixels
+                metrics['pixel_correctness'] = float(pixel_correctness)
+            else:
+                metrics['pixel_correctness'] = 0.0
+            
+            # 3. Shape correctness (exact shape match)
+            shape_correct = np.array_equal(orig_shapes_np, recon_shapes_np)
+            metrics['shape_accuracy'] = float(shape_correct)
+            
+            # 4. Shape-wise correctness (percentage of correct shape values)
+            if orig_shapes_np.shape == recon_shapes_np.shape:
+                shape_matches = (orig_shapes_np == recon_shapes_np).sum()
+                total_shapes = orig_shapes_np.size
+                shape_correctness = shape_matches / total_shapes
+                metrics['shape_correctness'] = float(shape_correctness)
+            else:
+                metrics['shape_correctness'] = 0.0
+            
+            # 5. Overall accuracy (combined pixel and shape)
+            overall_accuracy = (metrics['pixel_correctness'] + metrics['shape_correctness']) / 2.0
+            metrics['overall_accuracy'] = float(overall_accuracy)
+            
+            # 6. Mean squared error for grids
+            if orig_grids_np.shape == recon_grids_np.shape:
+                mse_grids = np.mean((orig_grids_np.astype(float) - recon_grids_np.astype(float)) ** 2)
+                metrics['mse_grids'] = float(mse_grids)
+            else:
+                metrics['mse_grids'] = float('inf')
+            
+            # 7. Mean squared error for shapes
+            if orig_shapes_np.shape == recon_shapes_np.shape:
+                mse_shapes = np.mean((orig_shapes_np.astype(float) - recon_shapes_np.astype(float)) ** 2)
+                metrics['mse_shapes'] = float(mse_shapes)
+            else:
+                metrics['mse_shapes'] = float('inf')
+            
+            # Log metrics to WandB
+            pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
+            pattern_name = pattern_names.get(target_pattern, f"Pattern {target_pattern}")
+            
+            for metric_name, metric_value in metrics.items():
+                wandb.log({
+                    f"encoder_{enc_idx}/target_pattern_reconstruction/{metric_name}": metric_value
+                }, step=global_step)
+            
+            # Log summary metric
+            wandb.log({
+                f"encoder_{enc_idx}/target_pattern_reconstruction": overall_accuracy
+            }, step=global_step)
+            
+            logging.info(f"         📊 Target pattern reconstruction metrics for {pattern_name}:")
+            logging.info(f"           - Overall accuracy: {overall_accuracy:.4f}")
+            logging.info(f"           - Pixel correctness: {metrics['pixel_correctness']:.4f}")
+            logging.info(f"           - Shape correctness: {metrics['shape_correctness']:.4f}")
+            logging.info(f"           - MSE grids: {metrics['mse_grids']:.6f}")
+            logging.info(f"           - MSE shapes: {metrics['mse_shapes']:.6f}")
+            
+            return metrics
+            
+        except Exception as e:
+            logging.warning(f"Target pattern reconstruction evaluation failed for encoder {enc_idx}: {e}")
+            import traceback
+            logging.error(f"Traceback: {traceback.format_exc()}")
+            return {}
+    
     def _generate_phase_a_tsne(self, enc_idx: int, encoder_params: dict, step: int, total_steps: int):
         """
         Generate T-SNE visualization and certainty plots during Phase A training to monitor encoder specialization progress.
@@ -1576,6 +1744,21 @@ class StructuredTrainer:
             # Generate certainty plots for all patterns
             logging.info(f"       📊 Generating certainty plots for all patterns...")
             self._generate_phase_a_certainty_plots(enc_idx, encoder_params, eval_data, current_global_step, step, total_steps)
+            
+            # Evaluate target pattern reconstruction during Phase A training
+            logging.info(f"       🔍 Evaluating target pattern reconstruction progress...")
+            target_pattern = enc_idx + 1  # Encoder 0 -> Pattern 1, Encoder 1 -> Pattern 2, Encoder 2 -> Pattern 3
+            if target_pattern in eval_data:
+                reconstruction_metrics = self._evaluate_target_pattern_reconstruction(
+                    enc_idx, encoder_params, target_pattern, eval_data[target_pattern], current_global_step
+                )
+                # Log Phase A specific reconstruction metrics
+                if reconstruction_metrics:
+                    wandb.log({
+                        f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction": reconstruction_metrics.get('overall_accuracy', 0.0),
+                        f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction/pixel_correctness": reconstruction_metrics.get('pixel_correctness', 0.0),
+                        f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction/shape_correctness": reconstruction_metrics.get('shape_correctness', 0.0),
+                    }, step=current_global_step)
             
             # Additional Phase A specific metrics
             wandb.log({
