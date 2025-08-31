@@ -33,8 +33,8 @@ AFTER: Pattern IDs are extracted from task generator, ensuring perfect alignment
 CRITICAL FIXES APPLIED FOR ENCODER SPECIALIZATION:
 =================================================
 
-6. ✅ FIXED: Contrastive loss formula was incorrect (was driving other variance DOWN instead of UP)
-7. ✅ FIXED: Increased base coefficient from 1e-3 to 0.1 for stronger specialization signal
+6. ✅ RESTORED: Original contrastive loss formula: target_var + coefficient * (1/other_var)
+7. ✅ FIXED: Increased base coefficient from 1e-3 to 0.5 for stronger specialization signal
 8. ✅ FIXED: Balanced training data distribution (50% target, 50% others instead of 70%/30%)
 9. ✅ ADDED: Fixed contrastive coefficient (no dynamic adjustment)
 10. ✅ ADDED: Early stopping when excellent specialization is achieved (ratio < 0.5)
@@ -1411,10 +1411,10 @@ class StructuredTrainer:
                     dynamic_coeff = base_coeff
                     logging.debug(f"       ✅ Good specialization (ratio: {current_specialization_ratio:.3f}), using base coefficient {dynamic_coeff:.6f}")
                 
-                # CORRECTED: Contrastive loss that properly drives specialization
-                # L = target_var - coefficient * other_var
-                # This minimizes target_var and maximizes other_var
-                contrastive_loss = avg_target_var - dynamic_coeff * avg_other_var
+                # ORIGINAL: Contrastive loss that drives specialization
+                # L = target_var + coefficient * (1/other_var)
+                # This minimizes target_var and maximizes other_var (through 1/other_var)
+                contrastive_loss = avg_target_var + dynamic_coeff * (1.0 / (avg_other_var + 1e-8))
                 
                 # Add regularization to prevent extreme values
                 reg_loss = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
@@ -1457,8 +1457,8 @@ class StructuredTrainer:
                     avg_target_var = jnp.mean(target_var)
                     avg_other_var = jnp.mean(other_var)
                     
-                    # Use the contrastive coefficient defined in outer scope
-                    contrastive_loss = avg_target_var - contrastive_coeff * avg_other_var
+                    # Use the original contrastive loss formula
+                    contrastive_loss = avg_target_var + contrastive_coeff * (1.0 / (avg_other_var + 1e-8))
                     
                     # Add regularization
                     reg = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
