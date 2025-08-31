@@ -912,8 +912,28 @@ def evaluate_custom_dataset(
                 
                 # Prepend initial losses if available
                 if initial_ga_losses is not None:
-                    # Reshape to match per-sample format: (N, 1) -> (N, 1)
-                    initial_ga_losses = initial_ga_losses.reshape(initial_ga_losses.shape[0], 1)
+                    # Debug: show the shapes we're working with
+                    print(f"[store_latents] Debug shapes: initial_ga_losses={initial_ga_losses.shape}, ga_losses_per_sample={ga_losses_per_sample.shape}")
+                    
+                    # The initial_ga_losses should be (batch_size,) and we need to make it (batch_size, 1)
+                    # Handle different possible shapes
+                    if initial_ga_losses.ndim == 1:
+                        # (batch_size,) -> (batch_size, 1)
+                        initial_ga_losses = initial_ga_losses.reshape(-1, 1)
+                    elif initial_ga_losses.ndim == 2:
+                        # Already (batch_size, something) - check if we need to squeeze
+                        if initial_ga_losses.shape[1] == 1:
+                            # Already (batch_size, 1)
+                            pass
+                        else:
+                            # (batch_size, N) -> take mean across N to get (batch_size, 1)
+                            initial_ga_losses = np.mean(initial_ga_losses, axis=1, keepdims=True)
+                    else:
+                        # Higher dimensions - flatten and reshape
+                        initial_ga_losses = initial_ga_losses.flatten().reshape(-1, 1)
+                    
+                    print(f"[store_latents] After reshape: initial_ga_losses={initial_ga_losses.shape}")
+                    
                     # Concatenate: initial + optimization steps
                     ga_losses_with_initial = np.concatenate([initial_ga_losses, ga_losses_per_sample], axis=1)
                     payload["ga_losses_per_sample"] = ga_losses_with_initial

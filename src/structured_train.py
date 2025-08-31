@@ -3808,9 +3808,14 @@ class StructuredTrainer:
                     ari_score = compute_adjusted_rand_index(latents_concat, source_ids_np, k=k)
                     clustering_metrics[f"clustering/source/ari_k{k}"] = ari_score
                 
-                # Log clustering metrics to WandB
-                wandb.log(clustering_metrics, step=step)
-                logging.info(f"Clustering metrics computed: {clustering_metrics}")
+                # Log clustering metrics to WandB with proper step tracking
+                if step is not None:
+                    wandb.log(clustering_metrics, step=step)
+                    logging.info(f"Clustering metrics computed: {clustering_metrics}")
+                else:
+                    # If no step provided, log without step (will use internal wandb step)
+                    wandb.log(clustering_metrics)
+                    logging.info(f"Clustering metrics computed (no step): {clustering_metrics}")
                 
             except Exception as e:
                 logging.warning(f"Clustering metrics computation failed: {e}")
@@ -4614,6 +4619,8 @@ class StructuredTrainer:
                         # Add clustering metrics to the main metrics dict
                         metrics.update(test_clustering_metrics)
                         logging.info(f"Test clustering metrics computed: {test_clustering_metrics}")
+                        
+                        # Note: These metrics will be logged to wandb by the calling function with proper step
                         
                     except Exception as e:
                         logging.warning(f"Test clustering metrics computation failed: {e}")
