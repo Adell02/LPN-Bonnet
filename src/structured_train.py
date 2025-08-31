@@ -1250,11 +1250,13 @@ class StructuredTrainer:
             # Update state - only update the encoder we're training
             all_encoder_params = list(state.params["encoders"])
             all_encoder_params[enc_idx] = new_encoder_params
-            state = state.replace(
-                params=state.params.replace(
-                    encoders=tuple(all_encoder_params)
-                )
-            )
+            
+            # Create new params dictionary
+            new_params = dict(state.params)
+            new_params["encoders"] = tuple(all_encoder_params)
+            
+            # Update state
+            state = state.replace(params=new_params)
             
             if step % 50 == 0:
                 logging.info(f"     Encoder {enc_idx} - Step {step}/{num_steps} - Loss: {float(loss):.6f}")
