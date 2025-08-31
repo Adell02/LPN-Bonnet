@@ -1341,13 +1341,13 @@ class StructuredTrainer:
                         
                         # Additional encoder metrics for comprehensive monitoring
                         f"encoder_{enc_idx}/target_pattern": target_pattern,
-                        f"encoder_{enc_idx}/target_samples_count": int(jnp.sum(target_mask)),
+                        f"encoder_{enc_idx}/target_pattern_count": int(jnp.sum(target_mask)),
                         f"encoder_{enc_idx}/other_samples_count": int(jnp.sum(other_mask)),
                         
                         # Repulsion loss metrics (if enabled)
                         f"encoder_{enc_idx}/repulsion_loss": float(repulsion_loss) if repulsion_loss > 0 else 0.0,
                         f"encoder_{enc_idx}/repulsion_coefficient": self.cfg.training.get("repulsion_kl", 0),
-                    })
+                    }, step=current_global_step)
                 
                 if step % 50 == 0:
                     # Calculate specialization metrics
@@ -1466,7 +1466,7 @@ class StructuredTrainer:
                     {
                         f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/certainty_panel": wandb.Image(fig_cert)
                     },
-                    step=self.phase_a_global_step,
+                    step=current_global_step,
                 )
                 plt.close(fig_cert)
             except Exception as e:
@@ -1481,7 +1481,7 @@ class StructuredTrainer:
         for pattern_id, stats in pattern_variances.items():
             wandb.log({
                 f"encoder_{enc_idx}/pattern_{pattern_id}/mean_variance": stats['mean'],
-            })
+            }, step=current_global_step)
         
         # Create essential T-SNE visualization only (like train.py)
         logging.info(f"       Creating T-SNE plot for Encoder {enc_idx}...")
@@ -1548,7 +1548,7 @@ class StructuredTrainer:
             fig_latents = visualize_tsne(jnp.array(all_latents_flat), np.array(all_patterns))
             
             # Log to WandB
-            wandb.log({f"encoder_{enc_idx}/tsne_plot": wandb.Image(fig_latents)})
+            wandb.log({f"encoder_{enc_idx}/tsne_plot": wandb.Image(fig_latents)}, step=global_step)
             plt.close(fig_latents)
             
         except Exception as e:
@@ -1592,9 +1592,6 @@ class StructuredTrainer:
                 mutable=False,
             )
             
-            # For target pattern reconstruction evaluation, we focus on encoder specialization metrics
-            # rather than full reconstruction generation to avoid complex tensor dimension issues
-            
             # Convert to numpy for evaluation
             orig_grids_np = np.array(eval_grids)
             orig_shapes_np = np.array(eval_shapes)
@@ -1602,53 +1599,32 @@ class StructuredTrainer:
             logvar_np = np.array(logvar)
             
             # Compute encoder specialization metrics for the target pattern
-            
-            # Compute encoder specialization metrics for the target pattern
             metrics = {}
             
-            # 1. Pixel-level accuracy (exact match)
-            pixel_correct = np.array_equal(orig_grids_np, recon_grids_np)
-            metrics['pixel_accuracy'] = float(pixel_correct)
+            # 1. Encoder variance analysis (specialization quality)
+            variances = np.exp(logvar_np)  # Convert logvar to variance
+            mean_variance = float(np.mean(variances))
+            variance_std = float(np.std(variances))
             
-            # 2. Pixel-wise correctness (percentage of correct pixels)
-            if orig_grids_np.shape == recon_grids_np.shape:
-                pixel_matches = (orig_grids_np == recon_grids_np).sum()
-                total_pixels = orig_grids_np.size
-                pixel_correctness = pixel_matches / total_pixels
-                metrics['pixel_correctness'] = float(pixel_correctness)
-            else:
-                metrics['pixel_correctness'] = 0.0
+            # 2. Confidence score based on variance (lower variance = higher confidence)
+            # For target pattern, we want low variance (high confidence)
+            confidence_score = 1.0 / (1.0 + mean_variance)  # Higher confidence for lower variance
+            metrics['confidence_score'] = float(confidence_score)
             
-            # 3. Shape correctness (exact shape match)
-            shape_correct = np.array_equal(orig_shapes_np, recon_shapes_np)
-            metrics['shape_accuracy'] = float(shape_correct)
+            # 3. Specialization quality (how well encoder specializes in target pattern)
+            # Lower variance indicates better specialization
+            specialization_quality = 1.0 / (1.0 + mean_variance)
+            metrics['specialization_quality'] = float(specialization_quality)
             
-            # 4. Shape-wise correctness (percentage of correct shape values)
-            if orig_shapes_np.shape == recon_shapes_np.shape:
-                shape_matches = (orig_shapes_np == recon_shapes_np).sum()
-                total_shapes = orig_shapes_np.size
-                shape_correctness = shape_matches / total_shapes
-                metrics['shape_correctness'] = float(shape_correctness)
-            else:
-                metrics['shape_correctness'] = 0.0
+            # 4. Variance statistics
+            metrics['mean_variance'] = mean_variance
+            metrics['variance_std'] = variance_std
+            metrics['min_variance'] = float(np.min(variances))
+            metrics['max_variance'] = float(np.max(variances))
             
-            # 5. Overall accuracy (combined pixel and shape)
-            overall_accuracy = (metrics['pixel_correctness'] + metrics['shape_correctness']) / 2.0
-            metrics['overall_accuracy'] = float(overall_accuracy)
-            
-            # 6. Mean squared error for grids
-            if orig_grids_np.shape == recon_grids_np.shape:
-                mse_grids = np.mean((orig_grids_np.astype(float) - recon_grids_np.astype(float)) ** 2)
-                metrics['mse_grids'] = float(mse_grids)
-            else:
-                metrics['mse_grids'] = float('inf')
-            
-            # 7. Mean squared error for shapes
-            if orig_shapes_np.shape == recon_shapes_np.shape:
-                mse_shapes = np.mean((orig_shapes_np.astype(float) - recon_shapes_np.astype(float)) ** 2)
-                metrics['mse_shapes'] = float(mse_shapes)
-            else:
-                metrics['mse_shapes'] = float('inf')
+            # 5. Overall specialization score (combined metric)
+            overall_score = (confidence_score + specialization_quality) / 2.0
+            metrics['overall_score'] = float(overall_score)
             
             # Log metrics to WandB
             pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
@@ -1661,15 +1637,15 @@ class StructuredTrainer:
             
             # Log summary metric
             wandb.log({
-                f"encoder_{enc_idx}/target_pattern_reconstruction": overall_accuracy
+                f"encoder_{enc_idx}/target_pattern_reconstruction": overall_score
             }, step=global_step)
             
             logging.info(f"         📊 Target pattern reconstruction metrics for {pattern_name}:")
-            logging.info(f"           - Overall accuracy: {overall_accuracy:.4f}")
-            logging.info(f"           - Mean variance: {metrics['mean_variance']:.6f}")
-            logging.info(f"           - Variance std: {metrics['variance_std']:.6f}")
-            logging.info(f"           - Confidence score: {metrics['confidence_score']:.4f}")
-            logging.info(f"           - Specialization quality: {metrics['specialization_quality']:.4f}")
+            logging.info(f"           - Overall score: {overall_score:.4f}")
+            logging.info(f"           - Mean variance: {mean_variance:.6f}")
+            logging.info(f"           - Variance std: {variance_std:.6f}")
+            logging.info(f"           - Confidence score: {confidence_score:.4f}")
+            logging.info(f"           - Specialization quality: {specialization_quality:.4f}")
             
             return metrics
             
@@ -1728,12 +1704,12 @@ class StructuredTrainer:
                         f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction": reconstruction_metrics.get('overall_accuracy', 0.0),
                         f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction/pixel_correctness": reconstruction_metrics.get('pixel_correctness', 0.0),
                         f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction/shape_correctness": reconstruction_metrics.get('shape_correctness', 0.0),
-                    })
+                    }, step=current_global_step)
             
             # Additional Phase A specific metrics
             wandb.log({
                 # No meaningless metrics - only meaningful data
-            })
+            }, step=current_global_step)
             
             logging.info(f"       ✅ Phase A T-SNE and certainty plots generated and logged to WandB")
             
@@ -1799,7 +1775,7 @@ class StructuredTrainer:
                     # Log to WandB with proper organization
                     wandb.log({
                         f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/certainty_panel": wandb.Image(fig_cert),
-                    })
+                    }, step=global_step)
                     
                     # Close figure to free memory
                     plt.close(fig_cert)
@@ -2892,7 +2868,7 @@ class StructuredTrainer:
         if cfg.training.get("eval_every_n_logs"):
             try:
                 logging.info(f"Running evaluation at step 0 (first step)")
-                self.evaluate(state, enc_params_list)
+                self.evaluate(state, enc_params_list, step)
                 
                 # Test datasets evaluation at first step
                 if hasattr(self, 'test_datasets') and self.test_datasets:
@@ -2900,7 +2876,7 @@ class StructuredTrainer:
                         try:
                             start = time.time()
                             test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
-                                state, dataset_dict
+                                state, dataset_dict, step=0
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                             
@@ -2925,7 +2901,7 @@ class StructuredTrainer:
                                 else:
                                     logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                             
-                            wandb.log(test_metrics)
+                            wandb.log(test_metrics, step=0)
                             plt.close('all')  # Close all figures to prevent memory leaks
                             # Explicitly close additional T-SNE figures
                             if fig_tsne_samples is not None:
@@ -2967,7 +2943,7 @@ class StructuredTrainer:
             
             dataloading_time = time.time()
             for batches in dataloader:
-                wandb.log({"timing/dataloading_time": time.time() - dataloading_time})
+                wandb.log({"timing/dataloading_time": time.time() - dataloading_time}, step=step)
                 
                 # Training - process log_every_n_steps batches at once
                 key, train_key = jax.random.split(key)
@@ -3049,10 +3025,10 @@ class StructuredTrainer:
             if self.phase1_completed:
                 # Phase 2: Organize metrics by category
                 organized_metrics = self._organize_phase2_metrics_for_wandb(metrics)
-                wandb.log(organized_metrics)
+                wandb.log(organized_metrics, step=step)
             else:
                 # Phase 1: Log metrics as is
-                wandb.log(metrics)
+                wandb.log(metrics, step=step)
 
                 # Save checkpoint
                 if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
@@ -3070,7 +3046,7 @@ class StructuredTrainer:
                 if eval_interval and (step // log_every) % eval_interval == 0:
                     try:
                         logging.info(f"Running evaluation at step {step}")
-                        self.evaluate(state, enc_params_list)
+                        self.evaluate(state, enc_params_list, step)
                         
                         # Test datasets evaluation (like train.py)
                         if hasattr(self, 'test_datasets') and self.test_datasets:
@@ -3078,7 +3054,7 @@ class StructuredTrainer:
                                 try:
                                     start = time.time()
                                     test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
-                                        state, dataset_dict
+                                        state, dataset_dict, step=step
                                     )
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                                     
@@ -3103,7 +3079,7 @@ class StructuredTrainer:
                                         else:
                                             logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                                     
-                                    wandb.log(test_metrics)
+                                    wandb.log(test_metrics, step=step)
                                     plt.close('all')  # Close all figures to prevent memory leaks
                                     # Explicitly close additional T-SNE figures
                                     if fig_tsne_samples is not None:
@@ -3130,7 +3106,7 @@ class StructuredTrainer:
         pbar.close()
         return state
 
-    def evaluate(self, state: TrainState, enc_params_list: list[dict] = None) -> dict:
+    def evaluate(self, state: TrainState, enc_params_list: list[dict] = None, step: int = None) -> dict:
         """
         Evaluate the model using the same approach as train.py:
         
@@ -3469,12 +3445,19 @@ class StructuredTrainer:
                 var_i = np.exp(np.array(logvar_i))  # Convert logvar to variance
                 var_i_flat = var_i.reshape(-1, var_i.shape[-1])  # Flatten to [num_tasks, latent_dim]
                 
+                # CRITICAL FIX: Expand pattern sequence to match flattened pair dimension
+                # Input: pairs (96, 4, 5, 5, 2) -> encoder output (96, 4, 32) -> flattened (384, 32)
+                # Pattern sequence: (96,) -> needs to be expanded to (384,) to match flattened pairs
+                num_samples = var_i.shape[0]  # 96
+                num_pairs = var_i.shape[1]    # 4
+                expanded_pattern_sequence = np.repeat(pattern_sequence, num_pairs)  # (96*4,) = (384,)
+                
                 # Compute mean variance per task for this encoder
-                mean_var_per_task = np.mean(var_i_flat, axis=1)  # [num_tasks]
+                mean_var_per_task = np.mean(var_i_flat, axis=1)  # [384]
                 
                 # Group variances by pattern for detailed analysis
                 for pattern_id in [1, 2, 3]:
-                    pattern_mask = (pattern_sequence == pattern_id)
+                    pattern_mask = (expanded_pattern_sequence == pattern_id)
                     if np.any(pattern_mask):
                         pattern_variances = mean_var_per_task[pattern_mask]
                         pattern_mean_var = float(np.mean(pattern_variances))
@@ -3483,11 +3466,11 @@ class StructuredTrainer:
                         # Store metrics for WandB logging
                         metric_key = f"encoder_{enc_idx}_pattern_{pattern_id}"
                         encoder_variance_metrics[f"{metric_key}_mean_variance"] = pattern_mean_var
-                        encoder_variance_metrics[f"{metric_key}_std_variance"] = pattern_std_var
+                        encoder_variance_metrics[f"{metric_key}_std_var"] = pattern_std_var
                         encoder_variance_metrics[f"{metric_key}_num_samples"] = int(np.sum(pattern_mask))
                         
                         # Log specialization progress
-                        logging.info(f"Encoder {enc_idx} - Pattern {pattern_id}: mean_var={pattern_mean_var:.6f}, std_var={pattern_std_var:.6f}, samples={np.sum(pattern_mask)}")
+                        logging.info(f"Pattern {pattern_id} - Encoder {enc_idx}: mean_var={pattern_mean_var:.6f}, std_var={pattern_std_var:.6f}")
                 
                 # Log the actual latent dimension from this encoder
                 actual_latent_dim = lat_np.shape[-1]
@@ -3826,7 +3809,7 @@ class StructuredTrainer:
                     clustering_metrics[f"clustering/source/ari_k{k}"] = ari_score
                 
                 # Log clustering metrics to WandB
-                wandb.log(clustering_metrics)
+                wandb.log(clustering_metrics, step=step)
                 logging.info(f"Clustering metrics computed: {clustering_metrics}")
                 
             except Exception as e:
@@ -3856,7 +3839,7 @@ class StructuredTrainer:
         if fig_tsne_encoders is not None:
             wandb_log_data[f"test/{test_name}/latents_encoders_pattern1"] = wandb.Image(fig_tsne_encoders)
         
-        wandb.log(wandb_log_data)
+        wandb.log(wandb_log_data, step=step)
 
         # NEW: Confidence panel per pattern (one task per pattern)
         try:
@@ -3931,7 +3914,7 @@ class StructuredTrainer:
                     pattern_id=pid,  # Pattern ID for filtering
                     pattern_name=pattern_names.get(pid, f"Pattern {pid}"),  # Pattern name
                 )
-                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)})
+                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)}, step=step)
                 plt.close(fig_panel)
                 
                 logging.info(f"Generated confidence panel for pattern {pid} with {len(enc_mus[0])} pairs")
@@ -4084,6 +4067,7 @@ class StructuredTrainer:
         num_tasks_to_show: int = 5,
         inference_mode: str = "mean",
         inference_kwargs: dict = None,
+        step: int = None,
     ) -> tuple[dict[str, float], Optional[plt.Figure], plt.Figure, Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure], list[Optional[plt.Figure]]]:
         """
         Test dataset submission method for structured training (similar to train.py).

@@ -642,6 +642,11 @@ def evaluate_custom_dataset(
                 if isinstance(traj, dict):
                     print(f"[store_latents] GA traj keys: {list(traj.keys())}")
                     print(f"[store_latents] GA traj content: {traj}")
+                    
+                    # Initialize variables
+                    ga_lat = None
+                    ga_lp = None
+                    
                     if "latents" in traj:
                         ga_lat = np.array(traj["latents"])  # (*B, steps, C, H)
                         print(f"[store_latents] ga_latents shape: {getattr(ga_lat, 'shape', None)}")
@@ -652,53 +657,57 @@ def evaluate_custom_dataset(
                         print(f"[store_latents] ga_log_probs shape: {getattr(ga_lp, 'shape', None)}")
                         print(f"[store_latents] ga_log_probs content: {ga_lp}")
                         payload["ga_log_probs"] = ga_lp
+                    
+                    # ✅ FIXED: GA path derivation moved inside the scope where variables exist
+                    if ga_lat is not None and ga_lp is not None:
+                        try:
+                            lat = ga_lat
+                            lp = ga_lp
+                            # Bring to canonical shape: (N, S, C, H) and (N, S, C)
+                            # Remove leading batch axis if present
+                            if lat.ndim >= 5:
+                                # (B, N, S_or_1, C, H)
+                                lat0 = lat[0]
+                            else:
+                                lat0 = lat
+                            if lp.ndim >= 4:
+                                lp0 = lp[0]
+                            else:
+                                lp0 = lp
+                            # Ensure we have explicit dims
+                            # Identify time dimension: if lat0.shape[-3] > 1 use that as steps; else use candidate axis as time
+                            Ndim = lat0.shape[0]
+                            steps_dim = lat0.shape[-3]
+                            cand_dim = lat0.shape[-2]
+                            # pick first pair
+                            lat_pair = lat0[0]  # (S, C, H) or (1, C, H)
+                            lp_pair = lp0[0]    # (S, C) or (1, C)
+                            if steps_dim > 1 and lat_pair.ndim == 3:
+                                # Standard case: time along axis 0, candidates along axis 1
+                                idx = np.argmax(lp_pair, axis=-1)               # (S,)
+                                best_path = lat_pair[np.arange(lat_pair.shape[0]), idx]  # (S, H)
+                                best_scores = np.max(lp_pair, axis=-1)         # (S,)
+                            else:
+                                # Steps collapsed to 1 and candidates represent iterations
+                                # Use candidates as time
+                                # transpose (1, C, H) -> (C, H)
+                                best_path = lat_pair.reshape(-1, lat_pair.shape[-1])  # (C, H)
+                                best_scores = np.max(lp_pair, axis=0).reshape(-1) if lp_pair.ndim == 2 else lp_pair.reshape(-1)
+                            if best_path.shape[-1] == 2:
+                                payload["ga_path"] = best_path
+                            payload["ga_scores"] = best_scores
+                            payload["ga_losses"] = -best_scores
+                            print(f"[store_latents] ✅ GA path derivation successful")
+                        except Exception as _pe:
+                            print(f"[store_latents] GA path/score derivation failed: {_pe!r}")
+                    else:
+                        print(f"[store_latents] Skipping GA path derivation: missing latents or log_probs")
                 else:
                     print(f"[store_latents] GA traj is not a dict: {type(traj)}")
                     print(f"[store_latents] GA traj value: {traj}")
             else:
                 print(f"[store_latents] No optimization_trajectory found in info0")
                 print(f"[store_latents] info0 keys: {list(info0.keys()) if isinstance(info0, dict) else 'not a dict'}")
-            
-                            # Derive a 2D GA path and scores robustly for batch 0, pair 0
-                try:
-                    lat = ga_lat
-                    lp = ga_lp
-                    # Bring to canonical shape: (N, S, C, H) and (N, S, C)
-                    # Remove leading batch axis if present
-                    if lat.ndim >= 5:
-                        # (B, N, S_or_1, C, H)
-                        lat0 = lat[0]
-                    else:
-                        lat0 = lat
-                    if lp.ndim >= 4:
-                        lp0 = lp[0]
-                    else:
-                        lp0 = lp
-                    # Ensure we have explicit dims
-                    # Identify time dimension: if lat0.shape[-3] > 1 use that as steps; else use candidate axis as time
-                    Ndim = lat0.shape[0]
-                    steps_dim = lat0.shape[-3]
-                    cand_dim = lat0.shape[-2]
-                    # pick first pair
-                    lat_pair = lat0[0]  # (S, C, H) or (1, C, H)
-                    lp_pair = lp0[0]    # (S, C) or (1, C)
-                    if steps_dim > 1 and lat_pair.ndim == 3:
-                        # Standard case: time along axis 0, candidates along axis 1
-                        idx = np.argmax(lp_pair, axis=-1)               # (S,)
-                        best_path = lat_pair[np.arange(lat_pair.shape[0]), idx]  # (S, H)
-                        best_scores = np.max(lp_pair, axis=-1)         # (S,)
-                    else:
-                        # Steps collapsed to 1 and candidates represent iterations
-                        # Use candidates as time
-                        # transpose (1, C, H) -> (C, H)
-                        best_path = lat_pair.reshape(-1, lat_pair.shape[-1])  # (C, H)
-                        best_scores = np.max(lp_pair, axis=0).reshape(-1) if lp_pair.ndim == 2 else lp_pair.reshape(-1)
-                    if best_path.shape[-1] == 2:
-                        payload["ga_path"] = best_path
-                    payload["ga_scores"] = best_scores
-                    payload["ga_losses"] = -best_scores
-                except Exception as _pe:
-                    print(f"[store_latents] GA path/score derivation failed: {_pe!r}")
 
             # ES trajectory -> save best_latents_per_generation, per-generation losses, and populations
             if isinstance(info0, dict) and "evolutionary_trajectory" in info0 and info0["evolutionary_trajectory"]:
