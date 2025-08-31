@@ -1370,9 +1370,15 @@ class StructuredTrainer:
             # Generate certainty figure for this pattern
             try:
                 pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+                
+                # Select a unique sample for each encoder/pattern combination
+                # This ensures different samples are shown for different combinations
+                sample_index = (enc_idx * 3 + pattern_id - 1) % len(eval_grids)
+                logging.debug(f"Certainty panel: Encoder {enc_idx}, Pattern {pattern_id}, Sample index {sample_index}/{len(eval_grids)}")
+                
                 fig_cert = visualize_struct_confidence_panel(
-                    sample_grids=np.array(eval_grids[0]),
-                    sample_shapes=np.array(eval_shapes[0]),
+                    sample_grids=np.array(eval_grids[sample_index]),
+                    sample_shapes=np.array(eval_shapes[sample_index]),
                     encoder_mus=[np.array(mu)],
                     encoder_logvars=[np.array(logvar)],
                     poe_mu=None,
@@ -2440,36 +2446,36 @@ class StructuredTrainer:
                     # Balanced dataloader provides (grids, shapes, pattern_ids)
                     if len(batches) == 3:
                         grids, shapes, explicit_pattern_ids = batches
-                    logging.info(f"✅ Using EXPLICIT pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
-                    logging.info(f"   Pattern distribution: {[int(p) for p in jnp.unique(explicit_pattern_ids)]}")
-                    # DEBUG: Verify pattern ID structure
-                    expected_patterns = [1] * self.samples_per_pattern_per_batch + [2] * self.samples_per_pattern_per_batch + [3] * self.samples_per_pattern_per_batch
-                    if not jnp.array_equal(explicit_pattern_ids, jnp.array(expected_patterns)):
-                        logging.error(f"❌ PATTERN ID MISMATCH!")
-                        logging.error(f"   Expected: {expected_patterns[:10]}... (first 10)")
-                        logging.error(f"   Got: {explicit_pattern_ids[:10]}... (first 10)")
-                        logging.error(f"   Full expected: {expected_patterns}")
-                        logging.error(f"   Full got: {explicit_pattern_ids}")
+                        logging.info(f"✅ Using EXPLICIT pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
+                        logging.info(f"   Pattern distribution: {[int(p) for p in jnp.unique(explicit_pattern_ids)]}")
+                        # DEBUG: Verify pattern ID structure
+                        expected_patterns = [1] * self.samples_per_pattern_per_batch + [2] * self.samples_per_pattern_per_batch + [3] * self.samples_per_pattern_per_batch
+                        if not jnp.array_equal(explicit_pattern_ids, jnp.array(expected_patterns)):
+                            logging.error(f"❌ PATTERN ID MISMATCH!")
+                            logging.error(f"   Expected: {expected_patterns[:10]}... (first 10)")
+                            logging.error(f"   Got: {explicit_pattern_ids[:10]}... (first 10)")
+                            logging.error(f"   Full expected: {expected_patterns}")
+                            logging.error(f"   Full got: {explicit_pattern_ids}")
+                        else:
+                            logging.info(f"✅ Pattern IDs match expected structure")
+                        
+                        # Essential pattern validation (reduced frequency)
+                        if step % 500 == 0:  # Validate every 500 steps to reduce spam
+                            self._validate_contrastive_loss_patterns(explicit_pattern_ids, self.batch_size)
                     else:
-                        logging.info(f"✅ Pattern IDs match expected structure")
-                    
-                    # Essential pattern validation (reduced frequency)
-                    if step % 500 == 0:  # Validate every 500 steps to reduce spam
-                        self._validate_contrastive_loss_patterns(explicit_pattern_ids, self.batch_size)
+                        # Fallback if dataloader doesn't provide pattern_ids in expected format
+                        grids, shapes = batches
+                        explicit_pattern_ids = jnp.concatenate([
+                            jnp.full((self.samples_per_pattern_per_batch,), 1),  # O-tetromino
+                            jnp.full((self.samples_per_pattern_per_batch,), 2),  # T-tetromino  
+                            jnp.full((self.samples_per_pattern_per_batch,), 3),  # L-tetromino
+                        ], axis=0)
+                        logging.warning(f"⚠️  Task generator dataloader didn't provide 3 elements, using fallback")
                 else:
-                    # Fallback if dataloader doesn't provide pattern_ids
+                    # Fixed dataset - extract pattern IDs from data content
                     grids, shapes = batches
-                    explicit_pattern_ids = jnp.concatenate([
-                        jnp.full((self.samples_per_pattern_per_batch,), 1),  # O-tetromino
-                        jnp.full((self.samples_per_pattern_per_batch,), 2),  # T-tetromino  
-                        jnp.full((self.samples_per_pattern_per_batch,), 3),  # L-tetromino
-                    ], axis=0)
-                    logging.warning(f"⚠️  Balanced dataloader didn't provide pattern_ids, using fallback")
-            else:
-                # Fixed dataset - extract pattern IDs from data content
-                grids, shapes = batches
-                explicit_pattern_ids = self._extract_true_pattern_ids_from_data(grids[0], shapes[0])
-                logging.info(f"⚠️  Using EXTRACTED pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
+                    explicit_pattern_ids = self._extract_true_pattern_ids_from_data(grids[0], shapes[0])
+                    logging.info(f"⚠️  Using EXTRACTED pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
             
             # Log essential batch info
             batch_size = grids.shape[1] if hasattr(grids, 'shape') and len(grids.shape) > 1 else len(grids)
@@ -2613,6 +2619,9 @@ class StructuredTrainer:
             return {}
         cfg = self.cfg
         alphas = jnp.asarray(cfg.structured.alphas, dtype=jnp.float32)
+        
+        # Initialize metrics dict early to avoid variable not defined errors
+        encoder_variance_metrics = {}
         
         # 1. IMPLEMENT LEAVE-ONE-OUT: Create leave_one_out versions like train.py
         # The issue is that make_leave_one_out is adding an extra dimension instead of reducing it
