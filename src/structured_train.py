@@ -1125,10 +1125,16 @@ class StructuredTrainer:
             logging.info(f"   Encoder {enc_idx} type: {type(self.encoders[enc_idx])}")
             logging.info(f"   Encoder {enc_idx} has apply method: {hasattr(self.encoders[enc_idx], 'apply')}")
             
-            # Create individual training state using main model
-            # We'll modify the parameters to only train one encoder
+            # Create a temporary model with ONLY the encoder we want to train
+            # This ensures the model structure matches the parameters
+            temp_model = StructuredLPN(
+                encoders=(self.encoders[enc_idx],),  # Single encoder object
+                decoder=self.decoder
+            )
+            
+            # Create individual training state
             individual_state = TrainState.create(
-                apply_fn=self.model.apply,
+                apply_fn=temp_model.apply,  # Use the temp model's apply function
                 tx=optax.adamw(self.cfg.training.learning_rate),
                 params={
                     "encoders": (enc_params,),  # Only this encoder's parameters
@@ -1138,7 +1144,7 @@ class StructuredTrainer:
             
             # Train this encoder on complementary data
             specialized_encoder = self._train_encoder_individually(
-                enc_idx, individual_state, self.model
+                enc_idx, individual_state, temp_model  # Use the temp model
             )
             
             specialized_encoders.append(specialized_encoder)
