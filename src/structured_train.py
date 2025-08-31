@@ -1676,9 +1676,11 @@ class StructuredTrainer:
             logging.info(f"       🔍 Phase A Evaluation at step {step}/{total_steps}")
             
             # Create evaluation data for all patterns to show specialization progress
+            # Use clean, pure patterns for visualization (not mixed training data)
             eval_data = {}
+            num_eval_samples = 100  # Same number for each pattern to ensure even coverage
             for pattern_id in [1, 2, 3]:
-                pattern_data = self._create_specialized_training_data(pattern_id)
+                pattern_data = self._create_pattern_dataset(pattern_id, num_eval_samples)
                 eval_data[pattern_id] = pattern_data
             
             # Generate T-SNE visualization
