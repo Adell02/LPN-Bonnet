@@ -894,7 +894,8 @@ def evaluate_custom_dataset(
             if ga_losses_rows and ga_steps_len is not None:
                 ga_losses_per_sample = np.vstack(ga_losses_rows).astype(np.float32)
                 payload["ga_losses_per_sample"] = ga_losses_per_sample
-                payload["ga_budget"] = (2 * np.arange(1, ga_steps_len + 1)).astype(np.int32)
+                # Include budget 0 for mean latent evaluation, then 2, 4, 6, ... for optimization steps
+                payload["ga_budget"] = np.concatenate([[0], (2 * np.arange(1, ga_steps_len + 1))]).astype(np.int32)
             if es_losses_rows and es_gen_len is not None:
                 es_losses_per_sample = np.vstack(es_losses_rows).astype(np.float32)
                 payload["es_generation_losses_per_sample"] = es_losses_per_sample
