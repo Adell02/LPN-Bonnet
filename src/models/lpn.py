@@ -838,6 +838,10 @@ class LPN(nn.Module):
         log_probs = jnp.concatenate([all_log_probs, last_log_probs[..., None]], axis=-1).reshape(
             *last_log_probs.shape[:-1], -1
         )
+        
+        # FIX: Include initial mean latent evaluation for trajectory tracking
+        # This ensures GA and ES start from the same point
+        initial_log_probs = vmap_log_probs_fn(latents[..., 0, :], input_seq, output_seq, self.decoder)
 
         best_context, second_best_context = self._select_best_and_second_best_latents(log_probs, latents)
 
@@ -845,9 +849,18 @@ class LPN(nn.Module):
         track_progress = kwargs.get("track_progress", False)
         if track_progress:
             try:
+                # FIX: Include initial mean latent in trajectory data
+                # This ensures GA and ES start from the same point (mean latent)
+                initial_latents = latents[..., 0, :]  # (*B, C, H) - initial mean latent
+                initial_log_probs_reshaped = initial_log_probs[..., None, :]  # (*B, 1, C) - add step dimension
+                
+                # Concatenate initial + steps: (*B, 1+num_steps, C, H) and (*B, 1+num_steps, C)
+                all_latents_with_initial = jnp.concatenate([initial_latents[..., None, :], all_latents], axis=-2)
+                all_log_probs_with_initial = jnp.concatenate([initial_log_probs_reshaped, all_log_probs], axis=-2)
+                
                 traj = {
-                    "latents": all_latents,      # (*B, num_steps, C, H)
-                    "log_probs": all_log_probs,  # (*B, num_steps, C)
+                    "latents": all_latents_with_initial,      # (*B, 1+num_steps, C, H) - includes initial
+                    "log_probs": all_log_probs_with_initial,  # (*B, 1+num_steps, C) - includes initial
                 }
             except Exception:
                 traj = {}
