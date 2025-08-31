@@ -342,24 +342,12 @@ class DecoderTransformer(nn.Module):
     def embed_inputs(
         self, input_seq: chex.Array, output_seq: chex.Array, context: chex.Array, dropout_eval: bool
     ) -> chex.Array:
-        print(f"[embed_inputs] DEBUG: Function entry:")
-        print(f"[embed_inputs]   input_seq.shape = {input_seq.shape}")
-        print(f"[embed_inputs]   output_seq.shape = {output_seq.shape}")
-        print(f"[embed_inputs]   context.shape = {context.shape}")
-        print(f"[embed_inputs]   context.ndim = {context.ndim}")
-        
         config = self.config
 
         # Context embedding block.
-        print(f"[embed_inputs] DEBUG: Before context embedding:")
-        print(f"[embed_inputs]   context.shape = {context.shape}")
-        
         context_embed = nn.Dense(
             config.emb_dim, config.transformer_layer.use_bias, config.dtype, name="context_embed"
         )(context)
-        
-        print(f"[embed_inputs] DEBUG: After context embedding:")
-        print(f"[embed_inputs]   context_embed.shape = {context_embed.shape}")
 
         # Position embedding block.
         if self.config.scaled_position_embeddings:
@@ -486,25 +474,7 @@ class DecoderTransformer(nn.Module):
         x_input_shape_row = jnp.expand_dims(input_grid_shapes_row_embed + input_embed, axis=-2)
         x_input_shape_col = jnp.expand_dims(input_grid_shapes_col_embed + input_embed, axis=-2)
         x_input_colors = input_colors_embed + input_pos_embeds + input_embed
-        
-        print(f"[embed_inputs] DEBUG: After creating embeddings:")
-        print(f"[embed_inputs]   x_input_shape_row.shape = {x_input_shape_row.shape}")
-        print(f"[embed_inputs]   x_input_shape_col.shape = {x_input_shape_col.shape}")
-        print(f"[embed_inputs]   x_input_colors.shape = {x_input_colors.shape}")
-        # Expand the context and broadcast it to match the other embeddings before concatenation.
-        # This avoids rank mismatches when additional batch dimensions are present (e.g. during
-        # vectorized evaluation).
         x_context = jnp.expand_dims(context_embed, axis=-2)
-        while x_context.ndim < x_input_shape_row.ndim:
-            x_context = jnp.expand_dims(x_context, axis=2)
-        
-        print(f"[embed_inputs] DEBUG: Before broadcast_to:")
-        print(f"[embed_inputs]   x_context.shape = {x_context.shape}")
-        print(f"[embed_inputs]   x_input_shape_row.shape = {x_input_shape_row.shape}")
-        print(f"[embed_inputs]   x_context.ndim = {x_context.ndim}")
-        print(f"[embed_inputs]   x_input_shape_row.ndim = {x_input_shape_row.ndim}")
-        
-        x_context = jnp.broadcast_to(x_context, x_input_shape_row.shape)
         x_output_shape_row = jnp.expand_dims(output_grid_shapes_row_embed + output_embed, axis=-2)
         x_output_shape_col = jnp.expand_dims(output_grid_shapes_col_embed + output_embed, axis=-2)
         x_output_colors = output_colors_embed + output_pos_embeds + output_embed

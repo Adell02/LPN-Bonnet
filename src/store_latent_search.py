@@ -346,8 +346,6 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
             t.vals = _extract_vals(f, prefix)
             
             # Fix GA shape mismatch: collapse latents to one point per step
-            # FIXED: GA now includes initial mean latent, so this should work correctly
-            # This ensures T matches loss length for proper pairing
             if prefix == "ga_" and t.pts is not None and t.vals is not None:
                 print(f"[plot] GA shape fix: pts={t.pts.shape}, vals={t.vals.shape}")
                 t.pts = _collapse_to_steps(t.pts, steps_len=len(t.vals))

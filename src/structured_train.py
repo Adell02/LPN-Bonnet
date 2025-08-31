@@ -1124,23 +1124,57 @@ class StructuredTrainer:
         
         # Generate specialized training data with target pattern emphasis
         # We need both target and other patterns for contrastive loss to work
-        target_samples = int(self.batch_size * 0.7)  # 70% target pattern
+        target_samples = int(self.batch_size * 0.33)  # 33% target pattern
         other_samples = self.batch_size - target_samples
         
         # Generate target pattern samples
         target_data = self._create_standardized_dataset(f"single_pattern_{target_pattern}", target_samples)
         
-        # Generate other pattern samples (balanced mix)
-        other_data = self._create_standardized_dataset("mixed_patterns", other_samples)
+        # Generate OTHER specific patterns (not mixed) for proper contrastive learning
+        # Each encoder should contrast against the OTHER two patterns specifically
+        other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
+        samples_per_other = other_samples // len(other_patterns)
         
-        # Combine the data
-        target_grids, target_shapes, target_ids = target_data
-        other_grids, other_shapes, other_ids = other_data
+        other_grids_list = []
+        other_shapes_list = []
+        other_ids_list = []
         
-        # Stack together
-        combined_grids = jnp.concatenate([target_grids, other_grids], axis=0)
-        combined_shapes = jnp.concatenate([target_shapes, other_shapes], axis=0)
-        combined_pattern_ids = jnp.concatenate([target_ids, other_ids], axis=0)
+        for other_pattern in other_patterns:
+            other_data = self._create_standardized_dataset(f"single_pattern_{other_pattern}", samples_per_other)
+            other_grids, other_shapes, other_ids = other_data
+            other_grids_list.append(other_grids)
+            other_shapes_list.append(other_shapes)
+            other_ids_list.append(other_ids)
+        
+        # Combine other patterns
+        if other_grids_list:
+            other_grids = jnp.concatenate(other_grids_list, axis=0)
+            other_shapes = jnp.concatenate(other_shapes_list, axis=0)
+            other_ids = jnp.concatenate(other_ids_list, axis=0)
+        else:
+            # Fallback if no other patterns
+            other_grids = jnp.array([])
+            other_shapes = jnp.array([])
+            other_ids = jnp.array([])
+        
+        # Combine target and other patterns
+        if len(other_grids) > 0:
+            combined_grids = jnp.concatenate([target_grids, other_grids], axis=0)
+            combined_shapes = jnp.concatenate([target_shapes, other_shapes], axis=0)
+            combined_pattern_ids = jnp.concatenate([target_ids, other_ids], axis=0)
+        else:
+            # Only target pattern available
+            combined_grids = target_grids
+            combined_shapes = target_shapes
+            combined_pattern_ids = target_ids
+        
+        # Log the pattern distribution for debugging
+        target_count = jnp.sum(combined_pattern_ids == target_pattern)
+        other_count = len(combined_pattern_ids) - target_count
+        logging.info(f"     Training data distribution for Encoder {enc_idx}:")
+        logging.info(f"       Target pattern {target_pattern}: {target_count} samples")
+        logging.info(f"       Other patterns: {other_count} samples")
+        logging.info(f"       Total samples: {len(combined_pattern_ids)}")
         
         specialized_data = (combined_grids, combined_shapes, combined_pattern_ids)
         
@@ -1186,6 +1220,13 @@ class StructuredTrainer:
             # Pattern enc_idx+1 should have low variance, others should have high variance
             target_pattern = enc_idx + 1
             pattern_ids = batch[2]  # (batch_size,)
+            
+            # Debug: Log pattern distribution in this batch
+            if step % 50 == 0:  # Log every 50 steps to avoid spam
+                target_count = jnp.sum(pattern_ids == target_pattern)
+                other_count = len(pattern_ids) - target_count
+                unique_patterns = jnp.unique(pattern_ids)
+                logging.info(f"       Batch pattern distribution: Target {target_pattern}: {target_count}, Others: {other_count}, Unique: {unique_patterns}")
             
             # Separate samples by pattern
             target_mask = (pattern_ids == target_pattern)
