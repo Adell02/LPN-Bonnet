@@ -291,8 +291,14 @@ class StructuredTrainer:
         self.gradient_accumulation_steps = cfg.training.gradient_accumulation_steps
         if self.batch_size % self.gradient_accumulation_steps != 0:
             raise ValueError("batch_size must be divisible by gradient_accumulation_steps")
-        # Optional: expose/unfreeze encoders for the first N gradient steps
+        
+        # NEW: Two-phase training approach
         self.encoder_expose_steps = int(cfg.training.get("encoder_expose_steps", 0) or 0)
+        self.phase1_completed = False  # Track if individual encoder specialization is done
+        
+        # Store original encoder params for individual training
+        self.original_encoder_params = None
+        self.original_decoder_params = None
 
         # Training/eval datasets - Use task generator like train.py for on-the-fly generation
         if cfg.training.get("struct_patterns_balanced", False):
@@ -1067,6 +1073,8 @@ class StructuredTrainer:
                 pattern_sequence = pattern_ids_np
                 pattern_changes = np.sum(pattern_sequence[1:] != pattern_sequence[:-1])
                 total_possible_changes = len(pattern_sequence) - 1
+                pattern_changes = np.sum(pattern_sequence[1:] != pattern_sequence[:-1])
+                total_possible_changes = len(pattern_sequence) - 1
                 mixing_ratio = pattern_changes / total_possible_changes if total_possible_changes > 0 else 0
                 
                 if mixing_ratio > 0.5:
@@ -1083,6 +1091,325 @@ class StructuredTrainer:
             
         except Exception as e:
             logging.error(f"Contrastive loss pattern validation failed: {e}")
+
+    def _specialize_individual_encoders(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
+        """
+        PHASE 1: Individual encoder specialization using original decoders.
+        
+        Each encoder is trained on complementary data subsets to reinforce
+        certainty on "their" patterns and decrease it for others.
+        
+        Args:
+            state: Current training state
+            enc_params_list: List of encoder parameters to specialize
+            
+        Returns:
+            Updated state with specialized encoders
+        """
+        logging.info("🚀 PHASE 1: Starting individual encoder specialization...")
+        logging.info(f"   - Training each encoder independently on complementary data")
+        logging.info(f"   - Using original decoders to prevent interference")
+        logging.info(f"   - Focus: pattern specialization through contrastive learning")
+        
+        # Store original parameters for restoration
+        self.original_encoder_params = [enc_params.copy() for enc_params in enc_params_list]
+        self.original_decoder_params = state.params["decoder"].copy()
+        
+        # Create individual training states for each encoder
+        specialized_encoders = []
+        
+        for enc_idx, enc_params in enumerate(enc_params_list):
+            logging.info(f"🔓 Specializing Encoder {enc_idx}...")
+            
+            # Create individual model with this encoder + original decoder
+            individual_model = StructuredLPN(
+                encoders=(self.encoders[enc_idx],),  # Single encoder
+                decoder=self.decoder
+            )
+            
+            # Create individual training state
+            individual_state = TrainState.create(
+                apply_fn=individual_model.apply,
+                tx=optax.adamw(self.cfg.training.learning_rate),
+                params={
+                    "encoders": (enc_params,),
+                    "decoder": self.original_decoder_params
+                }
+            )
+            
+            # Train this encoder on complementary data
+            specialized_encoder = self._train_encoder_individually(
+                enc_idx, individual_state, individual_model
+            )
+            
+            specialized_encoders.append(specialized_encoder)
+            logging.info(f"✅ Encoder {enc_idx} specialization completed")
+        
+        # Update the main state with specialized encoders
+        updated_state = state.replace(
+            params=state.params.replace(
+                encoders=tuple(specialized_encoders)
+            )
+        )
+        
+        self.phase1_completed = True
+        logging.info("🎉 PHASE 1 COMPLETED: All encoders specialized!")
+        logging.info("   - Encoders now have pattern-specific representations")
+        logging.info("   - Ready for Phase 2: Joint decoder training")
+        
+        return updated_state
+    
+    def _train_encoder_individually(self, enc_idx: int, state: TrainState, model: StructuredLPN) -> dict:
+        """
+        Train a single encoder individually on complementary data.
+        
+        Args:
+            enc_idx: Index of encoder to train
+            state: Individual training state
+            model: Individual model (1 encoder + original decoder)
+            
+        Returns:
+            Trained encoder parameters
+        """
+        logging.info(f"   Training Encoder {enc_idx} individually...")
+        
+        # Create complementary data for this encoder
+        # Pattern enc_idx+1 gets reinforced, others get reduced certainty
+        target_pattern = enc_idx + 1  # Encoder 0 -> Pattern 1, Encoder 1 -> Pattern 2, etc.
+        
+        # Generate specialized training data
+        specialized_data = self._create_specialized_training_data(target_pattern)
+        
+        # Train for encoder_expose_steps
+        num_steps = self.encoder_expose_steps
+        key = jax.random.PRNGKey(self.cfg.training.seed + enc_idx)
+        
+        for step in range(num_steps):
+            # Sample batch from specialized data
+            batch = self._sample_specialized_batch(specialized_data, target_pattern)
+            
+            # Forward pass with contrastive loss
+            loss, metrics = model.apply(
+                {"params": state.params},
+                *batch,
+                dropout_eval=False,
+                mode=self.cfg.training.inference_mode,
+                rngs={"dropout": key, "latents": key},
+                contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
+                pattern_ids=batch[2],  # pattern IDs
+                method=model.compute_loss
+            )
+            
+            # Compute gradients and update
+            grads = jax.grad(lambda p: model.apply(
+                {"params": p}, *batch, dropout_eval=False,
+                mode=self.cfg.training.inference_mode,
+                rngs={"dropout": key, "latents": key},
+                contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
+                pattern_ids=batch[2],
+                method=model.compute_loss
+            )[0])(state.params)
+            
+            # Update only encoder parameters
+            encoder_grads = {"encoders": grads["encoders"], "decoder": jnp.zeros_like(grads["decoder"])}
+            state = state.apply_gradients(grads=encoder_grads)
+            
+            if step % 50 == 0:
+                logging.info(f"     Encoder {enc_idx} - Step {step}/{num_steps} - Loss: {float(loss):.6f}")
+        
+        return state.params["encoders"][0]  # Return trained encoder params
+    
+    def _sample_specialized_batch(self, specialized_data: tuple, target_pattern: int) -> tuple:
+        """
+        Sample a batch from specialized training data.
+        
+        Args:
+            specialized_data: Tuple of (grids, shapes, pattern_ids)
+            target_pattern: Target pattern for this encoder
+            
+        Returns:
+            Batch tuple for training
+        """
+        grids, shapes, pattern_ids = specialized_data
+        batch_size = self.batch_size
+        
+        # Sample batch_size samples
+        if len(grids) >= batch_size:
+            indices = np.random.choice(len(grids), batch_size, replace=False)
+            batch_grids = grids[indices]
+            batch_shapes = shapes[indices]
+            batch_pattern_ids = pattern_ids[indices]
+        else:
+            # If not enough samples, repeat with random sampling
+            indices = np.random.choice(len(grids), batch_size, replace=True)
+            batch_grids = grids[indices]
+            batch_shapes = shapes[indices]
+            batch_pattern_ids = pattern_ids[indices]
+        
+        return batch_grids, batch_shapes, batch_pattern_ids
+    
+    def train_n_steps_phase2(self, state: TrainState, batches: tuple[chex.Array, chex.Array, chex.Array], key: chex.PRNGKey) -> tuple[TrainState, dict]:
+        """
+        Phase 2: Joint decoder training with frozen encoders.
+        
+        Args:
+            state: Current training state
+            batches: Tuple of (grids, shapes, pattern_ids)
+            key: Random key
+            
+        Returns:
+            Updated state and metrics
+        """
+        num_steps = batches[0].shape[0]  # Should be log_every_n_steps
+        keys = jax.random.split(key, num_steps)
+        
+        # Extract data
+        explicit_pattern_ids = batches[2]  # (batch_size,) - explicit pattern IDs aligned with data
+        
+        # Process each batch sequentially (since we don't have pmap)
+        all_metrics = []
+        for i in range(num_steps):
+            batch_pairs, batch_shapes = batches[0][i], batches[1][i]
+            batch_pattern_ids = explicit_pattern_ids  # Same pattern IDs for all steps
+            rng = keys[i]
+            
+            def loss_fn(full_params, batch_pairs, batch_shapes, rng):
+                # Phase 2: Only reconstruction loss, no specialization losses
+                pattern_ids = batch_pattern_ids
+                
+                # Validate pattern distribution
+                unique_patterns, counts = jnp.unique(pattern_ids, return_counts=True)
+                unique_patterns_py = [int(p) for p in unique_patterns]
+                counts_py = [int(c) for c in counts]
+                pattern_distribution = dict(zip(unique_patterns_py, counts_py))
+                logging.debug(f"Phase 2 pattern distribution: {pattern_distribution}")
+                
+                # Phase 2: NO specialization losses - only reconstruction
+                repulsion_coeff = 0.0
+                contrastive_coeff = 0.0
+                logging.debug(f"🔒 Phase 2: Encoders FROZEN - No specialization losses")
+                
+                loss, metrics = self.model.apply(
+                    {"params": full_params["decoder"]},
+                    batch_pairs,
+                    batch_shapes,
+                    dropout_eval=False,
+                    mode=self.cfg.training.inference_mode,
+                    poe_alphas=jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32),
+                    encoder_params_list=full_params["encoders"],
+                    decoder_params=full_params["decoder"],
+                    rngs={"dropout": rng, "latents": rng},
+                    prior_kl_coeff=self.cfg.training.get("prior_kl_coeff"),
+                    pairwise_kl_coeff=self.cfg.training.get("pairwise_kl_coeff"),
+                    repulsion_kl_coeff=repulsion_coeff,  # DISABLED in Phase 2
+                    contrastive_kl_coeff=contrastive_coeff,  # DISABLED in Phase 2
+                    pattern_ids=pattern_ids,  # Still pass for logging
+                    **(self.cfg.training.get("inference_kwargs") or {}),
+                )
+                return loss, metrics
+            
+            (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params, batch_pairs, batch_shapes, rng)
+            
+            # Phase 2: FREEZE encoders, only train decoder
+            if "encoders" in grads:
+                zeros_enc = tree_map(lambda g: jnp.zeros_like(g), grads["encoders"])
+                grads = dict(grads)
+                grads["encoders"] = zeros_enc
+                logging.debug(f"🔒 Phase 2: Encoder gradients zeroed (frozen)")
+            
+            state = state.apply_gradients(grads=grads)
+            all_metrics.append(metrics)
+        
+        # Average metrics over all steps
+        avg_metrics = {}
+        for key in all_metrics[0].keys():
+            avg_metrics[key] = jnp.mean(jnp.stack([m[key] for m in all_metrics]))
+        
+        # Phase 2: Log that we're in decoder-only training mode
+        logging.info(f"Phase 2: Joint decoder training completed - {num_steps} steps")
+        logging.info(f"   - Encoders are FROZEN (keeping specialization)")
+        logging.info(f"   - Decoder is TRAINABLE (reconstruction focus)")
+        logging.info(f"   - No specialization losses applied")
+        
+        return state, avg_metrics
+    
+    def _create_specialized_training_data(self, target_pattern: int) -> tuple:
+        """
+        Create specialized training data for individual encoder training.
+        
+        Args:
+            target_pattern: Pattern this encoder should specialize in (1, 2, or 3)
+            
+        Returns:
+            Tuple of (grids, shapes, pattern_ids) for specialized training
+        """
+        logging.info(f"     Creating specialized data for pattern {target_pattern}")
+        
+        # Generate balanced data with emphasis on target pattern
+        total_samples = self.batch_size * 10  # Generate more samples for individual training
+        target_samples = int(total_samples * 0.7)  # 70% target pattern
+        other_samples = total_samples - target_samples
+        
+        grids_list = []
+        shapes_list = []
+        pattern_ids_list = []
+        
+        # Generate target pattern samples (reinforced)
+        for _ in range(target_samples):
+            grids, shapes, _ = self._create_single_pattern_sample(target_pattern)
+            grids_list.append(grids)
+            shapes_list.append(shapes)
+            pattern_ids_list.append(target_pattern)
+        
+        # Generate other pattern samples (reduced certainty)
+        other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
+        samples_per_other = other_samples // len(other_patterns)
+        
+        for pattern_id in other_patterns:
+            for _ in range(samples_per_other):
+                grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
+                grids_list.append(grids)
+                shapes_list.append(shapes)
+                pattern_ids_list.append(pattern_id)
+        
+        # Stack and return
+        grids = jnp.stack(grids_list, axis=0)
+        shapes = jnp.stack(shapes_list, axis=0)
+        pattern_ids = jnp.array(pattern_ids_list)
+        
+        logging.info(f"     Generated {len(grids_list)} samples: {target_samples} target, {other_samples} others")
+        return grids, shapes, pattern_ids
+    
+    def _create_single_pattern_sample(self, pattern_id: int) -> tuple:
+        """
+        Create a single sample for a specific pattern.
+        
+        Args:
+            pattern_id: Pattern to generate (1, 2, or 3)
+            
+        Returns:
+            Tuple of (grids, shapes, pattern_ids)
+        """
+        # Use the existing pattern generation logic
+        from datasets.task_gen.dataloader import make_task_gen_dataloader
+        
+        dataloader = make_task_gen_dataloader(
+            batch_size=1,
+            log_every_n_steps=1,
+            num_workers=0,
+            task_generator_class="STRUCT_PATTERN",
+            num_pairs=self.task_generator_kwargs["num_pairs"],
+            online_data_augmentation=self.cfg.training.online_data_augmentation,
+            seed=self.cfg.training.seed + pattern_id,
+            pattern=pattern_id,
+            pattern_per_task=True,
+            num_rows=self.task_generator_kwargs.get("num_rows", 5),
+            num_cols=self.task_generator_kwargs.get("num_cols", 5),
+        )
+        
+        # Extract single sample
+        for (grids, shapes), _ in dataloader:
+            return grids[0, 0], shapes[0, 0], pattern_id
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
@@ -1113,6 +1440,20 @@ class StructuredTrainer:
         logging.info(f"Repulsion KL coefficient: {cfg.training.get('repulsion_kl', 'disabled')}")
         logging.info(f"Contrastive KL coefficient: {cfg.training.get('contrastive_kl', 'disabled')}")
         logging.info(f"Training with {len(cfg.structured.artifacts.models)} encoders for pattern specialization")
+        
+        # NEW: Two-phase training approach
+        if self.encoder_expose_steps > 0 and not self.phase1_completed:
+            logging.info("🚀 PHASE 1: Individual Encoder Specialization")
+            logging.info(f"   - Training each encoder independently for {self.encoder_expose_steps} steps")
+            logging.info(f"   - Using original decoders to prevent interference")
+            logging.info(f"   - Focus: pattern specialization through contrastive learning")
+            
+            # Phase 1: Individual encoder specialization
+            state = self._specialize_individual_encoders(state, enc_params_list)
+            
+            logging.info("✅ PHASE 1 COMPLETED: Encoders specialized!")
+            logging.info("   - Ready for Phase 2: Joint decoder training")
+            logging.info("   - Encoders will be frozen during joint training")
         
         # Test forward pass first to catch any issues early
         logging.info("Testing forward pass...")
@@ -1181,22 +1522,48 @@ class StructuredTrainer:
             # CRITICAL: Validate encoder variance outputs before training
             self._validate_encoder_variance_outputs(state, test_batch)
             
-            test_loss, test_metrics = self.model.apply(
-                {"params": state.params["decoder"]},
-                *test_batch,
-                dropout_eval=False,
-                mode=cfg.training.inference_mode,
-                poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32),
-                encoder_params_list=state.params["encoders"],
-                decoder_params=state.params["decoder"],
-                rngs={"dropout": key, "latents": key},
-                prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
-                pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
-                repulsion_kl_coeff=cfg.training.get("repulsion_kl"),
-                contrastive_kl_coeff=cfg.training.get("contrastive_kl"),  # ADD CONTRASTIVE LOSS
-                pattern_ids=test_pattern_ids,  # ADD PATTERN IDS FOR CONTRASTIVE LOSS
-                **(cfg.training.get("inference_kwargs") or {}),
-            )
+            # Phase 2: Joint training with frozen encoders
+            if self.phase1_completed:
+                logging.info("🔒 PHASE 2: Joint Decoder Training")
+                logging.info("   - Encoders are FROZEN (keep specialization)")
+                logging.info("   - Decoder is TRAINABLE for reconstruction")
+                logging.info("   - No specialization losses (repulsion/contrastive disabled)")
+                
+                # Test forward pass without specialization losses
+                test_loss, test_metrics = self.model.apply(
+                    {"params": state.params["decoder"]},
+                    *test_batch,
+                    dropout_eval=False,
+                    mode=cfg.training.inference_mode,
+                    poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32),
+                    encoder_params_list=state.params["encoders"],
+                    decoder_params=state.params["decoder"],
+                    rngs={"dropout": key, "latents": key},
+                    prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
+                    pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
+                    repulsion_kl_coeff=0.0,  # DISABLED in Phase 2
+                    contrastive_kl_coeff=0.0,  # DISABLED in Phase 2
+                    **(cfg.training.get("inference_kwargs") or {}),
+                )
+            else:
+                # Phase 1: Test with specialization losses
+                test_loss, test_metrics = self.model.apply(
+                    {"params": state.params["decoder"]},
+                    *test_batch,
+                    dropout_eval=False,
+                    mode=cfg.training.inference_mode,
+                    poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32),
+                    encoder_params_list=state.params["encoders"],
+                    decoder_params=state.params["decoder"],
+                    rngs={"dropout": key, "latents": key},
+                    prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
+                    pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
+                    repulsion_kl_coeff=cfg.training.get("repulsion_kl"),
+                    contrastive_kl_coeff=cfg.training.get("contrastive_kl"),
+                    pattern_ids=test_pattern_ids,
+                    **(cfg.training.get("inference_kwargs") or {}),
+                )
+            
             logging.info(f"Forward pass test successful: loss={float(test_loss):.4f}")
         except Exception as e:
             logging.error(f"Forward pass test failed: {e}")
@@ -1311,50 +1678,58 @@ class StructuredTrainer:
                 key, train_key = jax.random.split(key)
                 start = time.time()
                 
-                # CRITICAL: Extract explicit pattern IDs from balanced dataloader
-                if hasattr(self, 'task_generator') and self.task_generator:
-                    # Balanced dataloader provides (grids, shapes, pattern_ids)
-                    if len(batches) == 3:
-                        grids, shapes, explicit_pattern_ids = batches
-                        logging.info(f"✅ Using EXPLICIT pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
-                        logging.info(f"   Pattern distribution: {[int(p) for p in jnp.unique(explicit_pattern_ids)]}")
-                        # DEBUG: Verify pattern ID structure
-                        expected_patterns = [1] * self.samples_per_pattern_per_batch + [2] * self.samples_per_pattern_per_batch + [3] * self.samples_per_pattern_per_batch
-                        if not jnp.array_equal(explicit_pattern_ids, jnp.array(expected_patterns)):
-                            logging.error(f"❌ PATTERN ID MISMATCH!")
-                            logging.error(f"   Expected: {expected_patterns[:10]}... (first 10)")
-                            logging.error(f"   Got: {explicit_pattern_ids[:10]}... (first 10)")
-                            logging.error(f"   Full expected: {expected_patterns}")
-                            logging.error(f"   Full got: {explicit_pattern_ids}")
-                        else:
-                            logging.info(f"✅ Pattern IDs match expected structure")
-                        
-                        # NEW: Validate contrastive loss pattern distribution
-                        if step % 100 == 0:  # Validate every 100 steps to avoid spam
-                            self._validate_contrastive_loss_patterns(explicit_pattern_ids, self.batch_size)
+                            # CRITICAL: Extract explicit pattern IDs from balanced dataloader
+            if hasattr(self, 'task_generator') and self.task_generator:
+                # Balanced dataloader provides (grids, shapes, pattern_ids)
+                if len(batches) == 3:
+                    grids, shapes, explicit_pattern_ids = batches
+                    logging.info(f"✅ Using EXPLICIT pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
+                    logging.info(f"   Pattern distribution: {[int(p) for p in jnp.unique(explicit_pattern_ids)]}")
+                    # DEBUG: Verify pattern ID structure
+                    expected_patterns = [1] * self.samples_per_pattern_per_batch + [2] * self.samples_per_pattern_per_batch + [3] * self.samples_per_pattern_per_batch
+                    if not jnp.array_equal(explicit_pattern_ids, jnp.array(expected_patterns)):
+                        logging.error(f"❌ PATTERN ID MISMATCH!")
+                        logging.error(f"   Expected: {expected_patterns[:10]}... (first 10)")
+                        logging.error(f"   Got: {explicit_pattern_ids[:10]}... (first 10)")
+                        logging.error(f"   Full expected: {expected_patterns}")
+                        logging.error(f"   Full got: {explicit_pattern_ids}")
                     else:
-                        # Fallback if dataloader doesn't provide pattern_ids
-                        grids, shapes = batches
-                        explicit_pattern_ids = jnp.concatenate([
-                            jnp.full((self.samples_per_pattern_per_batch,), 1),  # O-tetromino
-                            jnp.full((self.samples_per_pattern_per_batch,), 2),  # T-tetromino  
-                            jnp.full((self.samples_per_pattern_per_batch,), 3),  # L-tetromino
-                        ], axis=0)
-                        logging.warning(f"⚠️  Balanced dataloader didn't provide pattern_ids, using fallback")
+                        logging.info(f"✅ Pattern IDs match expected structure")
+                    
+                    # NEW: Validate contrastive loss pattern distribution
+                    if step % 100 == 0:  # Validate every 100 steps to avoid spam
+                        self._validate_contrastive_loss_patterns(explicit_pattern_ids, self.batch_size)
                 else:
-                    # Fixed dataset - extract pattern IDs from data content
+                    # Fallback if dataloader doesn't provide pattern_ids
                     grids, shapes = batches
-                    explicit_pattern_ids = self._extract_true_pattern_ids_from_data(grids[0], shapes[0])
-                    logging.info(f"⚠️  Using EXTRACTED pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
-                
-                # Log pattern distribution for current batch
-                batch_size = grids.shape[1] if hasattr(grids, 'shape') and len(grids.shape) > 1 else len(grids)
-                samples_per_pattern = batch_size // 3
-                logging.debug(f"Processing balanced batch with {batch_size} samples")
-                logging.debug(f"Pattern distribution: {samples_per_pattern} samples per pattern (O, T, L tetrominos)")
-                logging.debug(f"Pattern structure: [O-tetromino x{samples_per_pattern}, T-tetromino x{samples_per_pattern}, L-tetromino x{samples_per_pattern}]")
-                
-                # Pass explicit pattern IDs to training
+                    explicit_pattern_ids = jnp.concatenate([
+                        jnp.full((self.samples_per_pattern_per_batch,), 1),  # O-tetromino
+                        jnp.full((self.samples_per_pattern_per_batch,), 2),  # T-tetromino  
+                        jnp.full((self.samples_per_pattern_per_batch,), 3),  # L-tetromino
+                    ], axis=0)
+                    logging.warning(f"⚠️  Balanced dataloader didn't provide pattern_ids, using fallback")
+            else:
+                # Fixed dataset - extract pattern IDs from data content
+                grids, shapes = batches
+                explicit_pattern_ids = self._extract_true_pattern_ids_from_data(grids[0], shapes[0])
+                logging.info(f"⚠️  Using EXTRACTED pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
+            
+            # Log pattern distribution for current batch
+            batch_size = grids.shape[1] if hasattr(grids, 'shape') and len(grids.shape) > 1 else len(grids)
+            samples_per_pattern = batch_size // 3
+            logging.debug(f"Processing balanced batch with {batch_size} samples")
+            logging.debug(f"Pattern distribution: {samples_per_pattern} samples per pattern (O, T, L tetrominos)")
+            logging.debug(f"Pattern structure: [O-tetromino x{samples_per_pattern}, T-tetromino x{samples_per_pattern}, L-tetromino x{samples_per_pattern}]")
+            
+            # NEW: Two-phase training logic
+            if self.phase1_completed:
+                # Phase 2: Joint training with frozen encoders
+                logging.debug(f"🔒 Phase 2: Joint decoder training (encoders frozen)")
+                batches_with_patterns = (grids, shapes, explicit_pattern_ids)
+                state, metrics = self.train_n_steps_phase2(state, batches_with_patterns, train_key)
+            else:
+                # Phase 1: Individual encoder training (should not reach here after Phase 1)
+                logging.warning(f"⚠️  Still in Phase 1 during main training loop - this shouldn't happen")
                 batches_with_patterns = (grids, shapes, explicit_pattern_ids)
                 state, metrics = self.train_n_steps(state, batches_with_patterns, train_key)
                 end = time.time()

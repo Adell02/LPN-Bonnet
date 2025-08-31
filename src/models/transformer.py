@@ -72,16 +72,10 @@ class EncoderTransformer(nn.Module):
     def embed_grids(self, pairs: chex.Array, grid_shapes: chex.Array, dropout_eval: bool) -> chex.Array:
         config = self.config
         
-        print(f"[embed_grids] Input pairs shape: {pairs.shape}")
-        print(f"[embed_grids] Input grid_shapes shape: {grid_shapes.shape}")
-        print(f"[embed_grids] config.max_rows: {config.max_rows}, config.max_cols: {config.max_cols}")
-        print(f"[embed_grids] config.max_len: {config.max_len}")
+
         
         # Handle empty grid_shapes by providing fallback dimensions
         if grid_shapes.shape[1] == 0:
-            print(f"[embed_grids] WARNING: Empty grid_shapes detected: {grid_shapes.shape}")
-            print(f"[embed_grids] Providing fallback grid dimensions from pairs shape")
-            
             # Extract grid dimensions from pairs shape
             batch_size = pairs.shape[0]
             max_rows = pairs.shape[1]  # Use actual rows from pairs
@@ -93,9 +87,6 @@ class EncoderTransformer(nn.Module):
             fallback_grid_shapes = np.array([
                 [[[max_rows, max_rows], [max_cols, max_cols]]]  # Add extra dimension for samples
             ] * batch_size, dtype=grid_shapes.dtype)
-            
-            print(f"[embed_grids] Fallback grid_shapes: {fallback_grid_shapes.shape}")
-            print(f"[embed_grids] Using dimensions: rows={max_rows}, cols={max_cols}")
             
             # Replace empty grid_shapes with fallback
             grid_shapes = fallback_grid_shapes
@@ -183,12 +174,6 @@ class EncoderTransformer(nn.Module):
         # Fix dimension mismatch: ensure grid_shapes_embed has compatible dimensions with x
         # This handles cases like tetro_pattern where x has extra dimensions
         if grid_shapes_embed.shape[:-2] != x.shape[:-2]:
-            print(f"[embed_grids] Dimension mismatch detected:")
-            print(f"  grid_shapes_embed shape: {grid_shapes_embed.shape}")
-            print(f"  x shape: {x.shape}")
-            print(f"  grid_shapes_embed batch dims: {grid_shapes_embed.shape[:-2]}")
-            print(f"  x batch dims: {x.shape[:-2]}")
-            
             # Simple approach: just expand dimensions to match
             x_batch_dims = len(x.shape[:-2])
             grid_batch_dims = len(grid_shapes_embed.shape[:-2])
@@ -198,15 +183,12 @@ class EncoderTransformer(nn.Module):
                 # Add missing dimensions by expanding
                 for _ in range(dims_to_add):
                     grid_shapes_embed = grid_shapes_embed[None, ...]
-                print(f"  After expanding dimensions: {grid_shapes_embed.shape}")
                 
                 # Now try broadcasting to final shape
                 try:
                     target_shape = (*x.shape[:-2], *grid_shapes_embed.shape[-2:])
                     grid_shapes_embed = jnp.broadcast_to(grid_shapes_embed, target_shape)
-                    print(f"  After broadcasting: {grid_shapes_embed.shape}")
                 except Exception as e:
-                    print(f"  Broadcasting failed: {e}")
                     raise ValueError(f"Cannot handle tensor dimension mismatch after expansion")
             else:
                 raise ValueError(f"Cannot handle tensor dimension mismatch: grid_shapes_embed {grid_shapes_embed.shape} vs x {x.shape}")
@@ -227,27 +209,15 @@ class EncoderTransformer(nn.Module):
         expected_seq_len = 1 + 4 + 2 * config.max_len
         
         if actual_seq_len != expected_seq_len:
-            print(f"[embed_grids] WARNING: Sequence length mismatch!")
-            print(f"[embed_grids] Expected: {expected_seq_len}, Actual: {actual_seq_len}")
-            print(f"[embed_grids] config.max_len: {config.max_len}")
-            print(f"[embed_grids] config.max_rows: {config.max_rows}, config.max_cols: {config.max_cols}")
-            print(f"[embed_grids] This suggests the grid dimensions are not what was expected")
-            
             # Try to calculate the actual sequence length from the data
             if 'pairs' in locals():
-                print(f"[embed_grids] pairs shape: {pairs.shape}")
                 if len(pairs.shape) >= 3:
                     actual_rows = pairs.shape[1]
                     actual_cols = pairs.shape[2]
-                    print(f"[embed_grids] Actual data dimensions: rows={actual_rows}, cols={actual_cols}")
-                    print(f"[embed_grids] Expected sequence length from data: {1 + 4 + 2 * actual_rows * actual_cols}")
         
         # Use a more flexible assertion that allows for dimension mismatches
         if actual_seq_len != expected_seq_len:
-            print(f"[embed_grids] WARNING: Sequence length mismatch - this may cause attention mask issues")
-            print(f"[embed_grids] Expected: {expected_seq_len}, Actual: {actual_seq_len}")
-        else:
-            print(f"[embed_grids] Sequence length check passed: {actual_seq_len}")
+            pass
         
         x = nn.Dropout(rate=config.transformer_layer.dropout_rate, name="embed_dropout")(x, dropout_eval)
         return x

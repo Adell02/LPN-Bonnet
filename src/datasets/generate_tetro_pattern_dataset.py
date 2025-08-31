@@ -50,7 +50,7 @@ def generate_tetro_pattern_dataset(length=99, num_pairs=4, seed=42):
     
     # Initialize arrays
     grids = np.zeros((length, num_pairs, 5, 5, 2), dtype=np.uint8)
-    shapes = np.zeros((length, num_pairs, 2), dtype=np.uint8)
+    shapes = np.zeros((length, num_pairs, 2, 2), dtype=np.uint8)  # Fixed: (length, num_pairs, 2, 2) for [input_rows, input_cols], [output_rows, output_cols]
     program_ids = np.zeros(length, dtype=np.uint32)
     
     # Define pattern offsets and bounding boxes
@@ -99,8 +99,9 @@ def generate_tetro_pattern_dataset(length=99, num_pairs=4, seed=42):
                 # Store in arrays
                 grids[task_idx, pair, :, :, 0] = input_grid
                 grids[task_idx, pair, :, :, 1] = output_grid
-                shapes[task_idx, pair, 0] = 5  # num_rows
-                shapes[task_idx, pair, 1] = 5  # num_cols
+                # Fixed: Store both input and output grid shapes separately
+                shapes[task_idx, pair, 0] = [5, 5]  # [input_rows, input_cols]
+                shapes[task_idx, pair, 1] = [5, 5]  # [output_rows, output_cols]
             
             # Set program ID to pattern type
             program_ids[task_idx] = pattern_id
@@ -108,7 +109,7 @@ def generate_tetro_pattern_dataset(length=99, num_pairs=4, seed=42):
     
     print("\nGenerated dataset:")
     print("  Total grids shape: {} (should be ({}, {}, 5, 5, 2))".format(grids.shape, length, num_pairs))
-    print("  Total shapes shape: {} (should be ({}, {}, 2))".format(shapes.shape, length, num_pairs))
+    print("  Total shapes shape: {} (should be ({}, {}, 2, 2))".format(shapes.shape, length, num_pairs))  # Fixed: now expects 2x2
     print("  Total program IDs shape: {} (should be ({},))".format(program_ids.shape, length))
     
     # Verify pattern distribution
@@ -134,6 +135,9 @@ def save_tetro_pattern_dataset(grids, shapes, program_ids, output_dir="src/datas
         program_ids: Program IDs array
         output_dir: Directory to save the dataset
     """
+    # Extract dimensions from the input arrays
+    length = grids.shape[0]
+    num_pairs = grids.shape[1]
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
@@ -154,7 +158,7 @@ def save_tetro_pattern_dataset(grids, shapes, program_ids, output_dir="src/datas
     # Verify the saved files
     print("\nVerification:")
     print("  Grids loaded: {}".format(np.load(grids_path).shape))
-    print("  Shapes loaded: {}".format(np.load(shapes_path).shape))
+    print("  Shapes loaded: {} (should be ({}, {}, 2, 2))".format(np.load(shapes_path).shape, length, num_pairs))  # Fixed: now expects 2x2
     print("  Program IDs loaded: {}".format(np.load(program_ids_path).shape))
 
 def main():
