@@ -386,8 +386,11 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
             # Fix GA shape mismatch: collapse latents to one point per step
             if prefix == "ga_" and t.pts is not None and t.vals is not None:
                 print(f"[plot] GA shape fix: pts={t.pts.shape}, vals={t.vals.shape}")
+                # FIXED: GA trajectory now properly includes mean latent as step 0
+                # The trajectory should have steps_len points including the mean latent
                 t.pts = _collapse_to_steps(t.pts, steps_len=len(t.vals))
                 print(f"[plot] GA shape after fix: pts={t.pts.shape}, vals={t.vals.shape}")
+                print(f"[plot] GA trajectory now properly aligned: {len(t.vals)} losses for {t.pts.shape[0]} latent points")
             
             t.best_per_gen = _extract_best_per_gen(f, prefix)
             pop_pts, gen_idx, pop_vals = _extract_pop(f, prefix)

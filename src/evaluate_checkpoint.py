@@ -894,58 +894,15 @@ def evaluate_custom_dataset(
             if ga_losses_rows and ga_steps_len is not None:
                 ga_losses_per_sample = np.vstack(ga_losses_rows).astype(np.float32)
                 
-                # For GA, we need to include the initial mean latent evaluation at budget 0
-                # Extract initial loss from the first step of optimization trajectory
-                initial_ga_losses = None
-                try:
-                    if "ga_log_probs" in payload:
-                        # Get initial log probs (first step, best candidate)
-                        initial_lp = payload["ga_log_probs"][..., 0, :]  # First step, all candidates
-                        initial_scores = np.max(initial_lp, axis=-1)  # Best candidate per sample
-                        initial_ga_losses = -initial_scores  # Convert to positive losses
-                        print(f"[store_latents] Extracted initial GA losses: {initial_ga_losses.shape}, range: [{initial_ga_losses.min():.6f}, {initial_ga_losses.max():.6f}]")
-                    else:
-                        print(f"[store_latents] Warning: No ga_log_probs found, cannot extract initial GA losses")
-                except Exception as e:
-                    print(f"[store_latents] Failed to extract initial GA losses: {e}")
-                    initial_ga_losses = None
+                # FIXED: GA now properly provides mean latent evaluation in the trajectory
+                # The model now evaluates the mean latent BEFORE optimization and includes it as step 0
+                # No need to "bolt on" the initial loss - it's already properly included
+                print(f"[store_latents] GA trajectory now properly includes mean latent evaluation from model")
+                payload["ga_losses_per_sample"] = ga_losses_per_sample
                 
-                # Prepend initial losses if available
-                if initial_ga_losses is not None:
-                    # Debug: show the shapes we're working with
-                    print(f"[store_latents] Debug shapes: initial_ga_losses={initial_ga_losses.shape}, ga_losses_per_sample={ga_losses_per_sample.shape}")
-                    
-                    # The issue is that initial_ga_losses has shape (1, 4) but ga_losses_per_sample has shape (4, 50)
-                    # We need to align the batch dimensions. The initial_ga_losses should be expanded to match
-                    # the batch size of ga_losses_per_sample
-                    
-                    # First, let's understand what we have:
-                    # - initial_ga_losses: (1, 4) - 1 batch, 4 samples
-                    # - ga_losses_per_sample: (4, 50) - 4 samples, 50 steps
-                    
-                    # We need to extract the 4 samples from initial_ga_losses and reshape them
-                    if initial_ga_losses.shape[0] == 1 and initial_ga_losses.shape[1] == 4:
-                        # Extract the 4 samples: (1, 4) -> (4,)
-                        initial_ga_losses = initial_ga_losses[0, :]  # Shape: (4,)
-                        # Reshape to (4, 1) for concatenation
-                        initial_ga_losses = initial_ga_losses.reshape(-1, 1)  # Shape: (4, 1)
-                        print(f"[store_latents] Extracted and reshaped initial GA losses: {initial_ga_losses.shape}")
-                    else:
-                        print(f"[store_latents] Unexpected initial_ga_losses shape: {initial_ga_losses.shape}, skipping initial loss prepending")
-                        initial_ga_losses = None
-                    
-                    # Concatenate: initial + optimization steps
-                    if initial_ga_losses is not None:
-                        ga_losses_with_initial = np.concatenate([initial_ga_losses, ga_losses_per_sample], axis=1)
-                        payload["ga_losses_per_sample"] = ga_losses_with_initial
-                        print(f"[store_latents] GA losses with initial: {ga_losses_with_initial.shape}")
-                    else:
-                        payload["ga_losses_per_sample"] = ga_losses_per_sample
-                else:
-                    payload["ga_losses_per_sample"] = ga_losses_per_sample
-                
-                # Include budget 0 for mean latent evaluation, then 2, 4, 6, ... for optimization steps
-                payload["ga_budget"] = np.concatenate([[0], (2 * np.arange(1, ga_steps_len + 1))]).astype(np.int32)
+                # FIXED: GA trajectory now properly includes mean latent as step 0
+                # Budget 0 = mean latent evaluation, Budget 2 = first optimization step, etc.
+                payload["ga_budget"] = (2 * np.arange(0, ga_steps_len + 1)).astype(np.int32)
             if es_losses_rows and es_gen_len is not None:
                 es_losses_per_sample = np.vstack(es_losses_rows).astype(np.float32)
                 payload["es_generation_losses_per_sample"] = es_losses_per_sample
