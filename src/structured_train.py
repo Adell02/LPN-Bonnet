@@ -1689,7 +1689,8 @@ class StructuredTrainer:
             # Create evaluation data for all patterns to show specialization progress
             eval_data = {}
             for pattern_id in [1, 2, 3]:
-                pattern_data = self._create_specialized_training_data(pattern_id)
+                # Use the same pattern dataset creation as Phase B for consistency
+                pattern_data = self._create_pattern_dataset(pattern_id, 100)
                 eval_data[pattern_id] = pattern_data
             
             # Generate T-SNE visualization
@@ -1766,12 +1767,17 @@ class StructuredTrainer:
                     
                     # Reshape data for visualization: Show OUTPUT grids (tetromino patterns), not input grids (anchor points)
                     # Data shape: (num_samples, num_pairs, 5, 5, 2) where [:, :, :, :, 0] = input, [:, :, :, :, 1] = output
-                    vis_grids = np.array(sample_grids)[:, :, :, :, 1]  # Take OUTPUT channel (tetromino patterns)
-                    vis_shapes = np.array(sample_shapes)[:, :, 1]       # Take OUTPUT dimensions
+                    # Function expects: (num_pairs, 5, 5, 2) so we need to transpose
+                    vis_grids = np.array(sample_grids)[0, :, :, :, 1]  # Take first sample, all pairs, OUTPUT channel
+                    vis_shapes = np.array(sample_shapes)[0, :, 1]       # Take first sample, all pairs, OUTPUT dimensions
                     
                     # Debug: Verify visualization data shows correct patterns
-                    debug_grid = vis_grids[0, 0]  # First sample, first pair
+                    debug_grid = vis_grids[0]  # First pair
                     logging.info(f"         Visualization grid for pattern {pattern_id} ({pattern_name}):\n{debug_grid}")
+                    logging.info(f"         Grid shape: {vis_grids.shape}, Expected: (4, 5, 5)")
+                    logging.info(f"         Sample grid shape: {debug_grid.shape}, Expected: (5, 5)")
+                    logging.info(f"         Original sample_grids shape: {sample_grids.shape}")
+                    logging.info(f"         Original sample_shapes shape: {sample_shapes.shape}")
                     
                     fig_cert = visualize_struct_confidence_panel(
                         sample_grids=vis_grids,
@@ -1861,12 +1867,17 @@ class StructuredTrainer:
                         pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
                         
                         # Reshape data for visualization: Show OUTPUT grids (tetromino patterns)
-                        vis_grids = np.array(sample_grids)[:, :, :, :, 1]  # Take OUTPUT channel
-                        vis_shapes = np.array(sample_shapes)[:, :, 1]       # Take OUTPUT dimensions
+                        # Function expects: (num_pairs, 5, 5, 2) so we need to transpose
+                        vis_grids = np.array(sample_grids)[0, :, :, :, 1]  # Take first sample, all pairs, OUTPUT channel
+                        vis_shapes = np.array(sample_shapes)[0, :, 1]       # Take first sample, all pairs, OUTPUT dimensions
                         
                         # Debug: Verify visualization data shows correct patterns
-                        debug_grid = vis_grids[0, 0]  # First sample, first pair
+                        debug_grid = vis_grids[0]  # First pair
                         logging.info(f"         Phase B visualization grid for pattern {pattern_id} ({pattern_name}):\n{debug_grid}")
+                        logging.info(f"         Phase B Grid shape: {vis_grids.shape}, Expected: (4, 5, 5)")
+                        logging.info(f"         Phase B Sample grid shape: {debug_grid.shape}, Expected: (5, 5)")
+                        logging.info(f"         Phase B Original sample_grids shape: {sample_grids.shape}")
+                        logging.info(f"         Phase B Original sample_shapes shape: {sample_shapes.shape}")
                         
                         fig_cert = visualize_struct_confidence_panel(
                             sample_grids=vis_grids,
