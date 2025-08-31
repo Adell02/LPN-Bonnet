@@ -3717,11 +3717,71 @@ class StructuredTrainer:
             (mask.sum(axis=(0)) / (mask.sum() + 1e-5)),
         )
         
-        # Generation visualization
+        # Generation visualization - CRITICAL FIX: Compute individual predictions for each sample using leave_one_out approach
         num_show = max(1, min(num_tasks_to_show, int(grids_np.shape[0])))
         num_pairs = int(shapes_np.shape[1])
-        pred_grids_vis = np.repeat(out_grids_np[:num_show, None, ...], num_pairs, axis=1)
-        pred_shapes_vis = np.repeat(out_shapes_np[:num_show, None, :], num_pairs, axis=1)
+        
+        # Instead of copying the first prediction, we need to generate individual predictions for each sample
+        # This requires calling the model for each sample individually to get proper leave_one_out predictions
+        individual_pred_grids = []
+        individual_pred_shapes = []
+        
+        for task_idx in range(num_show):
+            task_grids = dataset_grids[task_idx:task_idx+1]  # Single task
+            task_shapes = dataset_shapes[task_idx:task_idx+1]
+            
+            # Create leave_one_out data for this specific task
+            task_leave_one_out_grids = make_leave_one_out(task_grids, axis=-4)
+            task_leave_one_out_shapes = make_leave_one_out(task_shapes, axis=-3)
+            
+            # Handle the extra dimension from make_leave_one_out
+            if task_leave_one_out_grids.shape[1] == task_grids.shape[1]:
+                task_leave_one_out_grids = task_leave_one_out_grids[:, 0, ...]
+                task_leave_one_out_shapes = task_leave_one_out_shapes[:, 0, ...]
+            
+            try:
+                # Generate individual prediction for this task using leave_one_out approach
+                task_output_grids, task_output_shapes, _ = self.model.apply(
+                    {"params": state.params["decoder"]},
+                    method=self.model.generate_output,
+                    pairs=task_leave_one_out_grids,
+                    grid_shapes=task_leave_one_out_shapes,
+                    input=task_grids[:, 0, ..., 0],
+                    input_grid_shape=task_shapes[:, 0, ..., 0],
+                    key=jax.random.PRNGKey(task_idx),
+                    dropout_eval=True,
+                    mode=inference_mode,
+                    return_two_best=False,
+                    poe_alphas=alphas,
+                    encoder_params_list=state.params["encoders"],
+                    decoder_params=state.params["decoder"],
+                    repulsion_kl_coeff=self.cfg.training.get("repulsion_kl"),
+                )
+                
+                # Convert to numpy and reshape for visualization
+                task_output_grids_np = np.array(jax.device_get(task_output_grids))
+                task_output_shapes_np = np.array(jax.device_get(task_output_shapes))
+                
+                # Reshape to match the expected visualization format: (num_pairs, ...)
+                if len(task_output_grids_np.shape) == 4:  # (1, num_pairs, ...)
+                    task_output_grids_np = task_output_grids_np[0]  # Remove batch dimension
+                    task_output_shapes_np = task_output_shapes_np[0]
+                
+                individual_pred_grids.append(task_output_grids_np)
+                individual_pred_shapes.append(task_output_shapes_np)
+                
+            except Exception as e:
+                logging.error(f"Individual prediction for task {task_idx} failed: {e}")
+                # Fallback to copying the main prediction if individual generation fails
+                fallback_grids = np.repeat(out_grids_np[task_idx:task_idx+1, None, ...], num_pairs, axis=1)[0]
+                fallback_shapes = np.repeat(out_shapes_np[task_idx:task_idx+1, None, :], num_pairs, axis=1)[0]
+                individual_pred_grids.append(fallback_grids)
+                individual_pred_shapes.append(fallback_shapes)
+        
+        # Stack individual predictions for visualization
+        pred_grids_vis = np.stack(individual_pred_grids, axis=0)  # (num_show, num_pairs, ...)
+        pred_shapes_vis = np.stack(individual_pred_shapes, axis=0)  # (num_show, num_pairs, ...)
+        
         fig_gen = visualize_dataset_generation(grids_np[:num_show], shapes_np[:num_show], pred_grids_vis, pred_shapes_vis, num_show)
         
         # T-SNE visualization - Show encoders + context with different markers

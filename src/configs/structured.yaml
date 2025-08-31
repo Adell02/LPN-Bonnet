@@ -59,8 +59,8 @@ training:
   inference_kwargs: {}
   prior_kl_coeff: null
   pairwise_kl_coeff: null
-  total_num_steps: 200
-  encoder_expose_steps: 200  # number of initial gradient steps encoders are trainable
+  total_num_steps: 500
+  encoder_expose_steps: 500  # number of initial gradient steps encoders are trainable
   repulsion_kl: 0
   # This coefficient controls the strength of contrastive loss
   # Lower values = more stable, higher values = more aggressive specialization
