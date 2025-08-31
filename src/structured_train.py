@@ -603,7 +603,7 @@ class StructuredTrainer:
         shapes = shapes.reshape(num_logs, log_every_n_steps, self.batch_size, *shapes.shape[2:])
         return grids, shapes
 
-    def train_n_steps(self, state: TrainState, batches: tuple[chex.Array, chex.Array, chex.Array], key: chex.PRNGKey) -> tuple[TrainState, dict]:
+    def train_n_steps(self, state: TrainState, batches: tuple[chex.Array, chex.Array, chex.Array], key: chex.PRNGKey, global_step: int) -> tuple[TrainState, dict]:
         """Process log_every_n_steps batches and return updated state and metrics."""
         num_steps = batches[0].shape[0]  # Should be log_every_n_steps
         keys = jax.random.split(key, num_steps)
@@ -2775,15 +2775,17 @@ class StructuredTrainer:
                 for pattern_id, target_latents in prev_targets.items():
                     if target_latents is not None and len(target_latents) > 0:
                         # Ensure target latents have the same batch size
-                        if len(target_latents) == len(current_latents):
-                            # Compute L2 distance between current and target latents
-                            distances = jnp.linalg.norm(current_latents - target_latents, axis=1)
-                            
-                            # Repulsion loss: penalize when distance < margin
-                            # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2^2)
-                            repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
-                            repulsion_loss += repulsion_term
-                            num_repulsion_terms += 1
+                        # Compute pairwise L2 distances between current and stored latents
+                        distances = jnp.linalg.norm(
+                            current_latents[:, None, :] - target_latents[None, :, :],
+                            axis=-1,
+                        )
+
+                        # Repulsion loss: penalize when distance < margin
+                        # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2)
+                        repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
+                        repulsion_loss += repulsion_term
+                        num_repulsion_terms += 1
         
         # Average over all repulsion terms
         if num_repulsion_terms > 0:
@@ -2837,7 +2839,8 @@ class StructuredTrainer:
         log_every = cfg.training.log_every_n_steps
         self.enc_params_list = enc_params_list  # Store for train_n_steps
         
-        step = 0  # Always start from 0 - unique run IDs prevent conflicts
+        step = 0  # Local step counter for this training run
+        global_step = 0  # Cumulative global step for WandB logging
         epoch = 0
         key = jax.random.PRNGKey(cfg.training.seed)
         logging.info("Starting structured training...")
@@ -3018,7 +3021,7 @@ class StructuredTrainer:
         if cfg.training.get("eval_every_n_logs"):
             try:
                 logging.info(f"Running evaluation at step 0 (first step)")
-                self.evaluate(state, enc_params_list, step)
+                self.evaluate(state, enc_params_list, global_step)
                 
                 # Test datasets evaluation at first step
                 if hasattr(self, 'test_datasets') and self.test_datasets:
@@ -3026,7 +3029,7 @@ class StructuredTrainer:
                         try:
                             start = time.time()
                             test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
-                                state, dataset_dict, step=step
+                                state, dataset_dict, step=global_step
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                             
@@ -3051,7 +3054,7 @@ class StructuredTrainer:
                                 else:
                                     logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                             
-                            wandb.log(test_metrics, step=step)
+                            wandb.log(test_metrics, step=global_step)
                             plt.close('all')  # Close all figures to prevent memory leaks
                             # Explicitly close additional T-SNE figures
                             if fig_tsne_samples is not None:
@@ -3093,7 +3096,7 @@ class StructuredTrainer:
             
             dataloading_time = time.time()
             for batches in dataloader:
-                wandb.log({"timing/dataloading_time": time.time() - dataloading_time}, step=step)
+                wandb.log({"timing/dataloading_time": time.time() - dataloading_time}, step=global_step)
                 
                 # Training - process log_every_n_steps batches at once
                 key, train_key = jax.random.split(key)
@@ -3143,17 +3146,18 @@ class StructuredTrainer:
             if self.phase1_completed:
                 # Phase 2: Joint training with frozen encoders
                 batches_with_patterns = (grids, shapes, explicit_pattern_ids)
-                state, metrics = self.train_n_steps_phase2(state, batches_with_patterns, train_key, step)
+                state, metrics = self.train_n_steps_phase2(state, batches_with_patterns, train_key, global_step)
             else:
                 # Phase 1: Individual encoder training (should not reach here after Phase 1)
                 logging.warning(f"⚠️  Still in Phase 1 during main training loop - this shouldn't happen")
                 batches_with_patterns = (grids, shapes, explicit_pattern_ids)
-                state, metrics = self.train_n_steps(state, batches_with_patterns, train_key)
+                state, metrics = self.train_n_steps(state, batches_with_patterns, train_key, global_step)
             
             end = time.time()
             
             pbar.update(log_every)
             step += log_every
+            global_step += log_every
                 
             # Log essential encoder status
             if step % 100 == 0:
@@ -3176,18 +3180,18 @@ class StructuredTrainer:
             if self.phase1_completed:
                 # Phase 2: Organize metrics by category for better visualization
                 organized_metrics = self._organize_phase2_metrics_for_wandb(metrics)
-                wandb.log(organized_metrics, step=step)
+                wandb.log(organized_metrics, step=global_step)
             else:
                 # Phase 1: Log metrics as is
-                wandb.log(metrics, step=step)
+                wandb.log(metrics, step=global_step)
                 
             # CRITICAL FIX: Both phases should have the SAME evaluation frequency
             # This ensures Phase 2 shows the same comprehensive metrics and plots as regular training
             eval_interval = cfg.training.get("eval_every_n_logs", 0)
             if eval_interval and (step // log_every) % eval_interval == 0:
                 try:
-                    logging.info(f"Running evaluation at step {step}")
-                    self.evaluate(state, enc_params_list, step)
+                    logging.info(f"Running evaluation at step {global_step}")
+                    self.evaluate(state, enc_params_list, global_step)
                     
                     # Test datasets evaluation (like train.py) - CRITICAL for both phases
                     if hasattr(self, 'test_datasets') and self.test_datasets:
@@ -3195,7 +3199,7 @@ class StructuredTrainer:
                             try:
                                 start = time.time()
                                 test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
-                                    state, dataset_dict, step=step
+                                    state, dataset_dict, step=global_step
                                 )
                                 test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                                 
@@ -3220,7 +3224,7 @@ class StructuredTrainer:
                                     else:
                                         logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                                 
-                                wandb.log(test_metrics, step=step)
+                                wandb.log(test_metrics, step=global_step)
                                 plt.close('all')  # Close all figures to prevent memory leaks
                                 # Explicitly close additional T-SNE figures
                                 if fig_tsne_samples is not None:
@@ -3239,7 +3243,7 @@ class StructuredTrainer:
             # Save checkpoint (for both phases)
             if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
                 try:
-                    logging.info(f"Saving checkpoint at step {step}")
+                    logging.info(f"Saving checkpoint at step {global_step}")
                     from flax.serialization import msgpack_serialize, to_state_dict
                     with open("state.msgpack", "wb") as outfile:
                         outfile.write(msgpack_serialize(to_state_dict(state)))

@@ -1454,8 +1454,14 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     if ga_npz_path and os.path.exists(ga_npz_path):
         try:
             with np.load(ga_npz_path, allow_pickle=True) as f:
+                # Always attempt to read stored budget so we can show
+                # the mean latent evaluation as budget 0.
                 if 'ga_budget' in f:
                     ga_budget = np.array(f['ga_budget']).reshape(-1)
+
+                # Per-sample overlay is only meaningful when we have
+                # multiple samples, but it should still respect the
+                # pre-computed budget if present.
                 if (dataset_length is not None and dataset_length > 1) and 'ga_losses_per_sample' in f:
                     L = np.array(f['ga_losses_per_sample'])  # (N, S)
                     x = ga_budget if ga_budget is not None and len(ga_budget) == L.shape[1] else np.arange(L.shape[1])
@@ -1475,13 +1481,18 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Fallback single GA curve if no per-sample available
     if has_ga_loss and not did_ga_overlay:
         if ga_steps is not None:
-            ga_budget = 2 * np.arange(1, len(ga.vals) + 1)
-            print(f"[loss] GA budget calculation: {len(ga.vals)} steps → budget points: {ga_budget}")
-            ax.plot(ga_budget, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
+            if ga_budget is not None and len(ga_budget) == len(ga.vals):
+                x = ga_budget
+            else:
+                # Default to 2×step count, starting from 0 to include
+                # the initial mean latent evaluation.
+                x = 2 * np.arange(len(ga.vals))
+            print(f"[loss] GA budget calculation: {len(ga.vals)} steps → budget points: {x}")
+            ax.plot(x, ga.vals, color="#FBB998", linewidth=3.0, marker='o',
                     markersize=6, label=f"Gradient Ascent (2×{ga_steps} steps)", zorder=3)
         else:
             ga_steps_indices = np.arange(len(ga.vals))
-            ax.plot(ga_steps_indices, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
+            ax.plot(ga_steps_indices, ga.vals, color="#FBB998", linewidth=3.0, marker='o',
                     markersize=6, label="Gradient Ascent", zorder=3)
         # Track y extents
         y_values_for_limits.append(np.asarray(ga.vals).reshape(-1))
