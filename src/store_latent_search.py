@@ -109,6 +109,16 @@ def try_extract_2d_points(npz: np.lib.npyio.NpzFile, prefix: str) -> Optional[np
         f"{prefix}latents",
         f"{prefix}all_latents",
     ]
+    
+    # For GA, also check for the stored trajectory data
+    if prefix == "ga_":
+        preferred = [
+            f"{prefix}path",
+            f"{prefix}latents",  # This should contain the full trajectory
+            f"{prefix}all_latents",
+            f"{prefix}best_latents_per_generation",
+        ]
+    
     for key in preferred:
         if key in npz:
             arr = np.array(npz[key])
@@ -116,13 +126,18 @@ def try_extract_2d_points(npz: np.lib.npyio.NpzFile, prefix: str) -> Optional[np
                 # Accept any dimension - PCA will handle reduction to 2D if needed
                 print(f"[plot] Using key '{key}' for {prefix} points, shape={arr.shape}")
                 return arr
+    
     # Fallback: first array with at least 2 dimensions
     for key in npz.files:
         if not key.startswith(prefix):
             continue
         arr = np.array(npz[key])
         if arr.ndim >= 2:
+            print(f"[plot] Fallback: using key '{key}' for {prefix} points, shape={arr.shape}")
             return arr
+    
+    print(f"[plot] No suitable trajectory data found for {prefix}")
+    print(f"[plot] Available keys: {list(npz.keys())}")
     return None
 
 

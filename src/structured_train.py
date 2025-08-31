@@ -1319,7 +1319,6 @@ class StructuredTrainer:
                     wandb.log({
                         # Core training metrics (like train.py) - goes to phase_a_losses tab
                         f"phase_a_losses/encoder_{enc_idx}/total_loss": float(total_loss),
-                        f"phase_a_losses/encoder_{enc_idx}/step": current_global_step,
                         
                         # Essential contrastive loss tracking - goes to phase_a_losses tab
                         f"phase_a_losses/encoder_{enc_idx}/contrastive_loss": float(contrastive_loss),
@@ -1341,16 +1340,14 @@ class StructuredTrainer:
                         f"encoder_{enc_idx}/specialization_score": float(jnp.log(avg_other_var / (avg_target_var + 1e-8) + 1e-8)),
                         
                         # Additional encoder metrics for comprehensive monitoring
-                        f"encoder_{enc_idx}/training_step": step,
                         f"encoder_{enc_idx}/target_pattern": target_pattern,
-                        f"encoder_{enc_idx}/batch_size": len(batch[0]),
                         f"encoder_{enc_idx}/target_samples_count": int(jnp.sum(target_mask)),
                         f"encoder_{enc_idx}/other_samples_count": int(jnp.sum(other_mask)),
                         
                         # Repulsion loss metrics (if enabled)
                         f"encoder_{enc_idx}/repulsion_loss": float(repulsion_loss) if repulsion_loss > 0 else 0.0,
                         f"encoder_{enc_idx}/repulsion_coefficient": self.cfg.training.get("repulsion_kl", 0),
-                    }, step=current_global_step)
+                    })
                 
                 if step % 50 == 0:
                     # Calculate specialization metrics
@@ -1484,7 +1481,7 @@ class StructuredTrainer:
         for pattern_id, stats in pattern_variances.items():
             wandb.log({
                 f"encoder_{enc_idx}/pattern_{pattern_id}/mean_variance": stats['mean'],
-            }, step=current_global_step)
+            })
         
         # Create essential T-SNE visualization only (like train.py)
         logging.info(f"       Creating T-SNE plot for Encoder {enc_idx}...")
@@ -1551,7 +1548,7 @@ class StructuredTrainer:
             fig_latents = visualize_tsne(jnp.array(all_latents_flat), np.array(all_patterns))
             
             # Log to WandB
-            wandb.log({f"encoder_{enc_idx}/tsne_plot": wandb.Image(fig_latents)}, step=global_step)
+            wandb.log({f"encoder_{enc_idx}/tsne_plot": wandb.Image(fig_latents)})
             plt.close(fig_latents)
             
         except Exception as e:
@@ -1731,14 +1728,12 @@ class StructuredTrainer:
                         f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction": reconstruction_metrics.get('overall_accuracy', 0.0),
                         f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction/pixel_correctness": reconstruction_metrics.get('pixel_correctness', 0.0),
                         f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction/shape_correctness": reconstruction_metrics.get('shape_correctness', 0.0),
-                    }, step=current_global_step)
+                    })
             
             # Additional Phase A specific metrics
             wandb.log({
-                f"phase_a/encoder_{enc_idx}/tsne_step": step,
-                f"phase_a/encoder_{enc_idx}/tsne_progress": step / total_steps,
-                f"phase_a/encoder_{enc_idx}/tsne_timestamp": time.time(),
-            }, step=current_global_step)
+                # No meaningless metrics - only meaningful data
+            })
             
             logging.info(f"       ✅ Phase A T-SNE and certainty plots generated and logged to WandB")
             
@@ -1760,21 +1755,24 @@ class StructuredTrainer:
             total_steps: Total steps for encoder training
         """
         try:
-            # Generate certainty plots for each pattern
+            # Generate certainty plots for each pattern (like the working implementation)
             for pattern_id in [1, 2, 3]:
                 if pattern_id in eval_data:
                     grids, shapes, pattern_ids = eval_data[pattern_id]
                     
-                    # Sample a subset for efficiency (use first 4 samples for certainty panel)
-                    num_samples = min(4, len(grids))
-                    sample_grids = grids[:num_samples]
-                    sample_shapes = shapes[:num_samples]
+                    # Select a unique sample for each encoder/pattern combination (like working implementation)
+                    # This ensures different samples are shown for different combinations
+                    sample_index = (enc_idx * 3 + pattern_id - 1) % len(grids)
+                    logging.debug(f"Certainty panel: Encoder {enc_idx}, Pattern {pattern_id}, Sample index {sample_index}/{len(grids)}")
                     
-                    # Get encoder outputs for these samples
+                    # Get encoder outputs for this single sample (exactly like working implementation)
+                    sample_grids = grids[sample_index]  # Single sample (not slice)
+                    sample_shapes = shapes[sample_index]  # Single sample (not slice)
+                    
                     mu, logvar = self.encoders[enc_idx].apply(
                         {"params": encoder_params},
-                        sample_grids,
-                        sample_shapes,
+                        sample_grids[None, ...],  # Add batch dimension back
+                        sample_shapes[None, ...],  # Add batch dimension back
                         dropout_eval=False,
                         mutable=False,
                     )
@@ -1783,14 +1781,10 @@ class StructuredTrainer:
                     pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
                     pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
                     
-                    # Reshape data for visualization: (num_pairs, 5, 5, 2) -> (num_pairs, 5, 5, 1)
-                    # and (num_pairs, 2, 2) -> (num_pairs, 2)
-                    vis_grids = np.array(sample_grids)[:, :, :, 0]  # Take first channel only
-                    vis_shapes = np.array(sample_shapes)[:, :, 0]    # Take first dimension only
-                    
+                    # Pass data directly to visualization (exactly like working implementation)
                     fig_cert = visualize_struct_confidence_panel(
-                        sample_grids=vis_grids,
-                        sample_shapes=vis_shapes,
+                        sample_grids=np.array(sample_grids),
+                        sample_shapes=np.array(sample_shapes),
                         encoder_mus=[np.array(mu)],
                         encoder_logvars=[np.array(logvar)],
                         poe_mu=None,
@@ -1805,10 +1799,7 @@ class StructuredTrainer:
                     # Log to WandB with proper organization
                     wandb.log({
                         f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/certainty_panel": wandb.Image(fig_cert),
-                        f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/step": step,
-                        f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/progress": step / total_steps,
-                        f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/global_step": global_step,
-                    }, step=global_step)
+                    })
                     
                     # Close figure to free memory
                     plt.close(fig_cert)
@@ -3058,10 +3049,10 @@ class StructuredTrainer:
             if self.phase1_completed:
                 # Phase 2: Organize metrics by category
                 organized_metrics = self._organize_phase2_metrics_for_wandb(metrics)
-                wandb.log(organized_metrics, step=step)
+                wandb.log(organized_metrics)
             else:
                 # Phase 1: Log metrics as is
-                wandb.log(metrics, step=step)
+                wandb.log(metrics)
 
                 # Save checkpoint
                 if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
@@ -3112,7 +3103,7 @@ class StructuredTrainer:
                                         else:
                                             logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                                     
-                                    wandb.log(test_metrics, step=step)
+                                    wandb.log(test_metrics)
                                     plt.close('all')  # Close all figures to prevent memory leaks
                                     # Explicitly close additional T-SNE figures
                                     if fig_tsne_samples is not None:
@@ -3835,7 +3826,7 @@ class StructuredTrainer:
                     clustering_metrics[f"clustering/source/ari_k{k}"] = ari_score
                 
                 # Log clustering metrics to WandB
-                wandb.log(clustering_metrics, step=step if 'step' in locals() else None)
+                wandb.log(clustering_metrics)
                 logging.info(f"Clustering metrics computed: {clustering_metrics}")
                 
             except Exception as e:

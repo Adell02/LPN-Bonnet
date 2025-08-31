@@ -727,7 +727,16 @@ class LPN(nn.Module):
             log_probs = self._compute_log_probs(row_logits, col_logits, grid_logits, output_seq)
             return log_probs
         
-        # CRITICAL DEBUG: Show initial loss computation for GA
+        value_and_grad_log_probs_fn = jax.vmap(
+            jax.value_and_grad(log_probs_fn), in_axes=(-2, None, None, None), out_axes=(-1, -2)
+        )
+        # Add vmaps for batch dimensions
+        for batch_dim in range(input_seq[..., 0, 0].ndim):
+            value_and_grad_log_probs_fn = jax.vmap(value_and_grad_log_probs_fn, in_axes=(0, 0, 0, None))
+
+        vmap_log_probs_fn = jax.vmap(log_probs_fn, in_axes=(-2, None, None, None), out_axes=-1)
+
+        # CRITICAL DEBUG: Show initial loss computation for GA (after vmap_log_probs_fn is defined)
         try:
             initial_log_probs = vmap_log_probs_fn(latents, input_seq, output_seq, self.decoder)
             print(f"         🔍 GA initial log_probs shape: {initial_log_probs.shape}")
@@ -739,15 +748,6 @@ class LPN(nn.Module):
             print(f"         🔍 GA initial losses min/max: {initial_losses.min():.6f}/{initial_losses.max():.6f}")
         except Exception as e:
             print(f"         🔍 GA initial loss debug failed: {e}")
-
-        value_and_grad_log_probs_fn = jax.vmap(
-            jax.value_and_grad(log_probs_fn), in_axes=(-2, None, None, None), out_axes=(-1, -2)
-        )
-        # Add vmaps for batch dimensions
-        for batch_dim in range(input_seq[..., 0, 0].ndim):
-            value_and_grad_log_probs_fn = jax.vmap(value_and_grad_log_probs_fn, in_axes=(0, 0, 0, None))
-
-        vmap_log_probs_fn = jax.vmap(log_probs_fn, in_axes=(-2, None, None, None), out_axes=-1)
 
         if accumulate_gradients_decoder_pairs:
 
@@ -878,24 +878,28 @@ class LPN(nn.Module):
         track_progress = kwargs.get("track_progress", False)
         if track_progress:
             try:
-                # CRITICAL FIX: Include initial mean latent in trajectory (same as ES generation 0)
-                # This ensures GA and ES trajectories start from the same point
-                initial_mean_latent = latents.mean(axis=-2, keepdims=True)  # (*B, 1, C, H)
-                initial_log_probs = vmap_log_probs_fn(initial_mean_latent, input_seq, output_seq, self.decoder)
+                # FIXED: Use the original latents before reshaping for initial mean
+                # The original latents are the starting point for gradient ascent
+                original_latents = latents[..., :all_latents.shape[-2], :]  # Get back to original shape
                 
-                # Concatenate: [initial_mean, step1, step2, ..., stepN]
-                trajectory_latents = jnp.concatenate([initial_mean_latent, all_latents], axis=-2)
-                trajectory_log_probs = jnp.concatenate([initial_log_probs, all_log_probs], axis=-2)
+                # Get initial log probs for the starting latents
+                initial_log_probs = vmap_log_probs_fn(original_latents, input_seq, output_seq, self.decoder)
+                
+                # Concatenate: [initial, step1, step2, ..., stepN]
+                trajectory_latents = jnp.concatenate([original_latents[..., None, :, :], all_latents], axis=-2)
+                trajectory_log_probs = jnp.concatenate([initial_log_probs[..., None, :], all_log_probs], axis=-2)
                 
                 # Debug logging to show the fix is working
-                print(f"         🔧 GA trajectory fix: initial_mean shape={initial_mean_latent.shape}, all_latents shape={all_latents.shape}")
+                print(f"         🔧 GA trajectory fix: original_latents shape={original_latents.shape}, all_latents shape={all_latents.shape}")
                 print(f"         🔧 GA trajectory fix: final trajectory shape={trajectory_latents.shape}")
                 
                 traj = {
-                    "latents": trajectory_latents,      # (*B, num_steps+1, C, H) - includes initial mean
-                    "log_probs": trajectory_log_probs,  # (*B, num_steps+1, C) - includes initial mean
+                    "latents": trajectory_latents,      # (*B, num_steps+1, C, H) - includes initial
+                    "log_probs": trajectory_log_probs,  # (*B, num_steps+1, C) - includes initial
                 }
-            except Exception:
+                print(f"         ✅ GA trajectory created successfully with {trajectory_latents.shape[-2]} steps")
+            except Exception as e:
+                print(f"         ❌ GA trajectory creation failed: {e}")
                 traj = {}
             return best_context, second_best_context, traj
 
