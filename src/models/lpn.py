@@ -1451,11 +1451,18 @@ class LPN(nn.Module):
                 random_latents = mean_latent + scale * random_vectors
             
             prep_latents = jnp.concatenate([prep_latents, random_latents], axis=-2)
-        
+
         # Ensure the output has the expected shape
         if prep_latents.ndim < 2:
             raise ValueError(f"prep_latents must have at least 2 dimensions, got {prep_latents.ndim}")
-        
+
+        # Some encoder configurations may introduce a singleton axis before the
+        # latent dimension (e.g. when a sample dimension of size 1 is present).
+        # Squeeze that axis so downstream code consistently receives latents of
+        # shape (*B, N, H).
+        if prep_latents.shape[-2] == 1:
+            prep_latents = jnp.squeeze(prep_latents, axis=-2)
+
         print(f"         ✅ Final prepared latents: {prep_latents.shape}")
         return prep_latents
 
