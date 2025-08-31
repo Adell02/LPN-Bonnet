@@ -482,86 +482,123 @@ class StructuredLPN(nn.Module):
     ) -> chex.Array:
         """Compute contrastive KL loss for encoder specialization.
         
-        This loss encourages each encoder to produce lower KL divergence (better alignment)
-        for patterns it should specialize in, and higher KL divergence for other patterns.
+        MATHEMATICAL FOUNDATION:
+        This loss implements a contrastive learning approach where:
+        1. Each encoder e is assigned a target pattern p_e
+        2. For samples of pattern p_e: encourage LOW KL divergence (high certainty)
+        3. For samples of other patterns: encourage HIGH KL divergence (low certainty)
+        
+        The loss function is:
+        L_contrastive = Σ_e Σ_i sign(e,i) * KL(q_e(x_i) || p_poe(x_i))
+        
+        Where:
+        - sign(e,i) = +1 if pattern_ids[i] == p_e (target pattern for encoder e)
+        - sign(e,i) = -1 if pattern_ids[i] != p_e (non-target pattern for encoder e)
+        - KL(q_e(x_i) || p_poe(x_i)) measures how well encoder e approximates PoE posterior for sample i
+        
+        This encourages:
+        - Encoder e to become CERTAIN (low variance) on pattern p_e
+        - Encoder e to become UNCERTAIN (high variance) on other patterns
         
         Args:
             mus: (E, B, N, H) - means from each encoder
             logvars: (E, B, N, H) - log variances from each encoder  
-            mu_poe: (B, N, H) - mean from PoE aggregation
-            logvar_poe: (B, N, H) - log variance from PoE aggregation
-            pattern_ids: (B,) - pattern ID for each sample in batch
+            mu_poe: (B, N, H) - mean from PoE aggregation (fixed target)
+            logvar_poe: (B, N, H) - log variance from PoE aggregation (fixed target)
+            pattern_ids: (B,) - pattern ID for each sample in batch (1, 2, or 3)
             
         Returns:
             contrastive_loss: scalar - encourages encoder specialization
             kl_mean: scalar - average KL divergence across all encoders/samples
             sign_mean: scalar - average sign value (indicates pattern alignment)
         """
-        E = mus.shape[0]
+        E = mus.shape[0]  # Number of encoders
+        B = mus.shape[1]  # Batch size
         if E == 0:
             return 0.0, 0.0, 0.0
             
-        # Note: Removed debug logging from inside JAX-compiled function
-        # as it can cause issues with JAX traced arrays
+        # CRITICAL: Validate pattern IDs
+        unique_patterns = jnp.unique(pattern_ids)
+        if len(unique_patterns) < 2:
+            # Need at least 2 patterns for contrastive learning to work
+            logging.warning(f"Contrastive loss requires at least 2 patterns, got {len(unique_patterns)}")
+            return 0.0, 0.0, 0.0
         
-        var_poe = jnp.exp(logvar_poe)
-        var_enc = jnp.exp(logvars)
+        # Convert to variances for KL computation
+        var_poe = jnp.exp(logvar_poe)  # (B, N, H)
+        var_enc = jnp.exp(logvars)     # (E, B, N, H)
         
-        # KL(q_e || p_poe) for each encoder e: measures how well each encoder
-        # approximates the PoE posterior for each sample
+        # Compute KL divergence: KL(q_e || p_poe) for each encoder e and sample i
+        # KL(q||p) = 0.5 * (log(var_p/var_q) + (var_q + (mu_q - mu_p)²)/var_p - 1)
         kl = 0.5 * (
-            (logvar_poe[None, ...] - logvars)
-            + (var_enc + jnp.square(mus - mu_poe[None, ...])) / (var_poe[None, ...] + 1e-8)
-            - 1.0
+            (logvar_poe[None, ...] - logvars)  # log(var_p/var_q)
+            + (var_enc + jnp.square(mus - mu_poe[None, ...])) / (var_poe[None, ...] + 1e-8)  # (var_q + (mu_q - mu_p)²)/var_p
+            - 1.0  # -1 term
         )
-        kl = jnp.mean(kl, axis=(-2, -1))  # (E, B) - average over pairs and latent dims
+        
+        # Average KL over pairs and latent dimensions: (E, B)
+        kl = jnp.mean(kl, axis=(-2, -1))
         
         # STABILIZATION: Clip KL values to prevent explosion
-        # This prevents extremely large KL values from dominating the loss
-        kl_clip_threshold = 10.0  # Reasonable upper bound for KL divergence
+        kl_clip_threshold = 10.0
         kl = jnp.clip(kl, -kl_clip_threshold, kl_clip_threshold)
-
-        # CRITICAL FIX: Use STABLE pattern assignment for consistent encoder specialization
-        # Since we now have explicit, aligned pattern IDs, we can use a stable mapping:
-        # Encoder 0 → Pattern 1 (O-tetromino), Encoder 1 → Pattern 2 (T-tetromino), Encoder 2 → Pattern 3 (L-tetromino)
         
-        # Create stable encoder→pattern mapping
-        enc_ids = jnp.arange(1, E + 1, dtype=pattern_ids.dtype)[:, None]  # [1, 2, 3] for encoders [0, 1, 2]
+        # CRITICAL: Create encoder→pattern specialization mapping
+        # Encoder 0 specializes in Pattern 1 (O-tetromino)
+        # Encoder 1 specializes in Pattern 2 (T-tetromino)  
+        # Encoder 2 specializes in Pattern 3 (L-tetromino)
+        target_patterns = jnp.array([1, 2, 3], dtype=pattern_ids.dtype)  # [1, 2, 3]
         
-        # Create sign matrix: 
-        # +1 if pattern matches encoder specialization (encourage lower KL, lower variance)
-        # -1 if pattern doesn't match (encourage higher KL, higher variance)
-        sign = jnp.where(pattern_ids[None, :] == enc_ids, 1.0, -1.0)
+        # Create specialization matrix: (E, B)
+        # +1: encoder should be CERTAIN on this pattern (low KL, low variance)
+        # -1: encoder should be UNCERTAIN on this pattern (high KL, high variance)
+        is_target_pattern = pattern_ids[None, :] == target_patterns[:, None]  # (E, B)
+        sign = jnp.where(is_target_pattern, 1.0, -1.0)  # (E, B)
         
-        # DEBUG: Log pattern assignment for monitoring
-        # This should show clear +1/-1 pattern for each encoder
-        logging.debug(f"Pattern assignment matrix:")
-        logging.debug(f"  Encoder 0 (should specialize in Pattern 1): {sign[0, :10]}... (first 10)")
-        logging.debug(f"  Encoder 1 (should specialize in Pattern 2): {sign[1, :10]}... (first 10)")
-        logging.debug(f"  Encoder 2 (should specialize in Pattern 3): {sign[2, :10]}... (first 10)")
+        # DEBUG: Log pattern assignment for monitoring (every 100 steps to avoid spam)
+        if hasattr(self, '_debug_counter'):
+            self._debug_counter += 1
+        else:
+            self._debug_counter = 0
+            
+        if self._debug_counter % 100 == 0:
+            # Sample first few batch elements for debugging
+            sample_size = min(5, B)
+            logging.debug(f"Contrastive loss pattern assignment (sample of {sample_size}):")
+            for e in range(min(3, E)):  # Show first 3 encoders
+                target_p = target_patterns[e]
+                signs_sample = sign[e, :sample_size]
+                patterns_sample = pattern_ids[:sample_size]
+                logging.debug(f"  Encoder {e} (target: Pattern {target_p}): signs={signs_sample}, patterns={patterns_sample}")
         
-        # Compute contrastive loss: 
-        # - Positive sign * KL: encourages encoders to have lower KL for their specialized patterns
-        # - Negative sign * KL: encourages encoders to have higher KL for non-specialized patterns
-        # This should lead to encoder specialization
+        # COMPUTE CONTRASTIVE LOSS
+        # L = Σ_e Σ_i sign(e,i) * KL(e,i)
+        # This encourages:
+        # - Positive sign * KL: encoder becomes CERTAIN on target pattern (KL → 0)
+        # - Negative sign * KL: encoder becomes UNCERTAIN on other patterns (KL → high)
         
-        # STABILIZATION: Add temperature scaling and softmax-like normalization
-        # This makes the loss more stable and prevents extreme values
-        temperature = 1.0  # Lower values make the loss more aggressive, higher values more stable
+        # Apply sign to KL values
+        signed_kl = sign * kl  # (E, B)
         
-        # Apply temperature scaling to KL values
-        kl_scaled = kl / temperature
+        # STABILIZATION: Use temperature scaling for more stable gradients
+        temperature = 1.0  # Can be tuned: lower = more aggressive, higher = more stable
+        
+        # Apply temperature scaling
+        signed_kl_scaled = signed_kl / temperature
         
         # STABILIZATION: Use softmax-like normalization to bound the loss
-        # This prevents the loss from growing unbounded
-        kl_exp = jnp.exp(jnp.clip(kl_scaled, -10.0, 10.0))  # Prevent exp overflow
+        # This prevents extreme values while maintaining the contrastive effect
+        kl_exp = jnp.exp(jnp.clip(signed_kl_scaled, -10.0, 10.0))  # Prevent exp overflow
         kl_normalized = kl_exp / (jnp.sum(kl_exp, axis=0, keepdims=True) + 1e-8)
         
-        # Compute contrastive loss with normalized KL values
-        contrastive = jnp.mean(sign * kl_normalized)
+        # Final contrastive loss: average over all encoders and samples
+        contrastive_loss = jnp.mean(signed_kl)
         
-        # Return additional metrics for monitoring
-        return contrastive, jnp.mean(kl), jnp.mean(sign)
+        # Return metrics for monitoring
+        kl_mean = jnp.mean(kl)           # Average KL divergence
+        sign_mean = jnp.mean(sign)       # Average sign (should be close to 0 for balanced patterns)
+        
+        return contrastive_loss, kl_mean, sign_mean
 
 
 
