@@ -189,13 +189,13 @@ class StructuredLPN(nn.Module):
                 mu_poe_fixed = jax.lax.stop_gradient(mu_poe)
                 logvar_poe_fixed = jax.lax.stop_gradient(logvar_poe)
                 
-                contrastive_loss, kl_mean, sign_mean = self._compute_contrastive_loss(
+                contrastive_loss, avg_var_target, avg_var_other = self._compute_contrastive_loss(
                     mus, logvars, mu_poe_fixed, logvar_poe_fixed, pattern_ids
                 )
                 loss += contrastive_kl_coeff * contrastive_loss
             except Exception as e:
                 logging.warning(
-                    f"Contrastive loss computation failed: {e}. Skipping contrastive loss."
+                    f"Variance control loss computation failed: {e}. Skipping variance control loss."
                 )
                 contrastive_loss = 0.0
 
@@ -217,9 +217,12 @@ class StructuredLPN(nn.Module):
             metrics.update(
                 contrastive_loss=contrastive_loss,
                 contrastive_loss_weighted=contrastive_kl_coeff * contrastive_loss,
-                # Additional contrastive loss metrics for monitoring
-                contrastive_kl_mean=kl_mean if 'kl_mean' in locals() else 0.0,
-                contrastive_sign_mean=sign_mean if 'sign_mean' in locals() else 0.0,
+                # Variance control metrics for monitoring
+                contrastive_avg_var_target=avg_var_target if 'avg_var_target' in locals() else 0.0,
+                contrastive_avg_var_other=avg_var_other if 'avg_var_other' in locals() else 0.0,
+                # Specialization quality metrics
+                contrastive_specialization_ratio=avg_var_target / (avg_var_other + 1e-8) if 'avg_var_target' in locals() and 'avg_var_other' in locals() else 1.0,
+                contrastive_specialization_score=jnp.log(avg_var_target / (avg_var_other + 1e-8) + 1e-8) if 'avg_var_target' in locals() and 'avg_var_other' in locals() else 0.0,
             )
 
         return loss, metrics
@@ -476,44 +479,44 @@ class StructuredLPN(nn.Module):
         self,
         mus: chex.Array,
         logvars: chex.Array,
-        mu_poe: chex.Array,  # Should be stop_gradient'd before calling this function
-        logvar_poe: chex.Array,  # Should be stop_gradient'd before calling this function
+        mu_poe: chex.Array,  # Not used in this implementation but kept for compatibility
+        logvar_poe: chex.Array,  # Not used in this implementation but kept for compatibility
         pattern_ids: chex.Array,
     ) -> chex.Array:
-        """Compute contrastive KL loss for encoder specialization.
+        """Compute direct variance control loss for encoder specialization.
         
-        MATHEMATICAL FOUNDATION:
-        This loss implements a contrastive learning approach where:
-        1. Each encoder e is assigned a target pattern p_e
-        2. For samples of pattern p_e: encourage LOW KL divergence (high certainty)
-        3. For samples of other patterns: encourage HIGH KL divergence (low certainty)
+        This loss directly controls the variance of each encoder:
+        - Target pattern: variance → 0 (high certainty)
+        - Other patterns: variance → ∞ (low certainty)
         
         The loss function is:
-        L_contrastive = Σ_e Σ_i sign(e,i) * KL(q_e(x_i) || p_poe(x_i))
+        L_variance = λ_pos * avg_var_target - λ_neg * avg_var_other
         
         Where:
-        - sign(e,i) = +1 if pattern_ids[i] == p_e (target pattern for encoder e)
-        - sign(e,i) = -1 if pattern_ids[i] != p_e (non-target pattern for encoder e)
-        - KL(q_e(x_i) || p_poe(x_i)) measures how well encoder e approximates PoE posterior for sample i
+        - avg_var_target: average variance of target pattern samples for each encoder
+        - avg_var_other: average variance of non-target pattern samples for each encoder
+        - λ_pos: coefficient for target pattern variance (should be positive)
+        - λ_neg: coefficient for other pattern variance (should be negative)
         
         This encourages:
-        - Encoder e to become CERTAIN (low variance) on pattern p_e
-        - Encoder e to become UNCERTAIN (high variance) on other patterns
+        - Encoder e to have LOW variance (high certainty) on pattern p_e
+        - Encoder e to have HIGH variance (low certainty) on other patterns
         
         Args:
-            mus: (E, B, N, H) - means from each encoder
+            mus: (E, B, N, H) - means from each encoder (not used in this implementation)
             logvars: (E, B, N, H) - log variances from each encoder  
-            mu_poe: (B, N, H) - mean from PoE aggregation (fixed target)
-            logvar_poe: (B, N, H) - log variance from PoE aggregation (fixed target)
+            mu_poe: (B, N, H) - mean from PoE aggregation (not used)
+            logvar_poe: (B, N, H) - log variance from PoE aggregation (not used)
             pattern_ids: (B,) - pattern ID for each sample in batch (1, 2, or 3)
             
         Returns:
-            contrastive_loss: scalar - encourages encoder specialization
-            kl_mean: scalar - average KL divergence across all encoders/samples
-            sign_mean: scalar - average sign value (indicates pattern alignment)
+            variance_loss: scalar - encourages encoder specialization through direct variance control
+            avg_var_target: scalar - average target pattern variance
+            avg_var_other: scalar - average other pattern variance
         """
         E = mus.shape[0]  # Number of encoders
         B = mus.shape[1]  # Batch size
+        
         if E == 0:
             return 0.0, 0.0, 0.0
             
@@ -521,84 +524,50 @@ class StructuredLPN(nn.Module):
         unique_patterns = jnp.unique(pattern_ids)
         if len(unique_patterns) < 2:
             # Need at least 2 patterns for contrastive learning to work
-            logging.warning(f"Contrastive loss requires at least 2 patterns, got {len(unique_patterns)}")
+            logging.warning(f"Variance control loss requires at least 2 patterns, got {len(unique_patterns)}")
             return 0.0, 0.0, 0.0
         
-        # Convert to variances for KL computation
-        var_poe = jnp.exp(logvar_poe)  # (B, N, H)
-        var_enc = jnp.exp(logvars)     # (E, B, N, H)
+        # Convert log variances to variances
+        var = jnp.exp(logvars)  # (E, B, N, H)
         
-        # Compute KL divergence: KL(q_e || p_poe) for each encoder e and sample i
-        # KL(q||p) = 0.5 * (log(var_p/var_q) + (var_q + (mu_q - mu_p)²)/var_p - 1)
-        kl = 0.5 * (
-            (logvar_poe[None, ...] - logvars)  # log(var_p/var_q)
-            + (var_enc + jnp.square(mus - mu_poe[None, ...])) / (var_poe[None, ...] + 1e-8)  # (var_q + (mu_q - mu_p)²)/var_p
-            - 1.0  # -1 term
-        )
+        # Average variance over pairs and latent dimensions: (E, B)
+        var_per_sample = jnp.mean(var, axis=(-2, -1))
         
-        # Average KL over pairs and latent dimensions: (E, B)
-        kl = jnp.mean(kl, axis=(-2, -1))
+        # Create target pattern mask: (E, B)
+        # Encoder 0 → Pattern 1, Encoder 1 → Pattern 2, Encoder 2 → Pattern 3
+        target_patterns = jnp.arange(1, E + 1, dtype=pattern_ids.dtype)  # [1, 2, 3]
+        mask = jnp.where(pattern_ids[None, :] == target_patterns[:, None], 1.0, 0.0)  # (E, B)
         
-        # STABILIZATION: Clip KL values to prevent explosion
-        kl_clip_threshold = 10.0
-        kl = jnp.clip(kl, -kl_clip_threshold, kl_clip_threshold)
+        # Compute average variance for target and non-target patterns per encoder
+        # Target pattern variance: average over samples where mask == 1
+        target_var_sum = jnp.sum(var_per_sample * mask, axis=1)  # (E,)
+        target_count = jnp.sum(mask, axis=1)  # (E,)
+        avg_var_target = jnp.where(target_count > 0, target_var_sum / target_count, 0.0)  # (E,)
         
-        # CRITICAL: Create encoder→pattern specialization mapping
-        # Encoder 0 specializes in Pattern 1 (O-tetromino)
-        # Encoder 1 specializes in Pattern 2 (T-tetromino)  
-        # Encoder 2 specializes in Pattern 3 (L-tetromino)
-        target_patterns = jnp.array([1, 2, 3], dtype=pattern_ids.dtype)  # [1, 2, 3]
+        # Non-target pattern variance: average over samples where mask == 0
+        other_var_sum = jnp.sum(var_per_sample * (1.0 - mask), axis=1)  # (E,)
+        other_count = jnp.sum(1.0 - mask, axis=1)  # (E,)
+        avg_var_other = jnp.where(other_count > 0, other_var_sum / other_count, 0.0)  # (E,)
         
-        # Create specialization matrix: (E, B)
-        # +1: encoder should be CERTAIN on this pattern (low KL, low variance)
-        # -1: encoder should be UNCERTAIN on this pattern (high KL, high variance)
-        is_target_pattern = pattern_ids[None, :] == target_patterns[:, None]  # (E, B)
-        sign = jnp.where(is_target_pattern, 1.0, -1.0)  # (E, B)
+        # STABILIZATION: Clip variances to prevent extreme values
+        # This prevents numerical instability while maintaining the contrastive effect
+        clip_threshold = 10.0
+        avg_var_target = jnp.clip(avg_var_target, 0.0, clip_threshold)
+        avg_var_other = jnp.clip(avg_var_other, 0.0, clip_threshold)
         
-        # DEBUG: Log pattern assignment for monitoring (every 100 steps to avoid spam)
-        if hasattr(self, '_debug_counter'):
-            self._debug_counter += 1
-        else:
-            self._debug_counter = 0
-            
-        if self._debug_counter % 100 == 0:
-            # Sample first few batch elements for debugging
-            sample_size = min(5, B)
-            logging.debug(f"Contrastive loss pattern assignment (sample of {sample_size}):")
-            for e in range(min(3, E)):  # Show first 3 encoders
-                target_p = target_patterns[e]
-                signs_sample = sign[e, :sample_size]
-                patterns_sample = pattern_ids[:sample_size]
-                logging.debug(f"  Encoder {e} (target: Pattern {target_p}): signs={signs_sample}, patterns={patterns_sample}")
+        # Compute variance control loss
+        # L = λ_pos * avg_var_target - λ_neg * avg_var_other
+        # Where λ_pos > 0 (encourage low target variance) and λ_neg < 0 (encourage high other variance)
+        # For simplicity, we use λ_pos = 1.0 and λ_neg = -1.0
+        # This can be made configurable through the contrastive_kl_coeff parameter
         
-        # COMPUTE CONTRASTIVE LOSS
-        # L = Σ_e Σ_i sign(e,i) * KL(e,i)
-        # This encourages:
-        # - Positive sign * KL: encoder becomes CERTAIN on target pattern (KL → 0)
-        # - Negative sign * KL: encoder becomes UNCERTAIN on other patterns (KL → high)
+        lambda_pos = 1.0   # Positive coefficient for target variance (minimize)
+        lambda_neg = -1.0  # Negative coefficient for other variance (maximize)
         
-        # Apply sign to KL values
-        signed_kl = sign * kl  # (E, B)
-        
-        # STABILIZATION: Use temperature scaling for more stable gradients
-        temperature = 1.0  # Can be tuned: lower = more aggressive, higher = more stable
-        
-        # Apply temperature scaling
-        signed_kl_scaled = signed_kl / temperature
-        
-        # STABILIZATION: Use softmax-like normalization to bound the loss
-        # This prevents extreme values while maintaining the contrastive effect
-        kl_exp = jnp.exp(jnp.clip(signed_kl_scaled, -10.0, 10.0))  # Prevent exp overflow
-        kl_normalized = kl_exp / (jnp.sum(kl_exp, axis=0, keepdims=True) + 1e-8)
-        
-        # Final contrastive loss: average over all encoders and samples
-        contrastive_loss = jnp.mean(signed_kl)
+        variance_loss = lambda_pos * jnp.mean(avg_var_target) + lambda_neg * jnp.mean(avg_var_other)
         
         # Return metrics for monitoring
-        kl_mean = jnp.mean(kl)           # Average KL divergence
-        sign_mean = jnp.mean(sign)       # Average sign (should be close to 0 for balanced patterns)
-        
-        return contrastive_loss, kl_mean, sign_mean
+        return variance_loss, jnp.mean(avg_var_target), jnp.mean(avg_var_other)
 
 
 
