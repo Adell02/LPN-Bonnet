@@ -2027,28 +2027,37 @@ class StructuredTrainer:
                 
                 # Collect variances across all steps for this encoder
                 all_variances = []
+                all_means = []
                 for step_outputs in all_encoder_outputs:
                     if f"encoder_{enc_idx}" in step_outputs:
                         variances = np.array(step_outputs[f"encoder_{enc_idx}"]["variance"])
+                        means = np.array(step_outputs[f"encoder_{enc_idx}"]["mu"])
                         all_variances.append(variances)
+                        all_means.append(means)
                 
                 if all_variances:
                     # Stack variances from all steps
                     stacked_variances = np.stack(all_variances, axis=0)  # (steps, batch, pairs, latent_dim)
+                    stacked_means = np.stack(all_means, axis=0)  # (steps, batch, pairs, latent_dim)
                     
                     # Compute mean variance per pattern
                     for pattern_id in unique_patterns:
                         pattern_mask = (pattern_ids_np == pattern_id)
                         if np.any(pattern_mask):
                             pattern_variances = stacked_variances[:, pattern_mask, :, :]  # (steps, pattern_samples, pairs, latent_dim)
+                            pattern_means = stacked_means[:, pattern_mask, :, :]  # (steps, pattern_samples, pairs, latent_dim)
                             
                             # Average over steps, pairs, and latent dimensions
                             mean_pattern_var = float(np.mean(pattern_variances))
                             std_pattern_var = float(np.std(pattern_variances))
+                            mean_pattern_mean = float(np.mean(pattern_means))
+                            std_pattern_mean = float(np.std(pattern_means))
                             
                             # Store metrics
                             enc_metrics[f"pattern_{pattern_id}_mean_variance"] = mean_pattern_var
                             enc_metrics[f"pattern_{pattern_id}_std_variance"] = std_pattern_var
+                            enc_metrics[f"pattern_{pattern_id}_mean_latent"] = mean_pattern_mean
+                            enc_metrics[f"pattern_{pattern_id}_std_latent"] = std_pattern_mean
                     
                     # Compute overall specialization metrics
                     if len(unique_patterns) >= 2:
@@ -2073,6 +2082,11 @@ class StructuredTrainer:
                                     specialization_ratio = target_var / (avg_other_var + 1e-8)
                                     enc_metrics["specialization_ratio"] = float(specialization_ratio)
                                     enc_metrics["specialization_score"] = float(np.log(specialization_ratio + 1e-8))
+                                    
+                                    # Additional specialization metrics
+                                    enc_metrics["target_pattern_variance"] = float(target_var)
+                                    enc_metrics["other_patterns_avg_variance"] = float(avg_other_var)
+                                    enc_metrics["specialization_effectiveness"] = float(1.0 / (specialization_ratio + 1e-8))
                 
                 # Add encoder metrics to main metrics dict
                 for key, value in enc_metrics.items():
@@ -2108,6 +2122,16 @@ class StructuredTrainer:
             # Add PoE stability metrics
             metrics["phase_b/poe/stability"] = 1.0  # Placeholder for PoE stability metric
             
+            # Add PoE aggregation quality metrics
+            if "poe_prior_weight" in avg_metrics and "poe_num_encoders" in avg_metrics:
+                prior_weight = float(avg_metrics["poe_prior_weight"])
+                num_encoders = float(avg_metrics["poe_num_encoders"])
+                
+                # Compute aggregation balance
+                encoder_weight = (1.0 - prior_weight) / num_encoders if num_encoders > 0 else 0.0
+                metrics["phase_b/poe/encoder_weight_per_encoder"] = encoder_weight
+                metrics["phase_b/poe/prior_vs_encoder_ratio"] = prior_weight / (encoder_weight + 1e-8)
+            
         except Exception as e:
             logging.warning(f"PoE aggregation metrics computation failed: {e}")
             metrics["phase_b/poe/error"] = str(e)
@@ -2139,6 +2163,17 @@ class StructuredTrainer:
             
             # Training stability metrics
             metrics["phase_b/decoder/training_stability"] = 1.0  # Placeholder for stability metric
+            
+            # Additional decoder-specific metrics
+            if "loss" in avg_metrics and "reconstruction_loss" in avg_metrics:
+                total_loss = float(avg_metrics["loss"])
+                recon_loss = float(avg_metrics["reconstruction_loss"])
+                
+                # Compute loss composition
+                other_loss = total_loss - recon_loss
+                metrics["phase_b/decoder/other_losses"] = other_loss
+                metrics["phase_b/decoder/reconstruction_loss_ratio"] = recon_loss / (total_loss + 1e-8)
+                metrics["phase_b/decoder/other_losses_ratio"] = other_loss / (total_loss + 1e-8)
             
         except Exception as e:
             logging.warning(f"Decoder training metrics computation failed: {e}")
