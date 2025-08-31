@@ -474,7 +474,13 @@ class DecoderTransformer(nn.Module):
         x_input_shape_row = jnp.expand_dims(input_grid_shapes_row_embed + input_embed, axis=-2)
         x_input_shape_col = jnp.expand_dims(input_grid_shapes_col_embed + input_embed, axis=-2)
         x_input_colors = input_colors_embed + input_pos_embeds + input_embed
+        # Expand the context and broadcast it to match the other embeddings before concatenation.
+        # This avoids rank mismatches when additional batch dimensions are present (e.g. during
+        # vectorized evaluation).
         x_context = jnp.expand_dims(context_embed, axis=-2)
+        while x_context.ndim < x_input_shape_row.ndim:
+            x_context = jnp.expand_dims(x_context, axis=2)
+        x_context = jnp.broadcast_to(x_context, x_input_shape_row.shape)
         x_output_shape_row = jnp.expand_dims(output_grid_shapes_row_embed + output_embed, axis=-2)
         x_output_shape_col = jnp.expand_dims(output_grid_shapes_col_embed + output_embed, axis=-2)
         x_output_colors = output_colors_embed + output_pos_embeds + output_embed

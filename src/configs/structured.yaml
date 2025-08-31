@@ -61,7 +61,7 @@ training:
   pairwise_kl_coeff: null
   total_num_steps: 500
   encoder_expose_steps: 500  # number of initial gradient steps encoders are trainable
-  repulsion_kl: 0
+  repulsion_kl: 1E-5
   # This coefficient controls the strength of contrastive loss
   # Lower values = more stable, higher values = more aggressive specialization
   # The system will dynamically adjust this coefficient based on specialization progress

@@ -1029,11 +1029,27 @@ class StructuredTrainer:
         self.original_encoder_params = [jax.tree_util.tree_map(lambda x: x, enc_params) for enc_params in enc_params_list]
         self.original_decoder_params = jax.tree_util.tree_map(lambda x: x, state.params["decoder"])
         
+        # Initialize repulsion loss system
+        repulsion_kl = self.cfg.training.get("repulsion_kl", 0)
+        target_latents_store = {}  # {encoder_idx: {pattern_id: target_latents}}
+        
+        if repulsion_kl > 0:
+            logging.info(f"🚫 Repulsion Loss Enabled: λ={repulsion_kl}")
+            logging.info(f"   - Sequential training: Each encoder will be pushed away from previous encoders")
+            logging.info(f"   - Training order: Encoder 0 → Encoder 1 (repulses from 0) → Encoder 2 (repulses from 0,1)")
+        else:
+            logging.info(f"⚠️  Repulsion Loss Disabled: repulsion_kl={repulsion_kl}")
+            logging.info(f"   - Parallel training: All encoders train independently without repulsion")
+        
         # Create individual training states for each encoder
         specialized_encoders = []
         
         for enc_idx, enc_params in enumerate(enc_params_list):
             logging.info(f"🔓 Specializing Encoder {enc_idx}...")
+            
+            if repulsion_kl > 0 and enc_idx > 0:
+                logging.info(f"   🚫 Encoder {enc_idx} will repulse from Encoders 0 to {enc_idx-1}")
+                logging.info(f"   📦 Available target latents: {list(target_latents_store.keys())}")
             
             # Debug: Check encoder structure
             logging.info(f"   Encoder {enc_idx} type: {type(self.encoders[enc_idx])}")
@@ -1061,7 +1077,7 @@ class StructuredTrainer:
                 if params is None:
                     logging.info(f"   Final encoder {i} params is None!")
                 else:
-                    logging.info(f"   Final encoder {i} params keys: {list(params.keys()) if isinstance(params, dict) else 'Not a dict'}")
+                    logging.info(f"   Original encoder {i} params keys: {list(params.keys()) if isinstance(params, dict) else 'Not a dict'}")
             individual_state = TrainState.create(
                 apply_fn=self.model.apply,  # Use the main model's apply function
                 tx=optax.adamw(self.cfg.training.learning_rate),
@@ -1071,14 +1087,22 @@ class StructuredTrainer:
                 }
             )
             
-            # Train this encoder on complementary data
+            # Train this encoder on complementary data with repulsion from previous encoders
             specialized_encoder = self._train_encoder_individually(
-                enc_idx, individual_state, self.model  # Use the main model
+                enc_idx, individual_state, self.model, target_latents_store
             )
+            
+            # Store target latents from this encoder for future repulsion
+            if repulsion_kl > 0:
+                target_latents_store[enc_idx] = self._extract_target_latents(enc_idx, specialized_encoder, individual_state)
+                logging.info(f"   📦 Stored target latents for Encoder {enc_idx} (will be used for repulsion)")
             
             # Evaluate the specialized encoder and create visualizations
             logging.info(f"   Evaluating specialized Encoder {enc_idx}...")
-            self._evaluate_specialized_encoder(enc_idx, specialized_encoder, individual_state)
+            # Calculate global step: current phase_a_global_step + steps completed by this encoder
+            current_global_step = self.phase_a_global_step + self.encoder_expose_steps
+            logging.info(f"   📊 Evaluation global step: {current_global_step} (phase_a: {self.phase_a_global_step} + encoder_steps: {self.encoder_expose_steps})")
+            self._evaluate_specialized_encoder(enc_idx, specialized_encoder, individual_state, current_global_step)
             
             specialized_encoders.append(specialized_encoder)
             logging.info(f"✅ Encoder {enc_idx} specialization completed")
@@ -1093,21 +1117,23 @@ class StructuredTrainer:
         
         self.phase1_completed = True
         
-        # Calculate Phase A T-SNE evaluation statistics
+        # Calculate Phase A evaluation statistics
+        eval_every_n_steps = self.cfg.training.get("eval_every_n_logs", 20) * self.cfg.training.get("log_every_n_steps", 5)
         total_phase_a_evals = 0
         for enc_idx in range(len(enc_params_list)):
             num_evals = self.encoder_expose_steps // eval_every_n_steps
             total_phase_a_evals += num_evals
-            logging.info(f"   - Encoder {enc_idx}: {num_evals} T-SNE evaluations generated")
+            logging.info(f"   - Encoder {enc_idx}: {num_evals} evaluations generated (T-SNE + certainty plots)")
         
         logging.info("🎉 PHASE 1 COMPLETED: All encoders specialized!")
-        logging.info(f"   - Total Phase A T-SNE evaluations: {total_phase_a_evals}")
+        logging.info(f"   - Total Phase A evaluations: {total_phase_a_evals}")
+        logging.info(f"   - Each evaluation includes: T-SNE visualization + certainty plots for all 3 patterns")
         logging.info("   - Encoders now have pattern-specific representations")
         logging.info("   - Ready for Phase 2: Joint decoder training")
         
         return updated_state
     
-    def _train_encoder_individually(self, enc_idx: int, state: TrainState, model: StructuredLPN) -> dict:
+    def _train_encoder_individually(self, enc_idx: int, state: TrainState, model: StructuredLPN, target_latents_store: dict = None) -> dict:
         """
         Train a single encoder individually on complementary data.
         
@@ -1132,9 +1158,12 @@ class StructuredTrainer:
         num_steps = self.encoder_expose_steps
         key = jax.random.PRNGKey(self.cfg.training.seed + enc_idx)
         
-        # Phase A T-SNE evaluation frequency: every eval_every_n_logs * log_every_n_steps steps
+        # Phase A evaluation frequency: every eval_every_n_logs * log_every_n_steps steps
         eval_every_n_steps = self.cfg.training.get("eval_every_n_logs", 20) * self.cfg.training.get("log_every_n_steps", 5)
-        logging.info(f"   Phase A T-SNE evaluation: every {eval_every_n_steps} steps")
+        logging.info(f"   Phase A evaluation frequency: every {eval_every_n_steps} steps")
+        logging.info(f"   - T-SNE visualizations: every {eval_every_n_steps} steps")
+        logging.info(f"   - Certainty plots: every {eval_every_n_steps} steps (all 3 patterns)")
+        logging.info(f"   - Total evaluations per encoder: {self.encoder_expose_steps // eval_every_n_steps}")
         
         for step in range(num_steps):
             # Sample batch from specialized data
@@ -1206,7 +1235,26 @@ class StructuredTrainer:
                 
                 # Add regularization to prevent extreme values
                 reg_loss = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
-                total_loss = contrastive_loss + reg_loss
+                
+                # Add repulsion loss to push away from previous encoders' latent targets
+                repulsion_loss = 0.0
+                if target_latents_store and self.cfg.training.get("repulsion_kl", 0) > 0:
+                    # Compute repulsion from previous encoders' targets
+                    repulsion_loss = self._compute_repulsion_loss(
+                        current_latents=mu.mean(axis=-2),  # Use mean over pairs
+                        target_latents_store=target_latents_store,
+                        current_encoder_idx=enc_idx,
+                        margin=1.0
+                    )
+                    
+                    # Scale repulsion loss by the coefficient
+                    repulsion_coeff = self.cfg.training.get("repulsion_kl", 0)
+                    repulsion_loss = repulsion_coeff * repulsion_loss
+                    
+                    if step % 50 == 0:
+                        logging.info(f"       Repulsion Loss: {float(repulsion_loss):.6f} (λ={repulsion_coeff})")
+                
+                total_loss = contrastive_loss + reg_loss + repulsion_loss
                 
                 # FIXED: Compute gradients properly for contrastive learning
                 def contrastive_loss_fn(params):
@@ -1282,6 +1330,7 @@ class StructuredTrainer:
                         f"phase_a_losses/encoder_{enc_idx}/loss_breakdown": {
                             "contrastive": float(contrastive_loss),
                             "regularization": float(reg_loss),
+                            "repulsion": float(repulsion_loss) if repulsion_loss > 0 else 0.0,
                             "total": float(total_loss)
                         },
                         
@@ -1297,6 +1346,10 @@ class StructuredTrainer:
                         f"encoder_{enc_idx}/batch_size": len(batch[0]),
                         f"encoder_{enc_idx}/target_samples_count": int(jnp.sum(target_mask)),
                         f"encoder_{enc_idx}/other_samples_count": int(jnp.sum(other_mask)),
+                        
+                        # Repulsion loss metrics (if enabled)
+                        f"encoder_{enc_idx}/repulsion_loss": float(repulsion_loss) if repulsion_loss > 0 else 0.0,
+                        f"encoder_{enc_idx}/repulsion_coefficient": self.cfg.training.get("repulsion_kl", 0),
                     }, step=current_global_step)
                 
                 if step % 50 == 0:
@@ -1335,7 +1388,7 @@ class StructuredTrainer:
         
         return state.params["encoders"][0]  # Return trained encoder params
     
-    def _evaluate_specialized_encoder(self, enc_idx: int, encoder_params: dict, state: TrainState):
+    def _evaluate_specialized_encoder(self, enc_idx: int, encoder_params: dict, state: TrainState, global_step: int):
         """
         Evaluate a specialized encoder and create comprehensive visualizations.
         
@@ -1416,7 +1469,7 @@ class StructuredTrainer:
                     {
                         f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/certainty_panel": wandb.Image(fig_cert)
                     },
-                    step=self.phase_a_global_step + 200,
+                    step=self.phase_a_global_step,
                 )
                 plt.close(fig_cert)
             except Exception as e:
@@ -1425,7 +1478,7 @@ class StructuredTrainer:
                 )
         
         # Log essential encoder variance metrics (scaled and minimal)
-        current_global_step = self.phase_a_global_step + 200  # After training
+        current_global_step = global_step  # Use passed global step parameter
         
         # Only log mean variance per pattern (essential for specialization monitoring)
         for pattern_id, stats in pattern_variances.items():
@@ -1499,7 +1552,7 @@ class StructuredTrainer:
     
     def _generate_phase_a_tsne(self, enc_idx: int, encoder_params: dict, step: int, total_steps: int):
         """
-        Generate T-SNE visualization during Phase A training to monitor encoder specialization progress.
+        Generate T-SNE visualization and certainty plots during Phase A training to monitor encoder specialization progress.
         
         Args:
             enc_idx: Index of the encoder being trained
@@ -1508,7 +1561,7 @@ class StructuredTrainer:
             total_steps: Total training steps for this encoder
         """
         try:
-            logging.info(f"       Generating Phase A T-SNE for Encoder {enc_idx} at step {step}/{total_steps}")
+            logging.info(f"       🔍 Phase A Evaluation at step {step}/{total_steps}")
             
             # Create evaluation data for all patterns to show specialization progress
             eval_data = {}
@@ -1520,6 +1573,10 @@ class StructuredTrainer:
             current_global_step = self.phase_a_global_step + step
             self._create_encoder_tsne(enc_idx, encoder_params, eval_data, current_global_step)
             
+            # Generate certainty plots for all patterns
+            logging.info(f"       📊 Generating certainty plots for all patterns...")
+            self._generate_phase_a_certainty_plots(enc_idx, encoder_params, eval_data, current_global_step, step, total_steps)
+            
             # Additional Phase A specific metrics
             wandb.log({
                 f"phase_a/encoder_{enc_idx}/tsne_step": step,
@@ -1527,10 +1584,80 @@ class StructuredTrainer:
                 f"phase_a/encoder_{enc_idx}/tsne_timestamp": time.time(),
             }, step=current_global_step)
             
-            logging.info(f"       ✅ Phase A T-SNE generated and logged to WandB")
+            logging.info(f"       ✅ Phase A T-SNE and certainty plots generated and logged to WandB")
             
         except Exception as e:
-            logging.error(f"       ❌ Phase A T-SNE generation failed: {e}")
+            logging.error(f"       ❌ Phase A evaluation generation failed: {e}")
+            import traceback
+            logging.error(f"       Traceback: {traceback.format_exc()}")
+    
+    def _generate_phase_a_certainty_plots(self, enc_idx: int, encoder_params: dict, eval_data: dict, global_step: int, step: int, total_steps: int):
+        """
+        Generate certainty plots for all patterns during Phase A training to monitor encoder specialization progress.
+        
+        Args:
+            enc_idx: Index of the encoder being trained
+            encoder_params: Current encoder parameters
+            eval_data: Evaluation data for all patterns
+            global_step: Global training step
+            step: Current step within encoder training
+            total_steps: Total steps for encoder training
+        """
+        try:
+            # Generate certainty plots for each pattern
+            for pattern_id in [1, 2, 3]:
+                if pattern_id in eval_data:
+                    grids, shapes, pattern_ids = eval_data[pattern_id]
+                    
+                    # Sample a subset for efficiency (use first 4 samples for certainty panel)
+                    num_samples = min(4, len(grids))
+                    sample_grids = grids[:num_samples]
+                    sample_shapes = shapes[:num_samples]
+                    
+                    # Get encoder outputs for these samples
+                    mu, logvar = self.encoders[enc_idx].apply(
+                        {"params": encoder_params},
+                        sample_grids,
+                        sample_shapes,
+                        dropout_eval=False,
+                        mutable=False,
+                    )
+                    
+                    # Create certainty panel
+                    pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
+                    pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
+                    
+                    fig_cert = visualize_struct_confidence_panel(
+                        sample_grids=np.array(sample_grids),
+                        sample_shapes=np.array(sample_shapes),
+                        encoder_mus=[np.array(mu)],
+                        encoder_logvars=[np.array(logvar)],
+                        poe_mu=None,
+                        poe_logvar=None,
+                        title=f"Encoder {enc_idx} - {pattern_name} - Step {step}/{total_steps}",
+                        encoder_labels=[f"Encoder {enc_idx}"],
+                        encoder_indices=[enc_idx],
+                        pattern_id=pattern_id,
+                        pattern_name=pattern_name,
+                    )
+                    
+                    # Log to WandB with proper organization
+                    wandb.log({
+                        f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/certainty_panel": wandb.Image(fig_cert),
+                        f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/step": step,
+                        f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/progress": step / total_steps,
+                        f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/global_step": global_step,
+                    }, step=global_step)
+                    
+                    # Close figure to free memory
+                    plt.close(fig_cert)
+                    
+                    logging.info(f"       ✅ Certainty panel generated for pattern {pattern_id} ({pattern_name})")
+            
+            logging.info(f"       📊 All certainty plots generated and logged to WandB")
+            
+        except Exception as e:
+            logging.error(f"       ❌ Certainty plot generation failed: {e}")
             import traceback
             logging.error(f"       Traceback: {traceback.format_exc()}")
     
@@ -2287,6 +2414,91 @@ class StructuredTrainer:
             fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
             fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
             return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
+
+    def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 1.0) -> float:
+        """
+        Compute repulsion loss to push current encoder away from previous encoders' latent targets.
+        
+        Args:
+            current_latents: Current encoder's latent representations [batch_size, latent_dim]
+            target_latents_store: Dictionary of {encoder_idx: {pattern_id: target_latents}} from previous encoders
+            current_encoder_idx: Index of the current encoder being trained
+            margin: Distance margin for repulsion (default: 1.0)
+            
+        Returns:
+            Repulsion loss value
+        """
+        if not target_latents_store or current_encoder_idx == 0:
+            # No previous encoders to repulse from
+            return 0.0
+        
+        repulsion_loss = 0.0
+        num_repulsion_terms = 0
+        
+        # Iterate through all previous encoders
+        for prev_enc_idx in range(current_encoder_idx):
+            if prev_enc_idx in target_latents_store:
+                prev_targets = target_latents_store[prev_enc_idx]
+                
+                # For each pattern, compute repulsion from previous encoder's targets
+                for pattern_id, target_latents in prev_targets.items():
+                    if target_latents is not None and len(target_latents) > 0:
+                        # Ensure target latents have the same batch size
+                        if len(target_latents) == len(current_latents):
+                            # Compute L2 distance between current and target latents
+                            distances = jnp.linalg.norm(current_latents - target_latents, axis=1)
+                            
+                            # Repulsion loss: penalize when distance < margin
+                            # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2^2)
+                            repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
+                            repulsion_loss += repulsion_term
+                            num_repulsion_terms += 1
+        
+        # Average over all repulsion terms
+        if num_repulsion_terms > 0:
+            repulsion_loss = repulsion_loss / num_repulsion_terms
+        
+        return repulsion_loss
+    
+    def _extract_target_latents(self, encoder_idx: int, encoder_params: dict, state: TrainState) -> dict:
+        """
+        Extract target latent representations from a trained encoder for repulsion loss.
+        
+        Args:
+            encoder_idx: Index of the encoder
+            encoder_params: Encoder parameters
+            state: Training state
+            
+        Returns:
+            Dictionary mapping pattern_id to target latent representations
+        """
+        target_latents = {}
+        
+        # Create evaluation data for each pattern
+        for pattern_id in [1, 2, 3]:
+            try:
+                # Generate pattern-specific data
+                pattern_data = self._create_pattern_dataset(pattern_id, num_samples=32)  # Use 32 samples for efficiency
+                grids, shapes, _ = pattern_data
+                
+                # Get encoder outputs
+                mu, logvar = self.encoders[encoder_idx].apply(
+                    {"params": encoder_params}, 
+                    grids, 
+                    shapes, 
+                    True, 
+                    mutable=False
+                )
+                
+                # Use mean of latents as target (or could use multiple samples)
+                target_lat = mu.mean(axis=-2)  # Mean over pairs
+                target_latents[pattern_id] = jnp.array(target_lat)
+                
+            except Exception as e:
+                logging.warning(f"Failed to extract target latents for Encoder {encoder_idx}, Pattern {pattern_id}: {e}")
+                target_latents[pattern_id] = None
+        
+        return target_latents
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
