@@ -36,7 +36,7 @@ CRITICAL FIXES APPLIED FOR ENCODER SPECIALIZATION:
 6. ✅ FIXED: Contrastive loss formula was incorrect (was driving other variance DOWN instead of UP)
 7. ✅ FIXED: Increased base coefficient from 1e-3 to 0.1 for stronger specialization signal
 8. ✅ FIXED: Balanced training data distribution (50% target, 50% others instead of 70%/30%)
-9. ✅ ADDED: Dynamic coefficient adjustment based on specialization progress
+9. ✅ ADDED: Fixed contrastive coefficient (no dynamic adjustment)
 10. ✅ ADDED: Early stopping when excellent specialization is achieved (ratio < 0.5)
 11. ✅ ADDED: Enhanced logging and monitoring of specialization metrics
 
@@ -71,6 +71,7 @@ These fixes ensure that encoders properly specialize on their target patterns:
 - Each encoder sees different training examples for better generalization
 - Repulsion loss actively pushes encoders to learn distinct representations
 - Pattern IDs correctly aligned with actual data content for effective contrastive learning
+- Fixed contrastive coefficient for stable training (no dynamic adjustment)
 
 BEFORE: Encoders showed "WEAK specialization" with ratio ~0.97 (no real separation)
 AFTER: Encoders should achieve strong specialization with ratio < 0.5 (2x separation)
@@ -1453,18 +1454,10 @@ class StructuredTrainer:
                     avg_target_var = jnp.mean(target_var)
                     avg_other_var = jnp.mean(other_var)
                     
-                    # Use the same dynamic coefficient logic
-                    base_coeff = self.cfg.training.get("contrastive_kl", 0.1)  # Increased from 1e-3 to 0.1
-                    current_specialization_ratio = avg_target_var / (avg_other_var + 1e-8)
+                    # Use fixed contrastive coefficient (no dynamic adjustment)
+                    contrastive_coeff = self.cfg.training.get("contrastive_kl", 0.1)  # Fixed coefficient
                     
-                    if current_specialization_ratio > 1.0:
-                        dynamic_coeff = base_coeff * 20.0
-                    elif current_specialization_ratio > 0.8:
-                        dynamic_coeff = base_coeff * 10.0
-                    else:
-                        dynamic_coeff = base_coeff
-                    
-                    contrastive_loss = avg_target_var - dynamic_coeff * avg_other_var
+                    contrastive_loss = avg_target_var - contrastive_coeff * avg_other_var
                     
                     # Add regularization
                     reg = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
@@ -1544,7 +1537,7 @@ class StructuredTrainer:
                         f"phase_a_specialization/encoder_{enc_idx}/specialization_ratio": float(current_specialization_ratio),
                         f"phase_a_specialization/encoder_{enc_idx}/specialization_score": float(jnp.log(current_specialization_ratio + 1e-8)),
                         f"phase_a_specialization/encoder_{enc_idx}/specialization_achieved": specialization_achieved,
-                        f"phase_a_specialization/encoder_{enc_idx}/dynamic_coefficient": float(dynamic_coeff),
+                        f"phase_a_specialization/encoder_{enc_idx}/contrastive_coefficient": float(contrastive_coeff),
                         
                         # Summary metrics for phase_a_losses tab
                         f"phase_a_losses/encoder_{enc_idx}/loss_breakdown": {
