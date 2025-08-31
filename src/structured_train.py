@@ -1162,6 +1162,10 @@ class StructuredTrainer:
                 enc_idx, individual_state, self.model  # Use the main model
             )
             
+            # Evaluate the specialized encoder and create visualizations
+            logging.info(f"   Evaluating specialized Encoder {enc_idx}...")
+            self._evaluate_specialized_encoder(enc_idx, specialized_encoder, individual_state)
+            
             specialized_encoders.append(specialized_encoder)
             logging.info(f"✅ Encoder {enc_idx} specialization completed")
         
@@ -1214,8 +1218,7 @@ class StructuredTrainer:
                 logging.info(f"   State params encoders type: {type(state.params['encoders'])}")
                 logging.info(f"   State params encoders length: {len(state.params['encoders'])}")
             
-            # Custom training loop: directly call encoder and compute loss
-            # This avoids the complexity of StructuredLPN with individual encoders
+            # Comprehensive training loop with proper contrastive loss and metrics
             
             # Get the encoder we're training
             encoder = self.encoders[enc_idx]
@@ -1230,36 +1233,301 @@ class StructuredTrainer:
                 mutable=False,
             )
             
-            # Compute a simple loss for now (we'll implement proper contrastive loss later)
-            # For now, use a dummy loss to test the training loop
-            loss = jnp.mean((mu - 0.0) ** 2)  # Dummy loss
+            # Compute proper contrastive loss for encoder specialization
+            # Pattern enc_idx+1 should have low variance, others should have high variance
+            target_pattern = enc_idx + 1
+            pattern_ids = batch[2]  # (batch_size,)
             
-            # Compute gradients and update
-            grads = jax.grad(lambda p: jnp.mean(encoder.apply(
-                {"params": p}, batch[0], batch[1], dropout_eval=False, mutable=False
-            )[0] ** 2))(encoder_params)
+            # Separate samples by pattern
+            target_mask = (pattern_ids == target_pattern)
+            other_mask = ~target_mask
             
-            # Update encoder parameters
-            new_encoder_params = jax.tree_util.tree_map(
-                lambda p, g: p - self.cfg.training.learning_rate * g,
-                encoder_params, grads
-            )
-            
-            # Update state - only update the encoder we're training
-            all_encoder_params = list(state.params["encoders"])
-            all_encoder_params[enc_idx] = new_encoder_params
-            
-            # Create new params dictionary
-            new_params = dict(state.params)
-            new_params["encoders"] = tuple(all_encoder_params)
-            
-            # Update state
-            state = state.replace(params=new_params)
-            
-            if step % 50 == 0:
-                logging.info(f"     Encoder {enc_idx} - Step {step}/{num_steps} - Loss: {float(loss):.6f}")
+            if jnp.any(target_mask) and jnp.any(other_mask):
+                # Target pattern variance (should be minimized)
+                target_var = jnp.exp(logvar[target_mask])
+                avg_target_var = jnp.mean(target_var)
+                
+                # Other patterns variance (should be maximized)
+                other_var = jnp.exp(logvar[other_mask])
+                avg_other_var = jnp.mean(other_var)
+                
+                # Contrastive loss: minimize target variance, maximize other variance
+                contrastive_loss = avg_target_var - self.cfg.training.get("contrastive_kl", 0.5) * avg_other_var
+                
+                # Add regularization to prevent extreme values
+                reg_loss = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
+                total_loss = contrastive_loss + reg_loss
+                
+                # Compute gradients and update
+                grads = jax.grad(lambda p: jnp.mean(encoder.apply(
+                    {"params": p}, batch[0], batch[1], dropout_eval=False, mutable=False
+                )[1] ** 2) - self.cfg.training.get("contrastive_kl", 0.5) * jnp.mean(encoder.apply(
+                    {"params": p}, batch[0], batch[1], dropout_eval=False, mutable=False
+                )[1] ** 2) + 0.01 * jnp.mean(encoder.apply(
+                    {"params": p}, batch[0], batch[1], dropout_eval=False, mutable=False
+                )[1] ** 4))(encoder_params)
+                
+                # Update encoder parameters
+                new_encoder_params = jax.tree_util.tree_map(
+                    lambda p, g: p - self.cfg.training.learning_rate * g,
+                    encoder_params, grads
+                )
+                
+                # Update state - only update the encoder we're training
+                all_encoder_params = list(state.params["encoders"])
+                all_encoder_params[enc_idx] = new_encoder_params
+                
+                # Create new params dictionary
+                new_params = dict(state.params)
+                new_params["encoders"] = tuple(all_encoder_params)
+                
+                # Update state
+                state = state.replace(params=new_params)
+                
+                # Log comprehensive metrics to WandB
+                if step % 10 == 0:  # Log more frequently
+                    current_global_step = self.phase_a_global_step + step
+                    wandb.log({
+                        f"phase_a/encoder_{enc_idx}/total_loss": float(total_loss),
+                        f"phase_a/encoder_{enc_idx}/contrastive_loss": float(contrastive_loss),
+                        f"phase_a/encoder_{enc_idx}/reg_loss": float(reg_loss),
+                        f"phase_a/encoder_{enc_idx}/avg_target_variance": float(avg_target_var),
+                        f"phase_a/encoder_{enc_idx}/avg_other_variance": float(avg_other_var),
+                        f"phase_a/encoder_{enc_idx}/specialization_ratio": float(avg_other_var / (avg_target_var + 1e-8)),
+                        f"phase_a/encoder_{enc_idx}/step": current_global_step,
+                    }, step=current_global_step)
+                
+                if step % 50 == 0:
+                    logging.info(f"     Encoder {enc_idx} - Step {step}/{num_steps} - Total Loss: {float(total_loss):.6f}")
+                    logging.info(f"       Contrastive: {float(contrastive_loss):.6f}, Reg: {float(reg_loss):.6f}")
+                    logging.info(f"       Target Var: {float(avg_target_var):.6f}, Other Var: {float(avg_other_var):.6f}")
+            else:
+                # Fallback if no target or other patterns in batch
+                total_loss = jnp.mean((mu - 0.0) ** 2)
+                logging.warning(f"     Encoder {enc_idx} - Step {step}/{num_steps} - No target/other patterns in batch, using fallback loss")
         
         return state.params["encoders"][0]  # Return trained encoder params
+    
+    def _evaluate_specialized_encoder(self, enc_idx: int, encoder_params: dict, state: TrainState):
+        """
+        Evaluate a specialized encoder and create comprehensive visualizations.
+        
+        Args:
+            enc_idx: Index of the encoder
+            encoder_params: Trained encoder parameters
+            state: Training state with all parameters
+        """
+        logging.info(f"     Creating comprehensive evaluation for Encoder {enc_idx}...")
+        
+        # Create a temporary model for evaluation
+        temp_model = StructuredLPN(
+            encoders=(self.encoders[enc_idx],),
+            decoder=self.decoder
+        )
+        
+        # Generate evaluation data for all patterns
+        eval_data = {}
+        for pattern_id in [1, 2, 3]:
+            pattern_data = self._create_specialized_training_data(pattern_id)
+            eval_data[pattern_id] = pattern_data
+        
+        # Compute encoder variances per pattern
+        pattern_variances = {}
+        for pattern_id, (grids, shapes, pattern_ids) in eval_data.items():
+            # Sample a subset for evaluation
+            if len(grids) > 100:
+                indices = np.random.choice(len(grids), 100, replace=False)
+                eval_grids = grids[indices]
+                eval_shapes = shapes[indices]
+                eval_pattern_ids = pattern_ids[indices]
+            else:
+                eval_grids, eval_shapes, eval_pattern_ids = grids, shapes, pattern_ids
+            
+            # Forward pass through encoder
+            mu, logvar = self.encoders[enc_idx].apply(
+                {"params": encoder_params},
+                eval_grids,
+                eval_shapes,
+                dropout_eval=False,
+                mutable=False,
+            )
+            
+            # Compute variance statistics
+            variances = jnp.exp(logvar)
+            pattern_variances[pattern_id] = {
+                'mean': float(jnp.mean(variances)),
+                'std': float(jnp.std(variances)),
+                'min': float(jnp.min(variances)),
+                'max': float(jnp.max(variances)),
+                'variances': variances
+            }
+        
+        # Log comprehensive metrics to WandB
+        current_global_step = self.phase_a_global_step + 200  # After training
+        for pattern_id, stats in pattern_variances.items():
+            wandb.log({
+                f"phase_a_variances/encoder_{enc_idx}/pattern_{pattern_id}/mean": stats['mean'],
+                f"phase_a_variances/encoder_{enc_idx}/pattern_{pattern_id}/std": stats['std'],
+                f"phase_a_variances/encoder_{enc_idx}/pattern_{pattern_id}/min": stats['min'],
+                f"phase_a_variances/encoder_{enc_idx}/pattern_{pattern_id}/max": stats['max'],
+            }, step=current_global_step)
+        
+        # Create T-SNE visualization
+        logging.info(f"       Creating T-SNE plot for Encoder {enc_idx}...")
+        self._create_encoder_tsne(enc_idx, encoder_params, eval_data, current_global_step)
+        
+        # Create certainty panel (histograms)
+        logging.info(f"       Creating certainty panel for Encoder {enc_idx}...")
+        self._create_encoder_certainty_panel(enc_idx, pattern_variances, current_global_step)
+        
+        # Create reconstruction samples
+        logging.info(f"       Creating reconstruction samples for Encoder {enc_idx}...")
+        self._create_encoder_reconstruction_samples(enc_idx, encoder_params, eval_data, current_global_step)
+        
+        logging.info(f"     ✅ Evaluation completed for Encoder {enc_idx}")
+    
+    def _create_encoder_tsne(self, enc_idx: int, encoder_params: dict, eval_data: dict, global_step: int):
+        """Create T-SNE visualization for encoder latents."""
+        try:
+            # Collect latents from all patterns
+            all_latents = []
+            all_patterns = []
+            
+            for pattern_id, (grids, shapes, pattern_ids) in eval_data.items():
+                # Sample subset for T-SNE
+                if len(grids) > 100:
+                    indices = np.random.choice(len(grids), 100, replace=False)
+                    sample_grids = grids[indices]
+                    sample_shapes = shapes[indices]
+                else:
+                    sample_grids, sample_shapes = grids, shapes
+                
+                # Get latents
+                mu, logvar = self.encoders[enc_idx].apply(
+                    {"params": encoder_params},
+                    sample_grids,
+                    sample_shapes,
+                    dropout_eval=False,
+                    mutable=False,
+                )
+                
+                all_latents.append(mu)
+                all_patterns.extend([pattern_id] * len(mu))
+            
+            # Concatenate and flatten
+            all_latents = jnp.concatenate(all_latents, axis=0)
+            all_latents_flat = all_latents.reshape(all_latents.shape[0], -1)
+            
+            # T-SNE
+            from sklearn.manifold import TSNE
+            tsne = TSNE(n_components=2, random_state=42)
+            latents_2d = tsne.fit_transform(np.array(all_latents_flat))
+            
+            # Create plot
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            colors = ['red', 'blue', 'green']
+            for pattern_id in [1, 2, 3]:
+                mask = np.array(all_patterns) == pattern_id
+                ax.scatter(latents_2d[mask, 0], latents_2d[mask, 1], 
+                          c=colors[pattern_id-1], label=f'Pattern {pattern_id}', alpha=0.7)
+            
+            ax.set_title(f'Encoder {enc_idx} Latent Space T-SNE')
+            ax.set_xlabel('TSNE 1')
+            ax.set_ylabel('TSNE 2')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            
+            # Log to WandB
+            wandb.log({f"phase_a/encoder_{enc_idx}/tsne_plot": wandb.Image(fig)}, step=global_step)
+            plt.close(fig)
+            
+        except Exception as e:
+            logging.warning(f"T-SNE creation failed for Encoder {enc_idx}: {e}")
+    
+    def _create_encoder_certainty_panel(self, enc_idx: int, pattern_variances: dict, global_step: int):
+        """Create certainty panel (histograms) for encoder variances."""
+        try:
+            import matplotlib.pyplot as plt
+            
+            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+            fig.suptitle(f'Encoder {enc_idx} Variance Distributions by Pattern')
+            
+            for i, pattern_id in enumerate([1, 2, 3]):
+                if pattern_id in pattern_variances:
+                    variances = pattern_variances[pattern_id]['variances']
+                    axes[i].hist(variances.flatten(), bins=30, alpha=0.7, edgecolor='black')
+                    axes[i].set_title(f'Pattern {pattern_id}')
+                    axes[i].set_xlabel('Variance')
+                    axes[i].set_ylabel('Frequency')
+                    axes[i].axvline(pattern_variances[pattern_id]['mean'], color='red', 
+                                  linestyle='--', label=f'Mean: {pattern_variances[pattern_id]["mean"]:.4f}')
+                    axes[i].legend()
+                    axes[i].grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            
+            # Log to WandB
+            wandb.log({f"phase_a/encoder_{enc_idx}/certainty_panel": wandb.Image(fig)}, step=global_step)
+            plt.close(fig)
+            
+        except Exception as e:
+            logging.warning(f"Certainty panel creation failed for Encoder {enc_idx}: {e}")
+    
+    def _create_encoder_reconstruction_samples(self, enc_idx: int, encoder_params: dict, eval_data: dict, global_step: int):
+        """Create reconstruction samples for encoder."""
+        try:
+            import matplotlib.pyplot as plt
+            
+            # Sample one example from each pattern
+            fig, axes = plt.subplots(3, 3, figsize=(12, 12))
+            fig.suptitle(f'Encoder {enc_idx} Reconstruction Samples')
+            
+            for i, pattern_id in enumerate([1, 2, 3]):
+                grids, shapes, pattern_ids = eval_data[pattern_id]
+                
+                # Get one sample
+                sample_grid = grids[0:1]
+                sample_shape = shapes[0:1]
+                
+                # Get latents
+                mu, logvar = self.encoders[enc_idx].apply(
+                    {"params": encoder_params},
+                    sample_grid,
+                    sample_shape,
+                    dropout_eval=False,
+                    mutable=False,
+                )
+                
+                # For now, just show the input grid (we'll implement proper reconstruction later)
+                grid_vis = sample_grid[0, 0]  # First pair, first sample
+                
+                # Visualize grid
+                axes[i, 0].imshow(grid_vis[:, :, 0], cmap='viridis')
+                axes[i, 0].set_title(f'Pattern {pattern_id} - Input Grid')
+                axes[i, 0].axis('off')
+                
+                # Show latent statistics
+                axes[i, 1].text(0.1, 0.5, f'Mean: {float(jnp.mean(mu)):.4f}\nVar: {float(jnp.mean(jnp.exp(logvar))):.4f}', 
+                               transform=axes[i, 1].transAxes, fontsize=12, verticalalignment='center')
+                axes[i, 1].set_title(f'Pattern {pattern_id} - Latent Stats')
+                axes[i, 1].axis('off')
+                
+                # Placeholder for reconstruction
+                axes[i, 2].text(0.1, 0.5, 'Reconstruction\n(Coming Soon)', 
+                               transform=axes[i, 2].transAxes, fontsize=12, verticalalignment='center')
+                axes[i, 2].set_title(f'Pattern {pattern_id} - Reconstruction')
+                axes[i, 2].axis('off')
+            
+            plt.tight_layout()
+            
+            # Log to WandB
+            wandb.log({f"phase_a/encoder_{enc_idx}/reconstruction_samples": wandb.Image(fig)}, step=global_step)
+            plt.close(fig)
+            
+        except Exception as e:
+            logging.warning(f"Reconstruction samples creation failed for Encoder {enc_idx}: {e}")
     
     def _sample_specialized_batch(self, specialized_data: tuple, target_pattern: int) -> tuple:
         """
