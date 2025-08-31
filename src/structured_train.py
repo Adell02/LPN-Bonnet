@@ -1407,9 +1407,42 @@ class StructuredTrainer:
             num_cols=self.task_generator_kwargs.get("num_cols", 5),
         )
         
-        # Extract single sample
-        for (grids, shapes), _ in dataloader:
-            return grids[0, 0], shapes[0, 0], pattern_id
+        # Extract single sample - handle different dataloader output formats
+        try:
+            # Try the expected format first
+            for batch in dataloader:
+                if len(batch) == 2:
+                    # Format: (grids, shapes)
+                    grids, shapes = batch
+                    # Extract from batch format: (log_every_n_steps, batch_size, ...)
+                    return grids[0, 0], shapes[0, 0], pattern_id
+                elif len(batch) == 3:
+                    # Format: (grids, shapes, pattern_ids)
+                    grids, shapes, _ = batch
+                    return grids[0, 0], shapes[0, 0], pattern_id
+                else:
+                    # Unexpected format, try to handle gracefully
+                    logging.warning(f"Unexpected dataloader output format: {len(batch)} elements")
+                    if hasattr(batch, '__getitem__'):
+                        grids = batch[0] if len(batch) > 0 else None
+                        shapes = batch[1] if len(batch) > 1 else None
+                        if grids is not None and shapes is not None:
+                            return grids[0, 0], shapes[0, 0], pattern_id
+                    
+                    # Fallback: create minimal sample
+                    logging.warning(f"Creating fallback sample for pattern {pattern_id}")
+                    num_pairs = self.task_generator_kwargs["num_pairs"]
+                    fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
+                    fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
+                    return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
+                    
+        except Exception as e:
+            logging.error(f"Error creating single pattern sample for pattern {pattern_id}: {e}")
+            # Create minimal fallback sample
+            num_pairs = self.task_generator_kwargs["num_pairs"]
+            fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
+            fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
+            return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
