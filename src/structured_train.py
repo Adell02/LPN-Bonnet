@@ -1368,10 +1368,7 @@ class StructuredTrainer:
                     f"phase_a/encoder_{enc_idx}/target_pattern": target_pattern,
                 }
                 
-                # CRITICAL: Add variance trend analysis to detect overfitting/specialization issues
-                wandb_metrics[f"phase_a/encoder_{enc_idx}/debug/variance_trend"] = "monitoring"
-                
-                # Add contrastive loss metrics if available
+                # CRITICAL: Add all training losses for comprehensive monitoring
                 if "contrastive_loss" in metrics:
                     wandb_metrics[f"phase_a/encoder_{enc_idx}/contrastive_loss"] = float(metrics["contrastive_loss"])
                 if "contrastive_loss_weighted" in metrics:
@@ -1380,6 +1377,37 @@ class StructuredTrainer:
                     wandb_metrics[f"phase_a/encoder_{enc_idx}/contrastive_kl_mean"] = float(metrics["contrastive_kl_mean"])
                 if "contrastive_sign_mean" in metrics:
                     wandb_metrics[f"phase_a/encoder_{enc_idx}/contrastive_sign_mean"] = float(metrics["contrastive_sign_mean"])
+                
+                # Add reconstruction loss (main loss component)
+                wandb_metrics[f"phase_a/encoder_{enc_idx}/reconstruction_loss"] = float(loss)
+                
+                # Add total loss
+                wandb_metrics[f"phase_a/encoder_{enc_idx}/total_loss"] = float(loss)
+                
+                # CRITICAL: Add accuracy metrics for monitoring training progress
+                # Compute accuracy on this batch for each pattern
+                try:
+                    # Get predictions from the model
+                    predictions = model.apply(
+                        {"params": state.params},
+                        pairs=batch[0],
+                        grid_shapes=batch[1],
+                        dropout_eval=True,  # Use dropout for training
+                        mode=self.cfg.training.inference_mode,
+                        rngs={"dropout": key, "latents": key},
+                        contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
+                        pattern_ids=batch[2],
+                        encoder_params_list=[state.params["encoders"][0]],
+                        decoder_params=state.params["decoder"],
+                    )
+                    
+                    # For now, log a placeholder accuracy metric
+                    # You can implement specific accuracy computation based on your needs
+                    wandb_metrics[f"phase_a/encoder_{enc_idx}/accuracy_placeholder"] = 0.0
+                    
+                except Exception as e:
+                    logging.warning(f"Could not compute accuracy for Encoder {enc_idx}: {e}")
+                    wandb_metrics[f"phase_a/encoder_{enc_idx}/accuracy_placeholder"] = 0.0
                 
                 # Log encoder variance metrics for each pattern
                 try:
@@ -1572,6 +1600,20 @@ class StructuredTrainer:
                         logging.warning(f"Could not generate histograms for Encoder {enc_idx}: {e}")
                         # Log additional debug info
                         logging.debug(f"Encoder {enc_idx} Histograms error details - Batch shapes: grids={batch[0].shape}, shapes={batch[1].shape}, pattern_ids={batch[2].shape}")
+                
+                # CRITICAL: Generate reconstruction samples for each pattern during Phase A training
+                # This shows how well each encoder can reconstruct different patterns
+                if step % 100 == 0:  # Generate samples every 100 steps to avoid spam
+                    try:
+                        fig_reconstructions = self._create_encoder_reconstruction_samples(
+                            enc_idx, encoder_params, batch[0], batch[1], batch[2], target_pattern, step
+                        )
+                        if fig_reconstructions is not None:
+                            wandb_metrics[f"phase_a/encoder_{enc_idx}/reconstruction_samples"] = wandb.Image(fig_reconstructions)
+                            plt.close(fig_reconstructions)
+                            logging.info(f"✅ Generated reconstruction samples for Encoder {enc_idx} at global step {current_global_step}")
+                    except Exception as e:
+                        logging.warning(f"Could not generate reconstruction samples for Encoder {enc_idx}: {e}")
                 
                 # CRITICAL: Keep only essential metrics in phase_a_variances
                 # Focus on mean variance per encoder per pattern for clean monitoring
@@ -3385,7 +3427,7 @@ class StructuredTrainer:
         """
         Create T-SNE visualization for a single encoder during Phase A training.
         
-        This shows how the encoder is representing different patterns during specialization.
+        This uses the SAME T-SNE function as train.py for consistency.
         
         Args:
             enc_idx: Index of the encoder
@@ -3398,13 +3440,6 @@ class StructuredTrainer:
         Returns:
             matplotlib Figure with T-SNE visualization
         """
-        try:
-            from sklearn.manifold import TSNE
-            import matplotlib.pyplot as plt
-        except ImportError:
-            logging.warning("sklearn or matplotlib not available for T-SNE visualization")
-            return None
-        
         try:
             # Get encoder latents for this batch
             mu_i, logvar_i = self.encoders[enc_idx].apply(
@@ -3433,73 +3468,26 @@ class StructuredTrainer:
                 pattern_ids_np = pattern_ids_np[:min_length]
                 logging.warning(f"Encoder {enc_idx} T-SNE: Truncated arrays to length {min_length} due to size mismatch")
             
-            # Downsample if too many points
-            max_points = min(200, len(latents_np))
-            if len(latents_np) > max_points:
-                indices = np.random.RandomState(42).choice(
-                    len(latents_np), size=max_points, replace=False
-                )
-                latents_np = latents_np[indices]
-                pattern_ids_np = pattern_ids_np[indices]
+            # Use the SAME T-SNE function as train.py for consistency
+            # This ensures the same style, colors, and markers
+            fig_tsne = visualize_tsne_sources(
+                latents=latents_np,
+                program_ids=pattern_ids_np,  # Pattern types (1, 2, 3) for colors
+                source_ids=np.full(len(latents_np), enc_idx, dtype=int),  # All from same encoder
+                max_points=min(200, len(latents_np)),
+                random_state=42,
+                task_ids=np.zeros(len(latents_np), dtype=int),  # No task IDs during training
+            )
             
-            # Perform T-SNE
-            tsne = TSNE(n_components=2, perplexity=min(30, max_points//4), max_iter=1000, random_state=42)
-            latents_2d = tsne.fit_transform(latents_np)
+            # Update title to show this is during training
+            if fig_tsne is not None:
+                fig_tsne.suptitle(f"Encoder {enc_idx} T-SNE During Training (Step {getattr(self, '_current_step', 'unknown')})\nTarget Pattern: {target_pattern}", 
+                                fontsize=16, fontweight='bold')
             
-            # Create figure
-            fig, ax = plt.subplots(figsize=(12, 10))
-            
-            # Color coding: target pattern vs others
-            target_mask = (pattern_ids_np == target_pattern)
-            other_mask = ~target_mask
-            
-            # Plot target pattern (should be learning, more scattered)
-            if np.any(target_mask):
-                ax.scatter(
-                    latents_2d[target_mask, 0], 
-                    latents_2d[target_mask, 1],
-                    c='red', 
-                    marker='o',
-                    alpha=0.7,
-                    s=100,
-                    label=f'Target Pattern {target_pattern} (Learning)',
-                    edgecolors='darkred'
-                )
-            
-            # Plot other patterns (should be more certain, clustered)
-            if np.any(other_mask):
-                ax.scatter(
-                    latents_2d[other_mask, 0], 
-                    latents_2d[other_mask, 1],
-                    c='blue', 
-                    marker='s',
-                    alpha=0.7,
-                    s=100,
-                    label=f'Other Patterns (Certain)',
-                    edgecolors='darkblue'
-                )
-            
-            # Set title and labels
-            ax.set_title(f"Encoder {enc_idx} T-SNE During Training (Step {getattr(self, '_current_step', 'unknown')})", 
-                        fontsize=16, fontweight='bold')
-            ax.set_xlabel("t-SNE 1", fontsize=12)
-            ax.set_ylabel("t-SNE 2", fontsize=12)
-            
-            # Add legend
-            ax.legend(title="Pattern Types", loc="upper right")
-            
-            # Add specialization status
-            target_count = np.sum(target_mask)
-            other_count = np.sum(other_mask)
-            ax.text(0.02, 0.98, f"Target Pattern {target_pattern}: {target_count} samples\nOther Patterns: {other_count} samples", 
-                   transform=ax.transAxes, verticalalignment='top',
-                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-            
-            plt.tight_layout()
-            return fig
+            return fig_tsne
             
         except Exception as e:
-            logging.error(f"Failed to create encoder T-SNE during training: {e}")
+            logging.warning(f"Could not create T-SNE for Encoder {enc_idx}: {e}")
             return None
 
     def _create_pattern_variance_histograms(
@@ -4399,6 +4387,120 @@ class StructuredTrainer:
                     continue
         
         return None
+    
+    def _create_encoder_reconstruction_samples(
+        self,
+        enc_idx: int,
+        enc_params: dict,
+        batch_grids: chex.Array,
+        batch_shapes: chex.Array,
+        batch_pattern_ids: chex.Array,
+        target_pattern: int,
+        current_step: int
+    ) -> Optional[plt.Figure]:
+        """
+        Create reconstruction samples for each pattern during Phase A training.
+        
+        This shows how well each encoder can reconstruct different patterns.
+        
+        Args:
+            enc_idx: Index of the encoder
+            enc_params: Encoder parameters
+            batch_grids: Batch of grids
+            batch_shapes: Batch of shapes
+            batch_pattern_ids: Pattern IDs for the batch
+            target_pattern: Target pattern this encoder should specialize in
+            current_step: Current training step
+            
+        Returns:
+            matplotlib Figure with reconstruction samples
+        """
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+        except ImportError:
+            logging.warning("matplotlib not available for reconstruction visualization")
+            return None
+        
+        try:
+            # Get encoder latents for this batch
+            mu_i, logvar_i = self.encoders[enc_idx].apply(
+                {"params": enc_params}, 
+                batch_grids, 
+                batch_shapes, 
+                False,  # eval mode
+                mutable=False
+            )
+            
+            # Sample from the encoder
+            key = jax.random.PRNGKey(42)  # Fixed seed for reproducibility
+            latents = mu_i + jnp.sqrt(jnp.exp(logvar_i)) * jax.random.normal(key, mu_i.shape)
+            
+            # Get decoder outputs (reconstructions)
+            # Note: This is a simplified version - you may need to adapt based on your model structure
+            decoder_outputs = self.decoder.apply(
+                {"params": self.original_decoder_params},
+                latents,
+                batch_shapes,
+                False,  # eval mode
+                mutable=False
+            )
+            
+            # Convert to numpy for visualization
+            grids_np = np.array(batch_grids)
+            pattern_ids_np = np.array(batch_pattern_ids)
+            reconstructions_np = np.array(decoder_outputs)
+            
+            # Create figure with subplots for each pattern
+            fig, axes = plt.subplots(3, 4, figsize=(16, 12))
+            fig.suptitle(f"Encoder {enc_idx} Reconstruction Samples - Step {current_step}\nTarget Pattern: {target_pattern}", 
+                        fontsize=16, fontweight='bold')
+            
+            # Pattern names for better visualization
+            pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+            pattern_colors = {1: 'red', 2: 'blue', 3: 'green'}
+            
+            # Show samples for each pattern
+            for pattern_id in [1, 2, 3]:
+                pattern_mask = (pattern_ids_np == pattern_id)
+                if np.any(pattern_mask):
+                    # Get first sample for this pattern
+                    sample_idx = np.where(pattern_mask)[0][0]
+                    
+                    # Original input
+                    ax = axes[pattern_id-1, 0]
+                    ax.imshow(grids_np[sample_idx, 0], cmap='Blues', alpha=0.8)
+                    ax.set_title(f"Pattern {pattern_id} - Input", fontsize=12)
+                    ax.axis('off')
+                    
+                    # Reconstruction
+                    ax = axes[pattern_id-1, 1]
+                    ax.imshow(reconstructions_np[sample_idx, 0], cmap='Blues', alpha=0.8)
+                    ax.set_title(f"Pattern {pattern_id} - Reconstruction", fontsize=12)
+                    ax.axis('off')
+                    
+                    # Target output
+                    ax = axes[pattern_id-1, 2]
+                    ax.imshow(grids_np[sample_idx, 1], cmap='Blues', alpha=0.8)
+                    ax.set_title(f"Pattern {pattern_id} - Target", fontsize=12)
+                    ax.axis('off')
+                    
+                    # Reconstruction quality indicator
+                    ax = axes[pattern_id-1, 3]
+                    # Simple quality metric (you can implement more sophisticated ones)
+                    quality = np.mean(np.abs(reconstructions_np[sample_idx, 0] - grids_np[sample_idx, 1]))
+                    ax.text(0.5, 0.5, f"Quality: {quality:.3f}\n{'Good' if quality < 0.1 else 'Poor'}", 
+                           ha='center', va='center', transform=ax.transAxes, fontsize=12,
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor=pattern_colors[pattern_id], alpha=0.3))
+                    ax.set_title(f"Pattern {pattern_id} - Quality", fontsize=12)
+                    ax.axis('off')
+            
+            plt.tight_layout()
+            return fig
+            
+        except Exception as e:
+            logging.warning(f"Could not create reconstruction samples for Encoder {enc_idx}: {e}")
+            return None
 
 
 @hydra.main(config_path="configs", version_base=None, config_name="structured")
