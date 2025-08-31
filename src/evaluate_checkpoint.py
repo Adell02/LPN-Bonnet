@@ -915,29 +915,32 @@ def evaluate_custom_dataset(
                     # Debug: show the shapes we're working with
                     print(f"[store_latents] Debug shapes: initial_ga_losses={initial_ga_losses.shape}, ga_losses_per_sample={ga_losses_per_sample.shape}")
                     
-                    # The initial_ga_losses should be (batch_size,) and we need to make it (batch_size, 1)
-                    # Handle different possible shapes
-                    if initial_ga_losses.ndim == 1:
-                        # (batch_size,) -> (batch_size, 1)
-                        initial_ga_losses = initial_ga_losses.reshape(-1, 1)
-                    elif initial_ga_losses.ndim == 2:
-                        # Already (batch_size, something) - check if we need to squeeze
-                        if initial_ga_losses.shape[1] == 1:
-                            # Already (batch_size, 1)
-                            pass
-                        else:
-                            # (batch_size, N) -> take mean across N to get (batch_size, 1)
-                            initial_ga_losses = np.mean(initial_ga_losses, axis=1, keepdims=True)
-                    else:
-                        # Higher dimensions - flatten and reshape
-                        initial_ga_losses = initial_ga_losses.flatten().reshape(-1, 1)
+                    # The issue is that initial_ga_losses has shape (1, 4) but ga_losses_per_sample has shape (4, 50)
+                    # We need to align the batch dimensions. The initial_ga_losses should be expanded to match
+                    # the batch size of ga_losses_per_sample
                     
-                    print(f"[store_latents] After reshape: initial_ga_losses={initial_ga_losses.shape}")
+                    # First, let's understand what we have:
+                    # - initial_ga_losses: (1, 4) - 1 batch, 4 samples
+                    # - ga_losses_per_sample: (4, 50) - 4 samples, 50 steps
+                    
+                    # We need to extract the 4 samples from initial_ga_losses and reshape them
+                    if initial_ga_losses.shape[0] == 1 and initial_ga_losses.shape[1] == 4:
+                        # Extract the 4 samples: (1, 4) -> (4,)
+                        initial_ga_losses = initial_ga_losses[0, :]  # Shape: (4,)
+                        # Reshape to (4, 1) for concatenation
+                        initial_ga_losses = initial_ga_losses.reshape(-1, 1)  # Shape: (4, 1)
+                        print(f"[store_latents] Extracted and reshaped initial GA losses: {initial_ga_losses.shape}")
+                    else:
+                        print(f"[store_latents] Unexpected initial_ga_losses shape: {initial_ga_losses.shape}, skipping initial loss prepending")
+                        initial_ga_losses = None
                     
                     # Concatenate: initial + optimization steps
-                    ga_losses_with_initial = np.concatenate([initial_ga_losses, ga_losses_per_sample], axis=1)
-                    payload["ga_losses_per_sample"] = ga_losses_with_initial
-                    print(f"[store_latents] GA losses with initial: {ga_losses_with_initial.shape}")
+                    if initial_ga_losses is not None:
+                        ga_losses_with_initial = np.concatenate([initial_ga_losses, ga_losses_per_sample], axis=1)
+                        payload["ga_losses_per_sample"] = ga_losses_with_initial
+                        print(f"[store_latents] GA losses with initial: {ga_losses_with_initial.shape}")
+                    else:
+                        payload["ga_losses_per_sample"] = ga_losses_per_sample
                 else:
                     payload["ga_losses_per_sample"] = ga_losses_per_sample
                 

@@ -2876,7 +2876,7 @@ class StructuredTrainer:
                         try:
                             start = time.time()
                             test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
-                                state, dataset_dict, step=0
+                                state, dataset_dict, step=step
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                             
@@ -2901,7 +2901,7 @@ class StructuredTrainer:
                                 else:
                                     logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                             
-                            wandb.log(test_metrics, step=0)
+                            wandb.log(test_metrics, step=step)
                             plt.close('all')  # Close all figures to prevent memory leaks
                             # Explicitly close additional T-SNE figures
                             if fig_tsne_samples is not None:
@@ -3120,6 +3120,12 @@ class StructuredTrainer:
         This ensures structured_train.py emulates train.py exactly while maintaining
         the architectural differences (multiple encoders + PoE + single decoder).
         """
+        # Log the step parameter being used for evaluation
+        logging.info(f"🔍 Evaluation called with step={step} (type: {type(step)})")
+        if step is None:
+            logging.warning("⚠️  Evaluation called without step parameter - this may cause WandB step tracking issues")
+        else:
+            logging.info(f"✅ Evaluation using step={step} for WandB logging")
         # Use current encoder weights from state.params, not the original artifact weights
         current_enc_params_list = state.params["encoders"]
         logging.info(f"Evaluation using current encoder weights from training state (step {getattr(state, 'step', 'unknown')})")
@@ -4656,7 +4662,9 @@ def run(cfg: omegaconf.DictConfig):
         except Exception as e:
             logging.warning(f"Resume failed: {e}")
     state = trainer.train(state, enc_params_list)
-    trainer.evaluate(state, enc_params_list)
+    # Final evaluation with the final step value
+    final_step = cfg.training.total_num_steps
+    trainer.evaluate(state, enc_params_list, final_step)
 
 
 if __name__ == "__main__":
