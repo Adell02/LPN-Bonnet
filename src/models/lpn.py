@@ -917,6 +917,24 @@ class LPN(nn.Module):
             initial_latents_for_eval = latents[..., 0, :]  # (B1, B2, H)
         else:
             initial_latents_for_eval = latents[..., 0, :]  # (*B, H)
+        
+        # CRITICAL FIX: Ensure the batch dimensions match input_seq
+        # If we have input_seq with shape (1, 4, 3, 102), we need latents with shape (1, 4, 256)
+        expected_batch_shape = input_seq.shape[:-2]  # (1, 4)
+        current_batch_shape = initial_latents_for_eval.shape[:-1]  # (1,) or (1, 4)
+        
+        print(f"         🔍 DEBUG: Batch shape analysis:")
+        print(f"         🔍   Expected batch shape: {expected_batch_shape}")
+        print(f"         🔍   Current batch shape: {current_batch_shape}")
+        
+        if current_batch_shape != expected_batch_shape:
+            print(f"         🔍 DEBUG: Batch shapes don't match, need to reshape")
+            # Reshape to match expected batch dimensions
+            # This ensures compatibility with the vmap functions
+            if len(expected_batch_shape) == 2 and len(current_batch_shape) == 1:
+                # Expand from (1, 256) to (1, 4, 256)
+                initial_latents_for_eval = initial_latents_for_eval[:, None, :].repeat(expected_batch_shape[1], axis=1)
+                print(f"         🔍 DEBUG: Reshaped latents to: {initial_latents_for_eval.shape}")
         print(f"         🔍 DEBUG: initial_latents_for_eval.shape = {initial_latents_for_eval.shape}")
         
         print(f"         🔍 DEBUG: About to call vmap_log_probs_fn:")
@@ -933,8 +951,14 @@ class LPN(nn.Module):
         # Check if the tensors are compatible for vmap
         print(f"         🔍 DEBUG: Tensor compatibility check:")
         print(f"         🔍   - input_seq batch shape: {input_seq.shape[:-2]}")
-        print(f"         🔍   - initial_latents_for_eval batch shape: {initial_latents_for_eval.shape[:-2]}")
-        print(f"         🔍   - Are batch shapes compatible? {input_seq.shape[:-2] == initial_latents_for_eval.shape[:-2]}")
+        print(f"         🔍   - initial_latents_for_eval batch shape: {initial_latents_for_eval.shape[:-1]}")
+        print(f"         🔍   - Are batch shapes compatible? {input_seq.shape[:-2] == initial_latents_for_eval.shape[:-1]}")
+        
+        # Final verification before calling vmap
+        if input_seq.shape[:-2] != initial_latents_for_eval.shape[:-1]:
+            print(f"         🔍 ERROR: Batch shapes still don't match after reshape!")
+            print(f"         🔍   This will cause broadcasting errors in the decoder")
+            raise ValueError(f"Batch shape mismatch: input_seq {input_seq.shape[:-2]} vs latents {initial_latents_for_eval.shape[:-1]}")
         
         initial_log_probs = vmap_log_probs_fn(initial_latents_for_eval, input_seq, output_seq, self.decoder)
 
