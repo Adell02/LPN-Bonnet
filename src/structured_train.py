@@ -56,7 +56,7 @@ from data_utils import (
     data_augmentation_fn,
     make_leave_one_out,
 )
-from datasets.task_gen.dataloader import make_task_gen_dataloader
+
 from visualization import (
     visualize_dataset_generation,
     visualize_heatmap,
@@ -732,50 +732,21 @@ class StructuredTrainer:
         if batch_size % 3 != 0:
             raise ValueError(f"Batch size {batch_size} must be divisible by 3 for uniform pattern distribution")
         
-        # Generate samples for each pattern
+        # Generate samples for each pattern using standardized dataset generator
         grids_list = []
         shapes_list = []
         
         for pattern_id in [1, 2, 3]:  # Pattern 1, Pattern 2, Pattern 3
-            # Generate samples_per_pattern samples for this pattern
-            # Use make_task_gen_dataloader directly since make_dataset doesn't support STRUCT_PATTERN
-            from datasets.task_gen.dataloader import make_task_gen_dataloader
+            # Use standardized dataset generator for consistency
             
-            # Create dataloader for this specific pattern
-            dataloader = make_task_gen_dataloader(
-                batch_size=1,
-                log_every_n_steps=1,
-                num_workers=0,  # No workers for single batch generation
-                task_generator_class="STRUCT_PATTERN",
-                num_pairs=self.task_generator_kwargs["num_pairs"],
-                online_data_augmentation=self.cfg.training.online_data_augmentation,
-                seed=self.cfg.training.seed + pattern_id + (self._batch_counter if hasattr(self, '_batch_counter') else 0),
-                pattern=pattern_id,  # Specific pattern
-                pattern_per_task=True,
-                num_rows=self.task_generator_kwargs.get("num_rows", 5),
-                num_cols=self.task_generator_kwargs.get("num_cols", 5),
-            )
+            # Use standardized dataset generator for consistency
+            grids, shapes, _ = self._create_standardized_dataset(f"single_pattern_{pattern_id}", samples_per_pattern)
             
-            # Generate samples using the dataloader
-            grids_list_pattern = []
-            shapes_list_pattern = []
-            for i, ((grids, shapes), _) in enumerate(zip(dataloader, range(samples_per_pattern))):
-                # The dataloader returns (log_every_n_steps, batch_size, ...) format
-                # Since we set batch_size=1 and log_every_n_steps=1, extract the actual data
-                # grids shape: (1, 1, num_pairs, max_rows, max_cols, 2) -> (num_pairs, max_rows, max_cols, 2)
-                # shapes shape: (1, 1, num_pairs, 2, 2) -> (num_pairs, 2, 2)
-                grids_list_pattern.append(grids[0, 0])  # Extract from batch format
-                shapes_list_pattern.append(shapes[0, 0])  # Extract from batch format
+            # DEBUG: Log the actual shapes returned by standardized generator
+            logging.debug(f"Pattern {pattern_id} - grids shape: {grids.shape}, shapes shape: {shapes.shape}")
             
-            # Stack the samples for this pattern
-            g = jnp.stack(grids_list_pattern, axis=0)
-            s = jnp.stack(shapes_list_pattern, axis=0)
-            
-            # DEBUG: Log the actual shapes returned by direct dataloader
-            logging.debug(f"Pattern {pattern_id} - grids shape: {g.shape}, shapes shape: {s.shape}")
-            
-            grids_list.append(g)
-            shapes_list.append(s)
+            grids_list.append(grids)
+            shapes_list.append(shapes)
         
         # CRITICAL FIX: Align pattern generation with pattern IDs
         # Create explicit pattern IDs that match the concatenation order
@@ -1152,7 +1123,7 @@ class StructuredTrainer:
         target_pattern = enc_idx + 1  # Encoder 0 -> Pattern 1, Encoder 1 -> Pattern 2, etc.
         
         # Generate specialized training data
-        specialized_data = self._create_specialized_training_data(target_pattern)
+        specialized_data = self._create_standardized_dataset(f"single_pattern_{target_pattern}", self.batch_size * 10)
         
         # Train for encoder_expose_steps
         num_steps = self.encoder_expose_steps
@@ -1689,8 +1660,8 @@ class StructuredTrainer:
             # Create evaluation data for all patterns to show specialization progress
             eval_data = {}
             for pattern_id in [1, 2, 3]:
-                # Use the same pattern dataset creation as Phase B for consistency
-                pattern_data = self._create_pattern_dataset(pattern_id, 100)
+                # Use standardized dataset creation for consistency
+                pattern_data = self._create_standardized_dataset(f"single_pattern_{pattern_id}", 100)
                 eval_data[pattern_id] = pattern_data
             
             # Generate T-SNE visualization
@@ -1828,7 +1799,7 @@ class StructuredTrainer:
             # Create evaluation data for all patterns (same as Phase A)
             eval_data = {}
             for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, 100)  # 100 samples per pattern
+                eval_data[pattern_id] = self._create_standardized_dataset(f"single_pattern_{pattern_id}", 100)  # 100 samples per pattern
             
             # Generate certainty plots for each pattern
             for pattern_id in [1, 2, 3]:
@@ -2525,202 +2496,13 @@ class StructuredTrainer:
         
         return organized_metrics
     
-    def _create_specialized_training_data(self, target_pattern: int) -> tuple:
-        """
-        Create specialized training data for individual encoder training.
-        
-        Args:
-            target_pattern: Pattern this encoder should specialize in (1, 2, or 3)
-            
-        Returns:
-            Tuple of (grids, shapes, pattern_ids) for specialized training
-        """
-        logging.info(f"     Creating specialized data for pattern {target_pattern}")
-        
-        # Generate balanced data with emphasis on target pattern
-        total_samples = self.batch_size * 10  # Generate more samples for individual training
-        target_samples = int(total_samples * 0.7)  # 70% target pattern
-        other_samples = total_samples - target_samples
-        
-        grids_list = []
-        shapes_list = []
-        pattern_ids_list = []
-        
-        # Generate target pattern samples (reinforced)
-        for _ in range(target_samples):
-            grids, shapes, _ = self._create_single_pattern_sample(target_pattern)
-            grids_list.append(grids)
-            shapes_list.append(shapes)
-            pattern_ids_list.append(target_pattern)
-        
-        # Generate other pattern samples (reduced certainty)
-        other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
-        samples_per_other = other_samples // len(other_patterns)
-        
-        for pattern_id in other_patterns:
-            for _ in range(samples_per_other):
-                grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
-                grids_list.append(grids)
-                shapes_list.append(shapes)
-                pattern_ids_list.append(pattern_id)
-        
-        # Stack and return
-        grids = jnp.stack(grids_list, axis=0)
-        shapes = jnp.stack(shapes_list, axis=0)
-        pattern_ids = jnp.array(pattern_ids_list)
-        
-        logging.info(f"     Generated {len(grids_list)} samples: {target_samples} target, {other_samples} others")
-        return grids, shapes, pattern_ids
+
     
-    def _create_pattern_dataset(self, pattern_id: int, num_samples: int) -> tuple:
-        """Create a dataset composed solely of a single pattern with clean tetromino shapes.
 
-        This is used for evaluation/visualization so that variance statistics
-        are computed from examples of the intended pattern only. Creates clean,
-        consistent tetromino patterns for reliable evaluation.
 
-        Args:
-            pattern_id: Pattern to generate (1, 2, or 3).
-            num_samples: Number of samples to generate for this pattern.
 
-        Returns:
-            Tuple of (grids, shapes, pattern_ids) each with ``num_samples``
-            entries corresponding to ``pattern_id``.
-        """
-        import numpy as np
-        import random
-        
-        # Set random seed for reproducibility
-        random.seed(self.cfg.training.seed + pattern_id)
-        
-        # Get number of pairs from config
-        num_pairs = self.task_generator_kwargs["num_pairs"]
-        
-        # Define clean tetromino patterns (1-based indexing to match our system)
-        pattern_definitions = {
-            1: {  # L-tetromino (3x2 box) - matches our pattern 1
-                'offsets': [(0, 0), (1, 0), (2, 0), (2, 1)],
-                'box_h': 3, 'box_w': 2,
-                'name': 'L-tetromino'
-            },
-            2: {  # O-tetromino (2x2 square) - matches our pattern 2  
-                'offsets': [(0, 0), (0, 1), (1, 0), (1, 1)],
-                'box_h': 2, 'box_w': 2,
-                'name': 'O-tetromino'
-            },
-            3: {  # T-tetromino (2x3 box) - matches our pattern 3
-                'offsets': [(0, 0), (0, 1), (0, 2), (1, 1)],
-                'box_h': 2, 'box_w': 3,
-                'name': 'T-tetromino'
-            }
-        }
-        
-        if pattern_id not in pattern_definitions:
-            logging.warning(f"Unknown pattern_id {pattern_id}, using pattern 1")
-            pattern_id = 1
-        
-        pattern_info = pattern_definitions[pattern_id]
-        logging.info(f"      Creating {num_samples} samples of {pattern_info['name']} (Pattern {pattern_id})")
-        
-        # Initialize arrays
-        grids = np.zeros((num_samples, num_pairs, 5, 5, 2), dtype=np.uint8)
-        shapes = np.zeros((num_samples, num_pairs, 2, 2), dtype=np.uint8)
-        pattern_ids = np.full(num_samples, pattern_id, dtype=np.uint8)
-        
-        for sample_idx in range(num_samples):
-            # Sample colors for this sample (consistent across all pairs)
-            colors = [random.randint(1, 9) for _ in range(4)]
-            
-            for pair_idx in range(num_pairs):
-                # Generate input grid with single anchor point
-                input_grid = np.zeros((5, 5), dtype=np.uint8)
-                output_grid = np.zeros((5, 5), dtype=np.uint8)
-                
-                # Choose random position for pattern (ensuring it fits)
-                max_row = 5 - pattern_info['box_h']
-                max_col = 5 - pattern_info['box_w']
-                top = random.randint(0, max_row)
-                left = random.randint(0, max_col)
-                
-                # Mark anchor in input
-                input_grid[top, left] = 0  # Use 0 for input (anchor point)
-                
-                # Draw pattern in output
-                for k, (dr, dc) in enumerate(pattern_info['offsets']):
-                    output_grid[top + dr, left + dc] = colors[k % len(colors)]
-                
-                # Store in arrays
-                grids[sample_idx, pair_idx, :, :, 0] = input_grid
-                grids[sample_idx, pair_idx, :, :, 1] = output_grid
-                shapes[sample_idx, pair_idx, 0] = [5, 5]  # [input_rows, input_cols]
-                shapes[sample_idx, pair_idx, 1] = [5, 5]  # [output_rows, output_cols]
-        
-        logging.info(f"      Generated {num_samples} samples: {grids.shape}, {shapes.shape}")
-        return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
     
-    def _create_single_pattern_sample(self, pattern_id: int) -> tuple:
-        """
-        Create a single sample for a specific pattern.
-        
-        Args:
-            pattern_id: Pattern to generate (1, 2, or 3)
-            
-        Returns:
-            Tuple of (grids, shapes, pattern_ids)
-        """
-        # Use the existing pattern generation logic
-        from datasets.task_gen.dataloader import make_task_gen_dataloader
-        
-        dataloader = make_task_gen_dataloader(
-            batch_size=1,
-            log_every_n_steps=1,
-            num_workers=0,
-            task_generator_class="STRUCT_PATTERN",
-            num_pairs=self.task_generator_kwargs["num_pairs"],
-            online_data_augmentation=self.cfg.training.online_data_augmentation,
-            seed=self.cfg.training.seed + pattern_id,
-            pattern=pattern_id,
-            pattern_per_task=True,
-            num_rows=self.task_generator_kwargs.get("num_rows", 5),
-            num_cols=self.task_generator_kwargs.get("num_cols", 5),
-        )
-        
-        # Extract single sample - handle different dataloader output formats
-        try:
-            # Try the expected format first
-            for batch in dataloader:
-                if len(batch) == 2:
-                    # Format: (grids, shapes)
-                    grids, shapes = batch
-                    # Extract from batch format: (log_every_n_steps, batch_size, ...)
-                    return grids[0, 0], shapes[0, 0], pattern_id
-                elif len(batch) == 3:
-                    # Format: (grids, shapes, pattern_ids)
-                    grids, shapes, _ = batch
-                    return grids[0, 0], shapes[0, 0], pattern_id
-                else:
-                    # Unexpected format, try to handle gracefully
-                    logging.warning(f"Unexpected dataloader output format: {len(batch)} elements")
-                    if hasattr(batch, '__getitem__'):
-                        grids = batch[0] if len(batch) > 0 else None
-                        shapes = batch[1] if len(batch) > 1 else None
-                        if grids is not None and shapes is not None:
-                            return grids[0, 0], shapes[0, 0], pattern_id
-                    
-                    # Fallback: create minimal sample
-                    logging.warning(f"Creating fallback sample for pattern {pattern_id}")
-                    num_pairs = self.task_generator_kwargs["num_pairs"]
-                    fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
-                    fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
-                    return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
-                    
-        except Exception as e:
-            logging.error(f"Error creating single pattern sample for pattern {pattern_id}: {e}")
-            # Create minimal fallback sample
-            num_pairs = self.task_generator_kwargs["num_pairs"]
-            fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
-            fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
-            return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
+
 
     def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 1.0) -> float:
         """
@@ -4838,6 +4620,163 @@ class StructuredTrainer:
         except Exception as e:
             logging.warning(f"Failed to monitor encoder {enc_idx} specialization: {e}")
             return {}
+
+    def _create_standardized_dataset(self, pattern_mode: str, num_samples: int) -> tuple:
+        """
+        Unified data generator for both phases with consistent format.
+        
+        Args:
+            pattern_mode: 
+                - "single_pattern_{id}" for single pattern (1, 2, or 3)
+                - "mixed_patterns" for balanced mix of all patterns
+                - "balanced_mixed" for training data with equal distribution
+            num_samples: Number of samples to generate
+            
+        Returns:
+            Tuple of (grids, shapes, pattern_ids) with consistent format:
+            - grids: (num_samples, num_pairs, 5, 5, 2) where [:, :, :, :, 0] = input, [:, :, :, :, 1] = output
+            - shapes: (num_samples, num_pairs, 2, 2) where [:, :, 0] = input_dims, [:, :, 1] = output_dims
+            - pattern_ids: (num_samples,) identifying which pattern each sample contains
+        """
+        import numpy as np
+        import random
+        
+        # Get number of pairs from config
+        num_pairs = self.task_generator_kwargs["num_pairs"]
+        
+        # Set random seed for reproducibility
+        random.seed(self.cfg.training.seed)
+        
+        if pattern_mode.startswith("single_pattern_"):
+            # Single pattern mode: generate only one specific pattern
+            pattern_id = int(pattern_mode.split("_")[-1])
+            if pattern_id not in [1, 2, 3]:
+                raise ValueError(f"Invalid pattern ID: {pattern_id}. Must be 1, 2, or 3.")
+            
+            # Define clean tetromino patterns
+            pattern_definitions = {
+                1: {  # L-tetromino (3x2 box)
+                    'offsets': [(0, 0), (1, 0), (2, 0), (2, 1)],
+                    'box_h': 3, 'box_w': 2,
+                    'name': 'L-tetromino'
+                },
+                2: {  # O-tetromino (2x2 square)
+                    'offsets': [(0, 0), (0, 1), (1, 0), (1, 1)],
+                    'box_h': 2, 'box_w': 2,
+                    'name': 'O-tetromino'
+                },
+                3: {  # T-tetromino (2x3 box)
+                    'offsets': [(0, 0), (0, 1), (0, 2), (1, 1)],
+                    'box_h': 2, 'box_w': 3,
+                    'name': 'T-tetromino'
+                }
+            }
+            
+            pattern_info = pattern_definitions[pattern_id]
+            logging.info(f"      Creating {num_samples} samples of {pattern_info['name']} (Pattern {pattern_id})")
+            
+            # Initialize arrays
+            grids = np.zeros((num_samples, num_pairs, 5, 5, 2), dtype=np.uint8)
+            shapes = np.zeros((num_samples, num_pairs, 2, 2), dtype=np.uint8)
+            pattern_ids = np.full(num_samples, pattern_id, dtype=np.uint8)
+            
+            for sample_idx in range(num_samples):
+                # Sample colors for this sample (consistent across all pairs)
+                colors = [random.randint(1, 9) for _ in range(4)]
+                
+                for pair_idx in range(num_pairs):
+                    # Generate input grid with single anchor point
+                    input_grid = np.zeros((5, 5), dtype=np.uint8)
+                    output_grid = np.zeros((5, 5), dtype=np.uint8)
+                    
+                    # Choose random position for pattern (ensuring it fits)
+                    max_row = 5 - pattern_info['box_h']
+                    max_col = 5 - pattern_info['box_w']
+                    top = random.randint(0, max_row)
+                    left = random.randint(0, max_col)
+                    
+                    # Mark anchor in input
+                    input_grid[top, left] = 1  # Use 1 for input (anchor point)
+                    
+                    # Draw pattern in output
+                    for k, (dr, dc) in enumerate(pattern_info['offsets']):
+                        output_grid[top + dr, left + dc] = colors[k % len(colors)]
+                    
+                    # Store in arrays
+                    grids[sample_idx, pair_idx, :, :, 0] = input_grid
+                    grids[sample_idx, pair_idx, :, :, 1] = output_grid
+                    shapes[sample_idx, pair_idx, 0] = [5, 5]  # [input_rows, input_cols]
+                    shapes[sample_idx, pair_idx, 1] = [5, 5]  # [output_rows, output_cols]
+            
+            logging.info(f"      Generated {num_samples} samples: {grids.shape}, {shapes.shape}")
+            return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
+            
+        elif pattern_mode == "mixed_patterns":
+            # Mixed patterns mode: balanced mix for evaluation
+            samples_per_pattern = num_samples // 3
+            remaining_samples = num_samples % 3
+            
+            # Initialize arrays
+            grids = np.zeros((num_samples, num_pairs, 5, 5, 2), dtype=np.uint8)
+            shapes = np.zeros((num_samples, num_pairs, 2, 2), dtype=np.uint8)
+            pattern_ids = np.zeros(num_samples, dtype=np.uint8)
+            
+            # Define all patterns
+            all_patterns = [
+                (1, [(0, 0), (1, 0), (2, 0), (2, 1)], 3, 2, "L-tetromino"),  # L
+                (2, [(0, 0), (0, 1), (1, 0), (1, 1)], 2, 2, "O-tetromino"),  # O
+                (3, [(0, 0), (0, 1), (0, 2), (1, 1)], 2, 3, "T-tetromino"),  # T
+            ]
+            
+            sample_idx = 0
+            for pattern_id, offsets, box_h, box_w, pattern_name in all_patterns:
+                # Generate samples for this pattern
+                num_pattern_samples = samples_per_pattern + (1 if remaining_samples > 0 else 0)
+                if remaining_samples > 0:
+                    remaining_samples -= 1
+                
+                logging.info(f"      Creating {num_pattern_samples} samples of {pattern_name} (Pattern {pattern_id})")
+                
+                for _ in range(num_pattern_samples):
+                    # Sample colors for this sample
+                    colors = [random.randint(1, 9) for _ in range(4)]
+                    
+                    for pair_idx in range(num_pairs):
+                        # Generate input grid with single anchor point
+                        input_grid = np.zeros((5, 5), dtype=np.uint8)
+                        output_grid = np.zeros((5, 5), dtype=np.uint8)
+                        
+                        # Choose random position for pattern
+                        max_row = 5 - box_h
+                        max_col = 5 - box_w
+                        top = random.randint(0, max_row)
+                        left = random.randint(0, max_col)
+                        
+                        # Mark anchor in input
+                        input_grid[top, left] = 1
+                        
+                        # Draw pattern in output
+                        for k, (dr, dc) in enumerate(offsets):
+                            output_grid[top + dr, left + dc] = colors[k % len(colors)]
+                        
+                        # Store in arrays
+                        grids[sample_idx, pair_idx, :, :, 0] = input_grid
+                        grids[sample_idx, pair_idx, :, :, 1] = output_grid
+                        shapes[sample_idx, pair_idx, 0] = [5, 5]
+                        shapes[sample_idx, pair_idx, 1] = [5, 5]
+                    
+                    pattern_ids[sample_idx] = pattern_id
+                    sample_idx += 1
+            
+            logging.info(f"      Generated {num_samples} mixed samples: {grids.shape}, {shapes.shape}")
+            return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
+            
+        elif pattern_mode == "balanced_mixed":
+            # Balanced mixed mode: equal distribution for training
+            return self._create_standardized_dataset("mixed_patterns", num_samples)
+            
+        else:
+            raise ValueError(f"Invalid pattern_mode: {pattern_mode}. Must be 'single_pattern_{id}', 'mixed_patterns', or 'balanced_mixed'")
 
 
 @hydra.main(config_path="configs", version_base=None, config_name="structured")

@@ -746,14 +746,23 @@ class LPN(nn.Module):
             print(f"         🔍   input_seq batch shape: {input_seq.shape[:-2]}")
             print(f"         🔍   latents batch shape: {latents.shape[:-2]}")
             
-            # Apply batch vmaps only if needed
-            for batch_dim in range(input_seq_ndim):
-                print(f"         🔍 DEBUG: Adding vmap for batch dimension {batch_dim}")
-                value_and_grad_log_probs_fn = jax.vmap(value_and_grad_log_probs_fn, in_axes=(0, 0, 0, None))
-                vmap_log_probs_fn = jax.vmap(vmap_log_probs_fn, in_axes=(0, 0, 0, None))
+            # Only apply batch vmaps if the batch shapes are actually different
+            if input_seq.shape[:-2] != latents.shape[:-2]:
+                print(f"         🔍 DEBUG: Batch shapes differ, applying vmaps...")
+                for batch_dim in range(input_seq_ndim):
+                    print(f"         🔍 DEBUG: Adding vmap for batch dimension {batch_dim}")
+                    value_and_grad_log_probs_fn = jax.vmap(value_and_grad_log_probs_fn, in_axes=(0, 0, 0, None))
+                    vmap_log_probs_fn = jax.vmap(vmap_log_probs_fn, in_axes=(0, 0, 0, None))
+            else:
+                print(f"         🔍 DEBUG: Batch shapes are compatible, no vmaps needed")
+        
+        # Count actual vmaps applied
+        actual_vmaps = 0
+        if input_seq_ndim > 0 and latents_ndim > 2 and input_seq.shape[:-2] != latents.shape[:-2]:
+            actual_vmaps = input_seq_ndim
         
         print(f"         🔍 DEBUG: Vmap functions created:")
-        print(f"         🔍   value_and_grad_log_probs_fn created with {input_seq_ndim if input_seq_ndim > 0 and latents_ndim > 2 else 0} batch vmaps")
+        print(f"         🔍   value_and_grad_log_probs_fn created with {actual_vmaps} batch vmaps")
         print(f"         🔍   vmap_log_probs_fn created")
 
         if accumulate_gradients_decoder_pairs:
@@ -888,7 +897,14 @@ class LPN(nn.Module):
         print(f"         🔍   input_seq.shape = {input_seq.shape}")
         print(f"         🔍   output_seq.shape = {output_seq.shape}")
         
-        initial_latents_for_eval = latents[..., 0, :]  # (*B, C, H) - initial mean latent
+        # FIX: Extract initial latents while preserving batch dimensions
+        # latents shape: (*B, N, H) where N is the number of steps
+        # We want: (*B, H) - the initial latent for each batch
+        # But we need to preserve the batch structure to match input_seq
+        if latents.ndim == 4:  # (B1, B2, N, H)
+            initial_latents_for_eval = latents[..., 0, :]  # (B1, B2, H)
+        else:
+            initial_latents_for_eval = latents[..., 0, :]  # (*B, H)
         print(f"         🔍 DEBUG: initial_latents_for_eval.shape = {initial_latents_for_eval.shape}")
         
         print(f"         🔍 DEBUG: About to call vmap_log_probs_fn:")
