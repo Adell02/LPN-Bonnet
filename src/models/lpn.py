@@ -725,6 +725,9 @@ class LPN(nn.Module):
             jax.value_and_grad(log_probs_fn), in_axes=(-2, None, None, None), out_axes=(-1, -2)
         )
         
+        # Create base vmap_log_probs_fn first
+        vmap_log_probs_fn = jax.vmap(log_probs_fn, in_axes=(-2, None, None, None), out_axes=-1)
+        
         # Add vmaps for batch dimensions - handle case where input_seq has no batch dims
         input_seq_ndim = input_seq[..., 0, 0].ndim
         print(f"         🔍 DEBUG: Vmap setup:")
@@ -736,8 +739,8 @@ class LPN(nn.Module):
             for batch_dim in range(input_seq_ndim):
                 print(f"         🔍 DEBUG: Adding vmap for batch dimension {batch_dim}")
                 value_and_grad_log_probs_fn = jax.vmap(value_and_grad_log_probs_fn, in_axes=(0, 0, 0, None))
-
-        vmap_log_probs_fn = jax.vmap(log_probs_fn, in_axes=(-2, None, None, None), out_axes=-1)
+                # CRITICAL FIX: Also apply batch vmaps to vmap_log_probs_fn
+                vmap_log_probs_fn = jax.vmap(vmap_log_probs_fn, in_axes=(0, 0, 0, None))
         
         print(f"         🔍 DEBUG: Vmap functions created:")
         print(f"         🔍   value_and_grad_log_probs_fn created with {input_seq_ndim} batch vmaps")

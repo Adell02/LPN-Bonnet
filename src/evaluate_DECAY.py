@@ -274,28 +274,35 @@ def create_heatmap(
     results_matrix: np.ndarray,
     out_dir: str
 ) -> Tuple[str, plt.Figure]:
-    """Create a heatmap showing decay rate vs budget colored by total loss."""
+    """Create a heatmap showing decay rate vs budget colored by log(total loss)."""
     
     fig, ax = plt.subplots(figsize=(12, 8))
+    
+    # Apply log transformation to the results matrix, handling negative and zero values
+    log_results_matrix = np.copy(results_matrix)
+    # Replace negative values with NaN (they will be masked)
+    log_results_matrix[log_results_matrix <= 0] = np.nan
+    # Apply log transformation
+    log_results_matrix = np.log10(log_results_matrix)
     
     # Create custom colormap to match the style
     from matplotlib.colors import LinearSegmentedColormap
     custom_colors = ['#FBB998', '#DB74DB', '#5361E5', '#96DCF8']
     custom_cmap = LinearSegmentedColormap.from_list('custom_palette', custom_colors, N=256)
 
-    # Create the heatmap
-    im = ax.imshow(results_matrix, cmap=custom_cmap, aspect='auto', 
+    # Create the heatmap with log-transformed values
+    im = ax.imshow(log_results_matrix, cmap=custom_cmap, aspect='auto', 
                    extent=[budgets[0], budgets[-1], decay_rates[0], decay_rates[-1]],
                    origin='lower')
     
     # Add colorbar
     cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label('Total Loss', fontsize=12)
+    cbar.set_label('log₁₀(Total Loss)', fontsize=12)
     
     # Set labels and title
     ax.set_xlabel('Search Budget', fontsize=14)
     ax.set_ylabel('Mutation Standard Deviation Decay Rate', fontsize=14)
-    ax.set_title('Evolutionary Search: Decay Rate vs Budget - Total Loss Heatmap', fontsize=16, fontweight='bold')
+    ax.set_title('Evolutionary Search: Decay Rate vs Budget - Log(Total Loss) Heatmap', fontsize=16, fontweight='bold')
     
     # Use log scale for decay rate and linear for budget
     ax.set_yscale('log')
