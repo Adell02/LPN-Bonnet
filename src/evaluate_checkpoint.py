@@ -893,7 +893,34 @@ def evaluate_custom_dataset(
             # Attach per-sample loss arrays and budgets if collected
             if ga_losses_rows and ga_steps_len is not None:
                 ga_losses_per_sample = np.vstack(ga_losses_rows).astype(np.float32)
-                payload["ga_losses_per_sample"] = ga_losses_per_sample
+                
+                # For GA, we need to include the initial mean latent evaluation at budget 0
+                # Extract initial loss from the first step of optimization trajectory
+                initial_ga_losses = None
+                try:
+                    if "ga_log_probs" in payload:
+                        # Get initial log probs (first step, best candidate)
+                        initial_lp = payload["ga_log_probs"][..., 0, :]  # First step, all candidates
+                        initial_scores = np.max(initial_lp, axis=-1)  # Best candidate per sample
+                        initial_ga_losses = -initial_scores  # Convert to positive losses
+                        print(f"[store_latents] Extracted initial GA losses: {initial_ga_losses.shape}, range: [{initial_ga_losses.min():.6f}, {initial_ga_losses.max():.6f}]")
+                    else:
+                        print(f"[store_latents] Warning: No ga_log_probs found, cannot extract initial GA losses")
+                except Exception as e:
+                    print(f"[store_latents] Failed to extract initial GA losses: {e}")
+                    initial_ga_losses = None
+                
+                # Prepend initial losses if available
+                if initial_ga_losses is not None:
+                    # Reshape to match per-sample format: (N, 1) -> (N, 1)
+                    initial_ga_losses = initial_ga_losses.reshape(initial_ga_losses.shape[0], 1)
+                    # Concatenate: initial + optimization steps
+                    ga_losses_with_initial = np.concatenate([initial_ga_losses, ga_losses_per_sample], axis=1)
+                    payload["ga_losses_per_sample"] = ga_losses_with_initial
+                    print(f"[store_latents] GA losses with initial: {ga_losses_with_initial.shape}")
+                else:
+                    payload["ga_losses_per_sample"] = ga_losses_per_sample
+                
                 # Include budget 0 for mean latent evaluation, then 2, 4, 6, ... for optimization steps
                 payload["ga_budget"] = np.concatenate([[0], (2 * np.arange(1, ga_steps_len + 1))]).astype(np.int32)
             if es_losses_rows and es_gen_len is not None:
