@@ -88,7 +88,7 @@ eval:
   inference_mode: "mean"
   inference_kwargs: {}
   num_tasks_to_show: 3
-  tsne_max_points: 2304  # Should be divisible by 4 (points per group: 3 encoders + 1 context) for clean sampling  
+  tsne_max_points: 500  # Should be divisible by 4 (points per group: 3 encoders + 1 context) for clean sampling  
   # Test datasets for comprehensive evaluation across all patterns
   eval_datasets:
     - generator: "STRUCT_PATTERN"

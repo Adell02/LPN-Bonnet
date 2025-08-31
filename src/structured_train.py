@@ -1092,7 +1092,16 @@ class StructuredTrainer:
         updated_state = state.replace(params=new_params)
         
         self.phase1_completed = True
+        
+        # Calculate Phase A T-SNE evaluation statistics
+        total_phase_a_evals = 0
+        for enc_idx in range(len(enc_params_list)):
+            num_evals = self.encoder_expose_steps // eval_every_n_steps
+            total_phase_a_evals += num_evals
+            logging.info(f"   - Encoder {enc_idx}: {num_evals} T-SNE evaluations generated")
+        
         logging.info("🎉 PHASE 1 COMPLETED: All encoders specialized!")
+        logging.info(f"   - Total Phase A T-SNE evaluations: {total_phase_a_evals}")
         logging.info("   - Encoders now have pattern-specific representations")
         logging.info("   - Ready for Phase 2: Joint decoder training")
         
@@ -1122,6 +1131,10 @@ class StructuredTrainer:
         # Train for encoder_expose_steps
         num_steps = self.encoder_expose_steps
         key = jax.random.PRNGKey(self.cfg.training.seed + enc_idx)
+        
+        # Phase A T-SNE evaluation frequency: every eval_every_n_logs * log_every_n_steps steps
+        eval_every_n_steps = self.cfg.training.get("eval_every_n_logs", 20) * self.cfg.training.get("log_every_n_steps", 5)
+        logging.info(f"   Phase A T-SNE evaluation: every {eval_every_n_steps} steps")
         
         for step in range(num_steps):
             # Sample batch from specialized data
@@ -1306,11 +1319,19 @@ class StructuredTrainer:
                         logging.info(f"       ⚠️  WEAK specialization: target variance is only {1/specialization_ratio:.1f}x LOWER")
                     else:
                         logging.warning(f"       ❌ POOR specialization: target variance is {specialization_ratio:.1f}x HIGHER!")
-                        logging.warning(f"          This indicates the encoder is NOT specializing correctly!")
+                        logging.warning(f"       This indicates the encoder is NOT specializing correctly!")
             else:
                 # Fallback if no target or other patterns in batch
                 total_loss = jnp.mean((mu - 0.0) ** 2)
                 logging.warning(f"     Encoder {enc_idx} - Step {step}/{num_steps} - No target/other patterns in batch, using fallback loss")
+            
+            # Phase A T-SNE Evaluation: Generate T-SNE plots at regular intervals
+            if step % eval_every_n_steps == 0 and step > 0:
+                try:
+                    logging.info(f"     🔍 Phase A T-SNE Evaluation at step {step}/{num_steps}")
+                    self._generate_phase_a_tsne(enc_idx, encoder_params, step, num_steps)
+                except Exception as e:
+                    logging.warning(f"     Phase A T-SNE generation failed at step {step}: {e}")
         
         return state.params["encoders"][0]  # Return trained encoder params
     
@@ -1474,6 +1495,43 @@ class StructuredTrainer:
             
         except Exception as e:
             logging.warning(f"T-SNE creation failed for Encoder {enc_idx}: {e}")
+    
+    def _generate_phase_a_tsne(self, enc_idx: int, encoder_params: dict, step: int, total_steps: int):
+        """
+        Generate T-SNE visualization during Phase A training to monitor encoder specialization progress.
+        
+        Args:
+            enc_idx: Index of the encoder being trained
+            encoder_params: Current encoder parameters
+            step: Current training step
+            total_steps: Total training steps for this encoder
+        """
+        try:
+            logging.info(f"       Generating Phase A T-SNE for Encoder {enc_idx} at step {step}/{total_steps}")
+            
+            # Create evaluation data for all patterns to show specialization progress
+            eval_data = {}
+            for pattern_id in [1, 2, 3]:
+                pattern_data = self._create_specialized_training_data(pattern_id)
+                eval_data[pattern_id] = pattern_data
+            
+            # Generate T-SNE visualization
+            current_global_step = self.phase_a_global_step + step
+            self._create_encoder_tsne(enc_idx, encoder_params, eval_data, current_global_step)
+            
+            # Additional Phase A specific metrics
+            wandb.log({
+                f"phase_a/encoder_{enc_idx}/tsne_step": step,
+                f"phase_a/encoder_{enc_idx}/tsne_progress": step / total_steps,
+                f"phase_a/encoder_{enc_idx}/tsne_timestamp": time.time(),
+            }, step=current_global_step)
+            
+            logging.info(f"       ✅ Phase A T-SNE generated and logged to WandB")
+            
+        except Exception as e:
+            logging.error(f"       ❌ Phase A T-SNE generation failed: {e}")
+            import traceback
+            logging.error(f"       Traceback: {traceback.format_exc()}")
     
     def _sample_specialized_batch(self, specialized_data: tuple, target_pattern: int) -> tuple:
         """
@@ -2232,6 +2290,13 @@ class StructuredTrainer:
             logging.info(f"   - Training each encoder independently for {self.encoder_expose_steps} steps")
             logging.info(f"   - Using original decoders to prevent interference")
             logging.info(f"   - Focus: pattern specialization through contrastive learning")
+            
+            # Log Phase A T-SNE evaluation schedule
+            eval_every_n_steps = self.cfg.training.get("eval_every_n_logs", 20) * self.cfg.training.get("log_every_n_steps", 5)
+            num_tsne_evals_per_encoder = self.encoder_expose_steps // eval_every_n_steps
+            logging.info(f"   - Phase A T-SNE evaluation: every {eval_every_n_steps} steps")
+            logging.info(f"   - Expected T-SNE evaluations per encoder: {num_tsne_evals_per_encoder}")
+            logging.info(f"   - Total expected T-SNE evaluations: {num_tsne_evals_per_encoder * len(enc_params_list)}")
             
             # Phase 1: Individual encoder specialization
             state = self._specialize_individual_encoders(state, enc_params_list)
