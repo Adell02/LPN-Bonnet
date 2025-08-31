@@ -878,9 +878,22 @@ class LPN(nn.Module):
         track_progress = kwargs.get("track_progress", False)
         if track_progress:
             try:
+                # CRITICAL FIX: Include initial mean latent in trajectory (same as ES generation 0)
+                # This ensures GA and ES trajectories start from the same point
+                initial_mean_latent = latents.mean(axis=-2, keepdims=True)  # (*B, 1, C, H)
+                initial_log_probs = vmap_log_probs_fn(initial_mean_latent, input_seq, output_seq, self.decoder)
+                
+                # Concatenate: [initial_mean, step1, step2, ..., stepN]
+                trajectory_latents = jnp.concatenate([initial_mean_latent, all_latents], axis=-2)
+                trajectory_log_probs = jnp.concatenate([initial_log_probs, all_log_probs], axis=-2)
+                
+                # Debug logging to show the fix is working
+                print(f"         🔧 GA trajectory fix: initial_mean shape={initial_mean_latent.shape}, all_latents shape={all_latents.shape}")
+                print(f"         🔧 GA trajectory fix: final trajectory shape={trajectory_latents.shape}")
+                
                 traj = {
-                    "latents": all_latents,      # (*B, num_steps, C, H)
-                    "log_probs": all_log_probs,  # (*B, num_steps, C)
+                    "latents": trajectory_latents,      # (*B, num_steps+1, C, H) - includes initial mean
+                    "log_probs": trajectory_log_probs,  # (*B, num_steps+1, C) - includes initial mean
                 }
             except Exception:
                 traj = {}
