@@ -127,9 +127,14 @@ def collate_fn(
     if return_info:
         num_attempts = np.array([info["num_attempts_generate_task"] for info in infos])
         info = {"num_attempts_generate_task": num_attempts}
+        # CRITICAL FIX: Include pattern IDs for contrastive loss
+        # This ensures the contrastive loss uses the actual pattern IDs from the data
         if "program_id" in infos[0]:
             program_ids = np.array([info["program_id"] for info in infos])
             info["program_ids"] = program_ids
+        if "pattern_id" in infos[0]:
+            pattern_ids = np.array([info["pattern_id"] for info in infos])
+            info["pattern_ids"] = pattern_ids
         if num_devices is None:
             info = jax.tree_util.tree_map(
                 lambda x: x.reshape(log_every_n_steps, batch_size, *x.shape[2:]), info

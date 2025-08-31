@@ -126,7 +126,20 @@ class StructPatternTaskGenerator(IterableDataset):
         task = []
         for _ in range(self.num_pairs):
             task.append(self.generate_pair(self._task_colors))
-        info = {"num_attempts_generate_task": 1}
+        
+        # CRITICAL FIX: Include pattern ID in info for contrastive loss
+        # This ensures the contrastive loss uses the actual pattern ID from the data
+        # instead of manually constructed IDs that may be incorrect
+        pattern_id = self._task_pattern if hasattr(self, '_task_pattern') else self.pattern
+        if pattern_id in (0, None):
+            # For mixed patterns, use a consistent ID for this task
+            pattern_id = hash(str(self._task_colors)) % 1000  # Deterministic hash-based ID
+        
+        info = {
+            "num_attempts_generate_task": 1,
+            "pattern_id": pattern_id,  # Add pattern ID for contrastive loss
+            "pattern_type": "struct_pattern"
+        }
         return task, info
 
     def generate_pair(self, colors: Optional[list[int]] = None) -> dict[str, np.ndarray]:

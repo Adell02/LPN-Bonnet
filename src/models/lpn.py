@@ -952,6 +952,11 @@ class LPN(nn.Module):
             return losses
 
         # ----- initialize population around prepared latents -----
+        # CRITICAL FIX: Compute mean latent exactly as GA does, before any processing
+        # This ensures both methods start from the exact same point
+        ga_style_mean_latent = latents.mean(axis=-2, keepdims=True)  # (*B, 1, H) - same as GA
+        
+        # Process latents for population expansion (but don't use this for mean computation)
         base = self._prepare_latents_before_search(include_mean_latent, include_all_latents, latents)
         
         # Build subspace basis and compute sigma if using subspace mutation
@@ -979,7 +984,8 @@ class LPN(nn.Module):
             population = base[..., :population_size, :]                       # (*B, C, H)
         else:
             # Start from mean latent (same as GA) and expand population around it
-            mean_latent = base.mean(axis=-2, keepdims=True)                   # (*B, 1, H)
+            # CRITICAL: Use the GA-style mean latent, not the processed base mean
+            mean_latent = ga_style_mean_latent  # (*B, 1, H) - exactly same as GA
             print(f"         🎯 ES starting from mean latent (same as GA)")
             need = population_size - 1  # We only need to add (population_size - 1) since we start from mean
             key, nk = jax.random.split(key)
