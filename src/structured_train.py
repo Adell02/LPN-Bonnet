@@ -1132,6 +1132,12 @@ class StructuredTrainer:
                 decoder=self.decoder
             )
             
+            # Initialize the temporary model to ensure _core is set up
+            # We need a dummy input to trigger the setup() method
+            dummy_pairs = jnp.zeros((1, 1, 4, 2), dtype=jnp.float32)
+            dummy_shapes = jnp.zeros((1, 1, 2, 2), dtype=jnp.float32)
+            temp_model.init(jax.random.PRNGKey(0), dummy_pairs, dummy_shapes, False, "train")
+            
             # Create individual training state
             individual_state = TrainState.create(
                 apply_fn=temp_model.apply,  # Use the temp model's apply function
