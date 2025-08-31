@@ -710,9 +710,14 @@ class LPN(nn.Module):
         value_and_grad_log_probs_fn = jax.vmap(
             jax.value_and_grad(log_probs_fn), in_axes=(-2, None, None, None), out_axes=(-1, -2)
         )
-        # Add vmaps for batch dimensions
-        for batch_dim in range(input_seq[..., 0, 0].ndim):
-            value_and_grad_log_probs_fn = jax.vmap(value_and_grad_log_probs_fn, in_axes=(0, 0, 0, None))
+        
+        # Add vmaps for batch dimensions - handle case where input_seq has no batch dims
+        input_seq_ndim = input_seq[..., 0, 0].ndim
+        
+        if input_seq_ndim > 0:
+            # Add vmaps for batch dimensions
+            for batch_dim in range(input_seq_ndim):
+                value_and_grad_log_probs_fn = jax.vmap(value_and_grad_log_probs_fn, in_axes=(0, 0, 0, None))
 
         vmap_log_probs_fn = jax.vmap(log_probs_fn, in_axes=(-2, None, None, None), out_axes=-1)
 
@@ -832,6 +837,7 @@ class LPN(nn.Module):
         latents = jnp.concatenate([latents[..., None, :], all_latents], axis=-2).reshape(
             *latents.shape[:-2], -1, latents.shape[-1]
         )
+        
         # Get all log_probs
         last_log_probs = vmap_log_probs_fn(last_latents, input_seq, output_seq, self.decoder)
 
@@ -841,7 +847,8 @@ class LPN(nn.Module):
         
         # FIX: Include initial mean latent evaluation for trajectory tracking
         # This ensures GA and ES start from the same point
-        initial_log_probs = vmap_log_probs_fn(latents[..., 0, :], input_seq, output_seq, self.decoder)
+        initial_latents_for_eval = latents[..., 0, :]  # (*B, C, H) - initial mean latent
+        initial_log_probs = vmap_log_probs_fn(initial_latents_for_eval, input_seq, output_seq, self.decoder)
 
         best_context, second_best_context = self._select_best_and_second_best_latents(log_probs, latents)
 
@@ -1456,12 +1463,9 @@ class LPN(nn.Module):
         if prep_latents.ndim < 2:
             raise ValueError(f"prep_latents must have at least 2 dimensions, got {prep_latents.ndim}")
 
-        # Some encoder configurations may introduce a singleton axis before the
-        # latent dimension (e.g. when a sample dimension of size 1 is present).
-        # Squeeze that axis so downstream code consistently receives latents of
-        # shape (*B, N, H).
-        if prep_latents.shape[-2] == 1:
-            prep_latents = jnp.squeeze(prep_latents, axis=-2)
+        # FIXED: Don't squeeze singleton context dimensions - this breaks vmap operations
+        # The vmap operations expect consistent shapes (*B, C, H) even when C=1
+        # Removing this line fixes the "tuple index out of range" error
 
         print(f"         ✅ Final prepared latents: {prep_latents.shape}")
         return prep_latents
