@@ -4442,7 +4442,7 @@ class StructuredTrainer:
                 {"params": self.original_decoder_params},
                 latents,
                 batch_shapes,
-                False,  # eval mode
+                dropout_eval=False,  # eval mode
                 mutable=False
             )
             
