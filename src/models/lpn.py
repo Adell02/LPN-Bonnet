@@ -694,6 +694,20 @@ class LPN(nn.Module):
         latents = self._prepare_latents_before_search(
             include_mean_latent, include_all_latents, latents, random_perturbation, key
         )
+        
+        # CRITICAL DEBUG: Show what GA actually starts optimization from
+        print(f"         🔍 GA starting optimization from latents shape: {latents.shape}")
+        try:
+            if include_mean_latent and not include_all_latents:
+                # GA is starting from just the mean latent
+                start_latent = latents
+                start_flat = start_latent.flatten()
+                print(f"         🔍 GA starting from mean latent ACTUAL values: {start_flat[:5]}")
+                print(f"         🔍 GA starting from mean latent min/max: {start_flat.min():.6f}/{start_flat.max():.6f}")
+            else:
+                print(f"         🔍 GA starting from multiple latents (not just mean)")
+        except Exception as e:
+            print(f"         🔍 GA starting point debug failed: {e}")
 
         # Flatten input/output for decoding likelihood
         input_seq, output_seq = self._flatten_input_output_for_decoding(pairs, grid_shapes)
@@ -706,6 +720,19 @@ class LPN(nn.Module):
             row_logits, col_logits, grid_logits = decoder(input_seq, output_seq, latents, dropout_eval=True)
             log_probs = self._compute_log_probs(row_logits, col_logits, grid_logits, output_seq)
             return log_probs
+        
+        # CRITICAL DEBUG: Show initial loss computation for GA
+        try:
+            initial_log_probs = vmap_log_probs_fn(latents, input_seq, output_seq, self.decoder)
+            print(f"         🔍 GA initial log_probs shape: {initial_log_probs.shape}")
+            print(f"         🔍 GA initial log_probs ACTUAL values: {initial_log_probs.flatten()[:5]}")
+            print(f"         🔍 GA initial log_probs min/max: {initial_log_probs.min():.6f}/{initial_log_probs.max():.6f}")
+            # Convert to loss (negative log probs)
+            initial_losses = -initial_log_probs
+            print(f"         🔍 GA initial losses ACTUAL values: {initial_losses.flatten()[:5]}")
+            print(f"         🔍 GA initial losses min/max: {initial_losses.min():.6f}/{initial_losses.max():.6f}")
+        except Exception as e:
+            print(f"         🔍 GA initial loss debug failed: {e}")
 
         value_and_grad_log_probs_fn = jax.vmap(
             jax.value_and_grad(log_probs_fn), in_axes=(-2, None, None, None), out_axes=(-1, -2)
@@ -955,8 +982,19 @@ class LPN(nn.Module):
         # CRITICAL FIX: Compute mean latent exactly as GA does, before any processing
         # This ensures both methods start from the exact same point
         ga_style_mean_latent = latents.mean(axis=-2, keepdims=True)  # (*B, 1, H) - same as GA
-        print(f"         🔍 ES using GA-style mean latent: shape={ga_style_mean_latent.shape}, content preview={ga_style_mean_latent.flatten()[:3]}")
-        print(f"         🔍 ES input latents shape: {latents.shape}, content preview={latents.flatten()[:3]}")
+        print(f"         🔍 ES using GA-style mean latent: shape={ga_style_mean_latent.shape}")
+        print(f"         🔍 ES input latents shape: {latents.shape}")
+        
+        # CRITICAL DEBUG: Show actual values, not traced ones
+        try:
+            mean_flat = ga_style_mean_latent.flatten()
+            input_flat = latents.flatten()
+            print(f"         🔍 ES mean latent ACTUAL values: {mean_flat[:5]}")
+            print(f"         🔍 ES input latents ACTUAL values: {input_flat[:5]}")
+            print(f"         🔍 ES mean latent min/max: {mean_flat.min():.6f}/{mean_flat.max():.6f}")
+            print(f"         🔍 ES input latents min/max: {input_flat.min():.6f}/{input_flat.max():.6f}")
+        except Exception as e:
+            print(f"         🔍 ES debug failed: {e}")
         
         # CRITICAL: Don't process latents through _prepare_latents_before_search for ES
         # This ensures we use the exact same latents as GA
@@ -1018,6 +1056,16 @@ class LPN(nn.Module):
             # FIRST: Evaluate the original mean latent (same as GA) - this is generation 0
             # CRITICAL: Use the GA-style mean latent for consistency
             mean_latent = ga_style_mean_latent  # (*B, 1, H) - exactly same as GA
+            print(f"         🔍 ES Gen0: Evaluating mean latent with shape: {mean_latent.shape}")
+            
+            # CRITICAL DEBUG: Show the actual mean latent being evaluated
+            try:
+                mean_flat = mean_latent.flatten()
+                print(f"         🔍 ES Gen0: Mean latent ACTUAL values: {mean_flat[:5]}")
+                print(f"         🔍 ES Gen0: Mean latent min/max: {mean_flat.min():.6f}/{mean_flat.max():.6f}")
+            except Exception as e:
+                print(f"         🔍 ES Gen0: Mean latent debug failed: {e}")
+            
             mean_losses = _eval_candidates(mean_latent)  # Just the mean latent
             mean_fitness = -mean_losses.mean(axis=-2) if mean_losses.ndim >= 3 else -mean_losses
             
@@ -1046,6 +1094,15 @@ class LPN(nn.Module):
             print(f"         🎯 Generation 0 (mean latent): fitness = {mean_fitness_flat}, loss = {mean_gen_losses_flat}")
             print(f"         🔍 Debug Gen0: mean_fitness_flat.shape = {mean_fitness_flat.shape}, mean_gen_losses_flat.shape = {mean_gen_losses_flat.shape}")
             print(f"         🔍 Debug Gen0: mean_latent.shape = {mean_latent.shape}")
+            
+            # CRITICAL DEBUG: Show actual loss values
+            try:
+                print(f"         🔍 ES Gen0: mean_losses shape: {mean_losses.shape}")
+                print(f"         🔍 ES Gen0: mean_losses ACTUAL values: {mean_losses.flatten()[:5]}")
+                print(f"         🔍 ES Gen0: mean_losses min/max: {mean_losses.min():.6f}/{mean_losses.max():.6f}")
+                print(f"         🔍 ES Gen0: mean_gen_losses_flat ACTUAL value: {mean_gen_losses_flat}")
+            except Exception as e:
+                print(f"         🔍 ES Gen0: Loss debug failed: {e}")
             
             # SECOND: Evaluate the expanded population for visualization (this is NOT generation 0)
             initial_losses = _eval_candidates(population)
@@ -1411,8 +1468,20 @@ class LPN(nn.Module):
         
         if include_mean_latent:
             mean_latent = latents.mean(axis=-2, keepdims=True)
-            print(f"         🔍 GA computing mean latent: shape={mean_latent.shape}, content preview={mean_latent.flatten()[:3]}")
-            print(f"         🔍 GA input latents shape: {latents.shape}, content preview={latents.flatten()[:3]}")
+            print(f"         🔍 GA computing mean latent: shape={mean_latent.shape}")
+            print(f"         🔍 GA input latents shape: {latents.shape}")
+            
+            # CRITICAL DEBUG: Show actual values, not traced ones
+            try:
+                mean_flat = mean_latent.flatten()
+                input_flat = latents.flatten()
+                print(f"         🔍 GA mean latent ACTUAL values: {mean_flat[:5]}")
+                print(f"         🔍 GA input latents ACTUAL values: {input_flat[:5]}")
+                print(f"         🔍 GA mean latent min/max: {mean_flat.min():.6f}/{mean_flat.max():.6f}")
+                print(f"         🔍 GA input latents min/max: {input_flat.min():.6f}/{input_flat.max():.6f}")
+            except Exception as e:
+                print(f"         🔍 GA debug failed: {e}")
+            
             if include_all_latents:
                 # Include the mean latent in the latents from which to start the search.
                 prep_latents = jnp.concatenate([mean_latent, latents], axis=-2)
