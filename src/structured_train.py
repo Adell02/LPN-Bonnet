@@ -1359,7 +1359,7 @@ class StructuredTrainer:
             
             if step % 50 == 0:
                 logging.info(f"     Encoder {enc_idx} - Step {step}/{num_steps} - Loss: {float(loss):.6f}")
-                
+        
                 # Log detailed metrics to WandB for Phase A training
                 wandb_metrics = {
                     f"phase_a/encoder_{enc_idx}/step": step,
@@ -1405,25 +1405,11 @@ class StructuredTrainer:
                     variance_entropy = float(jnp.mean(-jnp.log(var_i + 1e-8)))  # Higher = more uncertainty
                     variance_cv = std_var / (mean_var + 1e-8)  # Coefficient of variation
                     
-                    # CRITICAL: Organize ALL variance data under phase_a_variances section for better WandB organization
-                    # This makes it easier to analyze encoder specialization progress
+                    # CRITICAL: Keep only essential variance data under phase_a_variances section
+                    # Focus on mean variance per encoder per pattern for clean monitoring
                     wandb_metrics.update({
-                        # Basic variance statistics
-                        f"phase_a_variances/encoder_{enc_idx}/basic/mean": mean_var,
-                        f"phase_a_variances/encoder_{enc_idx}/basic/std": std_var,
-                        f"phase_a_variances/encoder_{enc_idx}/basic/min": min_var,
-                        f"phase_a_variances/encoder_{enc_idx}/basic/max": max_var,
-                        f"phase_a_variances/encoder_{enc_idx}/basic/range": max_var - min_var,
-                        
-                        # Advanced variance debugging metrics
-                        f"phase_a_variances/encoder_{enc_idx}/debug/entropy": variance_entropy,
-                        f"phase_a_variances/encoder_{enc_idx}/debug/coefficient_variation": variance_cv,
-                        f"phase_a_variances/encoder_{enc_idx}/debug/stability": 1.0 / (1.0 + std_var),
-                        
-                        # Training context
-                        f"phase_a_variances/encoder_{enc_idx}/context/step": step,
-                        f"phase_a_variances/encoder_{enc_idx}/context/total_steps": num_steps,
-                        f"phase_a_variances/encoder_{enc_idx}/context/target_pattern": target_pattern,
+                        # Only mean variance - the key metric for specialization monitoring
+                        f"phase_a_variances/encoder_{enc_idx}/mean": mean_var,
                     })
                     
                     wandb_metrics.update({
@@ -1451,25 +1437,16 @@ class StructuredTrainer:
                     if len(variance_history) >= 2:
                         variance_trend = (variance_history[-1] - variance_history[0]) / len(variance_history)
                         
-                        # Add to both sections for comprehensive monitoring
+                        # Keep variance trend in main phase_a section only
                         wandb_metrics[f"phase_a/encoder_{enc_idx}/debug/variance_trend"] = variance_trend
-                        wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/trends/overall_trend"] = variance_trend
                         
                         # Alert if variance is consistently dropping (overfitting warning)
                         if variance_trend < -0.01 and len(variance_history) >= 5:
                             overfitting_warning = True
                             logging.warning(f"⚠️  Encoder {enc_idx} variance dropping trend: {variance_trend:.6f} - Possible overfitting!")
                     
-                    # Add overfitting warnings to phase_a_variances section (always defined now)
-                    wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/warnings/overfitting_detected"] = overfitting_warning
-                    wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/warnings/trend_value"] = variance_trend
-                    wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/warnings/history_length"] = len(variance_history)
-                    
-                    # Add trend analysis details
-                    if len(variance_history) >= 5:
-                        recent_trend = (variance_history[-1] - variance_history[-5]) / 5  # Last 5 steps
-                        wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/trends/recent_trend"] = recent_trend
-                        wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/trends/trend_acceleration"] = recent_trend - variance_trend
+                    # Keep overfitting warning in main phase_a section for monitoring
+                    # Remove excessive trend analysis from phase_a_variances
                     
                     # Store current variance for next iteration
                     setattr(self, f'_encoder_{enc_idx}_variance_history', variance_history)
@@ -1485,12 +1462,8 @@ class StructuredTrainer:
                             pattern_mean_var = float(jnp.mean(pattern_var))
                             pattern_std_var = float(jnp.std(pattern_var))
                             
-                            # Add pattern-specific variance metrics to phase_a_variances section
-                            wandb_metrics.update({
-                                f"phase_a_variances/encoder_{enc_idx}/patterns/pattern_{pattern_id}/mean": pattern_mean_var,
-                                f"phase_a_variances/encoder_{enc_idx}/patterns/pattern_{pattern_id}/std": pattern_std_var,
-                                f"phase_a_variances/encoder_{enc_idx}/patterns/pattern_{pattern_id}/samples": int(jnp.sum(pattern_mask)),
-                            })
+                            # Keep pattern-specific variance metrics in main phase_a section only
+                            # Remove from phase_a_variances to reduce clutter
                                         
                             # Keep original metrics for backward compatibility
                             wandb_metrics.update({
@@ -1546,9 +1519,8 @@ class StructuredTrainer:
                             pattern_mean_var = float(jnp.mean(pattern_var))
                             pattern_variance_means.append(pattern_mean_var)
                             
-                            # Add individual pattern average variance
+                            # Add individual pattern average variance (keep only in main phase_a section)
                             wandb_metrics[f"phase_a/encoder_{enc_idx}/pattern_{pid}/average_variance"] = pattern_mean_var
-                            wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/patterns/pattern_{pid}/average_variance"] = pattern_mean_var
                     
                     # Calculate overall average variance across all patterns for this encoder
                     if pattern_variance_means:
@@ -1556,7 +1528,7 @@ class StructuredTrainer:
                         pattern_variance_means_array = np.array(pattern_variance_means)
                         overall_pattern_variance_mean = float(np.mean(pattern_variance_means_array))
                         wandb_metrics[f"phase_a/encoder_{enc_idx}/overall_pattern_variance_mean"] = overall_pattern_variance_mean
-                        wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/summary/overall_pattern_variance_mean"] = overall_pattern_variance_mean
+                        # Remove from phase_a_variances to reduce clutter
                         
                         logging.info(f"✅ Encoder {enc_idx} - Overall pattern variance mean: {overall_pattern_variance_mean:.6f}")
                         
@@ -1601,18 +1573,8 @@ class StructuredTrainer:
                         # Log additional debug info
                         logging.debug(f"Encoder {enc_idx} Histograms error details - Batch shapes: grids={batch[0].shape}, shapes={batch[1].shape}, pattern_ids={batch[2].shape}")
                 
-                # CRITICAL: Add summary variance metrics for easy monitoring
-                # These provide quick overview of encoder specialization status
-                summary_metrics = {
-                    f"phase_a_variances/encoder_{enc_idx}/summary/overall_variance_mean": mean_var,
-                    f"phase_a_variances/encoder_{enc_idx}/summary/overall_variance_std": std_var,
-                    f"phase_a_variances/encoder_{enc_idx}/summary/overall_variance_range": max_var - min_var,
-                    f"phase_a_variances/encoder_{enc_idx}/summary/training_progress": step / num_steps,
-                    f"phase_a_variances/encoder_{enc_idx}/summary/specialization_quality": "good" if mean_var > 0.1 else "poor",
-                }
-                
-                # Add summary metrics to main wandb_metrics
-                wandb_metrics.update(summary_metrics)
+                # CRITICAL: Keep only essential metrics in phase_a_variances
+                # Focus on mean variance per encoder per pattern for clean monitoring
                 
                 # Log to WandB with global step for proper continuity
                 wandb.log(wandb_metrics, step=current_global_step)
@@ -2120,7 +2082,7 @@ class StructuredTrainer:
                 key, train_key = jax.random.split(key)
                 start = time.time()
                 
-                # CRITICAL: Extract explicit pattern IDs from balanced dataloader
+                            # CRITICAL: Extract explicit pattern IDs from balanced dataloader
             if hasattr(self, 'task_generator') and self.task_generator:
                 # Balanced dataloader provides (grids, shapes, pattern_ids)
                 if len(batches) == 3:
