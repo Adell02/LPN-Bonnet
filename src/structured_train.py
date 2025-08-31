@@ -1530,6 +1530,10 @@ class StructuredTrainer:
                                 else:
                                     logging.info(f"✅ Encoder {enc_idx} other pattern {pattern_id} variance ratio: {other_variance_ratio:.3f}")
                 
+                                
+                except Exception as e:
+                    logging.warning(f"Could not compute encoder variance metrics: {e}")
+                
                 # CRITICAL: Add average variance per encoder per pattern for easy monitoring
                 # This provides a quick overview of how each encoder is handling each pattern
                 try:
