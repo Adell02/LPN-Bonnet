@@ -1557,9 +1557,6 @@ class StructuredTrainer:
                 except Exception as e:
                     logging.warning(f"Could not compute average variance per pattern for Encoder {enc_idx}: {e}")
                 
-                except Exception as e:
-                    logging.warning(f"Could not compute encoder variance metrics: {e}")
-                
                 # CRITICAL: Generate T-SNE visualization for each encoder during Phase A training
                 # This helps visualize how encoders are specializing in different patterns
                 if step % 100 == 0:  # Generate T-SNE every 100 steps to avoid spam
