@@ -1552,7 +1552,9 @@ class StructuredTrainer:
                     
                     # Calculate overall average variance across all patterns for this encoder
                     if pattern_variance_means:
-                        overall_pattern_variance_mean = float(jnp.mean(pattern_variance_means))
+                        # Convert list to numpy array for mean calculation
+                        pattern_variance_means_array = np.array(pattern_variance_means)
+                        overall_pattern_variance_mean = float(np.mean(pattern_variance_means_array))
                         wandb_metrics[f"phase_a/encoder_{enc_idx}/overall_pattern_variance_mean"] = overall_pattern_variance_mean
                         wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/summary/overall_pattern_variance_mean"] = overall_pattern_variance_mean
                         
@@ -1565,6 +1567,9 @@ class StructuredTrainer:
                 # This helps visualize how encoders are specializing in different patterns
                 if step % 100 == 0:  # Generate T-SNE every 100 steps to avoid spam
                     try:
+                        # Log batch shapes for debugging
+                        logging.debug(f"Encoder {enc_idx} T-SNE - Batch shapes: grids={batch[0].shape}, shapes={batch[1].shape}, pattern_ids={batch[2].shape}")
+                        
                         fig_tsne_encoder = self._create_encoder_tsne_during_training(
                             enc_idx, encoder_params, batch[0], batch[1], batch[2], target_pattern
                         )
@@ -1574,11 +1579,16 @@ class StructuredTrainer:
                             logging.info(f"✅ Generated T-SNE for Encoder {enc_idx} at global step {current_global_step}")
                     except Exception as e:
                         logging.warning(f"Could not generate T-SNE for Encoder {enc_idx}: {e}")
+                        # Log additional debug info
+                        logging.debug(f"Encoder {enc_idx} T-SNE error details - Batch shapes: grids={batch[0].shape}, shapes={batch[1].shape}, pattern_ids={batch[2].shape}")
                 
                 # CRITICAL: Generate histogram visualizations for each pattern (certainty panel)
                 # This shows the distribution of variances for each pattern during specialization
                 if step % 100 == 0:  # Generate histograms every 100 steps to avoid spam
                     try:
+                        # Log batch shapes for debugging
+                        logging.debug(f"Encoder {enc_idx} Histograms - Batch shapes: grids={batch[0].shape}, shapes={batch[1].shape}, pattern_ids={batch[2].shape}")
+                        
                         fig_histograms = self._create_pattern_variance_histograms(
                             enc_idx, encoder_params, batch[0], batch[1], batch[2], target_pattern, step
                         )
@@ -1588,6 +1598,8 @@ class StructuredTrainer:
                             logging.info(f"✅ Generated certainty panel histograms for Encoder {enc_idx} at global step {current_global_step}")
                     except Exception as e:
                         logging.warning(f"Could not generate histograms for Encoder {enc_idx}: {e}")
+                        # Log additional debug info
+                        logging.debug(f"Encoder {enc_idx} Histograms error details - Batch shapes: grids={batch[0].shape}, shapes={batch[1].shape}, pattern_ids={batch[2].shape}")
                 
                 # CRITICAL: Add summary variance metrics for easy monitoring
                 # These provide quick overview of encoder specialization status
@@ -3441,9 +3453,23 @@ class StructuredTrainer:
                 mutable=False
             )
             
-            # Convert to numpy and reshape
-            latents_np = np.array(mu_i).reshape(-1, mu_i.shape[-1])
-            pattern_ids_np = np.array(batch_pattern_ids).reshape(-1)
+            # Convert to numpy and reshape - handle potential shape mismatches
+            latents_np = np.array(mu_i)
+            pattern_ids_np = np.array(batch_pattern_ids)
+            
+            # Ensure arrays have compatible shapes
+            if latents_np.ndim > 2:
+                latents_np = latents_np.reshape(-1, latents_np.shape[-1])
+            if pattern_ids_np.ndim > 1:
+                pattern_ids_np = pattern_ids_np.reshape(-1)
+            
+            # Ensure pattern_ids has the same length as latents
+            if len(pattern_ids_np) != len(latents_np):
+                # Truncate to the shorter length
+                min_length = min(len(pattern_ids_np), len(latents_np))
+                latents_np = latents_np[:min_length]
+                pattern_ids_np = pattern_ids_np[:min_length]
+                logging.warning(f"Encoder {enc_idx} T-SNE: Truncated arrays to length {min_length} due to size mismatch")
             
             # Downsample if too many points
             max_points = min(200, len(latents_np))
@@ -3562,10 +3588,26 @@ class StructuredTrainer:
                 mutable=False
             )
             
-            # Convert to numpy and reshape
+            # Convert to numpy and reshape - handle potential shape mismatches
             var_i = np.exp(np.array(logvar_i))  # Convert logvar to variance
-            var_i_flat = var_i.reshape(-1, var_i.shape[-1])  # Flatten to [num_samples, latent_dim]
-            pattern_ids_np = np.array(batch_pattern_ids).reshape(-1)
+            pattern_ids_np = np.array(batch_pattern_ids)
+            
+            # Ensure arrays have compatible shapes
+            if var_i.ndim > 2:
+                var_i_flat = var_i.reshape(-1, var_i.shape[-1])  # Flatten to [num_samples, latent_dim]
+            else:
+                var_i_flat = var_i
+            
+            if pattern_ids_np.ndim > 1:
+                pattern_ids_np = pattern_ids_np.reshape(-1)
+            
+            # Ensure pattern_ids has the same length as variances
+            if len(pattern_ids_np) != len(var_i_flat):
+                # Truncate to the shorter length
+                min_length = min(len(pattern_ids_np), len(var_i_flat))
+                var_i_flat = var_i_flat[:min_length]
+                pattern_ids_np = pattern_ids_np[:min_length]
+                logging.warning(f"Encoder {enc_idx} Histograms: Truncated arrays to length {min_length} due to size mismatch")
             
             # Create figure with subplots for each pattern
             fig, axes = plt.subplots(2, 2, figsize=(16, 12))
