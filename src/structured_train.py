@@ -2687,7 +2687,7 @@ class StructuredTrainer:
         log_every = cfg.training.log_every_n_steps
         self.enc_params_list = enc_params_list  # Store for train_n_steps
         
-        step = 0
+        step = 0  # Always start from 0 - unique run IDs prevent conflicts
         epoch = 0
         key = jax.random.PRNGKey(cfg.training.seed)
         logging.info("Starting structured training...")
@@ -3334,9 +3334,17 @@ class StructuredTrainer:
                 if "generation_fitness" in es_traj:
                     gen_fitness = np.array(es_traj["generation_fitness"])
                     if gen_fitness.ndim >= 1:
-                        final_fitness = gen_fitness[..., -1]  # Last generation
-                        final_losses = -final_fitness  # Convert fitness to loss
+                        # FIXED: Report best fitness across all generations (consistent with GA approach)
+                        # Instead of last generation fitness, use the best fitness found
+                        best_fitness = np.max(gen_fitness, axis=-1)  # Best across all generations
+                        final_losses = -best_fitness  # Convert best fitness to loss
                         search_metrics[f"test/{test_name}/total_final_loss"] = float(np.mean(final_losses))
+                        # Keep last generation for reference
+                        last_gen_fitness = gen_fitness[..., -1]  # Last generation
+                        last_gen_losses = -last_gen_fitness  # Convert to loss
+                        search_metrics[f"test/{test_name}/last_generation_loss"] = float(np.mean(last_gen_losses))
+                        print(f"[structured_train] ES final_loss: {float(np.mean(final_losses)):.6f} (best across {gen_fitness.shape[-1]} generations)")
+                        print(f"[structured_train] ES last_gen_loss: {float(np.mean(last_gen_losses)):.6f} (for comparison)")
         
 
         
@@ -3819,9 +3827,11 @@ class StructuredTrainer:
                     wandb.log(clustering_metrics, step=step)
                     logging.info(f"Clustering metrics computed: {clustering_metrics}")
                 else:
-                    # If no step provided, log without step (will use internal wandb step)
-                    wandb.log(clustering_metrics)
-                    logging.info(f"Clustering metrics computed (no step): {clustering_metrics}")
+                    # If no step provided, use a default step to avoid WandB step ordering issues
+                    default_step = 0  # Use 0 as default to maintain consistency
+                    wandb.log(clustering_metrics, step=default_step)
+                    logging.warning(f"⚠️  Clustering metrics logged with default step=0 (step parameter was None)")
+                    logging.info(f"Clustering metrics computed (default step): {clustering_metrics}")
                 
             except Exception as e:
                 logging.warning(f"Clustering metrics computation failed: {e}")
@@ -4638,9 +4648,21 @@ class StructuredTrainer:
 
 @hydra.main(config_path="configs", version_base=None, config_name="structured")
 def run(cfg: omegaconf.DictConfig):
+    # Check if we're resuming from a checkpoint to determine WandB resume behavior
+    resume_mode = "allow" if cfg.training.get("resume_from_checkpoint") else None
+    
+    # Generate unique run ID if not resuming to avoid step conflicts
+    import time
+    run_id = None
+    if not cfg.training.get("resume_from_checkpoint"):
+        run_id = f"run_{int(time.time())}"
+        logging.info(f"🆔 Using unique run ID: {run_id}")
+    
     wandb.init(
         entity=cfg.wandb.entity,
         project=cfg.wandb.project,
+        id=run_id,  # Use unique ID if not resuming
+        resume=resume_mode,  # Allow resuming if checkpoint resume is enabled
         settings=wandb.Settings(console="redirect"),
         config=omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
         save_code=True,
@@ -4661,6 +4683,18 @@ def run(cfg: omegaconf.DictConfig):
             state = from_bytes(state, data)
         except Exception as e:
             logging.warning(f"Resume failed: {e}")
+    # Handle step counter for resumed runs
+    if cfg.training.get("resume_from_checkpoint"):
+        if hasattr(wandb.run, 'resumed') and wandb.run.resumed:
+            logging.info(f"🔄 Resumed WandB run detected")
+            # For resumed runs, we'll start from step 0 and let WandB handle conflicts
+            trainer.resume_step_offset = 0
+        else:
+            logging.info(f"⚠️  Checkpoint resume requested but WandB run not resumed")
+            trainer.resume_step_offset = 0
+    else:
+        trainer.resume_step_offset = 0
+        
     state = trainer.train(state, enc_params_list)
     # Final evaluation with the final step value
     final_step = cfg.training.total_num_steps

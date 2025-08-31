@@ -1613,9 +1613,17 @@ class StructuredTrainer:
                 if "generation_fitness" in es_traj:
                     gen_fitness = np.array(es_traj["generation_fitness"])
                     if gen_fitness.ndim >= 1:
-                        final_fitness = gen_fitness[..., -1]  # Last generation
-                        final_losses = -final_fitness  # Convert fitness to loss
+                        # FIXED: Report best fitness across all generations (consistent with GA approach)
+                        # Instead of last generation fitness, use the best fitness found
+                        best_fitness = np.max(gen_fitness, axis=-1)  # Best across all generations
+                        final_losses = -best_fitness  # Convert best fitness to loss
                         search_metrics[f"test/{test_name}/total_final_loss"] = float(np.mean(final_losses))
+                        # Keep last generation for reference
+                        last_gen_fitness = gen_fitness[..., -1]  # Last generation
+                        last_gen_losses = -last_gen_fitness  # Convert to loss
+                        search_metrics[f"test/{test_name}/last_generation_loss"] = float(np.mean(last_gen_losses))
+                        print(f"[structured_train_backup] ES final_loss: {float(np.mean(final_losses)):.6f} (best across {gen_fitness.shape[-1]} generations)")
+                        print(f"[structured_train_backup] ES last_gen_loss: {float(np.mean(last_gen_losses)):.6f} (for comparison)")
         
 
         

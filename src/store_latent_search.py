@@ -2211,15 +2211,22 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                     gen_losses = -np.array(f['es_generation_fitness'])
                 if gen_losses is not None:
                     if len(gen_losses) > 0:
-                        es_metrics['es_final_loss'] = safe_array_to_scalar(gen_losses[-1])
+                        # FIXED: Report best loss across all generations (consistent with GA approach)
+                        # Instead of last generation loss, use the best loss found
+                        best_loss = np.min(gen_losses)
+                        es_metrics['es_final_loss'] = safe_array_to_scalar(best_loss)  # ✅ BEST ACROSS ALL GENERATIONS
                         es_metrics['es_loss_progression'] = gen_losses.tolist()
-                        es_metrics['es_loss_improvement'] = safe_array_to_scalar(gen_losses[0] - gen_losses[-1])
-                        es_metrics['es_best_loss'] = safe_array_to_scalar(np.min(gen_losses))
+                        es_metrics['es_loss_improvement'] = safe_array_to_scalar(gen_losses[0] - best_loss)
+                        es_metrics['es_best_loss'] = safe_array_to_scalar(best_loss)
+                        es_metrics['es_last_generation_loss'] = safe_array_to_scalar(gen_losses[-1])  # Keep for reference
+                        print(f"[metrics] ES final_loss: {best_loss:.6f} (best across {len(gen_losses)} generations)")
+                        print(f"[metrics] ES last_gen_loss: {gen_losses[-1]:.6f} (for comparison)")
                     else:
                         es_metrics['es_final_loss'] = None
                         es_metrics['es_loss_progression'] = []
                         es_metrics['es_loss_improvement'] = None
                         es_metrics['es_best_loss'] = None
+                        es_metrics['es_last_generation_loss'] = None
                 
                 if 'es_best_losses_per_generation' in f:
                     best_losses = np.array(f['es_best_losses_per_generation'])
