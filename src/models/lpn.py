@@ -695,14 +695,6 @@ class LPN(nn.Module):
             include_mean_latent, include_all_latents, latents, random_perturbation, key
         )
         
-        # CRITICAL FIX: Capture the ORIGINAL mean latent BEFORE any optimization starts
-        # This ensures we capture the true starting point, exactly like ES does
-        original_mean_latent_for_trajectory = None
-        if track_progress := kwargs.get("track_progress", False):
-            # Compute the mean latent from the prepared latents (before optimization)
-            original_mean_latent_for_trajectory = latents.mean(axis=-2, keepdims=True)  # (*B, 1, H) - same as ES
-            print(f"         🔧 GA trajectory fix: Captured ORIGINAL mean latent shape={original_mean_latent_for_trajectory.shape}")
-        
         # CRITICAL DEBUG: Show what GA actually starts optimization from
         print(f"         🔍 GA starting optimization from latents shape: {latents.shape}")
         # Use jax.device_get to get actual values, not traced ones
@@ -886,46 +878,26 @@ class LPN(nn.Module):
         track_progress = kwargs.get("track_progress", False)
         if track_progress:
             try:
-                # CRITICAL FIX: Capture the ORIGINAL mean latent BEFORE any optimization starts
-                # This ensures we capture the true starting point, exactly like ES does
+                # FIXED: Use the original latents before reshaping for initial mean
+                # The original latents are the starting point for gradient ascent
+                original_latents = latents[..., :all_latents.shape[-2], :]  # Get back to original shape
                 
-                # 1. CRITICAL FIX: Use the ORIGINAL mean latent that was captured at the start
-                # This ensures we capture the true starting point, not the processed latents variable
-                if original_mean_latent_for_trajectory is None:
-                    print(f"         ❌ GA trajectory fix: No original mean latent captured, falling back to current latents")
-                    # Fallback: compute from current latents (not ideal but prevents crash)
-                    original_mean_latent = latents.mean(axis=-2, keepdims=True)
-                else:
-                    original_mean_latent = original_mean_latent_for_trajectory
-                print(f"         🔧 GA trajectory fix: Using ORIGINAL mean latent shape={original_mean_latent.shape}")
+                # Get initial log probs for the starting latents
+                initial_log_probs = vmap_log_probs_fn(original_latents, input_seq, output_seq, self.decoder)
                 
-                # 2. Evaluate the mean latent BEFORE any optimization
-                # Use the same evaluation function that will be used during optimization
-                mean_latent_log_probs = vmap_log_probs_fn(original_mean_latent, input_seq, output_seq, self.decoder)
-                print(f"         🔧 GA trajectory fix: mean_latent_log_probs shape={mean_latent_log_probs.shape}")
-                
-                # 3. Build the complete trajectory: [mean_latent, step1, step2, ..., stepN]
-                # CRITICAL: all_latents has shape (*B, C, steps, H), so we need to add a dimension to mean_latent
-                # to match the steps dimension for concatenation
-                mean_latent_with_steps = original_mean_latent[..., None, :, :]  # (*B, C, 1, H) - add steps dimension
-                print(f"         🔧 GA trajectory fix: mean_latent_with_steps shape={mean_latent_with_steps.shape}")
-                
-                trajectory_latents = jnp.concatenate([mean_latent_with_steps, all_latents], axis=-2)
-                trajectory_log_probs = jnp.concatenate([mean_latent_log_probs[..., None], all_log_probs], axis=-1)
+                # Concatenate: [initial, step1, step2, ..., stepN]
+                trajectory_latents = jnp.concatenate([original_latents[..., None, :, :], all_latents], axis=-2)
+                trajectory_log_probs = jnp.concatenate([initial_log_probs[..., None, :], all_log_probs], axis=-2)
                 
                 # Debug logging to show the fix is working
-                print(f"         🔧 GA trajectory fix: original_mean_latent shape={original_mean_latent.shape}, all_latents shape={all_latents.shape}")
-                print(f"         🔧 GA trajectory fix: mean_latent_with_steps shape={mean_latent_with_steps.shape}")
+                print(f"         🔧 GA trajectory fix: original_latents shape={original_latents.shape}, all_latents shape={all_latents.shape}")
                 print(f"         🔧 GA trajectory fix: final trajectory shape={trajectory_latents.shape}")
-                print(f"         🔧 GA trajectory fix: mean_latent_log_probs shape={mean_latent_log_probs.shape}, all_log_probs shape={all_log_probs.shape}")
-                print(f"         🔧 GA trajectory fix: final log_probs shape={trajectory_log_probs.shape}")
                 
                 traj = {
-                    "latents": trajectory_latents,      # (*B, C, num_steps+1, H) - includes mean latent
-                    "log_probs": trajectory_log_probs,  # (*B, C, num_steps+1) - includes mean latent
+                    "latents": trajectory_latents,      # (*B, num_steps+1, C, H) - includes initial
+                    "log_probs": trajectory_log_probs,  # (*B, num_steps+1, C) - includes initial
                 }
                 print(f"         ✅ GA trajectory created successfully with {trajectory_latents.shape[-2]} steps")
-                print(f"         ✅ GA trajectory now properly starts from ORIGINAL mean latent (like ES)")
             except Exception as e:
                 print(f"         ❌ GA trajectory creation failed: {e}")
                 traj = {}

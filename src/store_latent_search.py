@@ -386,11 +386,8 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
             # Fix GA shape mismatch: collapse latents to one point per step
             if prefix == "ga_" and t.pts is not None and t.vals is not None:
                 print(f"[plot] GA shape fix: pts={t.pts.shape}, vals={t.vals.shape}")
-                # FIXED: GA trajectory now properly includes mean latent as step 0
-                # The trajectory should have steps_len points including the mean latent
                 t.pts = _collapse_to_steps(t.pts, steps_len=len(t.vals))
                 print(f"[plot] GA shape after fix: pts={t.pts.shape}, vals={t.vals.shape}")
-                print(f"[plot] GA trajectory now properly aligned: {len(t.vals)} losses for {t.pts.shape[0]} latent points")
             
             t.best_per_gen = _extract_best_per_gen(f, prefix)
             pop_pts, gen_idx, pop_vals = _extract_pop(f, prefix)
@@ -1454,14 +1451,8 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     if ga_npz_path and os.path.exists(ga_npz_path):
         try:
             with np.load(ga_npz_path, allow_pickle=True) as f:
-                # Always attempt to read stored budget so we can show
-                # the mean latent evaluation as budget 0.
                 if 'ga_budget' in f:
                     ga_budget = np.array(f['ga_budget']).reshape(-1)
-
-                # Per-sample overlay is only meaningful when we have
-                # multiple samples, but it should still respect the
-                # pre-computed budget if present.
                 if (dataset_length is not None and dataset_length > 1) and 'ga_losses_per_sample' in f:
                     L = np.array(f['ga_losses_per_sample'])  # (N, S)
                     x = ga_budget if ga_budget is not None and len(ga_budget) == L.shape[1] else np.arange(L.shape[1])
@@ -1481,18 +1472,13 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Fallback single GA curve if no per-sample available
     if has_ga_loss and not did_ga_overlay:
         if ga_steps is not None:
-            if ga_budget is not None and len(ga_budget) == len(ga.vals):
-                x = ga_budget
-            else:
-                # Default to 2×step count, starting from 0 to include
-                # the initial mean latent evaluation.
-                x = 2 * np.arange(len(ga.vals))
-            print(f"[loss] GA budget calculation: {len(ga.vals)} steps → budget points: {x}")
-            ax.plot(x, ga.vals, color="#FBB998", linewidth=3.0, marker='o',
+            ga_budget = 2 * np.arange(1, len(ga.vals) + 1)
+            print(f"[loss] GA budget calculation: {len(ga.vals)} steps → budget points: {ga_budget}")
+            ax.plot(ga_budget, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
                     markersize=6, label=f"Gradient Ascent (2×{ga_steps} steps)", zorder=3)
         else:
             ga_steps_indices = np.arange(len(ga.vals))
-            ax.plot(ga_steps_indices, ga.vals, color="#FBB998", linewidth=3.0, marker='o',
+            ax.plot(ga_steps_indices, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
                     markersize=6, label="Gradient Ascent", zorder=3)
         # Track y extents
         y_values_for_limits.append(np.asarray(ga.vals).reshape(-1))
@@ -1764,7 +1750,7 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                         arr = np.array(f[key]).reshape(-1)
                         if arr.size > 0:
                             ga_metrics[wandb_key] = arr
-                            print(f"[stats] GA {wandb_key}: shape={arr.shape}, mean={float(arr.mean()):.4f}, std={float(arr.std()):.4f}")
+                            print(f"[stats] GA {wandb_key}: shape={arr.shape}, mean={arr.mean():.4f}, std={arr.std():.4f}")
                         else:
                             print(f"[stats] GA {wandb_key}: empty array")
                     else:
@@ -1777,7 +1763,7 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                         # Take the minimum loss (best performance) for each sample
                         ga_best_losses = np.min(ga_losses_per_sample, axis=1)
                         ga_metrics['best_loss'] = ga_best_losses
-                        print(f"[stats] GA best_loss: shape={ga_best_losses.shape}, mean={float(ga_best_losses.mean()):.4f}, std={float(ga_best_losses.std()):.4f}")
+                        print(f"[stats] GA best_loss: shape={ga_best_losses.shape}, mean={ga_best_losses.mean():.4f}, std={ga_best_losses.std():.4f}")
                     else:
                         print(f"[stats] GA best_loss: empty array")
                 else:
@@ -1802,7 +1788,7 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                         arr = np.array(f[key]).reshape(-1)
                         if arr.size > 0:
                             es_metrics[wandb_key] = arr
-                            print(f"[stats] ES {wandb_key}: shape={arr.shape}, mean={float(arr.mean()):.4f}, std={float(arr.std()):.4f}")
+                            print(f"[stats] ES {wandb_key}: shape={arr.shape}, mean={arr.mean():.4f}, std={arr.std():.4f}")
                         else:
                             print(f"[stats] ES {wandb_key}: empty array")
                     else:
@@ -1815,7 +1801,7 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                         # Take the minimum loss (best performance) for each sample
                         es_best_losses = np.min(es_losses_per_sample, axis=1)
                         es_metrics['best_loss'] = es_best_losses
-                        print(f"[stats] ES best_loss: shape={es_best_losses.shape}, mean={float(es_best_losses.mean()):.4f}, std={float(es_best_losses.std()):.4f}")
+                        print(f"[stats] ES best_loss: shape={es_best_losses.shape}, mean={es_best_losses.mean():.4f}, std={es_best_losses.std():.4f}")
                     else:
                         print(f"[stats] ES best_loss: empty array")
                 else:

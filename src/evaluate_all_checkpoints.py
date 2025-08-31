@@ -1841,11 +1841,11 @@ def main():
 
                         # Log evaluation start
                         budget_info = {
-                            "type": "budget", 
-                            "value": es_cfg["budget"], 
+                            "type": "budget",
+                            "value": es_cfg["budget"],
                             "scaled_budget": es_cfg["scaled_budget"],
                             "population_size": es_cfg["population_size"],
-                            "num_generations": es_cfg["num_generations"]
+                            "num_generations": es_cfg["num_generations"],
                         }
                         log_evaluation_start(method, budget_info, method_kwargs, checkpoint["name"], step, args)
 
@@ -1871,7 +1871,7 @@ def main():
                         if ok:
                             results["method_results"]["evolutionary_search"]["success"] += 1
                             results["successful_evals"] += 1
-                            
+
                             # Log to W&B immediately
                             try:
                                 # Prepare subspace parameters for logging
@@ -1883,12 +1883,14 @@ def main():
                                         f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/ga_step_length": args.es_ga_step_length,
                                     }
                                     if args.es_trust_region_radius is not None:
-                                        subspace_log[f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/trust_region_radius"] = args.es_trust_region_radius
+                                        subspace_log[
+                                            f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/trust_region_radius"
+                                        ] = args.es_trust_region_radius
                                 else:
                                     subspace_log = {
                                         f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/subspace_enabled": False,
                                     }
-                                
+
                                 log_data = {
                                     f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/overall_accuracy": acc or 0.0,
                                     f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
@@ -1904,7 +1906,9 @@ def main():
                                 }
                                 # Add loss metric if available
                                 if metrics.get("total_final_loss") is not None:
-                                    log_data[f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/total_final_loss"] = metrics.get("total_final_loss")
+                                    log_data[
+                                        f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/total_final_loss"
+                                    ] = metrics.get("total_final_loss")
                                 wandb.log(log_data)
                             except Exception as e:
                                 print(f"⚠️  Failed to log to W&B: {e}")
@@ -1913,32 +1917,48 @@ def main():
                             results["failed_evals"] += 1
 
                         # Prepare CSV row with subspace parameters if enabled
-                        csv_row = [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], training_progress, "evolutionary_search", "budget", es_cfg["budget"], 
-                                  acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
-                                  metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
-                                  metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", ""),
-                                  metrics.get("total_final_loss", "")]
-                        
+                        csv_row = [
+                            time.strftime("%Y-%m-%d %H:%M:%S"),
+                            args.run_name,
+                            checkpoint["name"],
+                            training_progress,
+                            "evolutionary_search",
+                            "budget",
+                            es_cfg["budget"],
+                            acc or "",
+                            metrics.get("top_1_shape_accuracy", ""),
+                            metrics.get("top_1_accuracy", ""),
+                            metrics.get("top_1_pixel_correctness", ""),
+                            metrics.get("top_2_shape_accuracy", ""),
+                            metrics.get("top_2_accuracy", ""),
+                            metrics.get("top_2_pixel_correctness", ""),
+                            metrics.get("total_final_loss", ""),
+                        ]
+
                         # Add sample information if multiple samples
                         if args.n_samples > 1:
                             csv_row.extend([sample_idx + 1, sample_seed])
-                        
+
                         if args.es_use_subspace_mutation:
                             csv_row.extend([True, args.es_subspace_dim, args.es_ga_step_length, args.es_trust_region_radius or ""])
-                        
+
                         writer.writerow(csv_row)
-            
-            # Progress update after each checkpoint
-            total_evals = results["successful_evals"] + results["failed_evals"]
-            selected_counts = []
-            if "gradient_ascent" in args.plot_methods: selected_counts.append(len(ga_budgets))
-            if "random_search" in args.plot_methods: selected_counts.append(len(rs_samples))
-            if "evolutionary_search" in args.plot_methods: selected_counts.append(len(es_configs))
-            total_expected = sum(selected_counts) * args.n_samples  # Account for multiple samples
-            print(f"\n📊 Checkpoint {i}/{len(checkpoints)} complete. Total evaluations: {total_evals}/{total_expected * i}")
-            print(f"   ⏱️  Timing info available in W&B logs for each method and budget")
-            if args.n_samples > 1:
-                print(f"   🧪 Multiple samples: {args.n_samples} runs per evaluation")
+
+                # Progress update after each checkpoint
+                total_evals = results["successful_evals"] + results["failed_evals"]
+                selected_counts = []
+                if "gradient_ascent" in args.plot_methods:
+                    selected_counts.append(len(ga_budgets))
+                if "random_search" in args.plot_methods:
+                    selected_counts.append(len(rs_samples))
+                if "evolutionary_search" in args.plot_methods:
+                    selected_counts.append(len(es_configs))
+                total_expected = sum(selected_counts) * args.n_samples  # Account for multiple samples
+                print(f"\n📊 Checkpoint {i}/{len(checkpoints)} complete. Total evaluations: {total_evals}/{total_expected * i}")
+                print(f"   ⏱️  Timing info available in W&B logs for each method and budget")
+                if args.n_samples > 1:
+                    print(f"   🧪 Multiple samples: {args.n_samples} runs per evaluation")
+
             
             # Generate and upload checkpoint figure (unless --no_files is specified)
             if not args.no_files:
@@ -1948,26 +1968,32 @@ def main():
                     for method in args.plot_methods:
                         if method == "gradient_ascent":
                             for compute_budget in ga_budgets:
-                                checkpoint_results.append({
-                                    "method": method,
-                                    "budget": compute_budget,
-                                    "budget_type": "budget"
-                                })
+                                checkpoint_results.append(
+                                    {
+                                        "method": method,
+                                        "budget": compute_budget,
+                                        "budget_type": "budget",
+                                    }
+                                )
                         elif method == "random_search":
                             for num_samples in rs_samples:
-                                checkpoint_results.append({
-                                    "method": method,
-                                    "budget": num_samples,
-                                    "budget_type": "num_samples"
-                                })
+                                checkpoint_results.append(
+                                    {
+                                        "method": method,
+                                        "budget": num_samples,
+                                        "budget_type": "num_samples",
+                                    }
+                                )
                         elif method == "evolutionary_search":
                             for es_cfg in es_configs:
-                                checkpoint_results.append({
-                                    "method": method,
-                                    "budget": es_cfg["budget"],
-                                    "budget_type": "budget"
-                                })
-                    
+                                checkpoint_results.append(
+                                    {
+                                        "method": method,
+                                        "budget": es_cfg["budget"],
+                                        "budget_type": "budget",
+                                    }
+                                )
+
                     # Generate checkpoint figure
                     fig_path = generate_checkpoint_figure(
                         checkpoint_name=checkpoint["name"],
@@ -1976,30 +2002,32 @@ def main():
                         total_checkpoints=len(checkpoints),
                         results_data=checkpoint_results,
                         shared_budgets=shared_budgets,
-                        plot_methods=args.plot_methods
+                        plot_methods=args.plot_methods,
                     )
-                    
+
                     if fig_path:
                         # Upload to wandb under plots/ panel
                         try:
-                            wandb.log({
-                                f"plots/checkpoint_{training_progress}_progress": wandb.Image(fig_path),
-                                f"plots/checkpoint_{training_progress}_step": step,
-                                f"plots/checkpoint_{training_progress}_training_progress": training_progress,
-                                f"plots/checkpoint_{training_progress}_total_checkpoints": len(checkpoints),
-                                f"plots/checkpoint_{training_progress}_evaluations_completed": total_evals,
-                            })
+                            wandb.log(
+                                {
+                                    f"plots/checkpoint_{training_progress}_progress": wandb.Image(fig_path),
+                                    f"plots/checkpoint_{training_progress}_step": step,
+                                    f"plots/checkpoint_{training_progress}_training_progress": training_progress,
+                                    f"plots/checkpoint_{training_progress}_total_checkpoints": len(checkpoints),
+                                    f"plots/checkpoint_{training_progress}_evaluations_completed": total_evals,
+                                }
+                            )
                             print(f"📊 Generated and uploaded checkpoint figure: {fig_path}")
                         except Exception as e:
                             print(f"⚠️  Failed to upload checkpoint figure to W&B: {e}")
                     else:
-                        print(f"⚠️  Failed to generate checkpoint figure")
-                        
+                        print("⚠️  Failed to generate checkpoint figure")
+
                 except Exception as e:
                     print(f"⚠️  Failed to generate or upload checkpoint figure: {e}")
             else:
-                print(f"📁 File generation disabled (--no_files flag)")
-            
+                print("📁 File generation disabled (--no_files flag)")
+
             # Generate and upload comparison plot for this step (unless --no_files is specified)
             if not args.no_files:
                 try:
@@ -2007,483 +2035,525 @@ def main():
                     method_to_step_to_budget: Dict[str, Dict[int, Dict[int, float]]] = {}
                     for method in args.plot_methods:
                         method_to_step_to_budget[method] = {}
-                
+
                     if out_csv.exists():
+                        with out_csv.open("r") as f:
+                            reader = csv.DictReader(f)
+                            for row in reader:
+                                try:
+                                    row_step = int(row["checkpoint_step"]) if row["checkpoint_step"] else None
+                                    if row_step is None:
+                                        continue
+                                    method = row["method"]
+                                    budget = int(row["budget"]) if row["budget"] else None
+                                    if budget is None:
+                                        continue
+                                    try:
+                                        if args.loss and len(args.plot_methods) == 2:
+                                            # Use loss for loss difference plotting
+                                            loss_val = (
+                                                float(row["total_final_loss"])
+                                                if row["total_final_loss"] not in ("", None)
+                                                else np.nan
+                                            )
+                                            acc_val = loss_val
+                                        else:
+                                            # Use accuracy for regular plotting
+                                            acc_val = (
+                                                float(row["overall_accuracy"])
+                                                if row["overall_accuracy"] not in ("", None)
+                                                else np.nan
+                                            )
+                                    except Exception:
+                                        acc_val = np.nan
+
+                                    method_to_step_to_budget[method].setdefault(row_step, {})[budget] = acc_val
+                                except Exception:
+                                    continue
+
+                        # Check if we have data for any selected methods
+                        has_data = any(len(method_data) > 0 for method_data in method_to_step_to_budget.values())
+
+                        if has_data:
+                            # Collect all steps and budgets from selected methods
+                            all_steps = set()
+                            for method_data in method_to_step_to_budget.values():
+                                all_steps.update(method_data.keys())
+                            all_steps = sorted(all_steps)
+                            all_budgets = sorted(shared_budgets)
+
+                            if all_steps and all_budgets:
+                                # Create data arrays for selected methods
+                                method_arrays = {}
+                                for method in args.plot_methods:
+                                    method_arrays[method] = np.full((len(all_budgets), len(all_steps)), np.nan)
+
+                                # Fill data arrays
+                                for j, s in enumerate(all_steps):
+                                    for k, b in enumerate(all_budgets):
+                                        for method in args.plot_methods:
+                                            if method in method_to_step_to_budget:
+                                                method_arrays[method][k, j] = method_to_step_to_budget[method].get(s, {}).get(
+                                                    b, np.nan
+                                                )
+
+                                # Create plot with selected methods
+                                if len(args.plot_methods) == 2:
+                                    if args.loss:
+                                        # Loss difference plotting: show difference between methods
+                                        # For loss, lower is better, so we show method_B - method_A (positive = method_A better)
+                                        loss_diff = method_arrays[args.plot_methods[1]] - method_arrays[args.plot_methods[0]]
+                                        fig = visualize_optimization_comparison(
+                                            steps=np.array(all_steps),
+                                            budgets=np.array(all_budgets),
+                                            acc_A=loss_diff,  # This will be the loss difference
+                                            acc_B=np.full_like(loss_diff, np.nan),  # Not used for difference plot
+                                            method_A_name=f"Loss Diff ({args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()})",
+                                            method_B_name="",
+                                        )
+                                    else:
+                                        # Regular accuracy comparison
+                                        fig = visualize_optimization_comparison(
+                                            steps=np.array(all_steps),
+                                            budgets=np.array(all_budgets),
+                                            acc_A=method_arrays[args.plot_methods[0]],
+                                            acc_B=method_arrays[args.plot_methods[1]],
+                                            method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                                            method_B_name=args.plot_methods[1].replace("_", " ").title(),
+                                        )
+                                else:
+                                    # Single method or more than 2 methods - create simple heatmap for first method
+                                    fig = visualize_optimization_comparison(
+                                        steps=np.array(all_steps),
+                                        budgets=np.array(all_budgets),
+                                        acc_A=method_arrays[args.plot_methods[0]],
+                                        acc_B=np.full_like(method_arrays[args.plot_methods[0]], np.nan),
+                                        method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                                        method_B_name="",
+                                    )
+
+                                if args.loss and len(args.plot_methods) == 2:
+                                    plot_type = "Loss Difference"
+                                    plot_description = (
+                                        f"Positive values = {args.plot_methods[0].replace('_', ' ').title()} better (lower loss)"
+                                    )
+                                else:
+                                    plot_type = "Accuracy Comparison"
+                                    plot_description = "Higher values = better performance"
+
+                                fig.suptitle(
+                                    f"{plot_type} - Accumulated Data\n"
+                                    f"{plot_description}\n"
+                                    f"Current Training Progress: {training_progress}/{denom} ({pct}%)\n"
+                                    f"Checkpoint {i}/{len(checkpoints)} | Total Steps: {len(all_steps)}, Budgets: {len(all_budgets)}",
+                                    fontsize=14,
+                                    y=0.98,
+                                )
+
+                                step_plot_path = out_dir / f"optim_comparison_accumulated_progress_{training_progress}.png"
+                                fig.savefig(step_plot_path, dpi=200, bbox_inches="tight")
+                                plt.close(fig)
+
+                                # Count available data points without shadowing names
+                                data_point_count = 0
+                                for method_name, step_map in method_to_step_to_budget.items():
+                                    for _step, budget_map in step_map.items():
+                                        for v in budget_map.values():
+                                            if not np.isnan(v):
+                                                data_point_count += 1
+
+                                wandb.log(
+                                    {
+                                        f"checkpoint_{training_progress}/optimization_comparison": wandb.Image(str(step_plot_path)),
+                                        f"checkpoint_{training_progress}/plot_step": training_progress,
+                                        f"checkpoint_{training_progress}/plot_checkpoint_number": i,
+                                        f"checkpoint_{training_progress}/plot_total_checkpoints": len(checkpoints),
+                                        f"checkpoint_{training_progress}/plot_available_steps": len(all_steps),
+                                        f"checkpoint_{training_progress}/plot_available_budgets": len(all_budgets),
+                                        f"checkpoint_{training_progress}/plot_accumulated_data": True,
+                                    }
+                                )
+
+                                wandb.log(
+                                    {
+                                        "plot_progression/current_step": training_progress,
+                                        "plot_progression/checkpoint_number": i,
+                                        "plot_progression/total_checkpoints": len(checkpoints),
+                                        "plot_progression/comparison_plot": wandb.Image(str(step_plot_path)),
+                                        "plot_progression/available_data_points": data_point_count,
+                                        "plot_progression/accumulated_steps": len(all_steps),
+                                        "plot_progression/accumulated_budgets": len(all_budgets),
+                                    }
+                                )
+
+                                print(
+                                    f"📊 Generated and uploaded accumulated comparison plot for training progress {training_progress}/{denom} ({pct}%)"
+                                )
+                                print(f"   📈 Available steps: {all_steps}")
+                                print(f"   💰 Available budgets: {all_budgets}")
+                                print(f"   🔍 Data coverage: {data_point_count} data points")
+
+                                # Generate additional loss plots if --loss flag is enabled
+                                if args.loss and len(args.plot_methods) == 2:
+                                    try:
+                                        # Generate Loss vs Budget plot
+                                        loss_budget_plot_path = generate_loss_vs_budget_plot(
+                                            method_arrays=method_arrays,
+                                            budgets=all_budgets,
+                                            method_names=args.plot_methods,
+                                            checkpoint_name=checkpoint["name"],
+                                            checkpoint_step=step,
+                                        )
+
+                                        # Generate Loss vs Training Progress plot
+                                        loss_training_plot_path = generate_loss_vs_training_plot(
+                                            method_arrays=method_arrays,
+                                            steps=all_steps,
+                                            method_names=args.plot_methods,
+                                            checkpoint_name=checkpoint["name"],
+                                            checkpoint_step=step,
+                                            total_checkpoints=len(checkpoints),
+                                        )
+
+                                        # Upload both plots to W&B
+                                        if loss_budget_plot_path and loss_training_plot_path:
+                                            try:
+                                                wandb.log(
+                                                    {
+                                                        f"checkpoint_{training_progress}/loss_vs_budget": wandb.Image(
+                                                            loss_budget_plot_path
+                                                        ),
+                                                        f"checkpoint_{training_progress}/loss_vs_training": wandb.Image(
+                                                            loss_training_plot_path
+                                                        ),
+                                                    }
+                                                )
+                                                print("📊 Generated and uploaded loss plots:")
+                                                print(f"   • Loss vs Budget: {loss_budget_plot_path}")
+                                                print(f"   • Loss vs Training: {loss_training_plot_path}")
+                                            except Exception as e:
+                                                print(f"⚠️  Failed to upload loss plots to W&B: {e}")
+                                        else:
+                                            print("⚠️  Failed to generate one or both loss plots")
+
+                                    except Exception as e:
+                                        print(f"⚠️  Failed to generate loss plots: {e}")
+
+                except Exception as e:
+                    print(f"⚠️  Failed to generate comparison plot for training progress {training_progress}: {e}")
+            else:
+                print("📁 Comparison plot generation disabled (--no_files flag)")
+
+            
+            # Log checkpoint completion to W&B
+            try:
+                wandb.log(
+                    {
+                        f"checkpoint_{training_progress}/completion": 1.0,
+                        f"checkpoint_{training_progress}/total_evaluations": total_evals,
+                        f"checkpoint_{training_progress}/successful_evaluations": results["successful_evals"],
+                        f"checkpoint_{training_progress}/failed_evaluations": results["failed_evals"],
+                    }
+                )
+
+                overall_progress = i / len(checkpoints)
+                wandb.log(
+                    {
+                        "overall/progress": overall_progress,
+                        "overall/checkpoints_completed": i,
+                        "overall/total_checkpoints": len(checkpoints),
+                        "overall/total_evaluations": total_evals,
+                        "overall/successful_evaluations": results["successful_evals"],
+                        "overall/failed_evaluations": results["failed_evals"],
+                    }
+                )
+            except Exception as e:
+                print(f"⚠️  Failed to log checkpoint completion to W&B: {e}")
+
+            # Close sample loop
+            if args.n_samples > 1:
+                print(f"🔬 Completed {args.n_samples} samples for checkpoint {i}/{len(checkpoints)}")
+
+            # Upload CSV artifact
+            try:
+                artifact = wandb.Artifact(f"{args.run_name}--budgets-eval", type="evaluation")
+                artifact.add_file(str(out_csv))
+                run.log_artifact(artifact)
+            except Exception as e:
+                print(f"⚠️  Failed to upload CSV artifact: {e}")
+
+            # Build final optimization comparison plot from CSV (overall summary) (unless --no_files is specified)
+            if not args.no_files:
+                try:
+                    steps_list: List[int] = []
+                    method_maps: Dict[str, Dict[int, Dict[int, float]]] = {}
+                    for method in args.plot_methods:
+                        method_maps[method] = {}
+
                     with out_csv.open("r") as f:
                         reader = csv.DictReader(f)
                         for row in reader:
                             try:
-                                row_step = int(row["checkpoint_step"]) if row["checkpoint_step"] else None
-                                if row_step is None:
-                                    continue
-                                method = row["method"]
-                                budget = int(row["budget"]) if row["budget"] else None
-                                if budget is None:
-                                    continue
-                                try:
-                                    if args.loss and len(args.plot_methods) == 2:
-                                        # Use loss for loss difference plotting
-                                        loss_val = float(row["total_final_loss"]) if row["total_final_loss"] not in ("", None) else np.nan
-                                        acc_val = loss_val
-                                    else:
-                                        # Use accuracy for regular plotting
-                                        acc_val = float(row["overall_accuracy"]) if row["overall_accuracy"] not in ("", None) else np.nan
-                                except Exception:
-                                    acc_val = np.nan
-                                
-                                method_to_step_to_budget[method].setdefault(row_step, {})[budget] = acc_val
+                                step = int(row["checkpoint_step"]) if row["checkpoint_step"] else None
                             except Exception:
+                                step = None
+                            if step is None:
                                 continue
-                
-                # Check if we have data for any selected methods
-                has_data = any(len(method_data) > 0 for method_data in method_to_step_to_budget.values())
-                
-                if has_data:
-                    # Collect all steps and budgets from selected methods
-                    all_steps = set()
-                    for method_data in method_to_step_to_budget.values():
-                        all_steps.update(method_data.keys())
-                    all_steps = sorted(all_steps)
-                    all_budgets = sorted(shared_budgets)
-                    
-                    if all_steps and all_budgets:
-                        # Create data arrays for selected methods
-                        method_arrays = {}
-                        for method in args.plot_methods:
-                            method_arrays[method] = np.full((len(all_budgets), len(all_steps)), np.nan)
-                        
-                        # Fill data arrays
-                        for j, s in enumerate(all_steps):
-                            for k, b in enumerate(all_budgets):
-                                for method in args.plot_methods:
-                                    if method in method_to_step_to_budget:
-                                        method_arrays[method][k, j] = method_to_step_to_budget[method].get(s, {}).get(b, np.nan)
-                        
-                        # Create plot with selected methods
-                        if len(args.plot_methods) == 2:
-                            if args.loss:
-                                # Loss difference plotting: show difference between methods
-                                # For loss, lower is better, so we show method_B - method_A (positive = method_A better)
-                                loss_diff = method_arrays[args.plot_methods[1]] - method_arrays[args.plot_methods[0]]
-                                fig = visualize_optimization_comparison(
-                                    steps=np.array(all_steps),
-                                    budgets=np.array(all_budgets),
-                                    acc_A=loss_diff,  # This will be the loss difference
-                                    acc_B=np.full_like(loss_diff, np.nan),  # Not used for difference plot
-                                    method_A_name=f"Loss Diff ({args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()})",
-                                    method_B_name="",
-                                )
-                            else:
-                                # Regular accuracy comparison
-                                fig = visualize_optimization_comparison(
-                                    steps=np.array(all_steps),
-                                    budgets=np.array(all_budgets),
-                                    acc_A=method_arrays[args.plot_methods[0]],
-                                    acc_B=method_arrays[args.plot_methods[1]],
-                                    method_A_name=args.plot_methods[0].replace("_", " ").title(),
-                                    method_B_name=args.plot_methods[1].replace("_", " ").title(),
-                                )
-                        else:
-                            # Single method or more than 2 methods - create simple heatmap for first method
+                            steps_list.append(step)
+                            method = row["method"]
+                            try:
+                                budget = int(row["budget"]) if row["budget"] else None
+                            except Exception:
+                                budget = None
+                            try:
+                                if args.loss and len(args.plot_methods) == 2:
+                                    # Use loss for loss difference plotting
+                                    loss_val = float(row["total_final_loss"]) if row["total_final_loss"] not in ("", None) else np.nan
+                                    acc_val = loss_val
+                                else:
+                                    # Use accuracy for regular plotting
+                                    acc_val = float(row["overall_accuracy"]) if row["overall_accuracy"] not in ("", None) else np.nan
+                            except Exception:
+                                acc_val = np.nan
+                            if budget is None:
+                                continue
+                            if method in args.plot_methods:
+                                method_maps[method].setdefault(step, {})[budget] = acc_val
+
+                    steps_sorted = sorted(set(steps_list))
+                    actual_budgets = shared_budgets
+
+                    # Create data arrays for selected methods
+                    method_arrays = {}
+                    for method in args.plot_methods:
+                        method_arrays[method] = np.full((len(actual_budgets), len(steps_sorted)), np.nan)
+
+                    for j, s in enumerate(steps_sorted):
+                        for k, b in enumerate(actual_budgets):
+                            for method in args.plot_methods:
+                                method_arrays[method][k, j] = method_maps[method].get(s, {}).get(b, np.nan)
+
+                    # Create plot with selected methods
+                    if len(args.plot_methods) == 2:
+                        if args.loss:
+                            # Loss difference plotting: show difference between methods
+                            # For loss, lower is better, so we show method_B - method_A (positive = method_A better)
+                            loss_diff = method_arrays[args.plot_methods[1]] - method_arrays[args.plot_methods[0]]
                             fig = visualize_optimization_comparison(
-                                steps=np.array(all_steps),
-                                budgets=np.array(all_budgets),
-                                acc_A=method_arrays[args.plot_methods[0]],
-                                acc_B=np.full_like(method_arrays[args.plot_methods[0]], np.nan),
-                                method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                                steps=np.array(steps_sorted),
+                                budgets=np.array(actual_budgets),
+                                acc_A=loss_diff,  # This will be the loss difference
+                                acc_B=np.full_like(loss_diff, np.nan),  # Not used for difference plot
+                                method_A_name=f"Loss Diff ({args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()})",
                                 method_B_name="",
                             )
-                        
-                        if args.loss and len(args.plot_methods) == 2:
-                            plot_type = "Loss Difference"
-                            plot_description = f"Positive values = {args.plot_methods[0].replace('_', ' ').title()} better (lower loss)"
                         else:
-                            plot_type = "Accuracy Comparison"
-                            plot_description = "Higher values = better performance"
-                        
-                        fig.suptitle(
-                            f"{plot_type} - Accumulated Data\n"
-                            f"{plot_description}\n"
-                            f"Current Training Progress: {training_progress}/{denom} ({pct}%)\n"
-                            f"Checkpoint {i}/{len(checkpoints)} | Total Steps: {len(all_steps)}, Budgets: {len(all_budgets)}",
-                            fontsize=14, y=0.98
-                        )
-                        
-                        step_plot_path = out_dir / f"optim_comparison_accumulated_progress_{training_progress}.png"
-                        fig.savefig(step_plot_path, dpi=200, bbox_inches='tight')
-                        plt.close(fig)
-                        
-                        # Count available data points without shadowing names
-                        data_point_count = 0
-                        for method_name, step_map in method_to_step_to_budget.items():
-                            for _step, budget_map in step_map.items():
-                                for v in budget_map.values():
-                                    if not np.isnan(v):
-                                        data_point_count += 1
-                        
-                        wandb.log({
-                            f"checkpoint_{training_progress}/optimization_comparison": wandb.Image(str(step_plot_path)),
-                            f"checkpoint_{training_progress}/plot_step": training_progress,
-                            f"checkpoint_{training_progress}/plot_checkpoint_number": i,
-                            f"checkpoint_{training_progress}/plot_total_checkpoints": len(checkpoints),
-                            f"checkpoint_{training_progress}/plot_available_steps": len(all_steps),
-                            f"checkpoint_{training_progress}/plot_available_budgets": len(all_budgets),
-                            f"checkpoint_{training_progress}/plot_accumulated_data": True,
-                        })
-                        
-                        wandb.log({
-                            "plot_progression/current_step": training_progress,
-                            "plot_progression/checkpoint_number": i,
-                            "plot_progression/total_checkpoints": len(checkpoints),
-                            "plot_progression/comparison_plot": wandb.Image(str(step_plot_path)),
-                            "plot_progression/available_data_points": data_point_count,
-                            "plot_progression/accumulated_steps": len(all_steps),
-                            "plot_progression/accumulated_budgets": len(all_budgets),
-                        })
-                        
-                        print(f"📊 Generated and uploaded accumulated comparison plot for training progress {training_progress}/{denom} ({pct}%)")
-                        print(f"   📈 Available steps: {all_steps}")
-                        print(f"   💰 Available budgets: {all_budgets}")
-                        print(f"   🔍 Data coverage: {data_point_count} data points")
-                        
-                        # Generate additional loss plots if --loss flag is enabled
-                        if args.loss and len(args.plot_methods) == 2:
-                            try:
-                                # Generate Loss vs Budget plot
-                                loss_budget_plot_path = generate_loss_vs_budget_plot(
-                                    method_arrays=method_arrays,
-                                    budgets=all_budgets,
-                                    method_names=args.plot_methods,
-                                    checkpoint_name=checkpoint["name"],
-                                    checkpoint_step=step,
-                                )
-                                
-                                # Generate Loss vs Training Progress plot
-                                loss_training_plot_path = generate_loss_vs_training_plot(
-                                    method_arrays=method_arrays,
-                                    steps=all_steps,
-                                    method_names=args.plot_methods,
-                                    checkpoint_name=checkpoint["name"],
-                                    checkpoint_step=step,
-                                    total_checkpoints=len(checkpoints),
-                                )
-                                
-                                # Upload both plots to W&B
-                                if loss_budget_plot_path and loss_training_plot_path:
-                                    try:
-                                        wandb.log({
-                                            f"checkpoint_{training_progress}/loss_vs_budget": wandb.Image(loss_budget_plot_path),
-                                            f"checkpoint_{training_progress}/loss_vs_training": wandb.Image(loss_training_plot_path),
-                                        })
-                                        print(f"📊 Generated and uploaded loss plots:")
-                                        print(f"   • Loss vs Budget: {loss_budget_plot_path}")
-                                        print(f"   • Loss vs Training: {loss_training_plot_path}")
-                                    except Exception as e:
-                                        print(f"⚠️  Failed to upload loss plots to W&B: {e}")
-                                else:
-                                    print(f"⚠️  Failed to generate one or both loss plots")
-                                    
-                            except Exception as e:
-                                print(f"⚠️  Failed to generate loss plots: {e}")
-                        
-            except Exception as e:
-                print(f"⚠️  Failed to generate comparison plot for training progress {training_progress}: {e}")
-            else:
-                print(f"📁 Comparison plot generation disabled (--no_files flag)")
-            
-            # Log checkpoint completion to W&B
-            try:
-                wandb.log({
-                    f"checkpoint_{training_progress}/completion": 1.0,
-                    f"checkpoint_{training_progress}/total_evaluations": total_evals,
-                    f"checkpoint_{training_progress}/successful_evaluations": results["successful_evals"],
-                    f"checkpoint_{training_progress}/failed_evaluations": results["failed_evals"],
-                })
-                
-                overall_progress = i / len(checkpoints)
-                wandb.log({
-                    "overall/progress": overall_progress,
-                    "overall/checkpoints_completed": i,
-                    "overall/total_checkpoints": len(checkpoints),
-                    "overall/total_evaluations": total_evals,
-                    "overall/successful_evaluations": results["successful_evals"],
-                    "overall/failed_evaluations": results["failed_evals"],
-                })
-            except Exception as e:
-                print(f"⚠️  Failed to log checkpoint completion to W&B: {e}")
-        
-        # Close sample loop
-        if args.n_samples > 1:
-            print(f"🔬 Completed {args.n_samples} samples for checkpoint {i}/{len(checkpoints)}")
-
-    # Upload CSV artifact
-    try:
-        artifact = wandb.Artifact(f"{args.run_name}--budgets-eval", type="evaluation")
-        artifact.add_file(str(out_csv))
-        run.log_artifact(artifact)
-    except Exception as e:
-        print(f"⚠️  Failed to upload CSV artifact: {e}")
-
-    # Build final optimization comparison plot from CSV (overall summary) (unless --no_files is specified)
-    if not args.no_files:
-        try:
-        steps_list: List[int] = []
-        method_maps: Dict[str, Dict[int, Dict[int, float]]] = {}
-        for method in args.plot_methods:
-            method_maps[method] = {}
-            
-        with out_csv.open("r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                try:
-                    step = int(row["checkpoint_step"]) if row["checkpoint_step"] else None
-                except Exception:
-                    step = None
-                if step is None:
-                    continue
-                steps_list.append(step)
-                method = row["method"]
-                try:
-                    budget = int(row["budget"]) if row["budget"] else None
-                except Exception:
-                    budget = None
-                try:
-                    if args.loss and len(args.plot_methods) == 2:
-                        # Use loss for loss difference plotting
-                        loss_val = float(row["total_final_loss"]) if row["total_final_loss"] not in ("", None) else np.nan
-                        acc_val = loss_val
+                            # Regular accuracy comparison
+                            fig = visualize_optimization_comparison(
+                                steps=np.array(steps_sorted),
+                                budgets=np.array(actual_budgets),
+                                acc_A=method_arrays[args.plot_methods[0]],
+                                acc_B=method_arrays[args.plot_methods[1]],
+                                method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                                method_B_name=args.plot_methods[1].replace("_", " ").title(),
+                            )
                     else:
-                        # Use accuracy for regular plotting
-                        acc_val = float(row["overall_accuracy"]) if row["overall_accuracy"] not in ("", None) else np.nan
-                except Exception:
-                    acc_val = np.nan
-                if budget is None:
-                    continue
-                if method in args.plot_methods:
-                    method_maps[method].setdefault(step, {})[budget] = acc_val
+                        # Single method or more than 2 methods - create simple heatmap for first method
+                        fig = visualize_optimization_comparison(
+                            steps=np.array(steps_sorted),
+                            budgets=np.array(actual_budgets),
+                            acc_A=method_arrays[args.plot_methods[0]],
+                            acc_B=np.full_like(method_arrays[args.plot_methods[0]], np.nan),
+                            method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                            method_B_name="",
+                        )
 
-        steps_sorted = sorted(set(steps_list))
-        actual_budgets = shared_budgets
-        
-        # Create data arrays for selected methods
-        method_arrays = {}
-        for method in args.plot_methods:
-            method_arrays[method] = np.full((len(actual_budgets), len(steps_sorted)), np.nan)
-            
-        for j, s in enumerate(steps_sorted):
-            for k, b in enumerate(actual_budgets):
-                for method in args.plot_methods:
-                    method_arrays[method][k, j] = method_maps[method].get(s, {}).get(b, np.nan)
+                    max_progress = max(steps_sorted) if steps_sorted else 0
+                    denom_final = max(len(checkpoints) - 1, 1)
+                    progress_percentage = int((max_progress / denom_final) * 100) if steps_sorted else 0
 
-        # Create plot with selected methods
-        if len(args.plot_methods) == 2:
-            if args.loss:
-                # Loss difference plotting: show difference between methods
-                # For loss, lower is better, so we show method_B - method_A (positive = method_A better)
-                loss_diff = method_arrays[args.plot_methods[1]] - method_arrays[args.plot_methods[0]]
-                fig = visualize_optimization_comparison(
-                    steps=np.array(steps_sorted),
-                    budgets=np.array(actual_budgets),
-                    acc_A=loss_diff,  # This will be the loss difference
-                    acc_B=np.full_like(loss_diff, np.nan),  # Not used for difference plot
-                    method_A_name=f"Loss Diff ({args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()})",
-                    method_B_name="",
-                )
-            else:
-                # Regular accuracy comparison
-                fig = visualize_optimization_comparison(
-                    steps=np.array(steps_sorted),
-                    budgets=np.array(actual_budgets),
-                    acc_A=method_arrays[args.plot_methods[0]],
-                    acc_B=method_arrays[args.plot_methods[1]],
-                    method_A_name=args.plot_methods[0].replace("_", " ").title(),
-                    method_B_name=args.plot_methods[1].replace("_", " ").title(),
-                )
-        else:
-            # Single method or more than 2 methods - create simple heatmap for first method
-            fig = visualize_optimization_comparison(
-                steps=np.array(steps_sorted),
-                budgets=np.array(actual_budgets),
-                acc_A=method_arrays[args.plot_methods[0]],
-                acc_B=np.full_like(method_arrays[args.plot_methods[0]], np.nan),
-                method_A_name=args.plot_methods[0].replace("_", " ").title(),
-                method_B_name="",
-            )
-        
-        max_progress = max(steps_sorted) if steps_sorted else 0
-        denom_final = max(len(checkpoints) - 1, 1)
-        progress_percentage = int((max_progress / denom_final) * 100) if steps_sorted else 0
-        
-        if args.loss and len(args.plot_methods) == 2:
-            plot_type = "Loss Difference"
-            plot_description = f"Positive values = {args.plot_methods[0].replace('_', ' ').title()} better (lower loss)"
-        else:
-            plot_type = "Accuracy Comparison"
-            plot_description = "Higher values = better performance"
-        
-        fig.suptitle(
-            f"Final {plot_type} - {args.run_name}\n"
-            f"{plot_description}\n"
-            f"Training Progress: {len(steps_sorted)} steps (0% → {progress_percentage}%), Budgets: {len(actual_budgets)}", 
-            fontsize=14, y=0.98
-        )
-        
-        plot_path = out_dir / f"optim_comparison_final_{args.run_name}.png"
-        fig.savefig(plot_path, dpi=200, bbox_inches='tight')
-        plt.close(fig)
-        
-        wandb.log({
-            "final/optimization_comparison": wandb.Image(str(plot_path)),
-            "final/total_checkpoints": len(steps_sorted),
-            "final/total_budgets": len(actual_budgets),
-            "final/checkpoint_steps": steps_sorted,
-            "final/budget_values": actual_budgets,
-            "final/training_progress_percentage": progress_percentage,
-        })
-        
-        plot_art = wandb.Artifact(f"{args.run_name}--final-optim-comparison", type="evaluation")
-        plot_art.add_file(str(plot_path))
-        run.log_artifact(plot_art)
-        
-        print(f"📊 Generated and uploaded final comparison plot with {len(steps_sorted)} training progress steps (0% → {progress_percentage}%) and {len(actual_budgets)} budgets")
-        print(f"   📈 Methods: {', '.join(args.plot_methods).replace('_', ' ').title()}")
-        
-        # Generate additional loss plots if --loss flag is enabled
-        if args.loss and len(args.plot_methods) == 2:
-            try:
-                # Generate Loss vs Budget plot
-                final_loss_budget_plot_path = generate_loss_vs_budget_plot(
-                    method_arrays=method_arrays,
-                    budgets=actual_budgets,
-                    method_names=args.plot_methods,
-                    checkpoint_name="final_summary",
-                    checkpoint_step=max_progress,
-                )
-                
-                # Generate Loss vs Training Progress plot
-                final_loss_training_plot_path = generate_loss_vs_training_plot(
-                    method_arrays=method_arrays,
-                    steps=steps_sorted,
-                    method_names=args.plot_methods,
-                    checkpoint_name="final_summary",
-                    checkpoint_step=max_progress,
-                    total_checkpoints=len(checkpoints),
-                )
-                
-                # Upload both plots to W&B
-                if final_loss_budget_plot_path and final_loss_training_plot_path:
-                    try:
-                        wandb.log({
-                            "final/loss_vs_budget": wandb.Image(final_loss_budget_plot_path),
-                            "final/loss_vs_training": wandb.Image(final_loss_training_plot_path),
-                        })
-                        
-                        # Also upload as artifacts
-                        loss_budget_art = wandb.Artifact(f"{args.run_name}--final-loss-vs-budget", type="evaluation")
-                        loss_budget_art.add_file(str(final_loss_budget_plot_path))
-                        run.log_artifact(loss_budget_art)
-                        
-                        loss_training_art = wandb.Artifact(f"{args.run_name}--final-loss-vs-training", type="evaluation")
-                        loss_training_art.add_file(str(final_loss_training_plot_path))
-                        run.log_artifact(loss_training_art)
-                        
-                        print(f"📊 Generated and uploaded final loss plots:")
-                        print(f"   • Loss vs Budget: {final_loss_budget_plot_path}")
-                        print(f"   • Loss vs Training: {final_loss_training_plot_path}")
-                    except Exception as e:
-                        print(f"⚠️  Failed to upload final loss plots to W&B: {e}")
-                else:
-                    print(f"⚠️  Failed to generate one or both final loss plots")
-                    
-            except Exception as e:
-                print(f"⚠️  Failed to generate final loss plots: {e}")
-            
+                    if args.loss and len(args.plot_methods) == 2:
+                        plot_type = "Loss Difference"
+                        plot_description = f"Positive values = {args.plot_methods[0].replace('_', ' ').title()} better (lower loss)"
+                    else:
+                        plot_type = "Accuracy Comparison"
+                        plot_description = "Higher values = better performance"
+
+                    fig.suptitle(
+                        f"Final {plot_type} - {args.run_name}\n"
+                        f"{plot_description}\n"
+                        f"Training Progress: {len(steps_sorted)} steps (0% → {progress_percentage}%), Budgets: {len(actual_budgets)}",
+                        fontsize=14,
+                        y=0.98,
+                    )
+
+                    plot_path = out_dir / f"optim_comparison_final_{args.run_name}.png"
+                    fig.savefig(plot_path, dpi=200, bbox_inches="tight")
+                    plt.close(fig)
+
+                    wandb.log(
+                        {
+                            "final/optimization_comparison": wandb.Image(str(plot_path)),
+                            "final/total_checkpoints": len(steps_sorted),
+                            "final/total_budgets": len(actual_budgets),
+                            "final/checkpoint_steps": steps_sorted,
+                            "final/budget_values": actual_budgets,
+                            "final/training_progress_percentage": progress_percentage,
+                        }
+                    )
+
+                    plot_art = wandb.Artifact(f"{args.run_name}--final-optim-comparison", type="evaluation")
+                    plot_art.add_file(str(plot_path))
+                    run.log_artifact(plot_art)
+
+                    print(
+                        f"📊 Generated and uploaded final comparison plot with {len(steps_sorted)} training progress steps (0% → {progress_percentage}%) and {len(actual_budgets)} budgets"
+                    )
+                    print(f"   📈 Methods: {', '.join(args.plot_methods).replace('_', ' ').title()}")
+
+                    # Generate additional loss plots if --loss flag is enabled
+                    if args.loss and len(args.plot_methods) == 2:
+                        try:
+                            # Generate Loss vs Budget plot
+                            final_loss_budget_plot_path = generate_loss_vs_budget_plot(
+                                method_arrays=method_arrays,
+                                budgets=actual_budgets,
+                                method_names=args.plot_methods,
+                                checkpoint_name="final_summary",
+                                checkpoint_step=max_progress,
+                            )
+
+                            # Generate Loss vs Training Progress plot
+                            final_loss_training_plot_path = generate_loss_vs_training_plot(
+                                method_arrays=method_arrays,
+                                steps=steps_sorted,
+                                method_names=args.plot_methods,
+                                checkpoint_name="final_summary",
+                                checkpoint_step=max_progress,
+                                total_checkpoints=len(checkpoints),
+                            )
+
+                            # Upload both plots to W&B
+                            if final_loss_budget_plot_path and final_loss_training_plot_path:
+                                try:
+                                    wandb.log(
+                                        {
+                                            "final/loss_vs_budget": wandb.Image(final_loss_budget_plot_path),
+                                            "final/loss_vs_training": wandb.Image(final_loss_training_plot_path),
+                                        }
+                                    )
+
+                                    # Also upload as artifacts
+                                    loss_budget_art = wandb.Artifact(f"{args.run_name}--final-loss-vs-budget", type="evaluation")
+                                    loss_budget_art.add_file(str(final_loss_budget_plot_path))
+                                    run.log_artifact(loss_budget_art)
+
+                                    loss_training_art = wandb.Artifact(f"{args.run_name}--final-loss-vs-training", type="evaluation")
+                                    loss_training_art.add_file(str(final_loss_training_plot_path))
+                                    run.log_artifact(loss_training_art)
+
+                                    print("📊 Generated and uploaded final loss plots:")
+                                    print(f"   • Loss vs Budget: {final_loss_budget_plot_path}")
+                                    print(f"   • Loss vs Training: {final_loss_training_plot_path}")
+                                except Exception as e:
+                                    print(f"⚠️  Failed to upload final loss plots to W&B: {e}")
+                            else:
+                                print("⚠️  Failed to generate one or both final loss plots")
+
+                        except Exception as e:
+                            print(f"⚠️  Failed to generate final loss plots: {e}")
+
                 except Exception as e:
-                print(f"⚠️  Failed to generate or upload final comparison plot: {e}")
-        else:
-            print(f"📁 Final plot generation disabled (--no_files flag)")
+                    print(f"⚠️  Failed to generate or upload final comparison plot: {e}")
+            else:
+                print("📁 Final plot generation disabled (--no_files flag)")
 
-    # Summary
-    print("\n" + "=" * 60)
-    print("📈 EVALUATION SUMMARY")
-    print("=" * 60)
-    print(f"Total checkpoints: {results['total_checkpoints']}")
-    print(f"Successful evaluations: {results['successful_evals']}")
-    print(f"Failed evaluations: {results['failed_evals']}")
+            # Summary
+            print("\n" + "=" * 60)
+            print("📈 EVALUATION SUMMARY")
+            print("=" * 60)
+            print(f"Total checkpoints: {results['total_checkpoints']}")
+            print(f"Successful evaluations: {results['successful_evals']}")
+            print(f"Failed evaluations: {results['failed_evals']}")
 
-    for method, stats in results["method_results"].items():
-        print(f"\n{method.replace('_', ' ').title()}:")
-        print(f"  ✅ Success: {stats['success']}")
-        print(f"  ❌ Failed: {stats['failed']}")
+            for method, stats in results["method_results"].items():
+                print(f"\n{method.replace('_', ' ').title()}:")
+                print(f"  ✅ Success: {stats['success']}")
+                print(f"  ❌ Failed: {stats['failed']}")
 
-    print(f"\n📊 Output configuration:")
-    print(f"   • Output directory: {args.out_dir}")
-    print(f"   • CSV saved to: {out_csv}")
-    print(f"   • File generation: {'enabled' if not args.no_files else 'disabled (--no_files flag)'}")
-    print(f"📅 Timestamp: {timestamp}")
-    print("📈 Available metrics in CSV:")
-    print("   - overall_accuracy")
-    print("   - top_1_shape_accuracy") 
-    print("   - top_1_accuracy")
-    print("   - top_1_pixel_correctness")
-    print("   - top_2_shape_accuracy")
-    print("   - top_2_accuracy")
-    print("   - top_2_pixel_correctness")
-    print("   - total_final_loss")
-    if args.n_samples > 1:
-        print("   - sample_number")
-        print("   - sample_seed")
-    if args.es_use_subspace_mutation:
-        print("   - subspace_enabled")
-        print("   - subspace_dim")
-        print("   - ga_step_length")
-        print("   - trust_region_radius")
-    print(f"\n🔬 Methods evaluated:")
-    for method in ["gradient_ascent", "random_search", "evolutionary_search"]:
-        if method in args.plot_methods:
-            print(f"   - {method} ({'num_steps' if method == 'gradient_ascent' else 'num_samples' if method == 'random_search' else 'num_generations'})")
-        else:
-            print(f"   - {method} (skipped - not in plot_methods)")
-    
-    # Sample information
-    if args.n_samples > 1:
-        print(f"\n🧪 Sample configuration:")
-        print(f"   • Multiple samples: {args.n_samples} runs per evaluation")
-        print(f"   • Base seed: {args.dataset_seed}")
-        print(f"   • Sample seeds: {[args.dataset_seed + i for i in range(args.n_samples)]}")
-        if args.aggregate_statistics:
-            print(f"   • Statistical aggregation: enabled")
+            print(f"\n📊 Output configuration:")
+            print(f"   • Output directory: {args.out_dir}")
+            print(f"   • CSV saved to: {out_csv}")
+            print(f"   • File generation: {'enabled' if not args.no_files else 'disabled (--no_files flag)'}")
+            print(f"📅 Timestamp: {timestamp}")
+            print("📈 Available metrics in CSV:")
+            print("   - overall_accuracy")
+            print("   - top_1_shape_accuracy")
+            print("   - top_1_accuracy")
+            print("   - top_1_pixel_correctness")
+            print("   - top_2_shape_accuracy")
+            print("   - top_2_accuracy")
+            print("   - top_2_pixel_correctness")
+            print("   - total_final_loss")
+            if args.n_samples > 1:
+                print("   - sample_number")
+                print("   - sample_seed")
+            if args.es_use_subspace_mutation:
+                print("   - subspace_enabled")
+                print("   - subspace_dim")
+                print("   - ga_step_length")
+                print("   - trust_region_radius")
 
-    # Comprehensive logging summary
-    print(f"\n{'='*80}")
-    print("📋 COMPREHENSIVE EVALUATION LOG")
-    print(f"{'='*80}")
-    print(f"🕐 Run completed at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"📁 Run name: {args.run_name}")
-    print(f"🎯 Evaluation source: {'JSON' if using_json else 'Dataset'}")
-    print(f"📊 Plotting mode: {'Loss Difference' if args.loss else 'Accuracy Comparison'}")
-    if args.loss:
-        print(f"   • Loss difference: {args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()}")
-        print(f"   • Positive values = {args.plot_methods[0].replace('_', ' ').title()} better (lower loss)")
-        print(f"   • Additional plots: Loss vs Budget, Loss vs Training Progress")
-    if using_json:
-        print(f"   • Challenges: {args.json_challenges}")
-        print(f"   • Solutions: {args.json_solutions}")
-        print(f"   • Tasks limited to: {args.only_n_tasks}")
-    if args.dataset_folder:
-        print(f"   • Dataset: {args.dataset_folder}")
-        print(f"   • Length: {args.dataset_length}")
-        print(f"   • Batch size: {args.dataset_batch_size}")
-    
-    # Advanced features
-    if args.n_samples > 1:
-        print(f"   • Multiple samples: {args.n_samples} runs with different seeds")
-        if args.aggregate_statistics:
-            print(f"   • Statistical aggregation: enabled")
-    
-    # Output configuration
-    print(f"   • Output directory: {args.out_dir}")
-    print(f"   • File generation: {'enabled' if not args.no_files else 'disabled'}")
+            print(f"\n🔬 Methods evaluated:")
+            for method in ["gradient_ascent", "random_search", "evolutionary_search"]:
+                if method in args.plot_methods:
+                    print(
+                        f"   - {method} ({'num_steps' if method == 'gradient_ascent' else 'num_samples' if method == 'random_search' else 'num_generations'})"
+                    )
+                else:
+                    print(f"   - {method} (skipped - not in plot_methods)")
+
+            # Sample information
+            if args.n_samples > 1:
+                print(f"\n🧪 Sample configuration:")
+                print(f"   • Multiple samples: {args.n_samples} runs per evaluation")
+                print(f"   • Base seed: {args.dataset_seed}")
+                print(f"   • Sample seeds: {[args.dataset_seed + i for i in range(args.n_samples)]}")
+                if args.aggregate_statistics:
+                    print("   • Statistical aggregation: enabled")
+
+            # Comprehensive logging summary
+            print(f"\n{'=' * 80}")
+            print("📋 COMPREHENSIVE EVALUATION LOG")
+            print(f"{'=' * 80}")
+            print(f"🕐 Run completed at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"📁 Run name: {args.run_name}")
+            print(f"🎯 Evaluation source: {'JSON' if using_json else 'Dataset'}")
+            print(f"📊 Plotting mode: {'Loss Difference' if args.loss else 'Accuracy Comparison'}")
+            if args.loss:
+                print(
+                    f"   • Loss difference: {args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()}"
+                )
+                print(f"   • Positive values = {args.plot_methods[0].replace('_', ' ').title()} better (lower loss)")
+                print("   • Additional plots: Loss vs Budget, Loss vs Training Progress")
+            if using_json:
+                print(f"   • Challenges: {args.json_challenges}")
+                print(f"   • Solutions: {args.json_solutions}")
+                print(f"   • Tasks limited to: {args.only_n_tasks}")
+            if args.dataset_folder:
+                print(f"   • Dataset: {args.dataset_folder}")
+                print(f"   • Length: {args.dataset_length}")
+                print(f"   • Batch size: {args.dataset_batch_size}")
+
+            # Advanced features
+            if args.n_samples > 1:
+                print(f"   • Multiple samples: {args.n_samples} runs with different seeds")
+                if args.aggregate_statistics:
+                    print("   • Statistical aggregation: enabled")
+
+            # Output configuration
+            print(f"   • Output directory: {args.out_dir}")
+            print(f"   • File generation: {'enabled' if not args.no_files else 'disabled'}")
     
     print(f"\n⚙️  Method configurations:")
     for method in args.plot_methods:

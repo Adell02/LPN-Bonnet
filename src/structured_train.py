@@ -306,6 +306,9 @@ class StructuredTrainer:
         # Phase A global step counter for WandB metrics
         self.phase_a_global_step = 0
         
+        # Step tracking for validation
+        self.last_global_step = -1  # Track last logged global step to ensure monotonicity
+        
         # Store original encoder params for individual training
         self.original_encoder_params = None
         self.original_decoder_params = None
@@ -1984,6 +1987,27 @@ class StructuredTrainer:
         
         return encoder_outputs
     
+    def _validate_step_monotonicity(self, global_step: int, phase: str) -> None:
+        """
+        Validate that global_step is monotonically increasing.
+        
+        Args:
+            global_step: Current global step
+            phase: Current training phase ("1" or "2")
+        """
+        if self.last_global_step != -1 and global_step <= self.last_global_step:
+            logging.warning(f"⚠️  Step monotonicity violation detected!")
+            logging.warning(f"   Previous step: {self.last_global_step}, Current step: {global_step}")
+            logging.warning(f"   Phase: {phase}, Step difference: {global_step - self.last_global_step}")
+            if global_step == self.last_global_step:
+                logging.warning(f"   ⚠️  Duplicate step detected - this may cause WandB logging issues")
+            else:
+                logging.warning(f"   ⚠️  Step regression detected - this will cause WandB step ordering issues")
+        else:
+            logging.debug(f"✅ Step monotonicity validated: {self.last_global_step} -> {global_step} (Phase {phase})")
+        
+        self.last_global_step = global_step
+    
     def _generate_phase2_metrics_and_plots(self, avg_metrics: dict, all_encoder_outputs: list, pattern_ids: chex.Array, num_steps: int, state: TrainState, global_step: int) -> dict:
         """
         Generate comprehensive Phase 2 metrics and plots.
@@ -2023,19 +2047,18 @@ class StructuredTrainer:
             phase2_metrics.update(phase2_plots)
             
             # 5. GENERATE PHASE 2 CONFIDENCE PANELS (showing all encoders together)
+            logging.info(f"       🔍 Generating Phase 2 confidence panels for step {global_step}")
             phase2_confidence_panels = self._generate_phase2_confidence_panels(
                 all_encoder_outputs, pattern_ids, num_steps, state, global_step
             )
             phase2_metrics.update(phase2_confidence_panels)
+            logging.info(f"       ✅ Generated {len(phase2_confidence_panels)} Phase 2 confidence panels for step {global_step}")
             
-            # 6. LOG PHASE 2 CONFIDENCE PANELS TO WANDB WITH CORRECT GLOBAL STEP
-            # This ensures all confidence panels are properly uploaded with the right step
+            # 6. STORE PHASE 2 CONFIDENCE PANELS FOR LATER LOGGING (don't log here to avoid duplicates)
+            # The confidence panels will be logged in the main training loop with the correct global_step
             for panel_key, panel_fig in phase2_confidence_panels.items():
                 if panel_fig is not None and not isinstance(panel_fig, str):
-                    # Convert matplotlib figure to WandB image and log with correct step
-                    wandb.log({panel_key: wandb.Image(panel_fig)}, step=global_step)
-                    plt.close(panel_fig)  # Close figure to prevent memory leaks
-                    logging.info(f"       ✅ Logged Phase 2 confidence panel {panel_key} to WandB with step {global_step}")
+                    logging.info(f"       ✅ Phase 2 confidence panel {panel_key} created for step {global_step}")
                 elif isinstance(panel_fig, str):
                     # Log error message if panel generation failed
                     logging.warning(f"       ❌ Phase 2 confidence panel {panel_key} failed: {panel_fig}")
@@ -2855,11 +2878,16 @@ class StructuredTrainer:
         # Create evaluation data for each pattern
         for pattern_id in [1, 2, 3]:
             try:
+                logging.info(f"   🎯 Processing Pattern {pattern_id}...")
+                
                 # Generate pattern-specific data
                 pattern_data = self._create_pattern_dataset(pattern_id, num_samples=32)  # Use 32 samples for efficiency
                 grids, shapes, _ = pattern_data
                 
+                logging.info(f"   📊 Generated data - grids: {grids.shape}, shapes: {shapes.shape}")
+                
                 # Get encoder outputs
+                logging.info(f"   🔄 Calling encoder.apply...")
                 mu, logvar = self.encoders[encoder_idx].apply(
                     {"params": encoder_params}, 
                     grids, 
@@ -2868,12 +2896,19 @@ class StructuredTrainer:
                     mutable=False
                 )
                 
+                logging.info(f"   ✅ Encoder output - mu: {mu.shape}, logvar: {logvar.shape}")
+                
                 # Use mean of latents as target (or could use multiple samples)
                 target_lat = mu.mean(axis=-2)  # Mean over pairs
                 target_latents[pattern_id] = jnp.array(target_lat)
                 
+                logging.info(f"   🎯 Stored target latents for Pattern {pattern_id}: {target_lat.shape}")
+                
             except Exception as e:
-                logging.warning(f"Failed to extract target latents for Encoder {encoder_idx}, Pattern {pattern_id}: {e}")
+                logging.error(f"❌ Failed to extract target latents for Encoder {encoder_idx}, Pattern {pattern_id}: {e}")
+                logging.error(f"   Exception type: {type(e)}")
+                import traceback
+                logging.error(f"   Traceback: {traceback.format_exc()}")
                 target_latents[pattern_id] = None
         
         return target_latents
@@ -3203,11 +3238,12 @@ class StructuredTrainer:
             pbar.update(log_every)
             step += log_every
             global_step += log_every
-                
-            # Log essential encoder status
+            
+            # Log step progression for debugging
             if step % 100 == 0:
                 encoder_status = "TRAINABLE" if self.encoder_expose_steps > 0 else "FROZEN"
                 logging.info(f"Step {step}/{num_steps}: Encoders {encoder_status}")
+                logging.info(f"   Global step: {global_step}, Phase: {'2' if self.phase1_completed else '1'}")
             throughput = log_every * self.batch_size / (end - start)
             metrics.update({
                 "timing/train_time": end - start,
@@ -3225,10 +3261,37 @@ class StructuredTrainer:
             if self.phase1_completed:
                 # Phase 2: Organize metrics by category for better visualization
                 organized_metrics = self._organize_phase2_metrics_for_wandb(metrics)
-                wandb.log(organized_metrics, step=global_step)
+                
+                # Validate step monotonicity before logging
+                self._validate_step_monotonicity(global_step, "2")
+                
+                # Extract confidence panels from metrics and log them separately to ensure proper step tracking
+                confidence_panels = {}
+                other_metrics = {}
+                
+                for key, value in organized_metrics.items():
+                    if key.startswith("phase_b/confidence_panels/") and not isinstance(value, str):
+                        confidence_panels[key] = value
+                    else:
+                        other_metrics[key] = value
+                
+                # Log non-panel metrics first
+                if other_metrics:
+                    wandb.log(other_metrics, step=global_step)
+                    logging.info(f"       ✅ Logged Phase 2 non-panel metrics to WandB with step {global_step}")
+                
+                # Log confidence panels with explicit step tracking
+                for panel_key, panel_fig in confidence_panels.items():
+                    if panel_fig is not None:
+                        wandb.log({panel_key: wandb.Image(panel_fig)}, step=global_step)
+                        plt.close(panel_fig)  # Close figure to prevent memory leaks
+                        logging.info(f"       ✅ Logged Phase 2 confidence panel {panel_key} to WandB with step {global_step}")
+                
             else:
                 # Phase 1: Log metrics as is
+                self._validate_step_monotonicity(global_step, "1")
                 wandb.log(metrics, step=global_step)
+                logging.info(f"       ✅ Logged Phase 1 metrics to WandB with step {global_step}")
                 
             # CRITICAL FIX: Both phases should have the SAME evaluation frequency
             # This ensures Phase 2 shows the same comprehensive metrics and plots as regular training
@@ -4025,8 +4088,10 @@ class StructuredTrainer:
                 
                 # Log clustering metrics to WandB with proper step tracking
                 if step is not None:
+                    # Validate step monotonicity for clustering metrics
+                    self._validate_step_monotonicity(step, "2" if self.phase1_completed else "1")
                     wandb.log(clustering_metrics, step=step)
-                    logging.info(f"Clustering metrics computed: {clustering_metrics}")
+                    logging.info(f"Clustering metrics computed and logged with step {step}: {clustering_metrics}")
                 else:
                     # If no step provided, use a default step to avoid WandB step ordering issues
                     default_step = 0  # Use 0 as default to maintain consistency
@@ -4908,6 +4973,12 @@ class StructuredTrainer:
                         logging.info(f"Test clustering metrics computed: {test_clustering_metrics}")
                         
                         # Note: These metrics will be logged to wandb by the calling function with proper step
+                        # The step parameter passed to test_dataset_submission should be the global_step
+                        logging.info(f"Test clustering metrics will be logged with step {step}")
+                        
+                        # Validate step monotonicity for test clustering metrics
+                        if step is not None:
+                            self._validate_step_monotonicity(step, "2" if self.phase1_completed else "1")
                         
                     except Exception as e:
                         logging.warning(f"Test clustering metrics computation failed: {e}")
