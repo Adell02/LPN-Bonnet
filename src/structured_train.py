@@ -49,6 +49,12 @@ WANDB STEP CONTINUITY FIX:
 - Each encoder's steps are logged with proper continuity (0, 1, 2, ..., 200, 201, 202, ..., 400, 401, 402, ..., 600)
 - No more "step only supports monotonically increasing values" warnings
 
+INDENTATION FIXES:
+- Fixed misaligned comments and code blocks in pattern-specific variance analysis
+- Corrected indentation for all wandb_metrics.update() calls
+- Ensured proper nesting for if-else statements in variance debugging
+- Resolved IndentationError that was preventing code execution
+
 PHASE B (Joint Decoder Training):
 - Training progress: step, phase status, encoder/decoder status
 - Loss metrics: reconstruction_loss, prior_kl, pairwise_kl, total_loss (no specialization losses)
@@ -1463,51 +1469,51 @@ class StructuredTrainer:
                             pattern_mean_var = float(jnp.mean(pattern_var))
                             pattern_std_var = float(jnp.std(pattern_var))
                             
-                                                                    # Add pattern-specific variance metrics to phase_a_variances section
-                                        wandb_metrics.update({
-                                            f"phase_a_variances/encoder_{enc_idx}/patterns/pattern_{pattern_id}/mean": pattern_mean_var,
-                                            f"phase_a_variances/encoder_{enc_idx}/patterns/pattern_{pattern_id}/std": pattern_std_var,
-                                            f"phase_a_variances/encoder_{enc_idx}/patterns/pattern_{pattern_id}/samples": int(jnp.sum(pattern_mask)),
-                                        })
+                            # Add pattern-specific variance metrics to phase_a_variances section
+                            wandb_metrics.update({
+                                f"phase_a_variances/encoder_{enc_idx}/patterns/pattern_{pattern_id}/mean": pattern_mean_var,
+                                f"phase_a_variances/encoder_{enc_idx}/patterns/pattern_{pattern_id}/std": pattern_std_var,
+                                f"phase_a_variances/encoder_{enc_idx}/patterns/pattern_{pattern_id}/samples": int(jnp.sum(pattern_mask)),
+                            })
                                         
-                                        # Keep original metrics for backward compatibility
-                                        wandb_metrics.update({
-                                            f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/variance_mean": pattern_mean_var,
-                                            f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/variance_std": pattern_std_var,
-                                            f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/samples": int(jnp.sum(pattern_mask)),
-                                        })
+                            # Keep original metrics for backward compatibility
+                            wandb_metrics.update({
+                                f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/variance_mean": pattern_mean_var,
+                                f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/variance_std": pattern_std_var,
+                                f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/samples": int(jnp.sum(pattern_mask)),
+                            })
                                         
-                                        # CRITICAL: Add pattern-specific variance debugging
-                                        # Monitor if target pattern gets higher variance (specialization)
-                                        if pattern_id == target_pattern:
-                                            # Target pattern should have HIGHER variance (more uncertain, learning)
-                                            target_variance_ratio = pattern_mean_var / (mean_var + 1e-8)
-                                            
-                                            # Add to both sections for comprehensive monitoring
-                                            wandb_metrics[f"phase_a/encoder_{enc_idx}/debug/target_pattern_variance_ratio"] = target_variance_ratio
-                                            wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/specialization/target_pattern_ratio"] = target_variance_ratio
-                                            wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/specialization/target_pattern_status"] = "learning" if target_variance_ratio > 0.8 else "overfitting"
-                                            
-                                            if target_variance_ratio < 0.8:
-                                                logging.warning(f"⚠️  Encoder {enc_idx} target pattern {pattern_id} has LOW variance ratio: {target_variance_ratio:.3f}")
-                                                logging.warning(f"   Target pattern should have HIGHER variance for effective learning!")
-                                            else:
-                                                logging.info(f"✅ Encoder {enc_idx} target pattern {pattern_id} variance ratio: {target_variance_ratio:.3f}")
-                                        else:
-                                            # Other patterns should have LOWER variance (more certain, not learning)
-                                            other_variance_ratio = pattern_mean_var / (mean_var + 1e-8)
-                                            
-                                            # Add to both sections for comprehensive monitoring
-                                            wandb_metrics[f"phase_a/encoder_{enc_idx}/debug/other_pattern_{pattern_id}_variance_ratio"] = other_variance_ratio
-                                            wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/specialization/other_pattern_{pattern_id}_ratio"] = other_variance_ratio
-                                            wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/specialization/other_pattern_{pattern_id}_status"] = "certain" if other_variance_ratio < 1.2 else "uncertain"
-                                            
-                                            if other_variance_ratio > 1.2:
-                                                logging.warning(f"⚠️  Encoder {enc_idx} other pattern {pattern_id} has HIGH variance ratio: {other_variance_ratio:.3f}")
-                                                logging.warning(f"   Other patterns should have LOWER variance!")
-                                            else:
-                                                logging.info(f"✅ Encoder {enc_idx} other pattern {pattern_id} variance ratio: {other_variance_ratio:.3f}")
-                            
+                            # CRITICAL: Add pattern-specific variance debugging
+                            # Monitor if target pattern gets higher variance (specialization)
+                            if pattern_id == target_pattern:
+                                # Target pattern should have HIGHER variance (more uncertain, learning)
+                                target_variance_ratio = pattern_mean_var / (mean_var + 1e-8)
+                                
+                                # Add to both sections for comprehensive monitoring
+                                wandb_metrics[f"phase_a/encoder_{enc_idx}/debug/target_pattern_variance_ratio"] = target_variance_ratio
+                                wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/specialization/target_pattern_ratio"] = target_variance_ratio
+                                wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/specialization/target_pattern_status"] = "learning" if target_variance_ratio > 0.8 else "overfitting"
+                                
+                                if target_variance_ratio < 0.8:
+                                    logging.warning(f"⚠️  Encoder {enc_idx} target pattern {pattern_id} has LOW variance ratio: {target_variance_ratio:.3f}")
+                                    logging.warning(f"   Target pattern should have HIGHER variance for effective learning!")
+                                else:
+                                    logging.info(f"✅ Encoder {enc_idx} target pattern {pattern_id} variance ratio: {target_variance_ratio:.3f}")
+                            else:
+                                # Other patterns should have LOWER variance (more certain, not learning)
+                                other_variance_ratio = pattern_mean_var / (mean_var + 1e-8)
+                                
+                                # Add to both sections for comprehensive monitoring
+                                wandb_metrics[f"phase_a/encoder_{enc_idx}/debug/other_pattern_{pattern_id}_variance_ratio"] = other_variance_ratio
+                                wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/specialization/other_pattern_{pattern_id}_ratio"] = other_variance_ratio
+                                wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/specialization/other_pattern_{pattern_id}_status"] = "certain" if other_variance_ratio < 1.2 else "uncertain"
+                                
+                                if other_variance_ratio > 1.2:
+                                    logging.warning(f"⚠️  Encoder {enc_idx} other pattern {pattern_id} has HIGH variance ratio: {other_variance_ratio:.3f}")
+                                    logging.warning(f"   Other patterns should have LOWER variance!")
+                                else:
+                                    logging.info(f"✅ Encoder {enc_idx} other pattern {pattern_id} variance ratio: {other_variance_ratio:.3f}")
+                
                 except Exception as e:
                     logging.warning(f"Could not compute encoder variance metrics: {e}")
                 
