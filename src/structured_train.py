@@ -1166,11 +1166,9 @@ class StructuredTrainer:
             logging.info(f"✅ Encoder {enc_idx} specialization completed")
         
         # Update the main state with specialized encoders
-        updated_state = state.replace(
-            params=state.params.replace(
-                encoders=tuple(specialized_encoders)
-            )
-        )
+        new_params = dict(state.params)
+        new_params["encoders"] = tuple(specialized_encoders)
+        updated_state = state.replace(params=new_params)
         
         self.phase1_completed = True
         logging.info("🎉 PHASE 1 COMPLETED: All encoders specialized!")
