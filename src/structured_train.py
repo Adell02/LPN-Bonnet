@@ -1352,11 +1352,12 @@ class StructuredTrainer:
             decoder=self.decoder
         )
         
-        # Generate evaluation data for all patterns
+        # Generate evaluation data for all patterns using balanced pattern-specific datasets
         eval_data = {}
+        num_eval_samples = 100  # same number for each pattern to ensure even coverage
         for pattern_id in [1, 2, 3]:
-            pattern_data = self._create_specialized_training_data(pattern_id)
-            eval_data[pattern_id] = pattern_data
+            eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
+
         
         # Compute encoder variances per pattern
         pattern_variances = {}
@@ -2190,6 +2191,39 @@ class StructuredTrainer:
         logging.info(f"     Generated {len(grids_list)} samples: {target_samples} target, {other_samples} others")
         return grids, shapes, pattern_ids
     
+    def _create_pattern_dataset(self, pattern_id: int, num_samples: int) -> tuple:
+        """Create a dataset composed solely of a single pattern.
+
+        This is used for evaluation/visualization so that variance statistics
+        are computed from examples of the intended pattern only. Passing the same
+        ``num_samples`` for each pattern guarantees the resulting datasets are
+        even across the three patterns.
+
+        Args:
+            pattern_id: Pattern to generate (1, 2, or 3).
+            num_samples: Number of samples to generate for this pattern.
+
+        Returns:
+            Tuple of (grids, shapes, pattern_ids) each with ``num_samples``
+            entries corresponding to ``pattern_id``.
+        """
+
+        grids_list: list = []
+        shapes_list: list = []
+        pattern_ids_list: list = []
+
+        for _ in range(num_samples):
+            grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
+            grids_list.append(grids)
+            shapes_list.append(shapes)
+            pattern_ids_list.append(pattern_id)
+
+        grids = jnp.stack(grids_list, axis=0)
+        shapes = jnp.stack(shapes_list, axis=0)
+        pattern_ids = jnp.array(pattern_ids_list)
+
+        return grids, shapes, pattern_ids
+    
     def _create_single_pattern_sample(self, pattern_id: int) -> tuple:
         """
         Create a single sample for a specific pattern.
@@ -2993,6 +3027,10 @@ class StructuredTrainer:
         # Task IDs: each of the num_sets tasks contributes one point per source
         task_id_sequence = np.arange(num_sets, dtype=int)
         
+        # CRITICAL DEBUG: Log pattern sequence details
+        logging.info(f"T-SNE pattern sequence - shape: {pattern_sequence.shape}, content: {pattern_sequence[:10]}... (first 10)")
+        logging.info(f"T-SNE task_id_sequence - shape: {task_id_sequence.shape}, content: {task_id_sequence[:10]}... (first 10)")
+        
         # NEW: Track encoder variances for each pattern to monitor specialization
         encoder_variance_metrics = {}
         
@@ -3062,6 +3100,9 @@ class StructuredTrainer:
                 pattern_ids_list.append(encoder_pattern_sequence)  # Pattern sequence matching this encoder's output length
                 task_ids_list.append(task_id_sequence[:lat_np.shape[0]])  # Task IDs matching this encoder's output length
                 
+                # CRITICAL DEBUG: Log what we're appending
+                logging.info(f"Main eval - Encoder {enc_idx} - appended pattern_sequence: {encoder_pattern_sequence.shape}, task_sequence: {task_id_sequence[:lat_np.shape[0]].shape}")
+                
             except Exception as e:
                 logging.error(f"Main eval - Encoder {enc_idx} failed: {e}")
                 continue
@@ -3098,15 +3139,39 @@ class StructuredTrainer:
                 context_pattern_sequence = pattern_sequence[:context_np.shape[0]]
                 pattern_ids_list.append(context_pattern_sequence)  # Pattern sequence matching context output length
                 task_ids_list.append(task_id_sequence[:context_np.shape[0]])  # Task IDs matching context output length
+                
+                # CRITICAL DEBUG: Log what we're appending for context
+                logging.info(f"Main eval - Context - appended pattern_sequence: {context_pattern_sequence.shape}, task_sequence: {task_id_sequence[:context_np.shape[0]].shape}")
                 logging.info(f"Main eval - Added context to T-SNE: {len(context_np)} points")
         else:
             logging.warning(f"Main eval - No 'context' key found in info. Available keys: {list(info.keys())}")
         
         if all_latents:
+            # CRITICAL DEBUG: Log list contents before concatenation
+            logging.info(f"T-SNE lists before concatenation:")
+            logging.info(f"  - all_latents: {len(all_latents)} items, shapes: {[lat.shape for lat in all_latents]}")
+            logging.info(f"  - source_ids: {len(source_ids)} items")
+            logging.info(f"  - pattern_ids_list: {len(pattern_ids_list)} items, shapes: {[pat.shape for pat in pattern_ids_list]}")
+            logging.info(f"  - task_ids_list: {len(task_ids_list)} items, shapes: {[task.shape for task in task_ids_list]}")
+            
             latents_concat = np.concatenate(all_latents, axis=0)
             source_ids_np = np.array(source_ids)
             pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
             task_ids_np = np.concatenate(task_ids_list, axis=0)
+            
+            # CRITICAL DEBUG: Log array shapes to identify length mismatches
+            logging.info(f"T-SNE array shapes - latents: {latents_concat.shape}, source_ids: {source_ids_np.shape}, pattern_ids: {pattern_ids_concat.shape}, task_ids: {task_ids_np.shape}")
+            
+            # Verify all arrays have the same length
+            if not (latents_concat.shape[0] == source_ids_np.shape[0] == pattern_ids_concat.shape[0] == task_ids_np.shape[0]):
+                logging.error(f"T-SNE array length mismatch: latents={latents_concat.shape[0]}, source_ids={source_ids_np.shape[0]}, pattern_ids={pattern_ids_concat.shape[0]}, task_ids={task_ids_np.shape[0]}")
+                # Truncate all arrays to the minimum length to prevent errors
+                min_length = min(latents_concat.shape[0], source_ids_np.shape[0], pattern_ids_concat.shape[0], task_ids_np.shape[0])
+                latents_concat = latents_concat[:min_length]
+                source_ids_np = source_ids_np[:min_length]
+                pattern_ids_concat = pattern_ids_concat[:min_length]
+                task_ids_np = task_ids_np[:min_length]
+                logging.info(f"T-SNE arrays truncated to length {min_length} to prevent errors")
             
             # Log T-SNE structure: each pattern should have multiple sets with 4 points each (3 encoders + 1 context)
             total_points = latents_concat.shape[0]
