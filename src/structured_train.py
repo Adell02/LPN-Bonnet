@@ -1125,10 +1125,24 @@ class StructuredTrainer:
             
             # Create individual model with this encoder + original decoder
             # Ensure encoders is a tuple as expected by StructuredLPN
+            # Use the same encoder module type but with individual parameters
             individual_model = StructuredLPN(
                 encoders=(self.encoders[enc_idx],),  # Single encoder as tuple
                 decoder=self.decoder
             )
+            
+
+
+
+
+
+            
+
+
+
+
+
+
             
             # Create individual training state
             # Ensure parameter structure matches the individual model
@@ -1211,6 +1225,7 @@ class StructuredTrainer:
             )
             
             # Compute gradients and update
+            # Use the current state parameters structure for gradient computation
             grads = jax.grad(lambda p: model.apply(
                 {"params": p}, 
                 pairs=batch[0],  # grids as pairs
@@ -1227,14 +1242,18 @@ class StructuredTrainer:
             # Update only encoder parameters
             # Ensure gradient structure matches the state parameters
             if "encoders" in grads and "decoder" in grads:
-                encoder_grads = {"encoders": grads["encoders"], "decoder": jnp.zeros_like(grads["decoder"])}
+                # Create zero gradients for decoder parameters (nested structure)
+                from jax.tree_util import tree_map
+                zero_decoder_grads = tree_map(lambda x: jnp.zeros_like(x), grads["decoder"])
+                encoder_grads = {"encoders": grads["encoders"], "decoder": zero_decoder_grads}
                 state = state.apply_gradients(grads=encoder_grads)
             else:
                 logging.warning(f"Encoder {enc_idx} - Unexpected gradient structure: {list(grads.keys())}")
                 # Try to handle unexpected gradient structure
                 if "encoders" in grads:
                     # Only encoder gradients available
-                    encoder_grads = {"encoders": grads["encoders"], "decoder": jnp.zeros_like(state.params["decoder"])}
+                    zero_decoder_grads = tree_map(lambda x: jnp.zeros_like(x), state.params["decoder"])
+                    encoder_grads = {"encoders": grads["encoders"], "decoder": zero_decoder_grads}
                     state = state.apply_gradients(grads=encoder_grads)
                 else:
                     logging.error(f"Encoder {enc_idx} - No encoder gradients found, skipping update")

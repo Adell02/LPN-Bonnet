@@ -1008,6 +1008,37 @@ class LPN(nn.Module):
         decay_rate = kwargs.get("mutation_decay", 0.95)
         elite_size = kwargs.get("elite_size", max(1, population_size // 2))
 
+        # ----- Evaluate initial population (generation 0) - this is the same starting point as GA -----
+        if track_progress:
+            # Evaluate initial population (generation 0) - this is the same starting point as GA
+            initial_losses = _eval_candidates(population)
+            initial_fitness = -initial_losses.mean(axis=-2) if initial_losses.ndim >= 3 else -initial_losses
+            
+            # Track generation 0 (initial evaluation)
+            gen_bests.append(initial_fitness.max(axis=-1))  # Best fitness at generation 0
+            
+            # Get best latent from initial population
+            best_idx_0 = jnp.argmax(initial_fitness, axis=-1)
+            if population.ndim == 4:
+                rep_0 = population[..., 0, :, :]  # Take first pair for representative
+            else:
+                rep_0 = population
+            best_lat_0 = jnp.take_along_axis(rep_0, best_idx_0[..., None, None], axis=-2).squeeze(axis=-2)
+            gen_best_latents.append(best_lat_0)  # Best latent at generation 0
+            
+            # Store initial population
+            if rep_0.ndim == 4:
+                gen_populations.append(rep_0[..., 0, :, :])
+            else:
+                gen_populations.append(rep_0)
+            
+            # Store initial best loss
+            initial_gen_losses = initial_losses.mean(axis=-2) if initial_losses.ndim >= 3 else initial_losses
+            best_loss_0 = jnp.take_along_axis(initial_gen_losses, best_idx_0[..., None], axis=-1).squeeze(axis=-1)
+            gen_fitnesses.append(best_loss_0)  # Best loss at generation 0
+            
+            print(f"         🎯 Generation 0 (initial): best fitness = {initial_fitness.max(axis=-1)}, best loss = {best_loss_0}")
+
         # ----- main evolutionary loop (plain Python, no extra JAX transform) -----
         # CRITICAL: Population size is maintained at exactly population_size across all generations
         # This prevents the stacking error that was causing "All input arrays must have the same shape"
@@ -1206,6 +1237,8 @@ class LPN(nn.Module):
 
         if track_progress:
             # Stack as (*B, G, H) for latents and (*B, G) for metrics
+            # Note: Generation 0 is the initial evaluation (budget 0), then generations 1, 2, 3, ...
+            # This matches GA's structure: [initial_latent, step1_latent, step2_latent, ...]
             try:
                 gen_best_latents_arr = jnp.stack(gen_best_latents, axis=-2) if len(gen_best_latents) > 0 else None
             except ValueError as e:
@@ -1214,8 +1247,10 @@ class LPN(nn.Module):
             
             traj = {
                 # Save best fitness per generation under clear name (fitness = -loss)
+                # Structure: [gen0_fitness, gen1_fitness, gen2_fitness, ...] where gen0 is initial evaluation
                 "generation_fitness": jnp.stack(gen_bests) if len(gen_bests) > 0 else None,
                 "final_best_fitness": best_so_far,
+                # Structure: [gen0_best_latent, gen1_best_latent, gen2_best_latent, ...] where gen0 is initial evaluation
                 "best_latents_per_generation": gen_best_latents_arr,
             }
             if len(gen_populations) > 0:
