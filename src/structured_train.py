@@ -1125,32 +1125,22 @@ class StructuredTrainer:
             logging.info(f"   Encoder {enc_idx} type: {type(self.encoders[enc_idx])}")
             logging.info(f"   Encoder {enc_idx} has apply method: {hasattr(self.encoders[enc_idx], 'apply')}")
             
-            # Create a temporary model with ONLY the encoder we want to train
+            # Create individual training state with all encoders but only one trainable
             # This ensures the model structure matches the parameters
-            temp_model = StructuredLPN(
-                encoders=(self.encoders[enc_idx],),  # Single encoder object
-                decoder=self.decoder
-            )
-            
-            # Initialize the temporary model to ensure _core is set up
-            # We need a dummy input to trigger the setup() method
-            dummy_pairs = jnp.zeros((1, 1, 4, 2), dtype=jnp.float32)
-            dummy_shapes = jnp.zeros((1, 1, 2, 2), dtype=jnp.float32)
-            temp_model.init(jax.random.PRNGKey(0), dummy_pairs, dummy_shapes, False, "train")
-            
-            # Create individual training state
+            all_encoder_params = list(self.original_encoder_params)  # Copy all encoder parameters
+            all_encoder_params[enc_idx] = enc_params  # Replace the one we want to train
             individual_state = TrainState.create(
-                apply_fn=temp_model.apply,  # Use the temp model's apply function
+                apply_fn=self.model.apply,  # Use the main model's apply function
                 tx=optax.adamw(self.cfg.training.learning_rate),
                 params={
-                    "encoders": (enc_params,),  # Only this encoder's parameters
+                    "encoders": tuple(all_encoder_params),  # All encoders, but only one is trainable
                     "decoder": self.original_decoder_params
                 }
             )
             
             # Train this encoder on complementary data
             specialized_encoder = self._train_encoder_individually(
-                enc_idx, individual_state, temp_model  # Use the temp model
+                enc_idx, individual_state, self.model  # Use the main model
             )
             
             specialized_encoders.append(specialized_encoder)
@@ -1217,7 +1207,6 @@ class StructuredTrainer:
                 rngs={"dropout": key, "latents": key},
                 contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
                 pattern_ids=batch[2],  # pattern IDs
-                encoder_params_list=state.params["encoders"],  # Pass encoder parameters explicitly
             )
             
             # Compute gradients and update
@@ -1227,11 +1216,10 @@ class StructuredTrainer:
                 rngs={"dropout": key, "latents": key},
                 contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
                 pattern_ids=batch[2],
-                encoder_params_list=p["encoders"],  # Pass encoder parameters explicitly
             )[0])(state.params)
             
             # Update only encoder parameters
-            encoder_grads = {"encoders": grads["encoders"], "decoder": jnp.zeros_like(grads["decoder"])}
+            encoder_grads = {"encoders": grads["encoders"], "decoder": jax.tree_util.tree_map(lambda x: jnp.zeros_like(x), grads["decoder"])}
             state = state.apply_gradients(grads=encoder_grads)
             
             if step % 50 == 0:

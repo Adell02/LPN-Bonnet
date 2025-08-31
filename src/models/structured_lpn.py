@@ -114,7 +114,17 @@ class StructuredLPN(nn.Module):
 
         # Apply each encoder to get (mu, logvar)
         enc_outputs = []
-        for i, enc in enumerate(self.encoders):
+        
+        # If encoder_params_list is provided, use only those encoders
+        # Otherwise, use all model encoders
+        if encoder_params_list is not None:
+            # Use only the encoders that have parameters
+            encoders_to_use = self.encoders[:len(encoder_params_list)]
+        else:
+            # Use all model encoders
+            encoders_to_use = self.encoders
+            
+        for i, enc in enumerate(encoders_to_use):
             params = None if encoder_params_list is None else encoder_params_list[i]
             mu_i, logvar_i = enc.apply(
                 {"params": params} if params is not None else None,
