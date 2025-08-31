@@ -3,14 +3,16 @@
 Evaluate evolutionary search with different mutation standard deviation decay rates using a fixed checkpoint.
 Creates a heatmap showing mutation std decay vs budget colored by total loss after optimization.
 
+Note: Decay rates must be positive values (decay_start > 0, decay_end > 0) to avoid log10(0) errors.
+
 USAGE EXAMPLES:
 ==============
 
-1. BASIC USAGE (sweep mutation std decay from 0.01 to 1.0, budget from 50 to 200):
+1. BASIC USAGE (sweep mutation std decay from 0.001 to 1.0, budget from 50 to 200):
    python3 src/evaluate_DECAY.py \
      --run_name "winter-fire-132" \
      --dataset_folder "pattern2d_eval" \
-     --decay_start 0.01 \
+     --decay_start 0.001 \
      --decay_end 1.0 \
      --decay_steps 8 \
      --budget_start 50 \
@@ -21,7 +23,7 @@ USAGE EXAMPLES:
    python3 src/evaluate_DECAY.py \
      --run_name "winter-fire-132" \
      --dataset_folder "pattern2d_eval" \
-     --decay_start 0.1 \
+     --decay_start 0.01 \
      --decay_end 0.5 \
      --decay_steps 4 \
      --budget_start 50 \
@@ -321,8 +323,8 @@ def main():
     parser.add_argument("--dataset_folder", type=str, required=True, help="Dataset folder under 'src/datasets'")
     
     # Decay sweep configuration
-    parser.add_argument("--decay_start", type=float, default=0.01, help="Starting mutation standard deviation decay rate (default: 0.01)")
-    parser.add_argument("--decay_end", type=float, default=1.0, help="Ending mutation standard deviation decay rate (default: 1.0)")
+    parser.add_argument("--decay_start", type=float, default=0.001, help="Starting mutation standard deviation decay rate (must be > 0, default: 0.001)")
+    parser.add_argument("--decay_end", type=float, default=1.0, help="Ending mutation standard deviation decay rate (must be > 0, default: 1.0)")
     parser.add_argument("--decay_steps", type=int, default=8, help="Number of decay rate values (default: 8)")
     
     # Budget sweep configuration
@@ -347,6 +349,19 @@ def main():
     parser.add_argument("--no_wandb", action="store_true", help="Disable W&B logging even if available")
 
     args = parser.parse_args()
+
+    # Validate decay parameters to prevent log10(0) issues
+    if args.decay_start <= 0:
+        print(f"⚠️  Warning: decay_start ({args.decay_start}) must be positive. Setting to 0.001")
+        args.decay_start = 0.001
+    
+    if args.decay_end <= 0:
+        print(f"⚠️  Warning: decay_end ({args.decay_end}) must be positive. Setting to 1.0")
+        args.decay_end = 1.0
+    
+    if args.decay_start >= args.decay_end:
+        print(f"⚠️  Error: decay_start ({args.decay_start}) must be less than decay_end ({args.decay_end})")
+        return
 
     # Generate decay and budget values
     decay_rates = np.logspace(np.log10(args.decay_start), np.log10(args.decay_end), args.decay_steps)

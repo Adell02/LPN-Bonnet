@@ -1019,7 +1019,17 @@ class LPN(nn.Module):
             # Ensure consistent shapes: mean_fitness should be (*B,) not (*B, 1)
             mean_fitness_flat = mean_fitness.max(axis=-1) if mean_fitness.ndim > 1 else mean_fitness
             gen_bests.append(mean_fitness_flat)  # Mean latent fitness at generation 0
-            gen_best_latents.append(mean_latent.squeeze(axis=-2))  # Mean latent at generation 0
+            
+            # FIX: Ensure consistent shape structure across all generations
+            # mean_latent has shape (*B, 1, H) - we want (*B, H) to match later generations
+            # But we need to handle the context dimension properly
+            if mean_latent.ndim == 4:  # (*B, 1, C, H) - has context dimension
+                # Take first context for consistency with later generations
+                mean_latent_flat = mean_latent[..., 0, 0, :]  # (*B, H)
+            else:  # (*B, 1, H) - no context dimension
+                mean_latent_flat = mean_latent.squeeze(axis=-2)  # (*B, H)
+            
+            gen_best_latents.append(mean_latent_flat)  # Mean latent at generation 0
             
             # Store mean latent loss (same as GA) - ensure shape consistency
             mean_gen_losses = mean_losses.mean(axis=-2) if mean_losses.ndim >= 3 else mean_losses

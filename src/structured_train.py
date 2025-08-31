@@ -390,9 +390,9 @@ class StructuredTrainer:
             # CRITICAL FIX: Create explicit pattern IDs that match the concatenation order
             # This ensures pattern IDs align with the actual data, just like in training
             self.eval_pattern_ids = jnp.concatenate([
-                jnp.full((samples_per_pattern,), 1),  # O-tetromino (first 32 samples)
-                jnp.full((samples_per_pattern,), 2),  # T-tetromino (next 32 samples)
-                jnp.full((samples_per_pattern,), 3),  # L-tetromino (last 32 samples)
+                jnp.full((samples_per_pattern,), 1),  # Pattern 1 (first 32 samples)
+                jnp.full((samples_per_pattern,), 2),  # Pattern 2 (next 32 samples)
+                jnp.full((samples_per_pattern,), 3),  # Pattern 3 (last 32 samples)
             ], axis=0)
             
             # DEBUG: Log evaluation dataset info
@@ -431,14 +431,15 @@ class StructuredTrainer:
             # CRITICAL FIX: Create explicit pattern IDs that match the concatenation order
             # This ensures pattern IDs align with the actual data, just like in training
             self.eval_pattern_ids = jnp.concatenate([
-                jnp.full((samples_per_pattern,), 1),  # O-tetromino (first 32 samples)
-                jnp.full((samples_per_pattern,), 2),  # T-tetromino (next 32 samples)
-                jnp.full((samples_per_pattern,), 3),  # L-tetromino (last 32 samples)
+                jnp.full((samples_per_pattern,), 1),  # Pattern 1 (first 32 samples)
+                jnp.full((samples_per_pattern,), 2),  # Pattern 2 (next 32 samples)
+                jnp.full((samples_per_pattern,), 3),  # Pattern 3 (last 32 samples)
             ], axis=0)
             
             # DEBUG: Log evaluation dataset info
             logging.info(f"Generated fallback balanced evaluation dataset:")
             logging.info(f"  - Total samples: {self.eval_grids.shape[0]}")
+            logging.info(f"  - Samples per pattern: {samples_per_pattern}")
             logging.info(f"  - Samples per pattern: {samples_per_pattern}")
             logging.info(f"  - Grids shape: {self.eval_grids.shape}")
             logging.info(f"  - Shapes shape: {self.eval_shapes.shape}")
@@ -613,7 +614,7 @@ class StructuredTrainer:
             def loss_fn(full_params, batch_pairs, batch_shapes, rng):
                 # CRITICAL FIX: Use EXPLICIT pattern IDs that are aligned with balanced data
                 # These pattern IDs are guaranteed to match the data ordering:
-                # [O-tetromino x42, T-tetromino x42, L-tetromino x42]
+                # [Pattern 1 x42, Pattern 2 x42, Pattern 3 x42]
                 pattern_ids = batch_pattern_ids  # Use explicit, aligned pattern IDs
                 
                 # Validate pattern distribution
@@ -735,7 +736,7 @@ class StructuredTrainer:
         grids_list = []
         shapes_list = []
         
-        for pattern_id in [1, 2, 3]:  # O-tetromino, T-tetromino, L-tetromino
+        for pattern_id in [1, 2, 3]:  # Pattern 1, Pattern 2, Pattern 3
             # Generate samples_per_pattern samples for this pattern
             # Use make_task_gen_dataloader directly since make_dataset doesn't support STRUCT_PATTERN
             from datasets.task_gen.dataloader import make_task_gen_dataloader
@@ -779,9 +780,9 @@ class StructuredTrainer:
         # CRITICAL FIX: Align pattern generation with pattern IDs
         # Create explicit pattern IDs that match the concatenation order
         pattern_ids = jnp.concatenate([
-            jnp.full((samples_per_pattern,), 1),  # O-tetromino
-            jnp.full((samples_per_pattern,), 2),  # T-tetromino  
-            jnp.full((samples_per_pattern,), 3),  # L-tetromino
+            jnp.full((samples_per_pattern,), 1),  # Pattern 1
+            jnp.full((samples_per_pattern,), 2),  # Pattern 2  
+            jnp.full((samples_per_pattern,), 3),  # Pattern 3
         ], axis=0)
         
         # Concatenate all patterns to create balanced batch
@@ -1369,7 +1370,7 @@ class StructuredTrainer:
 
             # Generate certainty figure for this pattern
             try:
-                pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+                pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
                 
                 # Select a unique sample for each encoder/pattern combination
                 # This ensures different samples are shown for different combinations
@@ -1423,16 +1424,22 @@ class StructuredTrainer:
             all_latents = []
             all_patterns = []
             
+            # Configuration for number of samples and resampling
+            max_total_points = int(self.cfg.eval.get("tsne_max_points", 2304))
+            max_samples_per_pattern = max_total_points // 3
+            num_resamples = 3
+
             for pattern_id, (grids, shapes, pattern_ids) in eval_data.items():
-                # Sample subset for T-SNE (match train.py's 2000 max points approach)
-                max_samples_per_pattern = 667  # 2000/3 patterns = ~667 per pattern
+                # Sample subset for T-SNE
                 if len(grids) > max_samples_per_pattern:
                     indices = np.random.choice(len(grids), max_samples_per_pattern, replace=False)
                     sample_grids = grids[indices]
                     sample_shapes = shapes[indices]
+                    sample_pattern_ids = np.array(pattern_ids)[indices]
                 else:
                     sample_grids, sample_shapes = grids, shapes
-                
+                    sample_pattern_ids = np.array(pattern_ids)
+
                 # Get latents
                 mu, logvar = self.encoders[enc_idx].apply(
                     {"params": encoder_params},
@@ -1441,16 +1448,25 @@ class StructuredTrainer:
                     dropout_eval=False,
                     mutable=False,
                 )
-                
-                all_latents.append(mu)
-                all_patterns.extend([pattern_id] * len(mu))
-            
+
+                # Resample latents multiple times to increase sample count
+                mu_np = np.array(mu)
+                logvar_np = np.array(logvar)
+                std_np = np.exp(0.5 * logvar_np)
+                samples = []
+                for _ in range(num_resamples):
+                    samples.append(mu_np + np.random.randn(*mu_np.shape) * std_np)
+                samples = np.concatenate(samples, axis=0)
+
+                all_latents.append(samples)
+                all_patterns.extend(np.repeat(sample_pattern_ids, num_resamples))
+
             # Concatenate and flatten
-            all_latents = jnp.concatenate(all_latents, axis=0)
+            all_latents = np.concatenate(all_latents, axis=0)
             all_latents_flat = all_latents.reshape(all_latents.shape[0], -1)
-            
+
             # Use visualize_tsne function to match train.py style exactly
-            fig_latents = visualize_tsne(all_latents_flat, np.array(all_patterns))
+            fig_latents = visualize_tsne(jnp.array(all_latents_flat), np.array(all_patterns))
             
             # Log to WandB
             wandb.log({f"encoder_{enc_idx}/tsne_plot": wandb.Image(fig_latents)}, step=global_step)
@@ -2466,9 +2482,9 @@ class StructuredTrainer:
                         # Fallback if dataloader doesn't provide pattern_ids in expected format
                         grids, shapes = batches
                         explicit_pattern_ids = jnp.concatenate([
-                            jnp.full((self.samples_per_pattern_per_batch,), 1),  # O-tetromino
-                            jnp.full((self.samples_per_pattern_per_batch,), 2),  # T-tetromino  
-                            jnp.full((self.samples_per_pattern_per_batch,), 3),  # L-tetromino
+                            jnp.full((self.samples_per_pattern_per_batch,), 1),  # Pattern 1
+                            jnp.full((self.samples_per_pattern_per_batch,), 2),  # Pattern 2  
+                            jnp.full((self.samples_per_pattern_per_batch,), 3),  # Pattern 3
                         ], axis=0)
                         logging.warning(f"⚠️  Task generator dataloader didn't provide 3 elements, using fallback")
                 else:
@@ -2846,9 +2862,9 @@ class StructuredTrainer:
         total_sets = int(pairs_np.shape[0])
         spp = max(1, total_sets // 3)
         pattern_sequence = np.concatenate([
-            np.ones(spp, dtype=int),
-            np.ones(spp, dtype=int) * 2,
-            np.ones(total_sets - 2 * spp, dtype=int) * 3,
+            np.ones(spp, dtype=int),      # Pattern 1 (L-tetromino)
+            np.ones(spp, dtype=int) * 2,  # Pattern 2 (O-tetromino)
+            np.ones(total_sets - 2 * spp, dtype=int) * 3,  # Pattern 3 (T-tetromino)
         ])
         # Determine per-pattern counts (at least 1 from each if possible)
         per_pat = max(1, num_show // 3)
@@ -2898,9 +2914,9 @@ class StructuredTrainer:
         else:
             # Fallback to position-based assumption (should not happen with the fix above)
             pattern_sequence = np.concatenate([
-                np.ones(samples_per_pattern, dtype=int),      # Pattern 1 (O-tetromino)
-                np.ones(samples_per_pattern, dtype=int) * 2,  # Pattern 2 (T-tetromino) 
-                np.ones(samples_per_pattern, dtype=int) * 3   # Pattern 3 (L-tetromino)
+                np.ones(samples_per_pattern, dtype=int),      # Pattern 1 (first 32 samples)
+                np.ones(samples_per_pattern, dtype=int) * 2,  # Pattern 2 (next 32 samples)
+                np.ones(samples_per_pattern, dtype=int) * 3   # Pattern 3 (last 32 samples)
             ])
             logging.warning(f"T-SNE pattern mapping: Using FALLBACK position-based pattern IDs")
         
@@ -2976,8 +2992,10 @@ class StructuredTrainer:
                 logging.info(f"Main eval - Encoder {enc_idx} - final latent shape: {lat_np.shape}")
                 all_latents.append(lat_np)
                 source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
-                pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for each encoder
-                task_ids_list.append(task_id_sequence)  # Same task IDs for each encoder output
+                # CRITICAL FIX: Use the correct pattern sequence length for this encoder's output
+                encoder_pattern_sequence = pattern_sequence[:lat_np.shape[0]]
+                pattern_ids_list.append(encoder_pattern_sequence)  # Pattern sequence matching this encoder's output length
+                task_ids_list.append(task_id_sequence[:lat_np.shape[0]])  # Task IDs matching this encoder's output length
                 
             except Exception as e:
                 logging.error(f"Main eval - Encoder {enc_idx} failed: {e}")
@@ -3011,8 +3029,10 @@ class StructuredTrainer:
                 
                 all_latents.append(context_np)
                 source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for generation context
-                pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for context
-                task_ids_list.append(task_id_sequence)  # Task IDs for context points
+                # CRITICAL FIX: Use the correct pattern sequence length for context output
+                context_pattern_sequence = pattern_sequence[:context_np.shape[0]]
+                pattern_ids_list.append(context_pattern_sequence)  # Pattern sequence matching context output length
+                task_ids_list.append(task_id_sequence[:context_np.shape[0]])  # Task IDs matching context output length
                 logging.info(f"Main eval - Added context to T-SNE: {len(context_np)} points")
         else:
             logging.warning(f"Main eval - No 'context' key found in info. Available keys: {list(info.keys())}")
