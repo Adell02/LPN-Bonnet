@@ -955,9 +955,12 @@ class LPN(nn.Module):
         # CRITICAL FIX: Compute mean latent exactly as GA does, before any processing
         # This ensures both methods start from the exact same point
         ga_style_mean_latent = latents.mean(axis=-2, keepdims=True)  # (*B, 1, H) - same as GA
+        print(f"         🔍 ES using GA-style mean latent: shape={ga_style_mean_latent.shape}, content preview={ga_style_mean_latent.flatten()[:3]}")
+        print(f"         🔍 ES input latents shape: {latents.shape}, content preview={latents.flatten()[:3]}")
         
-        # Process latents for population expansion (but don't use this for mean computation)
-        base = self._prepare_latents_before_search(include_mean_latent, include_all_latents, latents)
+        # CRITICAL: Don't process latents through _prepare_latents_before_search for ES
+        # This ensures we use the exact same latents as GA
+        # We only need the original latents for population expansion, not for mean computation
         
         # Build subspace basis and compute sigma if using subspace mutation
         use_subspace_mutation = kwargs.get("use_subspace_mutation", False)
@@ -967,7 +970,7 @@ class LPN(nn.Module):
         
         if use_subspace_mutation:
             key, basis_key = jax.random.split(key)
-            U = self._make_subspace_basis(base, subspace_dim, basis_key)
+            U = self._make_subspace_basis(latents, subspace_dim, basis_key)  # Use original latents
             # Compute sigma to match GA step length using actual subspace dimension
             actual_subspace_dim = U.shape[-1]
             sigma = self._sigma_for_ga_step(ga_step_length, actual_subspace_dim)
@@ -977,30 +980,26 @@ class LPN(nn.Module):
             sigma = mutation_std
             print(f"         🔬 Standard ES: σ={sigma:.4f}")
         
-        # Cap or fill to population_size
-        C0 = base.shape[-2]
-        if C0 >= population_size:
-            # If we have more than needed, take the first population_size
-            population = base[..., :population_size, :]                       # (*B, C, H)
+        # CRITICAL: Start from mean latent (same as GA) and expand population around it
+        # Use the GA-style mean latent, not any processed version
+        mean_latent = ga_style_mean_latent  # (*B, 1, H) - exactly same as GA
+        print(f"         🎯 ES starting from mean latent (same as GA)")
+        
+        # Expand population around the mean latent
+        need = population_size - 1  # We only need to add (population_size - 1) since we start from mean
+        key, nk = jax.random.split(key)
+        if use_subspace_mutation and U is not None:
+            # Use subspace mutation for initial population expansion
+            actual_subspace_dim = U.shape[-1]  # Get actual subspace dimension from U
+            noise = jax.random.normal(nk, (*latents.shape[:-2], need, actual_subspace_dim))  # Use original latents shape
+            step = jnp.einsum('...nm,...hm->...nh', noise, jnp.swapaxes(U, -2, -1))
+            # Start from mean, add noise around it
+            population = jnp.concatenate([mean_latent, mean_latent + sigma * step], axis=-2)
         else:
-            # Start from mean latent (same as GA) and expand population around it
-            # CRITICAL: Use the GA-style mean latent, not the processed base mean
-            mean_latent = ga_style_mean_latent  # (*B, 1, H) - exactly same as GA
-            print(f"         🎯 ES starting from mean latent (same as GA)")
-            need = population_size - 1  # We only need to add (population_size - 1) since we start from mean
-            key, nk = jax.random.split(key)
-            if use_subspace_mutation and U is not None:
-                # Use subspace mutation for initial population expansion
-                actual_subspace_dim = U.shape[-1]  # Get actual subspace dimension from U
-                noise = jax.random.normal(nk, (*base.shape[:-2], need, actual_subspace_dim))
-                step = jnp.einsum('...nm,...hm->...nh', noise, jnp.swapaxes(U, -2, -1))
-                # Start from mean, add noise around it
-                population = jnp.concatenate([mean_latent, mean_latent + sigma * step], axis=-2)
-            else:
-                # Standard isotropic noise
-                noise = jax.random.normal(nk, (*base.shape[:-2], need, base.shape[-1]))
-                # Start from mean, add noise around it
-                population = jnp.concatenate([mean_latent, mean_latent + sigma * noise], axis=-2)
+            # Standard isotropic noise
+            noise = jax.random.normal(nk, (*latents.shape[:-2], need, latents.shape[-1]))  # Use original latents shape
+            # Start from mean, add noise around it
+            population = jnp.concatenate([mean_latent, mean_latent + sigma * noise], axis=-2)
 
         # Optional tracking of per-generation progress
         if track_progress:
@@ -1017,7 +1016,8 @@ class LPN(nn.Module):
         # ----- Evaluate initial population (generation 0) - this is the same starting point as GA -----
         if track_progress:
             # FIRST: Evaluate the original mean latent (same as GA) - this is generation 0
-            mean_latent = base.mean(axis=-2, keepdims=True)  # (*B, 1, H)
+            # CRITICAL: Use the GA-style mean latent for consistency
+            mean_latent = ga_style_mean_latent  # (*B, 1, H) - exactly same as GA
             mean_losses = _eval_candidates(mean_latent)  # Just the mean latent
             mean_fitness = -mean_losses.mean(axis=-2) if mean_losses.ndim >= 3 else -mean_losses
             
@@ -1411,6 +1411,8 @@ class LPN(nn.Module):
         
         if include_mean_latent:
             mean_latent = latents.mean(axis=-2, keepdims=True)
+            print(f"         🔍 GA computing mean latent: shape={mean_latent.shape}, content preview={mean_latent.flatten()[:3]}")
+            print(f"         🔍 GA input latents shape: {latents.shape}, content preview={latents.flatten()[:3]}")
             if include_all_latents:
                 # Include the mean latent in the latents from which to start the search.
                 prep_latents = jnp.concatenate([mean_latent, latents], axis=-2)
