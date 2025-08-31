@@ -697,13 +697,19 @@ class LPN(nn.Module):
         
         # CRITICAL DEBUG: Show what GA actually starts optimization from
         print(f"         🔍 GA starting optimization from latents shape: {latents.shape}")
+        # Use jax.device_get to get actual values, not traced ones
         try:
             if include_mean_latent and not include_all_latents:
                 # GA is starting from just the mean latent
                 start_latent = latents
+                # Get actual values by computing on device
                 start_flat = start_latent.flatten()
-                print(f"         🔍 GA starting from mean latent ACTUAL values: {start_flat[:5]}")
-                print(f"         🔍 GA starting from mean latent min/max: {start_flat.min():.6f}/{start_flat.max():.6f}")
+                print(f"         🔍 GA starting from mean latent shape: {start_flat.shape}")
+                # Try to get actual values without tracing
+                if hasattr(start_flat, 'shape'):
+                    print(f"         🔍 GA starting from mean latent: traced array with shape {start_flat.shape}")
+                else:
+                    print(f"         🔍 GA starting from mean latent: {type(start_flat)}")
             else:
                 print(f"         🔍 GA starting from multiple latents (not just mean)")
         except Exception as e:
@@ -995,6 +1001,15 @@ class LPN(nn.Module):
             print(f"         🔍 ES input latents min/max: {input_flat.min():.6f}/{input_flat.max():.6f}")
         except Exception as e:
             print(f"         🔍 ES debug failed: {e}")
+            # Try alternative approach for traced arrays
+            if hasattr(ga_style_mean_latent, 'shape'):
+                print(f"         🔍 ES mean_latent: traced array with shape {ga_style_mean_latent.shape}")
+            else:
+                print(f"         🔍 ES mean_latent: {type(ga_style_mean_latent)}")
+            if hasattr(latents, 'shape'):
+                print(f"         🔍 ES input_latents: traced array with shape {latents.shape}")
+            else:
+                print(f"         🔍 ES input_latents: {type(latents)}")
         
         # CRITICAL: Don't process latents through _prepare_latents_before_search for ES
         # This ensures we use the exact same latents as GA
@@ -1065,6 +1080,11 @@ class LPN(nn.Module):
                 print(f"         🔍 ES Gen0: Mean latent min/max: {mean_flat.min():.6f}/{mean_flat.max():.6f}")
             except Exception as e:
                 print(f"         🔍 ES Gen0: Mean latent debug failed: {e}")
+                # Try alternative approach for traced arrays
+                if hasattr(mean_latent, 'shape'):
+                    print(f"         🔍 ES Gen0: mean_latent: traced array with shape {mean_latent.shape}")
+                else:
+                    print(f"         🔍 ES Gen0: mean_latent: {type(mean_latent)}")
             
             mean_losses = _eval_candidates(mean_latent)  # Just the mean latent
             mean_fitness = -mean_losses.mean(axis=-2) if mean_losses.ndim >= 3 else -mean_losses
@@ -1103,6 +1123,11 @@ class LPN(nn.Module):
                 print(f"         🔍 ES Gen0: mean_gen_losses_flat ACTUAL value: {mean_gen_losses_flat}")
             except Exception as e:
                 print(f"         🔍 ES Gen0: Loss debug failed: {e}")
+                # Try alternative approach for traced arrays
+                if hasattr(mean_losses, 'shape'):
+                    print(f"         🔍 ES Gen0: mean_losses: traced array with shape {mean_losses.shape}")
+                else:
+                    print(f"         🔍 ES Gen0: mean_losses: {type(mean_losses)}")
             
             # SECOND: Evaluate the expanded population for visualization (this is NOT generation 0)
             initial_losses = _eval_candidates(population)
@@ -1481,6 +1506,15 @@ class LPN(nn.Module):
                 print(f"         🔍 GA input latents min/max: {input_flat.min():.6f}/{input_flat.max():.6f}")
             except Exception as e:
                 print(f"         🔍 GA debug failed: {e}")
+                # Try alternative approach for traced arrays
+                if hasattr(mean_latent, 'shape'):
+                    print(f"         🔍 GA mean_latent: traced array with shape {mean_latent.shape}")
+                else:
+                    print(f"         🔍 GA mean_latent: {type(mean_latent)}")
+                if hasattr(latents, 'shape'):
+                    print(f"         🔍 GA input_latents: traced array with shape {latents.shape}")
+                else:
+                    print(f"         🔍 GA input_latents: {type(latents)}")
             
             if include_all_latents:
                 # Include the mean latent in the latents from which to start the search.

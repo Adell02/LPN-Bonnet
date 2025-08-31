@@ -1439,6 +1439,9 @@ class StructuredTrainer:
                 
                 total_loss = contrastive_loss + reg_loss + repulsion_loss
                 
+                # Define contrastive coefficient for logging (from config)
+                contrastive_coeff = self.cfg.training.get("contrastive_kl", 0.1)
+                
                 # FIXED: Compute gradients properly for contrastive learning INCLUDING repulsion loss
                 def contrastive_loss_fn(params):
                     # Forward pass through encoder
@@ -1454,9 +1457,7 @@ class StructuredTrainer:
                     avg_target_var = jnp.mean(target_var)
                     avg_other_var = jnp.mean(other_var)
                     
-                    # Use fixed contrastive coefficient (no dynamic adjustment)
-                    contrastive_coeff = self.cfg.training.get("contrastive_kl", 0.1)  # Fixed coefficient
-                    
+                    # Use the contrastive coefficient defined in outer scope
                     contrastive_loss = avg_target_var - contrastive_coeff * avg_other_var
                     
                     # Add regularization
