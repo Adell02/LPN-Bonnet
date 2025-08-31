@@ -304,6 +304,7 @@ def _collapse_to_steps(arr: np.ndarray, steps_len: int) -> np.ndarray:
     """
     Collapse GA latents to one point per step by averaging over non-step axes.
     This ensures T matches loss length for proper pairing.
+    CRITICAL FIX: Preserve the initial mean latent by not averaging over context dimension.
     """
     arr = np.asarray(arr)
     if arr.ndim < 2:
@@ -326,14 +327,36 @@ def _collapse_to_steps(arr: np.ndarray, steps_len: int) -> np.ndarray:
     arr = np.transpose(arr, order)
     print(f"[_collapse_to_steps] After transpose: {arr.shape}")
     
-    # Now average over all leading axes except T and D
+    # CRITICAL FIX: Don't average over the context dimension (usually size 1)
+    # This preserves the initial mean latent and shows the full trajectory
+    # Only average over batch dimensions, not over the context dimension
     lead_axes = tuple(range(arr.ndim - 2))
     if lead_axes:
-        print(f"[_collapse_to_steps] Averaging over axes: {lead_axes}")
-        arr = arr.mean(axis=lead_axes)
+        # Check if we have a context dimension (usually size 1)
+        context_axis = None
+        for i in lead_axes:
+            if arr.shape[i] == 1:  # This is likely the context dimension
+                context_axis = i
+                break
+        
+        if context_axis is not None:
+            # Remove context axis from averaging
+            lead_axes = tuple(i for i in lead_axes if i != context_axis)
+            print(f"[_collapse_to_steps] Preserving context dimension, averaging over axes: {lead_axes}")
+        else:
+            print(f"[_collapse_to_steps] No context dimension found, averaging over axes: {lead_axes}")
+        
+        if lead_axes:
+            arr = arr.mean(axis=lead_axes)
     
-    # arr is now (T, D)
+    # arr is now (T, D) or (C, T, D) where C is context dimension
     print(f"[_collapse_to_steps] Final shape: {arr.shape}")
+    
+    # If we still have context dimension, squeeze it to get (T, D)
+    if arr.ndim == 3 and arr.shape[0] == 1:
+        arr = arr.squeeze(0)
+        print(f"[_collapse_to_steps] Squeezed context dimension, final shape: {arr.shape}")
+    
     return arr
 
 
@@ -1007,7 +1030,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
 
     # figure
     fig, ax = plt.subplots(1, 1, figsize=(16, 14))
-    title = f"Latent search: GA and ES (Z_dim = {original_dim})"
+    title = f"Latent Search Trajectories: GA and ES (Z_dim = {original_dim})\nBoth methods start from mean latent"
     ax.set_title(title, fontsize=20, fontweight='bold')
     ax.set_xlabel("z1", fontsize=16); ax.set_ylabel("z2", fontsize=16)
     ax.set_aspect("equal")  # With whitened PCA, this will look balanced
@@ -1145,12 +1168,35 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             # Flatten ES selected path for plotting: (1, G, 2) -> (G, 2)
             es_sel_flat = es_sel.reshape(-1, 2)
             print(f"[plot] Plotting ES trajectory: {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
-            _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES selected", alpha=1.0)
+            
+            # CRITICAL FIX: Highlight generation 0 as the starting point (mean latent)
+            # Plot the full trajectory including generation 0
+            _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
+            
+            # Add special marker for generation 0 (starting point - mean latent)
+            if es_sel_flat.shape[0] > 0:
+                start_point = es_sel_flat[0]  # Generation 0 = mean latent
+                ax.scatter([start_point[0]], [start_point[1]], s=300, marker="*", 
+                          color="#FFD700", edgecolors="black", linewidths=2.0,
+                          zorder=7, alpha=1.0, label="ES start (mean latent)")
+                print(f"[plot] ES starting point (generation 0) highlighted at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
+                
         elif es_sel.ndim == 2 and es_sel.shape[0] > 1:
             # Already flattened: (G, 2)
             es_sel_flat = es_sel
             print(f"[plot] Plotting ES trajectory (already flat): {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
-            _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES selected", alpha=1.0)
+            
+            # CRITICAL FIX: Highlight generation 0 as the starting point
+            _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
+            
+            # Add special marker for generation 0 (starting point - mean latent)
+            if es_sel_flat.shape[0] > 0:
+                start_point = es_sel_flat[0]  # Generation 0 = mean latent
+                ax.scatter([start_point[0]], [start_point[1]], s=300, marker="*", 
+                          color="#FFD700", edgecolors="black", linewidths=2.0,
+                          zorder=7, alpha=1.0, label="ES start (mean latent)")
+                print(f"[plot] ES starting point (generation 0) highlighted at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
+                
         else:
             print(f"[plot] ES trajectory plotting skipped: es_sel shape={es_sel.shape}, not enough generations")
             
@@ -1160,7 +1206,14 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 es_fallback = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])
                 if es_fallback.shape[0] > 1:
                     print(f"[plot] ES fallback plotting: {es_fallback.shape}")
-                    _plot_traj(ax, es_fallback, color="#DB74DB", label="ES selected (fallback)", alpha=1.0)
+                    _plot_traj(ax, es_fallback, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
+                    
+                    # Highlight starting point even in fallback
+                    if es_fallback.shape[0] > 0:
+                        start_point = es_fallback[0]
+                        ax.scatter([start_point[0]], [start_point[1]], s=300, marker="*", 
+                                  color="#FFD700", edgecolors="black", linewidths=2.0,
+                                  zorder=7, alpha=1.0, label="ES start (mean latent)")
                 else:
                     print(f"[plot] ES fallback failed: not enough points ({es_fallback.shape[0]})")
             else:
@@ -1173,7 +1226,17 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         # Flatten GA path for plotting
         ga_pts_flat = ga.pts.reshape(-1, 2)
         print(f"[plot] Plotting GA trajectory: {ga_pts_flat.shape}, range: x[{ga_pts_flat[:, 0].min():.3f}, {ga_pts_flat[:, 0].max():.3f}], y[{ga_pts_flat[:, 1].min():.3f}, {ga_pts_flat[:, 1].max():.3f}]")
-        _plot_traj(ax, ga_pts_flat, color="#FBB998", label="GA path", alpha=1.0)
+        
+        # CRITICAL FIX: Highlight that GA starts from mean latent
+        _plot_traj(ax, ga_pts_flat, color="#FBB998", label="GA trajectory (starts from mean latent)", alpha=1.0)
+        
+        # Add special marker for GA starting point (mean latent)
+        if ga_pts_flat.shape[0] > 0:
+            start_point = ga_pts_flat[0]  # First step = mean latent
+            ax.scatter([start_point[0]], [start_point[1]], s=300, marker="*", 
+                      color="#FFD700", edgecolors="black", linewidths=2.0,
+                      zorder=7, alpha=1.0, label="GA start (mean latent)")
+            print(f"[plot] GA starting point (mean latent) highlighted at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
     else:
         print(f"[plot] GA plotting skipped: pts={ga.pts is not None}, len={len(ga.pts) if ga.pts is not None else 0}")
 
@@ -1191,14 +1254,18 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                                        markersize=18, alpha=0.3, label='ES generation clusters'))
     
     # Trajectory paths
-    legend_elements.append(plt.Line2D([0], [0], color='#DB74DB', linewidth=5, label='ES selected path'))
-    legend_elements.append(plt.Line2D([0], [0], color='#FBB998', linewidth=5, label='GA path'))
+    legend_elements.append(plt.Line2D([0], [0], color='#DB74DB', linewidth=5, label='ES trajectory (starts from mean latent)'))
+    legend_elements.append(plt.Line2D([0], [0], color='#FBB998', linewidth=5, label='GA trajectory (starts from mean latent)'))
     
-    # Start/End markers
+    # Starting points (mean latent) - both methods start here
+    legend_elements.append(plt.Line2D([0], [0], marker='*', color='#FFD700', markerfacecolor='#FFD700', 
+                                     markersize=20, markeredgewidth=2, label='Starting point (mean latent)'))
+    
+    # Start/End markers for trajectory progression
     legend_elements.append(plt.Line2D([0], [0], marker='o', color='k', markerfacecolor='w', 
-                                     markersize=15, markeredgewidth=2, label='Start point'))
+                                     markersize=15, markeredgewidth=2, label='Trajectory start'))
     legend_elements.append(plt.Line2D([0], [0], marker='s', color='k', markerfacecolor='w', 
-                                     markersize=15, markeredgewidth=2, label='End point'))
+                                     markersize=15, markeredgewidth=2, label='Trajectory end'))
     
     ax.legend(handles=legend_elements, loc="upper right", frameon=True, fontsize=14)
     plt.tight_layout()

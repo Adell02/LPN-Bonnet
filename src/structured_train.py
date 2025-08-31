@@ -1219,18 +1219,18 @@ class StructuredTrainer:
             
             # Compute proper contrastive loss for encoder specialization
             # Pattern enc_idx+1 should have low variance, others should have high variance
-            target_pattern = enc_idx + 1
+            current_target_pattern = enc_idx + 1
             pattern_ids = batch[2]  # (batch_size,)
             
             # Debug: Log pattern distribution in this batch
             if step % 50 == 0:  # Log every 50 steps to avoid spam
-                target_count = jnp.sum(pattern_ids == target_pattern)
+                target_count = jnp.sum(pattern_ids == current_target_pattern)
                 other_count = len(pattern_ids) - target_count
                 unique_patterns = jnp.unique(pattern_ids)
-                logging.info(f"       Batch pattern distribution: Target {target_pattern}: {target_count}, Others: {other_count}, Unique: {unique_patterns}")
+                logging.info(f"       Batch pattern distribution: Target {current_target_pattern}: {target_count}, Others: {other_count}, Unique: {unique_patterns}")
             
             # Separate samples by pattern
-            target_mask = (pattern_ids == target_pattern)
+            target_mask = (pattern_ids == current_target_pattern)
             other_mask = ~target_mask
             
             if jnp.any(target_mask) and jnp.any(other_mask):
@@ -1374,7 +1374,7 @@ class StructuredTrainer:
                         
                         # Additional encoder metrics for comprehensive monitoring
                         f"encoder_{enc_idx}/training_step": step,
-                        f"encoder_{enc_idx}/target_pattern": target_pattern,
+                        f"encoder_{enc_idx}/target_pattern": current_target_pattern,
                         f"encoder_{enc_idx}/batch_size": len(batch[0]),
                         f"encoder_{enc_idx}/target_samples_count": int(jnp.sum(target_mask)),
                         f"encoder_{enc_idx}/other_samples_count": int(jnp.sum(other_mask)),
@@ -1418,7 +1418,7 @@ class StructuredTrainer:
                 except Exception as e:
                     logging.warning(f"     Phase A T-SNE generation failed at step {step}: {e}")
         
-        return state.params["encoders"][0]  # Return trained encoder params
+        return state.params["encoders"][enc_idx]  # Return trained encoder params
     
     def _evaluate_specialized_encoder(self, enc_idx: int, encoder_params: dict, state: TrainState, global_step: int):
         """
