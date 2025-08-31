@@ -1121,25 +1121,26 @@ class StructuredTrainer:
         for enc_idx, enc_params in enumerate(enc_params_list):
             logging.info(f"🔓 Specializing Encoder {enc_idx}...")
             
-            # Create individual model with this encoder + original decoder
-            individual_model = StructuredLPN(
-                encoders=(self.encoders[enc_idx],),  # Single encoder
+            # Create a temporary model with only the encoder we want to train
+            # This ensures the model structure is correct
+            temp_model = StructuredLPN(
+                encoders=(self.encoders[enc_idx],),  # Single encoder object
                 decoder=self.decoder
             )
             
             # Create individual training state
             individual_state = TrainState.create(
-                apply_fn=individual_model.apply,
+                apply_fn=temp_model.apply,
                 tx=optax.adamw(self.cfg.training.learning_rate),
                 params={
-                    "encoders": (enc_params,),
+                    "encoders": (enc_params,),  # Only this encoder's parameters
                     "decoder": self.original_decoder_params
                 }
             )
             
             # Train this encoder on complementary data
             specialized_encoder = self._train_encoder_individually(
-                enc_idx, individual_state, individual_model
+                enc_idx, individual_state, temp_model
             )
             
             specialized_encoders.append(specialized_encoder)

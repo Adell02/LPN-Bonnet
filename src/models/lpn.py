@@ -1028,6 +1028,8 @@ class LPN(nn.Module):
             gen_fitnesses.append(mean_gen_losses_flat)  # Mean latent loss at generation 0
             
             print(f"         🎯 Generation 0 (mean latent): fitness = {mean_fitness_flat}, loss = {mean_gen_losses_flat}")
+            print(f"         🔍 Debug Gen0: mean_fitness_flat.shape = {mean_fitness_flat.shape}, mean_gen_losses_flat.shape = {mean_gen_losses_flat.shape}")
+            print(f"         🔍 Debug Gen0: mean_latent.shape = {mean_latent.shape}")
             
             # SECOND: Evaluate the expanded population for visualization (this is NOT generation 0)
             initial_losses = _eval_candidates(population)
@@ -1074,8 +1076,8 @@ class LPN(nn.Module):
                 ).squeeze(axis=-2)                                    # (*B, H)
                 
                 gen_best_latents.append(best_lat)
-                # Store full population and losses for this generation (representative per batch)
-                # Ensure consistent shape by always taking first pair if 4D, or using as-is if 3D
+                # Store full population for visualization (separate from trajectory tracking)
+                # This is for background heatmap visualization, not for trajectory stacking
                 if rep.ndim == 4:
                     # If 4D, take first pair to ensure consistent shape across generations
                     gen_populations.append(rep[..., 0, :, :])  # (*B, C, H)
@@ -1089,6 +1091,9 @@ class LPN(nn.Module):
                     gen_losses, best_idx[..., None], axis=-1
                 ).squeeze(axis=-1)  # (*B,) - only the best loss this generation
                 gen_fitnesses.append(best_loss_this_gen)
+                
+                # Debug: Print shapes for this generation
+                print(f"         🔍 Debug Gen{gen_idx + 1}: best_lat.shape = {best_lat.shape}, best_loss_this_gen.shape = {best_loss_this_gen.shape}")
 
             # Select top half per batch (ensure at least 1 survivor)
             num_survivors = max(1, population_size // 2)
@@ -1242,10 +1247,17 @@ class LPN(nn.Module):
             # Stack as (*B, G, H) for latents and (*B, G) for metrics
             # Note: Generation 0 is the mean latent evaluation (budget 0, same as GA), then generations 1, 2, 3, ...
             # This matches GA's structure: [mean_latent, step1_latent, step2_latent, ...]
+            
+            # Debug: Check shapes of all arrays before stacking
+            print(f"         🔍 Debug: gen_bests shapes: {[b.shape for b in gen_bests]}")
+            print(f"         🔍 Debug: gen_best_latents shapes: {[l.shape for l in gen_best_latents]}")
+            print(f"         🔍 Debug: gen_fitnesses shapes: {[f.shape for f in gen_fitnesses]}")
+            
             try:
                 gen_best_latents_arr = jnp.stack(gen_best_latents, axis=-2) if len(gen_best_latents) > 0 else None
             except ValueError as e:
                 print(f"         ⚠️  Failed to stack best latents: {e}")
+                print(f"         🔍 gen_best_latents shapes: {[l.shape for l in gen_best_latents]}")
                 gen_best_latents_arr = None
             
             traj = {
