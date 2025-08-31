@@ -1764,7 +1764,7 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                         arr = np.array(f[key]).reshape(-1)
                         if arr.size > 0:
                             ga_metrics[wandb_key] = arr
-                            print(f"[stats] GA {wandb_key}: shape={arr.shape}, mean={arr.mean():.4f}, std={arr.std():.4f}")
+                            print(f"[stats] GA {wandb_key}: shape={arr.shape}, mean={float(arr.mean()):.4f}, std={float(arr.std()):.4f}")
                         else:
                             print(f"[stats] GA {wandb_key}: empty array")
                     else:
@@ -1777,7 +1777,7 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                         # Take the minimum loss (best performance) for each sample
                         ga_best_losses = np.min(ga_losses_per_sample, axis=1)
                         ga_metrics['best_loss'] = ga_best_losses
-                        print(f"[stats] GA best_loss: shape={ga_best_losses.shape}, mean={ga_best_losses.mean():.4f}, std={ga_best_losses.std():.4f}")
+                        print(f"[stats] GA best_loss: shape={ga_best_losses.shape}, mean={float(ga_best_losses.mean()):.4f}, std={float(ga_best_losses.std()):.4f}")
                     else:
                         print(f"[stats] GA best_loss: empty array")
                 else:
@@ -1802,7 +1802,7 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                         arr = np.array(f[key]).reshape(-1)
                         if arr.size > 0:
                             es_metrics[wandb_key] = arr
-                            print(f"[stats] ES {wandb_key}: shape={arr.shape}, mean={arr.mean():.4f}, std={arr.std():.4f}")
+                            print(f"[stats] ES {wandb_key}: shape={arr.shape}, mean={float(arr.mean()):.4f}, std={float(arr.std()):.4f}")
                         else:
                             print(f"[stats] ES {wandb_key}: empty array")
                     else:
@@ -1815,7 +1815,7 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                         # Take the minimum loss (best performance) for each sample
                         es_best_losses = np.min(es_losses_per_sample, axis=1)
                         es_metrics['best_loss'] = es_best_losses
-                        print(f"[stats] ES best_loss: shape={es_best_losses.shape}, mean={es_best_losses.mean():.4f}, std={es_best_losses.std():.4f}")
+                        print(f"[stats] ES best_loss: shape={es_best_losses.shape}, mean={float(es_best_losses.mean()):.4f}, std={float(es_best_losses.std()):.4f}")
                     else:
                         print(f"[stats] ES best_loss: empty array")
                 else:

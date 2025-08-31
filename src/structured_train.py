@@ -1101,8 +1101,15 @@ class StructuredTrainer:
             
             # Store target latents from this encoder for future repulsion
             if repulsion_kl > 0:
-                target_latents_store[enc_idx] = self._extract_target_latents(enc_idx, specialized_encoder, individual_state)
-                logging.info(f"   📦 Stored target latents for Encoder {enc_idx} (will be used for repulsion)")
+                logging.info(f"   📦 Extracting target latents for Encoder {enc_idx}...")
+                extracted_targets = self._extract_target_latents(enc_idx, specialized_encoder, individual_state)
+                target_latents_store[enc_idx] = extracted_targets
+                logging.info(f"   📦 Stored target latents for Encoder {enc_idx}: {list(extracted_targets.keys())}")
+                for pattern_id, target_lat in extracted_targets.items():
+                    if target_lat is not None:
+                        logging.info(f"     Pattern {pattern_id}: {target_lat.shape}")
+                    else:
+                        logging.warning(f"     Pattern {pattern_id}: None")
             
             # Evaluate the specialized encoder and create visualizations
             logging.info(f"   Evaluating specialized Encoder {enc_idx}...")
@@ -1246,6 +1253,9 @@ class StructuredTrainer:
                 # Add repulsion loss to push away from previous encoders' latent targets
                 repulsion_loss = 0.0
                 if target_latents_store and self.cfg.training.get("repulsion_kl", 0) > 0:
+                    logging.info(f"       🔍 Computing repulsion loss for Encoder {enc_idx}...")
+                    logging.info(f"       📦 target_latents_store keys: {list(target_latents_store.keys())}")
+                    
                     # Compute repulsion from previous encoders' targets
                     repulsion_loss = self._compute_repulsion_loss(
                         current_latents=mu.mean(axis=-2),  # Use mean over pairs
@@ -1260,6 +1270,12 @@ class StructuredTrainer:
                     
                     if step % 50 == 0:
                         logging.info(f"       Repulsion Loss: {float(repulsion_loss):.6f} (λ={repulsion_coeff})")
+                else:
+                    if step % 50 == 0:
+                        if not target_latents_store:
+                            logging.info(f"       🚫 Repulsion Loss: 0.000000 (target_latents_store is empty)")
+                        else:
+                            logging.info(f"       🚫 Repulsion Loss: 0.000000 (repulsion_kl={self.cfg.training.get('repulsion_kl', 0)})")
                 
                 total_loss = contrastive_loss + reg_loss + repulsion_loss
                 
@@ -2614,11 +2630,15 @@ class StructuredTrainer:
         import numpy as np
         import random
         
+        # DEBUG: Log method entry
+        logging.info(f"      🔍 _create_pattern_dataset called for pattern_id={pattern_id}, num_samples={num_samples}")
+        
         # Set random seed for reproducibility
         random.seed(self.cfg.training.seed + pattern_id)
         
         # Get number of pairs from config
         num_pairs = self.task_generator_kwargs["num_pairs"]
+        logging.info(f"      📊 Using num_pairs={num_pairs} from task_generator_kwargs")
         
         # Define clean tetromino patterns (1-based indexing to match our system)
         pattern_definitions = {
@@ -2680,7 +2700,15 @@ class StructuredTrainer:
                 shapes[sample_idx, pair_idx, 1] = [5, 5]  # [output_rows, output_cols]
         
         logging.info(f"      Generated {num_samples} samples: {grids.shape}, {shapes.shape}")
-        return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
+        
+        # DEBUG: Convert to JAX arrays and log
+        jax_grids = jnp.array(grids)
+        jax_shapes = jnp.array(shapes)
+        jax_pattern_ids = jnp.array(pattern_ids)
+        
+        logging.info(f"      ✅ Converted to JAX arrays: grids={jax_grids.shape}, shapes={jax_shapes.shape}, pattern_ids={jax_pattern_ids.shape}")
+        
+        return jax_grids, jax_shapes, jax_pattern_ids
     
     def _create_single_pattern_sample(self, pattern_id: int) -> tuple:
         """
@@ -2759,8 +2787,14 @@ class StructuredTrainer:
         Returns:
             Repulsion loss value
         """
+        # DEBUG: Log method entry and parameters
+        logging.info(f"🔍 _compute_repulsion_loss called for Encoder {current_encoder_idx}")
+        logging.info(f"   target_latents_store keys: {list(target_latents_store.keys())}")
+        logging.info(f"   current_latents shape: {current_latents.shape}")
+        
         if not target_latents_store or current_encoder_idx == 0:
             # No previous encoders to repulse from
+            logging.info(f"   🚫 No repulsion: target_latents_store empty or current_encoder_idx=0")
             return 0.0
         
         repulsion_loss = 0.0
@@ -2768,11 +2802,14 @@ class StructuredTrainer:
         
         # Iterate through all previous encoders
         for prev_enc_idx in range(current_encoder_idx):
+            logging.info(f"   🔍 Checking previous encoder {prev_enc_idx}...")
             if prev_enc_idx in target_latents_store:
                 prev_targets = target_latents_store[prev_enc_idx]
+                logging.info(f"   📦 Found targets for encoder {prev_enc_idx}: {list(prev_targets.keys())}")
                 
                 # For each pattern, compute repulsion from previous encoder's targets
                 for pattern_id, target_latents in prev_targets.items():
+                    logging.info(f"   🎯 Pattern {pattern_id}: target_latents type={type(target_latents)}, len={len(target_latents) if target_latents is not None else 'None'}")
                     if target_latents is not None and len(target_latents) > 0:
                         # Ensure target latents have the same batch size
                         # Compute pairwise L2 distances between current and stored latents
@@ -2786,10 +2823,18 @@ class StructuredTrainer:
                         repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
                         repulsion_loss += repulsion_term
                         num_repulsion_terms += 1
+                        logging.info(f"   ✅ Pattern {pattern_id}: repulsion_term={float(repulsion_term):.6f}")
+                    else:
+                        logging.warning(f"   ⚠️ Pattern {pattern_id}: target_latents is None or empty")
+            else:
+                logging.info(f"   ❌ No targets found for encoder {prev_enc_idx}")
         
         # Average over all repulsion terms
         if num_repulsion_terms > 0:
             repulsion_loss = repulsion_loss / num_repulsion_terms
+            logging.info(f"   🎯 Final repulsion loss: {float(repulsion_loss):.6f} (from {num_repulsion_terms} terms)")
+        else:
+            logging.warning(f"   ⚠️ No valid repulsion terms found!")
         
         return repulsion_loss
     

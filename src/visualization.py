@@ -840,3 +840,134 @@ def visualize_struct_confidence_panel(
     fig.suptitle(title, fontsize=14, fontweight='bold')
     return fig
 
+
+def visualize_phase2_certainty_panel(
+    sample_grids: chex.Array,
+    sample_shapes: chex.Array,
+    encoder_mus: list[chex.Array],
+    encoder_logvars: list[chex.Array],
+    poe_mu: chex.Array | None = None,
+    poe_logvar: chex.Array | None = None,
+    title: str = "Phase 2 Certainty Panel",
+    encoder_labels: list[str] | None = None,
+    encoder_indices: list[int] | None = None,
+    pattern_id: int | None = None,  # Pattern ID for filtering
+    pattern_name: str | None = None,  # Pattern name for display
+) -> plt.Figure:
+    """
+    Phase 2 Certainty Panel with:
+    - Top: the struct (input-output pairs) for one task
+    - Bottom: histogram of latent variances for ALL encoders in the same figure
+    
+    This function computes variance for all encoders and plots histograms in the same figure
+    to show encoder specialization and uncertainty across all patterns.
+
+    Args:
+        sample_grids: [N, R, C, 2] for a single task (pairs)
+        sample_shapes: [N, 2, 2] shapes for that task
+        encoder_mus: list of [N, D] means per encoder (aggregated over pair dim if needed)
+        encoder_logvars: list of [N, D] logvars per encoder (same shape as mus)
+        poe_mu: [N, D] PoE mean (optional)
+        poe_logvar: [N, D] PoE logvar (optional)
+        encoder_labels: optional labels for legend order
+        encoder_indices: optional list mapping each encoder to a global index for color coding
+        pattern_id: Pattern ID (1, 2, 3) for filtering variances
+        pattern_name: Pattern name (O-tetromino, T-tetromino, L-tetromino) for display
+    """
+    import numpy as _np
+    num_pairs = int(sample_grids.shape[0])
+
+    # Use constrained_layout to avoid tight_layout warnings with arbitrary num_pairs
+    fig = plt.figure(figsize=(18, 10), constrained_layout=True)  # Increased width to accommodate note
+    
+    # CRITICAL: Update title to show pattern-specific information
+    if pattern_id is not None and pattern_name is not None:
+        title = f"{title} - Pattern {pattern_id} ({pattern_name})"
+    fig.suptitle(title, fontsize=16, fontweight='bold')
+    
+    # Grid: 3 rows, C columns (C >= num_pairs)
+    cols = max(num_pairs, 3)
+    gs = fig.add_gridspec(3, cols, height_ratios=[1, 1, 1])
+    
+    # Create a nested grid for the top two rows: 2 x num_pairs
+    top = gs[0:2, 0:num_pairs].subgridspec(2, num_pairs)
+    for i in range(num_pairs):
+        ax_in = fig.add_subplot(top[0, i])
+        display_grid(ax_in, _np.array(sample_grids[i, :, :, 0]), _np.array(sample_shapes[i, :, 0]))
+        if i == 0:
+            ax_in.set_title("Input")
+        ax_out = fig.add_subplot(top[1, i])
+        display_grid(ax_out, _np.array(sample_grids[i, :, :, 1]), _np.array(sample_shapes[i, :, 1]))
+        if i == 0:
+            ax_out.set_title("Output")
+
+    # Bottom: histogram of variances for ALL encoders in the same figure
+    ax_vars = fig.add_subplot(gs[2, :])  # Span all columns for better visibility
+
+    # Colors for encoders (matching visualize_tsne_sources)
+    base_colors = ['#FBB998', '#DB74DB', '#5361E5', '#2ca02c']  # Orange, Pink, Blue, Green
+
+    if encoder_labels is None:
+        encoder_labels = [f"Encoder {i}" for i in range(len(encoder_mus))]
+    if encoder_indices is None:
+        encoder_indices = list(range(len(encoder_mus)))
+    enc_colors = [base_colors[i % len(base_colors)] for i in encoder_indices]
+
+    # Compute variances for all encoders
+    encoder_vars = []
+    mean_vars = []
+    for logvar in encoder_logvars:
+        var_flat = _np.exp(_np.asarray(logvar).reshape(-1))
+        encoder_vars.append(var_flat)
+        mean_vars.append(float(_np.mean(var_flat)))
+
+    # Determine which encoder is most confident based on mean variance
+    most_confident_idx = int(_np.argmin(mean_vars))
+
+    # Plot PoE distribution FIRST (at the back) if available
+    if poe_mu is not None and poe_logvar is not None:
+        poe_var_flat = _np.exp(_np.asarray(poe_logvar).reshape(-1))
+        ax_vars.hist(poe_var_flat, bins=30, histtype='step', linewidth=2.0, 
+                     color='#d62728', label='PoE', density=True, alpha=0.8)
+
+    # Plot encoder distributions SECOND (on top of PoE) - ALL in the same histogram
+    for idx, (var_flat, label) in enumerate(zip(encoder_vars, encoder_labels)):
+        is_confident = idx == most_confident_idx
+        color = enc_colors[idx]
+        alpha = 0.9 if is_confident else 0.6
+        label_with_status = label + (" (most confident)" if is_confident else "")
+        
+        # Plot histogram for this encoder
+        ax_vars.hist(var_flat, bins=30, alpha=alpha, color=color, 
+                     label=label_with_status, density=True, edgecolor='black', linewidth=0.5)
+
+    ax_vars.set_title("Latent Variances - All Encoders", fontsize=14, fontweight='bold')
+    ax_vars.set_xlabel("Variance", fontsize=12)
+    ax_vars.set_ylabel("Density", fontsize=12)
+    ax_vars.legend(frameon=True, fontsize=10)
+    ax_vars.grid(True, alpha=0.3)
+
+    # Add comprehensive note on the right showing mean variances and encoder status
+    note_text = "Encoder Variances:\n"
+    note_text += "=" * 20 + "\n"
+    for idx, (label, mean_var) in enumerate(zip(encoder_labels, mean_vars)):
+        status = "★ MOST CONFIDENT" if idx == most_confident_idx else "○"
+        note_text += f"{status} {label}: {mean_var:.4f}\n"
+    
+    if poe_mu is not None and poe_logvar is not None:
+        poe_var_flat = _np.exp(_np.asarray(poe_logvar).reshape(-1))
+        poe_mean_var = float(_np.mean(poe_var_flat))
+        note_text += f"\nPoE Mean: {poe_mean_var:.4f}\n"
+    
+    note_text += f"\nPattern: {pattern_name}\n"
+    note_text += f"ID: {pattern_id}\n"
+    
+    # Add the note to the right of the entire figure (outside all subplots)
+    # Position the text in the right margin of the figure
+    fig.text(0.98, 0.12, note_text,
+             fontsize=10, verticalalignment='bottom', horizontalalignment='right',
+             bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.9, 
+                      edgecolor='gray', linewidth=1))
+
+    return fig
+
