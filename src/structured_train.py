@@ -1191,23 +1191,22 @@ class StructuredTrainer:
             # Forward pass with contrastive loss
             loss, metrics = model.apply(
                 {"params": state.params},
-                *batch,
+                batch[0],  # grids
+                batch[1],  # shapes
                 dropout_eval=False,
                 mode=self.cfg.training.inference_mode,
                 rngs={"dropout": key, "latents": key},
                 contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
                 pattern_ids=batch[2],  # pattern IDs
-                method=model.compute_loss
             )
             
             # Compute gradients and update
             grads = jax.grad(lambda p: model.apply(
-                {"params": p}, *batch, dropout_eval=False,
+                {"params": p}, batch[0], batch[1], dropout_eval=False,
                 mode=self.cfg.training.inference_mode,
                 rngs={"dropout": key, "latents": key},
                 contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
                 pattern_ids=batch[2],
-                method=model.compute_loss
             )[0])(state.params)
             
             # Update only encoder parameters
