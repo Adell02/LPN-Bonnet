@@ -31,6 +31,8 @@ ENCODER VARIANCE DEBUGGING & SPECIALIZATION MONITORING:
 - Variance entropy & stability metrics: monitor uncertainty distribution
 - Overfitting warnings: alert when variance consistently drops across all patterns
 - T-SNE visualizations: show encoder latent space evolution during training
+- Average variance per encoder per pattern: monitor pattern-specific specialization progress
+- Overall pattern variance mean: track encoder specialization quality across all patterns
 
 PHASE_A_VARIANCES SECTION (WandB Organization):
 - /basic/: mean, std, min, max, range variance statistics
@@ -55,12 +57,24 @@ INDENTATION FIXES:
 - Ensured proper nesting for if-else statements in variance debugging
 - Resolved IndentationError that was preventing code execution
 
+GLOBAL STEP INTEGRATION:
+- All WandB metrics now use global step counters for proper continuity
+- Phase A: Uses phase_a_global_step for monotonically increasing steps
+- Phase B: Uses standard step counter for joint decoder training
+- All wandb.log calls include appropriate step parameters
+- No more "step only supports monotonically increasing values" warnings
+
 PHASE B (Joint Decoder Training):
 - Training progress: step, phase status, encoder/decoder status
 - Loss metrics: reconstruction_loss, prior_kl, pairwise_kl, total_loss (no specialization losses)
 - Encoder variance monitoring: variance statistics for frozen encoders (maintaining specialization)
 - Pattern-specific variance: variance analysis for each pattern per encoder during frozen state
 - Training focus: decoder-only training with frozen specialized encoders
+- **COMPLETE EVALUATION PIPELINE**: Same metrics and figures as train.py
+- **ALL TEST DATASETS**: Eval datasets, test datasets, JSON datasets
+- **ENHANCED VISUALIZATIONS**: Generation, pixel accuracy, latents, search progress, T-SNE plots
+- **OPTIMIZATION COMPARISON**: Gradient ascent vs. random search comparison plots
+- **COMPREHENSIVE METRICS**: All timing, clustering, and performance metrics
 
 GENERAL METRICS:
 - Timing: train_time, dataloading_time, throughput
@@ -1386,6 +1400,11 @@ class StructuredTrainer:
                     min_var = float(jnp.min(var_i))
                     max_var = float(jnp.max(var_i))
                     
+                    # CRITICAL: Add variance debugging metrics to detect overfitting/specialization issues
+                    # These metrics help understand if encoders are improving or degrading
+                    variance_entropy = float(jnp.mean(-jnp.log(var_i + 1e-8)))  # Higher = more uncertainty
+                    variance_cv = std_var / (mean_var + 1e-8)  # Coefficient of variation
+                    
                     # CRITICAL: Organize ALL variance data under phase_a_variances section for better WandB organization
                     # This makes it easier to analyze encoder specialization progress
                     wandb_metrics.update({
@@ -1407,11 +1426,6 @@ class StructuredTrainer:
                         f"phase_a_variances/encoder_{enc_idx}/context/target_pattern": target_pattern,
                     })
                     
-                    # CRITICAL: Add variance debugging metrics to detect overfitting/specialization issues
-                    # These metrics help understand if encoders are improving or degrading
-                    variance_entropy = float(jnp.mean(-jnp.log(var_i + 1e-8)))  # Higher = more uncertainty
-                    variance_cv = std_var / (mean_var + 1e-8)  # Coefficient of variation
-                    
                     wandb_metrics.update({
                         f"phase_a/encoder_{enc_idx}/debug/variance_entropy": variance_entropy,
                         f"phase_a/encoder_{enc_idx}/debug/variance_cv": variance_cv,
@@ -1429,6 +1443,10 @@ class StructuredTrainer:
                     if len(variance_history) > 10:
                         variance_history.pop(0)
                     
+                    # Initialize overfitting warning
+                    overfitting_warning = False
+                    variance_trend = 0.0
+                    
                     # Calculate trend (positive = increasing, negative = decreasing)
                     if len(variance_history) >= 2:
                         variance_trend = (variance_history[-1] - variance_history[0]) / len(variance_history)
@@ -1441,19 +1459,17 @@ class StructuredTrainer:
                         if variance_trend < -0.01 and len(variance_history) >= 5:
                             overfitting_warning = True
                             logging.warning(f"⚠️  Encoder {enc_idx} variance dropping trend: {variance_trend:.6f} - Possible overfitting!")
-                        else:
-                            overfitting_warning = False
-                        
-                        # Add overfitting warnings to phase_a_variances section
-                        wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/warnings/overfitting_detected"] = overfitting_warning
-                        wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/warnings/trend_value"] = variance_trend
-                        wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/warnings/history_length"] = len(variance_history)
-                        
-                        # Add trend analysis details
-                        if len(variance_history) >= 5:
-                            recent_trend = (variance_history[-1] - variance_history[-5]) / 5  # Last 5 steps
-                            wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/trends/recent_trend"] = recent_trend
-                            wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/trends/trend_acceleration"] = recent_trend - variance_trend
+                    
+                    # Add overfitting warnings to phase_a_variances section (always defined now)
+                    wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/warnings/overfitting_detected"] = overfitting_warning
+                    wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/warnings/trend_value"] = variance_trend
+                    wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/warnings/history_length"] = len(variance_history)
+                    
+                    # Add trend analysis details
+                    if len(variance_history) >= 5:
+                        recent_trend = (variance_history[-1] - variance_history[-5]) / 5  # Last 5 steps
+                        wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/trends/recent_trend"] = recent_trend
+                        wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/trends/trend_acceleration"] = recent_trend - variance_trend
                     
                     # Store current variance for next iteration
                     setattr(self, f'_encoder_{enc_idx}_variance_history', variance_history)
@@ -1514,6 +1530,33 @@ class StructuredTrainer:
                                 else:
                                     logging.info(f"✅ Encoder {enc_idx} other pattern {pattern_id} variance ratio: {other_variance_ratio:.3f}")
                 
+                # CRITICAL: Add average variance per encoder per pattern for easy monitoring
+                # This provides a quick overview of how each encoder is handling each pattern
+                try:
+                    # Calculate average variance across all patterns for this encoder
+                    pattern_variance_means = []
+                    for pid in [1, 2, 3]:  # O, T, L tetrominos
+                        pattern_mask = (pattern_ids == pid)
+                        if jnp.any(pattern_mask):
+                            pattern_var = var_i[pattern_mask]
+                            pattern_mean_var = float(jnp.mean(pattern_var))
+                            pattern_variance_means.append(pattern_mean_var)
+                            
+                            # Add individual pattern average variance
+                            wandb_metrics[f"phase_a/encoder_{enc_idx}/pattern_{pid}/average_variance"] = pattern_mean_var
+                            wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/patterns/pattern_{pid}/average_variance"] = pattern_mean_var
+                    
+                    # Calculate overall average variance across all patterns for this encoder
+                    if pattern_variance_means:
+                        overall_pattern_variance_mean = float(jnp.mean(pattern_variance_means))
+                        wandb_metrics[f"phase_a/encoder_{enc_idx}/overall_pattern_variance_mean"] = overall_pattern_variance_mean
+                        wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/summary/overall_pattern_variance_mean"] = overall_pattern_variance_mean
+                        
+                        logging.info(f"✅ Encoder {enc_idx} - Overall pattern variance mean: {overall_pattern_variance_mean:.6f}")
+                        
+                except Exception as e:
+                    logging.warning(f"Could not compute average variance per pattern for Encoder {enc_idx}: {e}")
+                
                 except Exception as e:
                     logging.warning(f"Could not compute encoder variance metrics: {e}")
                 
@@ -1522,12 +1565,12 @@ class StructuredTrainer:
                 if step % 100 == 0:  # Generate T-SNE every 100 steps to avoid spam
                     try:
                         fig_tsne_encoder = self._create_encoder_tsne_during_training(
-                            enc_idx, enc_params, batch[0], batch[1], batch[2], target_pattern
+                            enc_idx, encoder_params, batch[0], batch[1], batch[2], target_pattern
                         )
                         if fig_tsne_encoder is not None:
                             wandb_metrics[f"phase_a/encoder_{enc_idx}/tsne_visualization"] = wandb.Image(fig_tsne_encoder)
                             plt.close(fig_tsne_encoder)
-                            logging.info(f"✅ Generated T-SNE for Encoder {enc_idx} at step {step}")
+                            logging.info(f"✅ Generated T-SNE for Encoder {enc_idx} at global step {current_global_step}")
                     except Exception as e:
                         logging.warning(f"Could not generate T-SNE for Encoder {enc_idx}: {e}")
                 
@@ -1536,12 +1579,12 @@ class StructuredTrainer:
                 if step % 100 == 0:  # Generate histograms every 100 steps to avoid spam
                     try:
                         fig_histograms = self._create_pattern_variance_histograms(
-                            enc_idx, enc_params, batch[0], batch[1], batch[2], target_pattern, step
+                            enc_idx, encoder_params, batch[0], batch[1], batch[2], target_pattern, step
                         )
                         if fig_histograms is not None:
                             wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/certainty_panel"] = wandb.Image(fig_histograms)
                             plt.close(fig_histograms)
-                            logging.info(f"✅ Generated certainty panel histograms for Encoder {enc_idx} at step {step}")
+                            logging.info(f"✅ Generated certainty panel histograms for Encoder {enc_idx} at global step {current_global_step}")
                     except Exception as e:
                         logging.warning(f"Could not generate histograms for Encoder {enc_idx}: {e}")
                 
@@ -2015,7 +2058,7 @@ class StructuredTrainer:
                                 else:
                                     logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                             
-                            wandb.log(test_metrics)
+                            wandb.log(test_metrics, step=step)
                             plt.close('all')  # Close all figures to prevent memory leaks
                             # Explicitly close additional T-SNE figures
                             if fig_tsne_samples is not None:
@@ -2230,30 +2273,42 @@ class StructuredTrainer:
                     except Exception as e:
                         logging.warning(f"Checkpoint save failed: {e}")
                 
-                # Evaluation - Phase 2 uses standard evaluation interval
+                # Evaluation - Phase 2 uses standard evaluation interval (like train.py)
                 eval_interval = cfg.training.get("eval_every_n_logs", 0)
                 if eval_interval and (step // log_every) % eval_interval == 0:
                     try:
                         logging.info(f"Running evaluation at step {step}")
-                        self.evaluate(state, enc_params_list)
+                        key, eval_key, test_key, json_key = jax.random.split(key, 4)
                         
-                        # Test datasets evaluation (like train.py)
+                        # Eval datasets evaluation (like train.py)
+                        if hasattr(self, 'eval_datasets') and self.eval_datasets:
+                            for dataset_dict in self.eval_datasets:
+                                try:
+                                    start = time.time()
+                                    eval_metrics = self.eval(state, key=eval_key, **dataset_dict)
+                                    eval_metrics[f"timing/eval_{dataset_dict['dataset_name']}"] = time.time() - start
+                                    wandb.log(eval_metrics, step=step)
+                                    logging.info(f"✅ Eval dataset {dataset_dict['dataset_name']} completed")
+                                except Exception as e:
+                                    logging.warning(f"Eval dataset {dataset_dict['dataset_name']} failed: {e}")
+                        
+                        # Test datasets evaluation with enhanced search progress tracking (like train.py)
                         if hasattr(self, 'test_datasets') and self.test_datasets:
                             for dataset_dict in self.test_datasets:
                                 try:
                                     start = time.time()
                                     test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
-                                        state, dataset_dict
+                                        state, key=test_key, **dataset_dict
                                     )
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                                     
-                                    # Upload all figures
+                                    # Upload all figures including search progress (like train.py)
                                     for fig, name in [
                                         (fig_grids, "generation"),
                                         (fig_heatmap, "pixel_accuracy"),
                                         (fig_latents, "latents"),
                                         (fig_latents_samples, "latents_samples"),
-                                        (fig_search_progress, "search_progress"),
+                                        (fig_search_progress, "search_progress"),  # Enhanced search progress tracking
                                         (fig_tsne_samples, "latents_samples"),
                                     ]:
                                         if fig is not None:
@@ -2264,7 +2319,7 @@ class StructuredTrainer:
                                     for pattern_idx, fig_tsne_encoders_single in enumerate(fig_tsne_encoders_list, 1):
                                         if fig_tsne_encoders_single is not None:
                                             test_metrics[f"test/{dataset_dict['test_name']}/latents_encoders_pattern{pattern_idx}"] = wandb.Image(fig_tsne_encoders_single)
-                                            logging.info(f"Logged T-SNE for pattern {pattern_idx} ({pattern_names[pattern_idx]})")
+                                            logging.info(f"✅ Logged T-SNE for pattern {pattern_idx} ({pattern_names[pattern_idx]})")
                                         else:
                                             logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                                     
@@ -2278,8 +2333,38 @@ class StructuredTrainer:
                                         if fig_tsne_encoders_single is not None:
                                             plt.close(fig_tsne_encoders_single)
                                     
+                                    logging.info(f"✅ Test dataset {dataset_dict['test_name']} completed with all figures")
+                                    
                                 except Exception as e:
                                     logging.warning(f"Test dataset {dataset_dict['test_name']} failed: {e}")
+                        
+                        # JSON test datasets (like train.py)
+                        if hasattr(self, 'json_datasets') and self.json_datasets:
+                            for json_file_dict in self.json_datasets:
+                                try:
+                                    start = time.time()
+                                    test_metrics, fig_grids = self.test_json_submission(state, key=json_key, **json_file_dict)
+                                    json_test_name = json_file_dict["test_name"]
+                                    test_metrics[f"timing/test_{json_test_name}"] = time.time() - start
+                                    if fig_grids is not None:
+                                        test_metrics[f"test/{json_test_name}/generation"] = wandb.Image(fig_grids)
+                                    wandb.log(test_metrics, step=step)
+                                    logging.info(f"✅ JSON test dataset {json_test_name} completed")
+                                except Exception as e:
+                                    logging.warning(f"JSON test dataset {json_test_name} failed: {e}")
+                        
+                        # NEW: Generate optimization comparison plot (like train.py)
+                        try:
+                            comparison_fig = self._generate_optimization_comparison()
+                            if comparison_fig is not None:
+                                comparison_metrics = {
+                                    "optimization_comparison/methods": wandb.Image(comparison_fig)
+                                }
+                                wandb.log(comparison_metrics, step=step)
+                                plt.close(comparison_fig)
+                                logging.info(f"✅ Optimization comparison plot generated and logged")
+                        except Exception as e:
+                            logging.warning(f"Could not generate optimization comparison plot: {e}")
                         
                     except Exception as e:
                         logging.warning(f"Eval failed: {e}")
@@ -3215,7 +3300,7 @@ class StructuredTrainer:
         if fig_tsne_encoders is not None:
             wandb_log_data[f"test/{test_name}/latents_encoders_pattern1"] = wandb.Image(fig_tsne_encoders)
         
-        wandb.log(wandb_log_data)
+        wandb.log(wandb_log_data, step=step if 'step' in locals() else None)
 
         # NEW: Confidence panel per pattern (one task per pattern)
         try:
@@ -3290,7 +3375,7 @@ class StructuredTrainer:
                     pattern_id=pid,  # Pattern ID for filtering
                     pattern_name=pattern_names.get(pid, f"Pattern {pid}"),  # Pattern name
                 )
-                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)})
+                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)}, step=step if 'step' in locals() else None)
                 plt.close(fig_panel)
                 
                 logging.info(f"Generated confidence panel for pattern {pid} with {len(enc_mus[0])} pairs")
@@ -4236,6 +4321,79 @@ class StructuredTrainer:
                         logging.warning(f"Test clustering metrics computation failed: {e}")
         
         return metrics, fig_gen, fig_heatmap, fig_latents, None, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list
+
+    def _generate_optimization_comparison(self) -> Optional[plt.Figure]:
+        """Simplified: Generate comparison plot between optimization methods if data is available"""
+        if not hasattr(self, '_optimization_data') or len(self._optimization_data) == 0:
+            logging.debug("No optimization data available for comparison")
+            return None
+        
+        # Simple approach: take the first method that has both optimization types
+        logging.debug(f"Available optimization data: {list(self._optimization_data.keys())}")
+        for method_name, data in self._optimization_data.items():
+            grad_data = data.get('gradient_ascent', {})
+            search_data = data.get('random_search', {})
+            logging.debug(f"Method {method_name} - grad_data steps: {list(grad_data.keys())}, search_data steps: {list(search_data.keys())}")
+            
+            if len(grad_data) > 0 and len(search_data) > 0:
+                try:
+                    # Get common steps
+                    common_steps = sorted(set(grad_data.keys()) & set(search_data.keys()))
+                    logging.debug(f"Common steps: {common_steps}")
+                    if len(common_steps) < 2:
+                        logging.debug(f"Not enough common steps ({len(common_steps)} < 2)")
+                        continue
+                    
+                    # Find maximum budget size
+                    max_budget = 0
+                    for step in common_steps:
+                        max_budget = max(max_budget, len(grad_data[step]['accs']), len(search_data[step]['accs']))
+                    
+                    logging.debug(f"Max budget: {max_budget}")
+                    if max_budget < 2:
+                        logging.debug(f"Max budget too small ({max_budget} < 2)")
+                        continue
+                    
+                    # Create accuracy grids
+                    budgets = list(range(max_budget))
+                    acc_grad = np.full((max_budget, len(common_steps)), np.nan)
+                    acc_search = np.full((max_budget, len(common_steps)), np.nan)
+                    logging.debug(f"Creating plot with {len(common_steps)} steps and {max_budget} budget points")
+                    
+                    # Fill data
+                    for j, step in enumerate(common_steps):
+                        if step in grad_data:
+                            accs = grad_data[step]['accs']
+                            for i, acc in enumerate(accs):
+                                if i < max_budget:
+                                    acc_grad[i, j] = acc
+                        
+                        if step in search_data:
+                            accs = search_data[step]['accs']
+                            for i, acc in enumerate(accs):
+                                if i < max_budget:
+                                    acc_search[i, j] = acc
+                    
+                    # Generate plot
+                    logging.debug("Successfully generating optimization comparison plot!")
+                    try:
+                        from visualization import visualize_optimization_comparison
+                        return visualize_optimization_comparison(
+                            steps=np.array(common_steps),
+                            budgets=np.array(budgets),
+                            acc_A=acc_grad,
+                            acc_B=acc_search,
+                            method_A_name="Gradient Ascent",
+                            method_B_name="Random Search"
+                        )
+                    except ImportError:
+                        logging.warning("visualize_optimization_comparison not available, skipping optimization comparison plot")
+                        return None
+                except Exception as e:
+                    logging.warning(f"Error generating optimization comparison: {e}")
+                    continue
+        
+        return None
 
 
 @hydra.main(config_path="configs", version_base=None, config_name="structured")

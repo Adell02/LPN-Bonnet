@@ -1016,14 +1016,18 @@ class LPN(nn.Module):
             mean_fitness = -mean_losses.mean(axis=-2) if mean_losses.ndim >= 3 else -mean_losses
             
             # Store mean latent evaluation (same as GA) - this is generation 0
-            gen_bests.append(mean_fitness.max(axis=-1))  # Mean latent fitness at generation 0
+            # Ensure consistent shapes: mean_fitness should be (*B,) not (*B, 1)
+            mean_fitness_flat = mean_fitness.max(axis=-1) if mean_fitness.ndim > 1 else mean_fitness
+            gen_bests.append(mean_fitness_flat)  # Mean latent fitness at generation 0
             gen_best_latents.append(mean_latent.squeeze(axis=-2))  # Mean latent at generation 0
             
-            # Store mean latent loss (same as GA)
+            # Store mean latent loss (same as GA) - ensure shape consistency
             mean_gen_losses = mean_losses.mean(axis=-2) if mean_losses.ndim >= 3 else mean_losses
-            gen_fitnesses.append(mean_gen_losses)  # Mean latent loss at generation 0
+            # Ensure mean_gen_losses is (*B,) not (*B, 1)
+            mean_gen_losses_flat = mean_gen_losses.max(axis=-1) if mean_gen_losses.ndim > 1 else mean_gen_losses
+            gen_fitnesses.append(mean_gen_losses_flat)  # Mean latent loss at generation 0
             
-            print(f"         🎯 Generation 0 (mean latent): fitness = {mean_fitness.max(axis=-1)}, loss = {mean_gen_losses}")
+            print(f"         🎯 Generation 0 (mean latent): fitness = {mean_fitness_flat}, loss = {mean_gen_losses_flat}")
             
             # SECOND: Evaluate the expanded population for visualization (this is NOT generation 0)
             initial_losses = _eval_candidates(population)
