@@ -1122,8 +1122,27 @@ class StructuredTrainer:
         # Pattern enc_idx+1 gets reinforced, others get reduced certainty
         target_pattern = enc_idx + 1  # Encoder 0 -> Pattern 1, Encoder 1 -> Pattern 2, etc.
         
-        # Generate specialized training data
-        specialized_data = self._create_standardized_dataset(f"single_pattern_{target_pattern}", self.batch_size * 10)
+        # Generate specialized training data with target pattern emphasis
+        # We need both target and other patterns for contrastive loss to work
+        target_samples = int(self.batch_size * 0.7)  # 70% target pattern
+        other_samples = self.batch_size - target_samples
+        
+        # Generate target pattern samples
+        target_data = self._create_standardized_dataset(f"single_pattern_{target_pattern}", target_samples)
+        
+        # Generate other pattern samples (balanced mix)
+        other_data = self._create_standardized_dataset("mixed_patterns", other_samples)
+        
+        # Combine the data
+        target_grids, target_shapes, target_ids = target_data
+        other_grids, other_shapes, other_ids = other_data
+        
+        # Stack together
+        combined_grids = jnp.concatenate([target_grids, other_grids], axis=0)
+        combined_shapes = jnp.concatenate([target_shapes, other_shapes], axis=0)
+        combined_pattern_ids = jnp.concatenate([target_ids, other_ids], axis=0)
+        
+        specialized_data = (combined_grids, combined_shapes, combined_pattern_ids)
         
         # Train for encoder_expose_steps
         num_steps = self.encoder_expose_steps
@@ -1738,14 +1757,26 @@ class StructuredTrainer:
                     
                     # Reshape data for visualization: Show OUTPUT grids (tetromino patterns), not input grids (anchor points)
                     # Data shape: (num_samples, num_pairs, 5, 5, 2) where [:, :, :, :, 0] = input, [:, :, :, :, 1] = output
-                    # Function expects: (num_pairs, 5, 5, 2) so we need to transpose
-                    vis_grids = np.array(sample_grids)[0, :, :, :, 1]  # Take first sample, all pairs, OUTPUT channel
-                    vis_shapes = np.array(sample_shapes)[0, :, 1]       # Take first sample, all pairs, OUTPUT dimensions
+                    # Function expects: (num_pairs, 5, 5, 2) where last dimension is [input, output]
+                    # We need to create a new array with both input and output channels
+                    sample_grids_np = np.array(sample_grids)
+                    sample_shapes_np = np.array(sample_shapes)
+                    
+                    # Take first sample, all pairs, and create [input, output] format
+                    vis_grids = np.stack([
+                        sample_grids_np[0, :, :, :, 0],  # Input channel (anchor points)
+                        sample_grids_np[0, :, :, :, 1]   # Output channel (tetromino patterns)
+                    ], axis=-1)  # Shape: (4, 5, 5, 2)
+                    
+                    vis_shapes = np.stack([
+                        sample_shapes_np[0, :, 0],  # Input dimensions
+                        sample_shapes_np[0, :, 1]   # Output dimensions
+                    ], axis=-1)  # Shape: (4, 2, 2)
                     
                     # Debug: Verify visualization data shows correct patterns
-                    debug_grid = vis_grids[0]  # First pair
+                    debug_grid = vis_grids[0, :, :, 1]  # First pair, output channel
                     logging.info(f"         Visualization grid for pattern {pattern_id} ({pattern_name}):\n{debug_grid}")
-                    logging.info(f"         Grid shape: {vis_grids.shape}, Expected: (4, 5, 5)")
+                    logging.info(f"         Grid shape: {vis_grids.shape}, Expected: (4, 5, 5, 2)")
                     logging.info(f"         Sample grid shape: {debug_grid.shape}, Expected: (5, 5)")
                     logging.info(f"         Original sample_grids shape: {sample_grids.shape}")
                     logging.info(f"         Original sample_shapes shape: {sample_shapes.shape}")
@@ -1838,14 +1869,26 @@ class StructuredTrainer:
                         pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
                         
                         # Reshape data for visualization: Show OUTPUT grids (tetromino patterns)
-                        # Function expects: (num_pairs, 5, 5, 2) so we need to transpose
-                        vis_grids = np.array(sample_grids)[0, :, :, :, 1]  # Take first sample, all pairs, OUTPUT channel
-                        vis_shapes = np.array(sample_shapes)[0, :, 1]       # Take first sample, all pairs, OUTPUT dimensions
+                        # Function expects: (num_pairs, 5, 5, 2) where last dimension is [input, output]
+                        # We need to create a new array with both input and output channels
+                        sample_grids_np = np.array(sample_grids)
+                        sample_shapes_np = np.array(sample_shapes)
+                        
+                        # Take first sample, all pairs, and create [input, output] format
+                        vis_grids = np.stack([
+                            sample_grids_np[0, :, :, :, 0],  # Input channel (anchor points)
+                            sample_grids_np[0, :, :, :, 1]   # Output channel (tetromino patterns)
+                        ], axis=-1)  # Shape: (4, 5, 5, 2)
+                        
+                        vis_shapes = np.stack([
+                            sample_shapes_np[0, :, 0],  # Input dimensions
+                            sample_shapes_np[0, :, 1]   # Output dimensions
+                        ], axis=-1)  # Shape: (4, 2, 2)
                         
                         # Debug: Verify visualization data shows correct patterns
-                        debug_grid = vis_grids[0]  # First pair
+                        debug_grid = vis_grids[0, :, :, 1]  # First pair, output channel
                         logging.info(f"         Phase B visualization grid for pattern {pattern_id} ({pattern_name}):\n{debug_grid}")
-                        logging.info(f"         Phase B Grid shape: {vis_grids.shape}, Expected: (4, 5, 5)")
+                        logging.info(f"         Phase B Grid shape: {vis_grids.shape}, Expected: (4, 5, 5, 2)")
                         logging.info(f"         Phase B Sample grid shape: {debug_grid.shape}, Expected: (5, 5)")
                         logging.info(f"         Phase B Original sample_grids shape: {sample_grids.shape}")
                         logging.info(f"         Phase B Original sample_shapes shape: {sample_shapes.shape}")
