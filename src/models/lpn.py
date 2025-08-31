@@ -697,12 +697,11 @@ class LPN(nn.Module):
         
         # CRITICAL FIX: Capture the ORIGINAL mean latent BEFORE any optimization starts
         # This ensures we capture the true starting point, exactly like ES does
+        original_mean_latent_for_trajectory = None
         if track_progress := kwargs.get("track_progress", False):
             # Compute the mean latent from the prepared latents (before optimization)
-            original_mean_latent = latents.mean(axis=-2, keepdims=True)  # (*B, 1, H) - same as ES
-            # Store it for later use in trajectory creation
-            self._original_mean_latent_for_trajectory = original_mean_latent
-            print(f"         🔧 GA trajectory fix: Captured ORIGINAL mean latent shape={original_mean_latent.shape}")
+            original_mean_latent_for_trajectory = latents.mean(axis=-2, keepdims=True)  # (*B, 1, H) - same as ES
+            print(f"         🔧 GA trajectory fix: Captured ORIGINAL mean latent shape={original_mean_latent_for_trajectory.shape}")
         
         # CRITICAL DEBUG: Show what GA actually starts optimization from
         print(f"         🔍 GA starting optimization from latents shape: {latents.shape}")
@@ -890,9 +889,14 @@ class LPN(nn.Module):
                 # CRITICAL FIX: Capture the ORIGINAL mean latent BEFORE any optimization starts
                 # This ensures we capture the true starting point, exactly like ES does
                 
-                # 1. Use the ORIGINAL mean latent that was computed at the start of the function
-                # This is the untouched mean latent before any optimization processing
-                original_mean_latent = self._original_mean_latent_for_trajectory  # (*B, 1, H) - same as ES
+                # 1. CRITICAL FIX: Use the ORIGINAL mean latent that was captured at the start
+                # This ensures we capture the true starting point, not the processed latents variable
+                if original_mean_latent_for_trajectory is None:
+                    print(f"         ❌ GA trajectory fix: No original mean latent captured, falling back to current latents")
+                    # Fallback: compute from current latents (not ideal but prevents crash)
+                    original_mean_latent = latents.mean(axis=-2, keepdims=True)
+                else:
+                    original_mean_latent = original_mean_latent_for_trajectory
                 print(f"         🔧 GA trajectory fix: Using ORIGINAL mean latent shape={original_mean_latent.shape}")
                 
                 # 2. Evaluate the mean latent BEFORE any optimization
