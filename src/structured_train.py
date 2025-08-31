@@ -29,6 +29,38 @@ pattern IDs, preventing incorrect contrastive learning that could break training
 
 BEFORE: Pattern IDs were manually constructed, leading to mismatch with actual data
 AFTER: Pattern IDs are extracted from task generator, ensuring perfect alignment
+
+CRITICAL FIXES APPLIED FOR ENCODER SPECIALIZATION:
+=================================================
+
+6. ✅ FIXED: Contrastive loss formula was incorrect (was driving other variance DOWN instead of UP)
+7. ✅ FIXED: Increased base coefficient from 1e-3 to 0.1 for stronger specialization signal
+8. ✅ FIXED: Balanced training data distribution (50% target, 50% others instead of 70%/30%)
+9. ✅ ADDED: Dynamic coefficient adjustment based on specialization progress
+10. ✅ ADDED: Early stopping when excellent specialization is achieved (ratio < 0.5)
+11. ✅ ADDED: Enhanced logging and monitoring of specialization metrics
+
+CRITICAL FIXES APPLIED FOR TRAINING VARIETY AND REPULSION:
+========================================================
+
+12. ✅ FIXED: Random state reset causing identical datasets across encoders
+    - Each encoder now uses unique seeds: base_seed + enc_idx * 1000 + pattern * 100 + i
+    - Ensures different samples for each encoder and pattern combination
+13. ✅ FIXED: Fixed dataset pool limiting variety across training steps
+    - Dataset pools are now 3x larger than batch_size (dataset_multiplier = 3)
+    - _sample_specialized_batch can draw from larger variety of samples
+14. ✅ FIXED: Repulsion loss not included in gradient computation
+    - Repulsion loss now properly included in contrastive_loss_fn for gradients
+    - Encoders can learn to be distinct from each other during training
+
+These fixes ensure that encoders properly specialize on their target patterns:
+- Target pattern: variance → LOW (high confidence)
+- Other patterns: variance → HIGH (low confidence)
+- Each encoder sees different training examples for better generalization
+- Repulsion loss actively pushes encoders to learn distinct representations
+
+BEFORE: Encoders showed "WEAK specialization" with ratio ~0.97 (no real separation)
+AFTER: Encoders should achieve strong specialization with ratio < 0.5 (2x separation)
 """
 
 # from __future__ import annotations  # Not supported in Python 3.6
@@ -1140,9 +1172,10 @@ class StructuredTrainer:
             
             # Evaluate the specialized encoder and create visualizations
             logging.info(f"   Evaluating specialized Encoder {enc_idx}...")
-            # Use the current step from the main training loop for consistent WandB logging
-            current_global_step = current_step
-            logging.info(f"   📊 Evaluation global step: {current_global_step} (from main training loop)")
+            # Calculate the correct global step for this encoder's evaluation
+            # This should be the phase A global step plus the encoder's training steps
+            current_global_step = self.phase_a_global_step + self.encoder_expose_steps
+            logging.info(f"   📊 Evaluation global step: {current_global_step} (phase_a_global_step: {self.phase_a_global_step} + encoder_steps: {self.encoder_expose_steps})")
             self._evaluate_specialized_encoder(enc_idx, specialized_encoder, individual_state, current_global_step)
             
             specialized_encoders.append(specialized_encoder)
@@ -1192,26 +1225,36 @@ class StructuredTrainer:
         # Pattern enc_idx+1 gets reinforced, others get reduced certainty
         target_pattern = enc_idx + 1  # Encoder 0 -> Pattern 1, Encoder 1 -> Pattern 2, etc.
         
-        # Generate specialized training data with target pattern emphasis
-        # We need both target and other patterns for contrastive loss to work
-        target_samples = int(self.batch_size * 0.7)  # 70% target pattern
+        # Generate specialized training data with LARGER dataset pool for variety
+        # We need MORE samples than batch_size to ensure variety across steps
+        # This prevents encoders from seeing the same samples repeatedly
+        dataset_multiplier = 3  # Generate 3x more samples than needed for variety
+        
+        target_samples = int(self.batch_size * 0.5)  # 50% target pattern
         other_samples = self.batch_size - target_samples
         
+        # Generate larger pools for variety
+        target_pool_size = target_samples * dataset_multiplier
+        other_pool_size = other_samples * dataset_multiplier
+        
         # Generate target pattern samples
-        target_data = self._create_standardized_dataset(f"single_pattern_{target_pattern}", target_samples)
+        target_data = self._create_standardized_dataset(f"single_pattern_{target_pattern}", target_pool_size)
         target_grids, target_shapes, target_ids = target_data
         
         # Generate OTHER specific patterns (not mixed) for proper contrastive learning
         # Each encoder should contrast against the OTHER two patterns specifically
         other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
-        samples_per_other = other_samples // len(other_patterns)
+        samples_per_other = other_pool_size // len(other_patterns)
         
         other_grids_list = []
         other_shapes_list = []
         other_ids_list = []
         
-        for other_pattern in other_patterns:
-            other_data = self._create_standardized_dataset(f"single_pattern_{other_pattern}", samples_per_other)
+        for i, other_pattern in enumerate(other_patterns):
+            # Use different seeds for each pattern to ensure variety
+            pattern_seed = self.cfg.training.seed + enc_idx * 1000 + other_pattern * 100 + i
+            other_data = self._create_standardized_dataset(f"single_pattern_{other_pattern}", samples_per_other, 
+                                                        seed=pattern_seed)
             other_grids, other_shapes, other_ids = other_data
             other_grids_list.append(other_grids)
             other_shapes_list.append(other_shapes)
@@ -1243,9 +1286,10 @@ class StructuredTrainer:
         target_count = jnp.sum(combined_pattern_ids == target_pattern)
         other_count = len(combined_pattern_ids) - target_count
         logging.info(f"     Training data distribution for Encoder {enc_idx}:")
-        logging.info(f"       Target pattern {target_pattern}: {target_count} samples")
-        logging.info(f"       Other patterns: {other_count} samples")
-        logging.info(f"       Total samples: {len(combined_pattern_ids)}")
+        logging.info(f"       Target pattern {target_pattern}: {target_count} samples (pool size: {target_pool_size})")
+        logging.info(f"       Other patterns: {other_count} samples (pool size: {other_pool_size})")
+        logging.info(f"       Total samples: {len(combined_pattern_ids)} (batch size: {self.batch_size})")
+        logging.info(f"       Dataset variety: {dataset_multiplier}x larger pools for step-by-step variety")
         
         specialized_data = (combined_grids, combined_shapes, combined_pattern_ids)
         
@@ -1316,24 +1360,27 @@ class StructuredTrainer:
                 # We want: target_var << other_var (target pattern gets high confidence, others get low confidence)
                 
                 # Dynamic coefficient adjustment based on specialization progress
-                base_coeff = self.cfg.training.get("contrastive_kl", 1e-3)
+                base_coeff = self.cfg.training.get("contrastive_kl", 0.1)  # Increased from 1e-3 to 0.1
                 current_specialization_ratio = avg_target_var / (avg_other_var + 1e-8)
                 
-                # If specialization is poor, increase coefficient
+                # If specialization is poor, increase coefficient aggressively
                 if current_specialization_ratio > 1.0:
                     # Target variance is HIGHER than other variance (bad!)
-                    dynamic_coeff = base_coeff * 10.0  # Increase coefficient aggressively
-                    logging.debug(f"       Poor specialization detected (ratio: {current_specialization_ratio:.3f}), increasing coefficient to {dynamic_coeff:.6f}")
+                    dynamic_coeff = base_coeff * 20.0  # Increase coefficient aggressively
+                    logging.info(f"       🚨 POOR specialization detected (ratio: {current_specialization_ratio:.3f}), increasing coefficient to {dynamic_coeff:.6f}")
                 elif current_specialization_ratio > 0.8:
                     # Target variance is only slightly lower than other variance
-                    dynamic_coeff = base_coeff * 5.0  # Increase coefficient moderately
-                    logging.debug(f"       Weak specialization detected (ratio: {current_specialization_ratio:.3f}), increasing coefficient to {dynamic_coeff:.6f}")
+                    dynamic_coeff = base_coeff * 10.0  # Increase coefficient moderately
+                    logging.info(f"       ⚠️  WEAK specialization detected (ratio: {current_specialization_ratio:.3f}), increasing coefficient to {dynamic_coeff:.6f}")
                 else:
                     # Good specialization, use base coefficient
                     dynamic_coeff = base_coeff
-                    logging.debug(f"       Good specialization (ratio: {current_specialization_ratio:.3f}), using base coefficient {dynamic_coeff:.6f}")
+                    logging.debug(f"       ✅ Good specialization (ratio: {current_specialization_ratio:.3f}), using base coefficient {dynamic_coeff:.6f}")
                 
-                contrastive_loss = avg_target_var + dynamic_coeff * (1.0 / (avg_other_var + 1e-8))
+                # CORRECTED: Contrastive loss that properly drives specialization
+                # L = target_var - coefficient * other_var
+                # This minimizes target_var and maximizes other_var
+                contrastive_loss = avg_target_var - dynamic_coeff * avg_other_var
                 
                 # Add regularization to prevent extreme values
                 reg_loss = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
@@ -1358,7 +1405,7 @@ class StructuredTrainer:
                 
                 total_loss = contrastive_loss + reg_loss + repulsion_loss
                 
-                # FIXED: Compute gradients properly for contrastive learning
+                # FIXED: Compute gradients properly for contrastive learning INCLUDING repulsion loss
                 def contrastive_loss_fn(params):
                     # Forward pass through encoder
                     mu, logvar = encoder.apply(
@@ -1373,25 +1420,43 @@ class StructuredTrainer:
                     avg_target_var = jnp.mean(target_var)
                     avg_other_var = jnp.mean(other_var)
                     
-                    # Loss: target_var + coefficient * (1/other_var) 
-                    # This drives target_var DOWN and other_var UP
-                    
                     # Use the same dynamic coefficient logic
-                    base_coeff = self.cfg.training.get("contrastive_kl", 1e-3)
+                    base_coeff = self.cfg.training.get("contrastive_kl", 0.1)  # Increased from 1e-3 to 0.1
                     current_specialization_ratio = avg_target_var / (avg_other_var + 1e-8)
                     
                     if current_specialization_ratio > 1.0:
-                        dynamic_coeff = base_coeff * 10.0
+                        dynamic_coeff = base_coeff * 20.0
                     elif current_specialization_ratio > 0.8:
-                        dynamic_coeff = base_coeff * 5.0
+                        dynamic_coeff = base_coeff * 10.0
                     else:
                         dynamic_coeff = base_coeff
                     
-                    loss = avg_target_var + dynamic_coeff * (1.0 / (avg_other_var + 1e-8))
+                    contrastive_loss = avg_target_var - dynamic_coeff * avg_other_var
                     
                     # Add regularization
                     reg = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
-                    return loss + reg
+                    
+                    # CRITICAL FIX: Include repulsion loss in gradient computation
+                    total_loss = contrastive_loss + reg
+                    
+                    # Add repulsion loss if available and enabled
+                    if target_latents_store and self.cfg.training.get("repulsion_kl", 0) > 0:
+                        # Compute repulsion from previous encoders' targets
+                        repulsion_loss = self._compute_repulsion_loss(
+                            current_latents=mu.mean(axis=-2),  # Use mean over pairs
+                            target_latents_store=target_latents_store,
+                            current_encoder_idx=enc_idx,
+                            margin=1.0
+                        )
+                        
+                        # Scale repulsion loss by the coefficient
+                        repulsion_coeff = self.cfg.training.get("repulsion_kl", 0)
+                        repulsion_loss = repulsion_coeff * repulsion_loss
+                        
+                        # Add to total loss for gradient computation
+                        total_loss = total_loss + repulsion_loss
+                    
+                    return total_loss
                 
                 # Compute gradients
                 grads = jax.grad(contrastive_loss_fn)(encoder_params)
@@ -1413,9 +1478,21 @@ class StructuredTrainer:
                 # Update state
                 state = state.replace(params=new_params)
                 
+                # Check if we've achieved good specialization and can stop early
+                if current_specialization_ratio < 0.5:  # Target var < 50% of other var
+                    logging.info(f"       🎉 EXCELLENT specialization achieved at step {step}!")
+                    logging.info(f"         - Target variance: {float(avg_target_var):.6f}")
+                    logging.info(f"         - Other variance: {float(avg_other_var):.6f}")
+                    logging.info(f"         - Specialization ratio: {float(current_specialization_ratio):.6f}")
+                    logging.info(f"         - Stopping early to prevent overfitting")
+                    break  # Exit training loop early
+                
                 # Log essential metrics to WandB with proper tab organization
                 if step % 10 == 0:  # Log more frequently
                     current_global_step = self.phase_a_global_step + step
+                    
+                    # Check if we've achieved good specialization
+                    specialization_achieved = current_specialization_ratio < 0.5  # Target var < 50% of other var
                     
                     # Organize metrics into proper WandB tabs
                     wandb.log({
@@ -1427,6 +1504,14 @@ class StructuredTrainer:
                         f"phase_a_losses/encoder_{enc_idx}/contrastive_loss": float(contrastive_loss),
                         f"phase_a_losses/encoder_{enc_idx}/contrastive_loss_weighted": float(contrastive_loss * self.cfg.training.get("contrastive_kl", 0.5)),
                         f"phase_a_losses/encoder_{enc_idx}/reg_loss": float(reg_loss),
+                        
+                        # Specialization progress tracking
+                        f"phase_a_specialization/encoder_{enc_idx}/target_variance": float(avg_target_var),
+                        f"phase_a_specialization/encoder_{enc_idx}/other_variance": float(avg_other_var),
+                        f"phase_a_specialization/encoder_{enc_idx}/specialization_ratio": float(current_specialization_ratio),
+                        f"phase_a_specialization/encoder_{enc_idx}/specialization_score": float(jnp.log(current_specialization_ratio + 1e-8)),
+                        f"phase_a_specialization/encoder_{enc_idx}/specialization_achieved": specialization_achieved,
+                        f"phase_a_specialization/encoder_{enc_idx}/dynamic_coefficient": float(dynamic_coeff),
                         
                         # Summary metrics for phase_a_losses tab
                         f"phase_a_losses/encoder_{enc_idx}/loss_breakdown": {
@@ -3887,7 +3972,7 @@ class StructuredTrainer:
                 if step is not None:
                     wandb.log(clustering_metrics, step=step)
                 else:
-                    wandb.log(clustering_metrics)
+                    wandb.log(clustering_metrics, step=step)
                 logging.info(f"Clustering metrics computed: {clustering_metrics}")
                 
             except Exception as e:
@@ -3920,7 +4005,7 @@ class StructuredTrainer:
         if step is not None:
             wandb.log(wandb_log_data, step=step)
         else:
-            wandb.log(wandb_log_data)
+            wandb.log(wandb_log_data, step=step)
 
         # NEW: Confidence panel per pattern (one task per pattern)
         try:
@@ -3998,7 +4083,7 @@ class StructuredTrainer:
                 if step is not None:
                     wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)}, step=step)
                 else:
-                    wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)})
+                    wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)}, step=step)
                 plt.close(fig_panel)
                 
                 logging.info(f"Generated confidence panel for pattern {pid} with {len(enc_mus[0])} pairs")
@@ -4804,7 +4889,7 @@ class StructuredTrainer:
             logging.warning(f"Failed to monitor encoder {enc_idx} specialization: {e}")
             return {}
 
-    def _create_pattern_dataset(self, pattern_id: int, num_samples: int) -> tuple:
+    def _create_pattern_dataset(self, pattern_id: int, num_samples: int, seed: int = None) -> tuple:
         """
         Create a dataset with samples of a specific pattern.
         
@@ -4814,14 +4899,15 @@ class StructuredTrainer:
         Args:
             pattern_id: Pattern ID (1, 2, or 3)
             num_samples: Number of samples to generate
+            seed: Random seed for reproducibility (optional)
             
         Returns:
             Tuple of (grids, shapes, pattern_ids)
         """
         pattern_mode = f"single_pattern_{pattern_id}"
-        return self._create_standardized_dataset(pattern_mode, num_samples)
+        return self._create_standardized_dataset(pattern_mode, num_samples, seed)
 
-    def _create_standardized_dataset(self, pattern_mode: str, num_samples: int) -> tuple:
+    def _create_standardized_dataset(self, pattern_mode: str, num_samples: int, seed: int = None) -> tuple:
         """
         Unified data generator for both phases with consistent format.
         
@@ -4844,8 +4930,11 @@ class StructuredTrainer:
         # Get number of pairs from config
         num_pairs = self.task_generator_kwargs["num_pairs"]
         
-        # Set random seed for reproducibility
-        random.seed(self.cfg.training.seed)
+        # Set random seed for reproducibility (use provided seed or fallback to config)
+        if seed is not None:
+            random.seed(seed)
+        else:
+            random.seed(self.cfg.training.seed)
         
         if pattern_mode.startswith("single_pattern_"):
             # Single pattern mode: generate only one specific pattern
