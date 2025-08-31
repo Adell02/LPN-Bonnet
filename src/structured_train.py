@@ -1124,11 +1124,12 @@ class StructuredTrainer:
         
         # Generate specialized training data with target pattern emphasis
         # We need both target and other patterns for contrastive loss to work
-        target_samples = int(self.batch_size * 0.33)  # 33% target pattern
+        target_samples = int(self.batch_size * 0.7)  # 70% target pattern
         other_samples = self.batch_size - target_samples
         
         # Generate target pattern samples
         target_data = self._create_standardized_dataset(f"single_pattern_{target_pattern}", target_samples)
+        target_grids, target_shapes, target_ids = target_data
         
         # Generate OTHER specific patterns (not mixed) for proper contrastive learning
         # Each encoder should contrast against the OTHER two patterns specifically
