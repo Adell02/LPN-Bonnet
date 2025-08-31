@@ -92,6 +92,49 @@ USAGE EXAMPLES:
      --ga_include_mean_latent \
      --ga_random_perturbation 0.01 \
      --only_n_tasks 15
+
+10. COMPREHENSIVE OPTIMIZATION CONTROL (all parameters from store_latent_search.py):
+    python3 src/evaluate_all_checkpoints.py \
+      --run_name "winter-fire-132" \
+      --plot_methods gradient_ascent evolutionary_search \
+      --json_challenges json/arc-agi_evaluation_challenges.json \
+      --json_solutions json/arc-agi_evaluation_solutions.json \
+      --ga_lr 0.2 \
+      --ga_steps 1000 \
+      --ga_optimizer adam \
+      --ga_lr_schedule true \
+      --ga_lr_schedule_exponent 0.5 \
+      --ga_accumulate_gradients_decoder_pairs \
+      --ga_scan_gradients_latents \
+      --ga_include_mean_latent \
+      --es_mutation_std 0.5 \
+      --es_population 100 \
+      --es_generations 20 \
+      --es_mutation_decay 0.95 \
+      --es_elite_size 80 \
+      --es_use_subspace_mutation \
+      --es_subspace_dim 32 \
+      --es_ga_step_length 0.5 \
+      --es_trust_region_radius 2.0 \
+      --track_progress \
+      --background_resolution 400 \
+      --background_smoothing \
+      --background_knn 5 \
+      --background_bandwidth_scale 1.25 \
+      --background_global_mix 0.05 \
+      --out_dir results/advanced_eval \
+      --only_n_tasks 20
+
+11. MULTIPLE RUNS WITH STATISTICAL ANALYSIS:
+    python3 src/evaluate_all_checkpoints.py \
+      --run_name "winter-fire-132" \
+      --plot_methods gradient_ascent evolutionary_search \
+      --json_challenges json/arc-agi_evaluation_challenges.json \
+      --json_solutions json/arc-agi_evaluation_solutions.json \
+      --n_samples 5 \
+      --aggregate_statistics \
+      --dataset_seed 42 \
+      --only_n_tasks 10
 """
 
 import os
@@ -647,6 +690,21 @@ def run_evaluation(
                 str(method_kwargs.get("lr_schedule_exponent", 0.5)),
             ]
         )
+        
+        # Add advanced GA parameters
+        if method_kwargs.get("accumulate_gradients_decoder_pairs"):
+            cmd.extend(["--accumulate-gradients-decoder-pairs", "true"])
+        if method_kwargs.get("scan_gradients_latents"):
+            cmd.extend(["--scan-gradients-latents", "true"])
+        if method_kwargs.get("include_mean_latent"):
+            cmd.extend(["--include-mean-latent", "true"])
+        if method_kwargs.get("include_all_latents"):
+            cmd.extend(["--include-all-latents", "true"])
+        if method_kwargs.get("random_perturbation"):
+            cmd.extend(["--random-perturbation", method_kwargs["random_perturbation"]])
+        if method_kwargs.get("track_progress"):
+            cmd.extend(["--track-progress"])
+            
     elif method == "random_search":
         cmd.extend(
             [
@@ -660,6 +718,17 @@ def run_evaluation(
                 str(method_kwargs.get("random_search_seed", 0)),
             ]
         )
+        
+        # Add advanced RS parameters
+        if method_kwargs.get("include_mean_latent"):
+            cmd.extend(["--include-mean-latent", "true"])
+        if method_kwargs.get("include_all_latents"):
+            cmd.extend(["--include-all-latents", "true"])
+        if method_kwargs.get("random_perturbation"):
+            cmd.extend(["--random-perturbation", method_kwargs["random_perturbation"]])
+        if method_kwargs.get("track_progress"):
+            cmd.extend(["--track-progress"])
+            
     elif method == "evolutionary_search":
         cmd.extend(
             [
@@ -671,6 +740,14 @@ def run_evaluation(
                 str(method_kwargs.get("mutation_std", 0.2)),
             ]
         )
+        
+        # Add advanced ES parameters
+        if method_kwargs.get("mutation_decay") is not None:
+            cmd.extend(["--mutation-decay", str(method_kwargs["mutation_decay"])])
+        if method_kwargs.get("elite_size") is not None:
+            cmd.extend(["--elite-size", str(method_kwargs["elite_size"])])
+        if method_kwargs.get("track_progress"):
+            cmd.extend(["--track-progress"])
         
         # Add subspace parameters if enabled
         if args is not None and args.es_use_subspace_mutation:
@@ -899,13 +976,62 @@ def main():
                    help="Batch size for evaluation (larger = faster but more memory)")
     parser.add_argument("--parallel_tasks", type=int, default=1, 
                    help="Number of tasks to process in parallel")
-    # Method hyperparameter overrides
+    
+    # Advanced Gradient Ascent parameters (from store_latent_search.py)
     parser.add_argument("--ga_lr", type=float, default=None,
                    help="Override learning rate (step size) for gradient_ascent")
+    parser.add_argument("--ga_steps", type=int, default=None,
+                   help="Override number of GA steps (overrides budget/2 calculation)")
+    parser.add_argument("--ga_optimizer", type=str, default=None,
+                   help="Override optimizer for gradient_ascent")
+    parser.add_argument("--ga_lr_schedule", type=str, default=None,
+                   help="Override LR schedule for gradient_ascent (true/false)")
+    parser.add_argument("--ga_lr_schedule_exponent", type=float, default=None,
+                   help="Override LR schedule exponent for gradient_ascent")
+    parser.add_argument("--ga_accumulate_gradients_decoder_pairs", type=str, default=None,
+                   help="Whether to accumulate gradients for decoder pairs in gradient_ascent (true/false)")
+    parser.add_argument("--ga_scan_gradients_latents", type=str, default=None,
+                   help="Whether to scan gradients for latents in gradient_ascent (true/false)")
+    parser.add_argument("--ga_include_mean_latent", type=str, default=None,
+                   help="Whether to include mean latent in gradient_ascent (true/false)")
+    parser.add_argument("--ga_include_all_latents", type=str, default=None,
+                   help="Whether to include all latents in gradient_ascent (true/false)")
+    parser.add_argument("--ga_random_perturbation", type=str, default=None,
+                   help="Random perturbation kwargs for gradient_ascent (JSON string)")
+    parser.add_argument("--ga_track_progress", action="store_true",
+                   help="Enable progress tracking for gradient_ascent")
+    
+    # Advanced Random Search parameters (from store_latent_search.py)
+    parser.add_argument("--rs_scale", type=float, default=None,
+                   help="Override scale for random_search")
+    parser.add_argument("--rs_scan_batch_size", type=int, default=None,
+                   help="Override scan batch size for random_search")
+    parser.add_argument("--rs_random_search_seed", type=int, default=None,
+                   help="Override random search seed for random_search")
+    parser.add_argument("--rs_include_mean_latent", type=str, default=None,
+                   help="Whether to include mean latent in random_search (true/false)")
+    parser.add_argument("--rs_include_all_latents", type=str, default=None,
+                   help="Whether to include all latents in random_search (true/false)")
+    parser.add_argument("--rs_random_perturbation", type=str, default=None,
+                   help="Random perturbation kwargs for random_search (JSON string)")
+    parser.add_argument("--rs_track_progress", action="store_true",
+                   help="Enable progress tracking for random_search")
+    
+    # Advanced Evolutionary Search parameters (from store_latent_search.py)
     parser.add_argument("--es_mutation_std", type=float, default=None,
                    help="Override mutation standard deviation for evolutionary_search")
+    parser.add_argument("--es_population", type=int, default=None,
+                   help="Override population size for evolutionary_search (overrides sqrt(budget) calculation)")
+    parser.add_argument("--es_generations", type=int, default=None,
+                   help="Override number of generations for evolutionary_search (overrides budget/pop calculation)")
+    parser.add_argument("--es_mutation_decay", type=float, default=None,
+                   help="Multiply mutation_std by this factor each generation (default: 0.95)")
+    parser.add_argument("--es_elite_size", type=int, default=None,
+                   help="Number of top candidates preserved each generation (default: population//2)")
+    parser.add_argument("--es_track_progress", action="store_true",
+                   help="Enable progress tracking for evolutionary_search")
     
-    # Subspace evolutionary search parameters
+    # Subspace evolutionary search parameters (from store_latent_search.py)
     parser.add_argument("--es_use_subspace_mutation", action="store_true",
                    help="Enable subspace mutation for evolutionary search")
     parser.add_argument("--es_subspace_dim", type=int, default=32,
@@ -945,6 +1071,32 @@ def main():
                        help="Ending budget value (default: 100)")
     parser.add_argument("--budget_period", type=int, default=25, 
                        help="Period between budget values (default: 25)")
+    
+    # Advanced optimization features (from store_latent_search.py)
+    parser.add_argument("--n_samples", type=int, default=1,
+                       help="Number of times to run each evaluation with different random seeds (for statistical analysis)")
+    parser.add_argument("--aggregate_statistics", action="store_true",
+                       help="Aggregate per-sample metrics across n_samples runs and generate statistical plots")
+    parser.add_argument("--track_progress", action="store_true",
+                       help="Enable progress tracking for all optimization methods")
+    
+    # Background visualization parameters (from store_latent_search.py)
+    parser.add_argument("--background_resolution", type=int, default=400,
+                       help="Base resolution for background heatmap (higher = smoother)")
+    parser.add_argument("--background_smoothing", action="store_true",
+                       help="Enable additional Gaussian smoothing for small-scale searches")
+    parser.add_argument("--background_knn", type=int, default=5,
+                       help="k-NN parameter for adaptive bandwidth (3-7 recommended)")
+    parser.add_argument("--background_bandwidth_scale", type=float, default=1.25,
+                       help="Bandwidth scaling factor (bigger = softer, more overlap)")
+    parser.add_argument("--background_global_mix", type=float, default=0.05,
+                       help="Global mixing strength (0.02-0.1 recommended, 0 to disable)")
+    
+    # Output and logging options
+    parser.add_argument("--out_dir", type=str, default="results",
+                       help="Output directory for results and plots")
+    parser.add_argument("--no_files", action="store_true",
+                       help="Disable file generation and plotting (faster, just return values)")
     
     args = parser.parse_args()
     
@@ -1037,10 +1189,56 @@ def main():
             "run_name": args.run_name,
             "using_json": using_json,
             "dataset_folder": args.dataset_folder,
+            
+            # Gradient Ascent parameters
+            "ga_lr": args.ga_lr,
+            "ga_steps": args.ga_steps,
+            "ga_optimizer": args.ga_optimizer,
+            "ga_lr_schedule": args.ga_lr_schedule,
+            "ga_lr_schedule_exponent": args.ga_lr_schedule_exponent,
+            "ga_accumulate_gradients_decoder_pairs": args.ga_accumulate_gradients_decoder_pairs,
+            "ga_scan_gradients_latents": args.ga_scan_gradients_latents,
+            "ga_include_mean_latent": args.ga_include_mean_latent,
+            "ga_include_all_latents": args.ga_include_all_latents,
+            "ga_random_perturbation": args.ga_random_perturbation,
+            "ga_track_progress": args.ga_track_progress,
+            
+            # Random Search parameters
+            "rs_scale": args.rs_scale,
+            "rs_scan_batch_size": args.rs_scan_batch_size,
+            "rs_random_search_seed": args.rs_random_search_seed,
+            "rs_include_mean_latent": args.rs_include_mean_latent,
+            "rs_include_all_latents": args.rs_include_all_latents,
+            "rs_random_perturbation": args.rs_random_perturbation,
+            "rs_track_progress": args.rs_track_progress,
+            
+            # Evolutionary Search parameters
+            "es_mutation_std": args.es_mutation_std,
+            "es_population": args.es_population,
+            "es_generations": args.es_generations,
+            "es_mutation_decay": args.es_mutation_decay,
+            "es_elite_size": args.es_elite_size,
+            "es_track_progress": args.es_track_progress,
+            
+            # Subspace parameters
             "es_use_subspace_mutation": args.es_use_subspace_mutation,
             "es_subspace_dim": args.es_subspace_dim,
             "es_ga_step_length": args.es_ga_step_length,
             "es_trust_region_radius": args.es_trust_region_radius,
+            
+            # Advanced features
+            "n_samples": args.n_samples,
+            "aggregate_statistics": args.aggregate_statistics,
+            "track_progress": args.track_progress,
+            
+            # Background visualization
+            "background_resolution": args.background_resolution,
+            "background_smoothing": args.background_smoothing,
+            "background_knn": args.background_knn,
+            "background_bandwidth_scale": args.background_bandwidth_scale,
+            "background_global_mix": args.background_global_mix,
+            
+            # Plotting options
             "loss_plotting": args.loss,
             "plot_methods": args.plot_methods,
         },
@@ -1128,16 +1326,29 @@ def main():
             "optimizer": "adam",
             "lr_schedule": False,
             "lr_schedule_exponent": 0.5,
+            "accumulate_gradients_decoder_pairs": False,
+            "scan_gradients_latents": False,
+            "include_mean_latent": True,
+            "include_all_latents": False,
+            "random_perturbation": None,
+            "track_progress": False,
         },
         "random_search": {
             "scale": 1.0,
             "scan_batch_size": 10,
             "random_search_seed": 0,
+            "include_mean_latent": True,
+            "include_all_latents": False,
+            "random_perturbation": None,
+            "track_progress": False,
         },
         "evolutionary_search": {
             "population_size": 32,
             "num_generations": 25,
             "mutation_std": 0.5,
+            "mutation_decay": 0.95,
+            "elite_size": None,  # Will be calculated as population//2
+            "track_progress": False,
         },
     }
 
@@ -1148,30 +1359,174 @@ def main():
             print(f"⚙️  Overriding gradient_ascent lr -> {base_methods['gradient_ascent']['lr']}")
         except Exception:
             pass
+    if args.ga_steps is not None:
+        try:
+            base_methods["gradient_ascent"]["num_steps"] = int(args.ga_steps)
+            print(f"⚙️  Overriding gradient_ascent num_steps -> {base_methods['gradient_ascent']['num_steps']}")
+        except Exception:
+            pass
+    if args.ga_optimizer is not None:
+        try:
+            base_methods["gradient_ascent"]["optimizer"] = args.ga_optimizer
+            print(f"⚙️  Overriding gradient_ascent optimizer -> {base_methods['gradient_ascent']['optimizer']}")
+        except Exception:
+            pass
+    if args.ga_lr_schedule is not None:
+        try:
+            base_methods["gradient_ascent"]["lr_schedule"] = str(args.ga_lr_schedule).lower() == "true"
+            print(f"⚙️  Overriding gradient_ascent lr_schedule -> {base_methods['gradient_ascent']['lr_schedule']}")
+        except Exception:
+            pass
+    if args.ga_lr_schedule_exponent is not None:
+        try:
+            base_methods["gradient_ascent"]["lr_schedule_exponent"] = float(args.ga_lr_schedule_exponent)
+            print(f"⚙️  Overriding gradient_ascent lr_schedule_exponent -> {base_methods['gradient_ascent']['lr_schedule_exponent']}")
+        except Exception:
+            pass
+    if args.ga_accumulate_gradients_decoder_pairs is not None:
+        try:
+            base_methods["gradient_ascent"]["accumulate_gradients_decoder_pairs"] = str(args.ga_accumulate_gradients_decoder_pairs).lower() == "true"
+            print(f"⚙️  Overriding gradient_ascent accumulate_gradients_decoder_pairs -> {base_methods['gradient_ascent']['accumulate_gradients_decoder_pairs']}")
+        except Exception:
+            pass
+    if args.ga_scan_gradients_latents is not None:
+        try:
+            base_methods["gradient_ascent"]["scan_gradients_latents"] = str(args.ga_scan_gradients_latents).lower() == "true"
+            print(f"⚙️  Overriding gradient_ascent scan_gradients_latents -> {base_methods['gradient_ascent']['scan_gradients_latents']}")
+        except Exception:
+            pass
+    if args.ga_include_mean_latent is not None:
+        try:
+            base_methods["gradient_ascent"]["include_mean_latent"] = str(args.ga_include_mean_latent).lower() == "true"
+            print(f"⚙️  Overriding gradient_ascent include_mean_latent -> {base_methods['gradient_ascent']['include_mean_latent']}")
+        except Exception:
+            pass
+    if args.ga_include_all_latents is not None:
+        try:
+            base_methods["gradient_ascent"]["include_all_latents"] = str(args.ga_include_all_latents).lower() == "true"
+            print(f"⚙️  Overriding gradient_ascent include_all_latents -> {base_methods['gradient_ascent']['include_all_latents']}")
+        except Exception:
+            pass
+    if args.ga_random_perturbation is not None:
+        try:
+            base_methods["gradient_ascent"]["random_perturbation"] = args.ga_random_perturbation
+            print(f"⚙️  Overriding gradient_ascent random_perturbation -> {base_methods['gradient_ascent']['random_perturbation']}")
+        except Exception:
+            pass
+    if args.ga_track_progress or args.track_progress:
+        base_methods["gradient_ascent"]["track_progress"] = True
+        print(f"⚙️  Enabling gradient_ascent track_progress")
+    
+    # Random Search overrides
+    if args.rs_scale is not None:
+        try:
+            base_methods["random_search"]["scale"] = float(args.rs_scale)
+            print(f"⚙️  Overriding random_search scale -> {base_methods['random_search']['scale']}")
+        except Exception:
+            pass
+    if args.rs_scan_batch_size is not None:
+        try:
+            base_methods["random_search"]["scan_batch_size"] = int(args.rs_scan_batch_size)
+            print(f"⚙️  Overriding random_search scan_batch_size -> {base_methods['random_search']['scan_batch_size']}")
+        except Exception:
+            pass
+    if args.rs_random_search_seed is not None:
+        try:
+            base_methods["random_search"]["random_search_seed"] = int(args.rs_random_search_seed)
+            print(f"⚙️  Overriding random_search random_search_seed -> {base_methods['random_search']['random_search_seed']}")
+        except Exception:
+            pass
+    if args.rs_include_mean_latent is not None:
+        try:
+            base_methods["random_search"]["include_mean_latent"] = str(args.rs_include_mean_latent).lower() == "true"
+            print(f"⚙️  Overriding random_search include_mean_latent -> {base_methods['random_search']['include_mean_latent']}")
+        except Exception:
+            pass
+    if args.rs_include_all_latents is not None:
+        try:
+            base_methods["random_search"]["include_all_latents"] = str(args.rs_include_all_latents).lower() == "true"
+            print(f"⚙️  Overriding random_search include_all_latents -> {base_methods['random_search']['include_all_latents']}")
+        except Exception:
+            pass
+    if args.rs_random_perturbation is not None:
+        try:
+            base_methods["random_search"]["random_perturbation"] = args.rs_random_perturbation
+            print(f"⚙️  Overriding random_search random_perturbation -> {base_methods['random_search']['random_perturbation']}")
+        except Exception:
+            pass
+    if args.rs_track_progress or args.track_progress:
+        base_methods["random_search"]["track_progress"] = True
+        print(f"⚙️  Enabling random_search track_progress")
+    
+    # Evolutionary Search overrides
     if args.es_mutation_std is not None:
         try:
             base_methods["evolutionary_search"]["mutation_std"] = float(args.es_mutation_std)
             print(f"⚙️  Overriding evolutionary_search mutation_std -> {base_methods['evolutionary_search']['mutation_std']}")
         except Exception:
             pass
+    if args.es_population is not None:
+        try:
+            base_methods["evolutionary_search"]["population_size"] = int(args.es_population)
+            print(f"⚙️  Overriding evolutionary_search population_size -> {base_methods['evolutionary_search']['population_size']}")
+        except Exception:
+            pass
+    if args.es_generations is not None:
+        try:
+            base_methods["evolutionary_search"]["num_generations"] = int(args.es_generations)
+            print(f"⚙️  Overriding evolutionary_search num_generations -> {base_methods['evolutionary_search']['num_generations']}")
+        except Exception:
+            pass
+    if args.es_mutation_decay is not None:
+        try:
+            base_methods["evolutionary_search"]["mutation_decay"] = float(args.es_mutation_decay)
+            print(f"⚙️  Overriding evolutionary_search mutation_decay -> {base_methods['evolutionary_search']['mutation_decay']}")
+        except Exception:
+            pass
+    if args.es_elite_size is not None:
+        try:
+            base_methods["evolutionary_search"]["elite_size"] = int(args.es_elite_size)
+            print(f"⚙️  Overriding evolutionary_search elite_size -> {base_methods['evolutionary_search']['elite_size']}")
+        except Exception:
+            pass
+    if args.es_track_progress or args.track_progress:
+        base_methods["evolutionary_search"]["track_progress"] = True
+        print(f"⚙️  Enabling evolutionary_search track_progress")
     
     # Evolutionary search budget: balance population and generations first.
     # Choose population ≈ sqrt(budget), enforce at least 3 and cap at 32, then set generations = ceil(budget / population)
     # Apply budget multiplier to scale both population and generations
+    # If explicit population/generations are provided, use those instead
     es_configs = []  # list of {budget, population_size, num_generations}
     max_pop = base_methods["evolutionary_search"]["population_size"]
-    for b in shared_budgets:
-        # Apply budget multiplier
-        scaled_budget = b * args.es_budget_multiplier
-        proposed_pop = int(round(np.sqrt(scaled_budget)))
-        proposed_pop = max(3, min(max_pop, proposed_pop))
-        gens = int(max(1, int(np.ceil(scaled_budget / proposed_pop))))
-        es_configs.append({
-            "budget": int(b), 
-            "scaled_budget": scaled_budget,
-            "population_size": int(proposed_pop), 
-            "num_generations": int(gens)
-        })
+    
+    # Check if explicit values are provided
+    explicit_pop = base_methods["evolutionary_search"].get("population_size")
+    explicit_gens = base_methods["evolutionary_search"].get("num_generations")
+    
+    if explicit_pop is not None and explicit_gens is not None:
+        print(f"⚙️  Using explicit ES configuration: population={explicit_pop}, generations={explicit_gens}")
+        for b in shared_budgets:
+            es_configs.append({
+                "budget": int(b),
+                "scaled_budget": b,  # No scaling when using explicit values
+                "population_size": int(explicit_pop),
+                "num_generations": int(explicit_gens)
+            })
+    else:
+        print(f"⚙️  Using budget-based ES configuration with multiplier: {args.es_budget_multiplier}x")
+        for b in shared_budgets:
+            # Apply budget multiplier
+            scaled_budget = b * args.es_budget_multiplier
+            proposed_pop = int(round(np.sqrt(scaled_budget)))
+            proposed_pop = max(3, min(max_pop, proposed_pop))
+            gens = int(max(1, int(np.ceil(scaled_budget / proposed_pop))))
+            es_configs.append({
+                "budget": int(b), 
+                "scaled_budget": scaled_budget,
+                "population_size": int(proposed_pop), 
+                "num_generations": int(gens)
+            })
     try:
         cfg_summary = ", ".join([f"{c['budget']}->{c['population_size']}x{c['num_generations']} (scaled:{c['scaled_budget']:.1f})" for c in es_configs])
         print(f"🧬 Evolutionary configs (budget -> pop x gens): [{cfg_summary}]")
@@ -1193,7 +1548,7 @@ def main():
     print(f"\n🚀 Starting evaluation of {len(checkpoints)} checkpoints...")
 
     # CSV logging
-    out_dir = Path("results")
+    out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     out_csv = out_dir / f"eval_{args.run_name}_{timestamp}.csv"
@@ -1266,17 +1621,38 @@ def main():
             csv_headers = ["timestamp", "run_name", "checkpoint_name", "checkpoint_step", "method", "budget_type", "budget", 
                           "overall_accuracy", "top_1_shape_accuracy", "top_1_accuracy", "top_1_pixel_correctness",
                           "top_2_shape_accuracy", "top_2_accuracy", "top_2_pixel_correctness",
-                          "total_final_loss",
-                          "subspace_enabled", "subspace_dim", "ga_step_length", "trust_region_radius"]
+                          "total_final_loss"]
+            
+            # Add sample information if multiple samples
+            if args.n_samples > 1:
+                csv_headers.extend(["sample_number", "sample_seed"])
+            
+            # Add subspace parameters if enabled
+            if args.es_use_subspace_mutation:
+                csv_headers.extend(["subspace_enabled", "subspace_dim", "ga_step_length", "trust_region_radius"])
             
             writer.writerow(csv_headers)
 
-        # Iterate checkpoints
-        for i, checkpoint in enumerate(checkpoints, 1):
-            step = checkpoint["step"]
-            if step is None:
-                print(f"⚠️  Skipping checkpoint {checkpoint['name']} (no step info)")
-                continue
+            # Iterate checkpoints
+    for i, checkpoint in enumerate(checkpoints, 1):
+        step = checkpoint["step"]
+        if step is None:
+            print(f"⚠️  Skipping checkpoint {checkpoint['name']} (no step info)")
+            continue
+        
+        # Handle multiple samples if requested
+        sample_seeds = [args.dataset_seed]
+        if args.n_samples > 1:
+            sample_seeds = [args.dataset_seed + run_idx for run_idx in range(args.n_samples)]
+            print(f"🧪 Running {args.n_samples} samples with seeds: {sample_seeds}")
+        
+        for sample_idx, sample_seed in enumerate(sample_seeds):
+            if args.n_samples > 1:
+                print(f"\n🔬 Sample {sample_idx + 1}/{args.n_samples} with seed {sample_seed}")
+                # Update dataset seed for this sample
+                current_dataset_seed = sample_seed
+            else:
+                current_dataset_seed = args.dataset_seed
             
             # Extract training progress from checkpoint version (like plot_from_csv.py)
             checkpoint_name = checkpoint["name"]
@@ -1310,7 +1686,15 @@ def main():
                         # Budget = 2x steps => num_steps = ceil(budget / 2)
                         # Apply budget multiplier
                         scaled_budget = compute_budget * args.ga_budget_multiplier
-                        num_steps = int(np.ceil(scaled_budget / 2))
+                        
+                        # Use explicit ga_steps if provided, otherwise calculate from budget
+                        if base_methods["gradient_ascent"].get("num_steps") is not None:
+                            num_steps = base_methods["gradient_ascent"]["num_steps"]
+                            print(f"   📊 Using explicit GA steps: {num_steps} (budget calculation overridden)")
+                        else:
+                            num_steps = int(np.ceil(scaled_budget / 2))
+                            print(f"   📊 Calculated GA steps: {num_steps} from budget {compute_budget}")
+                        
                         method_kwargs = dict(base_methods["gradient_ascent"])
                         method_kwargs["num_steps"] = num_steps
 
@@ -1329,7 +1713,7 @@ def main():
                             dataset_length=args.dataset_length,
                             dataset_batch_size=args.dataset_batch_size,
                             dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
-                            dataset_seed=args.dataset_seed,
+                            dataset_seed=current_dataset_seed,
                             args=args,
                         )
 
@@ -1370,6 +1754,10 @@ def main():
                                   metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", ""),
                                   metrics.get("total_final_loss", "")]
                         
+                        # Add sample information if multiple samples
+                        if args.n_samples > 1:
+                            csv_row.extend([sample_idx + 1, sample_seed])
+                        
                         if args.es_use_subspace_mutation:
                             csv_row.extend([False, "", "", ""])  # Not applicable for gradient ascent
                         
@@ -1395,7 +1783,7 @@ def main():
                             dataset_length=args.dataset_length,
                             dataset_batch_size=args.dataset_batch_size,
                             dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
-                            dataset_seed=args.dataset_seed,
+                            dataset_seed=current_dataset_seed,
                             args=args,
                         )
 
@@ -1436,6 +1824,10 @@ def main():
                                   metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", ""),
                                   metrics.get("total_final_loss", "")]
                         
+                        # Add sample information if multiple samples
+                        if args.n_samples > 1:
+                            csv_row.extend([sample_idx + 1, sample_seed])
+                        
                         if args.es_use_subspace_mutation:
                             csv_row.extend([False, "", "", ""])  # Not applicable for random search
                         
@@ -1468,7 +1860,7 @@ def main():
                             dataset_length=args.dataset_length,
                             dataset_batch_size=args.dataset_batch_size,
                             dataset_use_hf=(str(args.dataset_use_hf).lower() == "true"),
-                            dataset_seed=args.dataset_seed,
+                            dataset_seed=current_dataset_seed,
                             args=args,
                         )
 
@@ -1527,6 +1919,10 @@ def main():
                                   metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", ""),
                                   metrics.get("total_final_loss", "")]
                         
+                        # Add sample information if multiple samples
+                        if args.n_samples > 1:
+                            csv_row.extend([sample_idx + 1, sample_seed])
+                        
                         if args.es_use_subspace_mutation:
                             csv_row.extend([True, args.es_subspace_dim, args.es_ga_step_length, args.es_trust_region_radius or ""])
                         
@@ -1538,75 +1934,81 @@ def main():
             if "gradient_ascent" in args.plot_methods: selected_counts.append(len(ga_budgets))
             if "random_search" in args.plot_methods: selected_counts.append(len(rs_samples))
             if "evolutionary_search" in args.plot_methods: selected_counts.append(len(es_configs))
-            total_expected = sum(selected_counts)
+            total_expected = sum(selected_counts) * args.n_samples  # Account for multiple samples
             print(f"\n📊 Checkpoint {i}/{len(checkpoints)} complete. Total evaluations: {total_evals}/{total_expected * i}")
             print(f"   ⏱️  Timing info available in W&B logs for each method and budget")
+            if args.n_samples > 1:
+                print(f"   🧪 Multiple samples: {args.n_samples} runs per evaluation")
             
-            # Generate and upload checkpoint figure
-            try:
-                # Collect results data for this checkpoint
-                checkpoint_results = []
-                for method in args.plot_methods:
-                    if method == "gradient_ascent":
-                        for compute_budget in ga_budgets:
-                            checkpoint_results.append({
-                                "method": method,
-                                "budget": compute_budget,
-                                "budget_type": "budget"
-                            })
-                    elif method == "random_search":
-                        for num_samples in rs_samples:
-                            checkpoint_results.append({
-                                "method": method,
-                                "budget": num_samples,
-                                "budget_type": "num_samples"
-                            })
-                    elif method == "evolutionary_search":
-                        for es_cfg in es_configs:
-                            checkpoint_results.append({
-                                "method": method,
-                                "budget": es_cfg["budget"],
-                                "budget_type": "budget"
-                            })
-                
-                # Generate checkpoint figure
-                fig_path = generate_checkpoint_figure(
-                    checkpoint_name=checkpoint["name"],
-                    checkpoint_step=step,
-                    training_progress=training_progress,
-                    total_checkpoints=len(checkpoints),
-                    results_data=checkpoint_results,
-                    shared_budgets=shared_budgets,
-                    plot_methods=args.plot_methods
-                )
-                
-                if fig_path:
-                    # Upload to wandb under plots/ panel
-                    try:
-                        wandb.log({
-                            f"plots/checkpoint_{training_progress}_progress": wandb.Image(fig_path),
-                            f"plots/checkpoint_{training_progress}_step": step,
-                            f"plots/checkpoint_{training_progress}_training_progress": training_progress,
-                            f"plots/checkpoint_{training_progress}_total_checkpoints": len(checkpoints),
-                            f"plots/checkpoint_{training_progress}_evaluations_completed": total_evals,
-                        })
-                        print(f"📊 Generated and uploaded checkpoint figure: {fig_path}")
-                    except Exception as e:
-                        print(f"⚠️  Failed to upload checkpoint figure to W&B: {e}")
-                else:
-                    print(f"⚠️  Failed to generate checkpoint figure")
+            # Generate and upload checkpoint figure (unless --no_files is specified)
+            if not args.no_files:
+                try:
+                    # Collect results data for this checkpoint
+                    checkpoint_results = []
+                    for method in args.plot_methods:
+                        if method == "gradient_ascent":
+                            for compute_budget in ga_budgets:
+                                checkpoint_results.append({
+                                    "method": method,
+                                    "budget": compute_budget,
+                                    "budget_type": "budget"
+                                })
+                        elif method == "random_search":
+                            for num_samples in rs_samples:
+                                checkpoint_results.append({
+                                    "method": method,
+                                    "budget": num_samples,
+                                    "budget_type": "num_samples"
+                                })
+                        elif method == "evolutionary_search":
+                            for es_cfg in es_configs:
+                                checkpoint_results.append({
+                                    "method": method,
+                                    "budget": es_cfg["budget"],
+                                    "budget_type": "budget"
+                                })
                     
-            except Exception as e:
-                print(f"⚠️  Failed to generate or upload checkpoint figure: {e}")
+                    # Generate checkpoint figure
+                    fig_path = generate_checkpoint_figure(
+                        checkpoint_name=checkpoint["name"],
+                        checkpoint_step=step,
+                        training_progress=training_progress,
+                        total_checkpoints=len(checkpoints),
+                        results_data=checkpoint_results,
+                        shared_budgets=shared_budgets,
+                        plot_methods=args.plot_methods
+                    )
+                    
+                    if fig_path:
+                        # Upload to wandb under plots/ panel
+                        try:
+                            wandb.log({
+                                f"plots/checkpoint_{training_progress}_progress": wandb.Image(fig_path),
+                                f"plots/checkpoint_{training_progress}_step": step,
+                                f"plots/checkpoint_{training_progress}_training_progress": training_progress,
+                                f"plots/checkpoint_{training_progress}_total_checkpoints": len(checkpoints),
+                                f"plots/checkpoint_{training_progress}_evaluations_completed": total_evals,
+                            })
+                            print(f"📊 Generated and uploaded checkpoint figure: {fig_path}")
+                        except Exception as e:
+                            print(f"⚠️  Failed to upload checkpoint figure to W&B: {e}")
+                    else:
+                        print(f"⚠️  Failed to generate checkpoint figure")
+                        
+                except Exception as e:
+                    print(f"⚠️  Failed to generate or upload checkpoint figure: {e}")
+            else:
+                print(f"📁 File generation disabled (--no_files flag)")
             
-            # Generate and upload comparison plot for this step
-            try:
-                # Accumulate data from CSV for selected methods only
-                method_to_step_to_budget: Dict[str, Dict[int, Dict[int, float]]] = {}
-                for method in args.plot_methods:
-                    method_to_step_to_budget[method] = {}
+            # Generate and upload comparison plot for this step (unless --no_files is specified)
+            if not args.no_files:
+                try:
+                    # Accumulate data from CSV for selected methods only
+                    method_to_step_to_budget: Dict[str, Dict[int, Dict[int, float]]] = {}
+                    for method in args.plot_methods:
+                        method_to_step_to_budget[method] = {}
                 
-                if out_csv.exists():
+                    if out_csv.exists():
                     with out_csv.open("r") as f:
                         reader = csv.DictReader(f)
                         for row in reader:
@@ -1786,6 +2188,8 @@ def main():
                         
             except Exception as e:
                 print(f"⚠️  Failed to generate comparison plot for training progress {training_progress}: {e}")
+            else:
+                print(f"📁 Comparison plot generation disabled (--no_files flag)")
             
             # Log checkpoint completion to W&B
             try:
@@ -1807,6 +2211,10 @@ def main():
                 })
             except Exception as e:
                 print(f"⚠️  Failed to log checkpoint completion to W&B: {e}")
+        
+        # Close sample loop
+        if args.n_samples > 1:
+            print(f"🔬 Completed {args.n_samples} samples for checkpoint {i}/{len(checkpoints)}")
 
     # Upload CSV artifact
     try:
@@ -1816,8 +2224,9 @@ def main():
     except Exception as e:
         print(f"⚠️  Failed to upload CSV artifact: {e}")
 
-    # Build final optimization comparison plot from CSV (overall summary)
-    try:
+    # Build final optimization comparison plot from CSV (overall summary) (unless --no_files is specified)
+    if not args.no_files:
+        try:
         steps_list: List[int] = []
         method_maps: Dict[str, Dict[int, Dict[int, float]]] = {}
         for method in args.plot_methods:
@@ -1989,8 +2398,10 @@ def main():
             except Exception as e:
                 print(f"⚠️  Failed to generate final loss plots: {e}")
             
-    except Exception as e:
-        print(f"⚠️  Failed to generate or upload final comparison plot: {e}")
+                except Exception as e:
+                print(f"⚠️  Failed to generate or upload final comparison plot: {e}")
+        else:
+            print(f"📁 Final plot generation disabled (--no_files flag)")
 
     # Summary
     print("\n" + "=" * 60)
@@ -2005,7 +2416,10 @@ def main():
         print(f"  ✅ Success: {stats['success']}")
         print(f"  ❌ Failed: {stats['failed']}")
 
-    print(f"\n📊 CSV saved to: {out_csv}")
+    print(f"\n📊 Output configuration:")
+    print(f"   • Output directory: {args.out_dir}")
+    print(f"   • CSV saved to: {out_csv}")
+    print(f"   • File generation: {'enabled' if not args.no_files else 'disabled (--no_files flag)'}")
     print(f"📅 Timestamp: {timestamp}")
     print("📈 Available metrics in CSV:")
     print("   - overall_accuracy")
@@ -2016,6 +2430,9 @@ def main():
     print("   - top_2_accuracy")
     print("   - top_2_pixel_correctness")
     print("   - total_final_loss")
+    if args.n_samples > 1:
+        print("   - sample_number")
+        print("   - sample_seed")
     if args.es_use_subspace_mutation:
         print("   - subspace_enabled")
         print("   - subspace_dim")
@@ -2027,6 +2444,15 @@ def main():
             print(f"   - {method} ({'num_steps' if method == 'gradient_ascent' else 'num_samples' if method == 'random_search' else 'num_generations'})")
         else:
             print(f"   - {method} (skipped - not in plot_methods)")
+    
+    # Sample information
+    if args.n_samples > 1:
+        print(f"\n🧪 Sample configuration:")
+        print(f"   • Multiple samples: {args.n_samples} runs per evaluation")
+        print(f"   • Base seed: {args.dataset_seed}")
+        print(f"   • Sample seeds: {[args.dataset_seed + i for i in range(args.n_samples)]}")
+        if args.aggregate_statistics:
+            print(f"   • Statistical aggregation: enabled")
 
     # Comprehensive logging summary
     print(f"\n{'='*80}")
@@ -2049,20 +2475,78 @@ def main():
         print(f"   • Length: {args.dataset_length}")
         print(f"   • Batch size: {args.dataset_batch_size}")
     
+    # Advanced features
+    if args.n_samples > 1:
+        print(f"   • Multiple samples: {args.n_samples} runs with different seeds")
+        if args.aggregate_statistics:
+            print(f"   • Statistical aggregation: enabled")
+    
+    # Output configuration
+    print(f"   • Output directory: {args.out_dir}")
+    print(f"   • File generation: {'enabled' if not args.no_files else 'disabled'}")
+    
     print(f"\n⚙️  Method configurations:")
     for method in args.plot_methods:
         if method == "gradient_ascent":
-            print(f"   • {method}: lr={base_methods[method].get('lr')}, optimizer={base_methods[method].get('optimizer')}")
+            ga_config = base_methods[method]
+            print(f"   • {method}: lr={ga_config.get('lr')}, optimizer={ga_config.get('optimizer')}")
+            if ga_config.get('lr_schedule'):
+                print(f"     - LR Schedule: enabled (exponent={ga_config.get('lr_schedule_exponent')})")
+            if ga_config.get('accumulate_gradients_decoder_pairs'):
+                print(f"     - Accumulate gradients decoder pairs: enabled")
+            if ga_config.get('scan_gradients_latents'):
+                print(f"     - Scan gradients latents: enabled")
+            if ga_config.get('include_mean_latent'):
+                print(f"     - Include mean latent: enabled")
+            if ga_config.get('include_all_latents'):
+                print(f"     - Include all latents: enabled")
+            if ga_config.get('random_perturbation'):
+                print(f"     - Random perturbation: {ga_config.get('random_perturbation')}")
+            if ga_config.get('track_progress'):
+                print(f"     - Progress tracking: enabled")
         elif method == "random_search":
-            print(f"   • {method}: scale={base_methods[method].get('scale')}, scan_batch_size={base_methods[method].get('scan_batch_size')}")
+            rs_config = base_methods[method]
+            print(f"   • {method}: scale={rs_config.get('scale')}, scan_batch_size={rs_config.get('scan_batch_size')}")
+            if rs_config.get('include_mean_latent'):
+                print(f"     - Include mean latent: enabled")
+            if rs_config.get('include_all_latents'):
+                print(f"     - Include all latents: enabled")
+            if rs_config.get('random_perturbation'):
+                print(f"     - Random perturbation: {rs_config.get('random_perturbation')}")
+            if rs_config.get('track_progress'):
+                print(f"     - Progress tracking: enabled")
         elif method == "evolutionary_search":
-            print(f"   • {method}: mutation_std={base_methods[method].get('mutation_std')}")
+            es_config = base_methods[method]
+            print(f"   • {method}: mutation_std={es_config.get('mutation_std')}")
+            if es_config.get('mutation_decay') is not None:
+                print(f"     - Mutation decay: {es_config.get('mutation_decay')}")
+            if es_config.get('elite_size') is not None:
+                print(f"     - Elite size: {es_config.get('elite_size')}")
+            if es_config.get('track_progress'):
+                print(f"     - Progress tracking: enabled")
             if args.es_use_subspace_mutation:
                 print(f"     - Subspace mutation: enabled (dim={args.es_subspace_dim}, ga_step={args.es_ga_step_length})")
                 if args.es_trust_region_radius is not None:
                     print(f"     - Trust region radius: {args.es_trust_region_radius}")
             else:
                 print(f"     - Subspace mutation: disabled (standard isotropic mutation)")
+    
+    # Advanced features
+    if args.n_samples > 1:
+        print(f"\n🧪 Advanced features:")
+        print(f"   • Multiple samples: {args.n_samples} runs with different seeds")
+        if args.aggregate_statistics:
+            print(f"   • Aggregate statistics: enabled")
+    
+    # Background visualization
+    if args.background_resolution != 400 or args.background_smoothing or args.background_knn != 5 or args.background_bandwidth_scale != 1.25 or args.background_global_mix != 0.05:
+        print(f"\n🎨 Background visualization:")
+        print(f"   • Resolution: {args.background_resolution}")
+        if args.background_smoothing:
+            print(f"   • Smoothing: enabled")
+        print(f"   • k-NN: {args.background_knn}")
+        print(f"   • Bandwidth scale: {args.background_bandwidth_scale}")
+        print(f"   • Global mix: {args.background_global_mix}")
     
     print(f"\n💰 Budget configuration:")
     print(f"   • Start: {args.budget_start}")
