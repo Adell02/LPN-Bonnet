@@ -1121,16 +1121,14 @@ class StructuredTrainer:
         for enc_idx, enc_params in enumerate(enc_params_list):
             logging.info(f"🔓 Specializing Encoder {enc_idx}...")
             
-            # Create a temporary model with only the encoder we want to train
-            # This ensures the model structure is correct
-            temp_model = StructuredLPN(
-                encoders=(self.encoders[enc_idx],),  # Single encoder object
-                decoder=self.decoder
-            )
+            # Debug: Check encoder structure
+            logging.info(f"   Encoder {enc_idx} type: {type(self.encoders[enc_idx])}")
+            logging.info(f"   Encoder {enc_idx} has apply method: {hasattr(self.encoders[enc_idx], 'apply')}")
             
-            # Create individual training state
+            # Create individual training state using main model
+            # We'll modify the parameters to only train one encoder
             individual_state = TrainState.create(
-                apply_fn=temp_model.apply,
+                apply_fn=self.model.apply,
                 tx=optax.adamw(self.cfg.training.learning_rate),
                 params={
                     "encoders": (enc_params,),  # Only this encoder's parameters
@@ -1140,7 +1138,7 @@ class StructuredTrainer:
             
             # Train this encoder on complementary data
             specialized_encoder = self._train_encoder_individually(
-                enc_idx, individual_state, temp_model
+                enc_idx, individual_state, self.model
             )
             
             specialized_encoders.append(specialized_encoder)
@@ -1188,6 +1186,14 @@ class StructuredTrainer:
         for step in range(num_steps):
             # Sample batch from specialized data
             batch = self._sample_specialized_batch(specialized_data, target_pattern)
+            
+            # Debug: Check model and parameters structure
+            if step == 0:
+                logging.info(f"   Model type: {type(model)}")
+                logging.info(f"   Model encoders: {type(model.encoders)}")
+                logging.info(f"   Model encoders length: {len(model.encoders)}")
+                logging.info(f"   State params encoders type: {type(state.params['encoders'])}")
+                logging.info(f"   State params encoders length: {len(state.params['encoders'])}")
             
             # Forward pass with contrastive loss
             loss, metrics = model.apply(
