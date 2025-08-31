@@ -1112,8 +1112,8 @@ class StructuredTrainer:
         logging.info(f"   - Focus: pattern specialization through contrastive learning")
         
         # Store original parameters for restoration
-        self.original_encoder_params = [enc_params.copy() for enc_params in enc_params_list]
-        self.original_decoder_params = state.params["decoder"].copy()
+        self.original_encoder_params = [jax.tree_util.tree_map(lambda x: x, enc_params) for enc_params in enc_params_list]
+        self.original_decoder_params = jax.tree_util.tree_map(lambda x: x, state.params["decoder"])
         
         # Create individual training states for each encoder
         specialized_encoders = []
@@ -1127,8 +1127,27 @@ class StructuredTrainer:
             
             # Create individual training state with all encoders but only one trainable
             # This ensures the model structure matches the parameters
+            
+            # Debug: Check original encoder parameters
+            logging.info(f"   Original encoder params length: {len(self.original_encoder_params)}")
+            for i, params in enumerate(self.original_encoder_params):
+                logging.info(f"   Original encoder {i} params type: {type(params)}")
+                if params is None:
+                    logging.info(f"   Original encoder {i} params is None!")
+                else:
+                    logging.info(f"   Original encoder {i} params keys: {list(params.keys()) if isinstance(params, dict) else 'Not a dict'}")
+            
             all_encoder_params = list(self.original_encoder_params)  # Copy all encoder parameters
             all_encoder_params[enc_idx] = enc_params  # Replace the one we want to train
+            
+            # Debug: Check final encoder parameters
+            logging.info(f"   Final encoder params length: {len(all_encoder_params)}")
+            for i, params in enumerate(all_encoder_params):
+                logging.info(f"   Final encoder {i} params type: {type(params)}")
+                if params is None:
+                    logging.info(f"   Final encoder {i} params is None!")
+                else:
+                    logging.info(f"   Final encoder {i} params keys: {list(params.keys()) if isinstance(params, dict) else 'Not a dict'}")
             individual_state = TrainState.create(
                 apply_fn=self.model.apply,  # Use the main model's apply function
                 tx=optax.adamw(self.cfg.training.learning_rate),
