@@ -506,8 +506,6 @@ class DecoderTransformer(nn.Module):
         if actual_seq_len != expected_seq_len:
             print(f"[embed_inputs] Sequence length mismatch - this may cause attention mask issues")
             print(f"[embed_inputs] Proceeding with actual sequence length: {actual_seq_len}")
-        else:
-            print(f"[embed_inputs] Sequence length check passed: {actual_seq_len}")
         
         return x
 

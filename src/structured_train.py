@@ -14,6 +14,29 @@ The only difference is the model architecture: instead of training both encoder 
 this trains only the decoder while using multiple pre-trained encoders via Product of Experts (PoE).
 
 This eliminates the data size mismatch that was causing training to get stuck.
+
+COMPREHENSIVE METRICS LOGGING TO WANDB:
+
+PHASE A (Individual Encoder Specialization):
+- Training progress: step, total_steps, phase status
+- Loss metrics: contrastive_loss, repulsion_loss, reconstruction_loss, prior_kl, pairwise_kl, total_loss
+- Encoder variance analysis: mean, std, min, max variance for each encoder
+- Pattern-specific variance: variance statistics for each pattern (O, T, L tetrominos) per encoder
+- Contrastive learning metrics: KL mean, sign mean for pattern specialization effectiveness
+- Training status: encoder/decoder trainability, exposure steps remaining
+
+PHASE B (Joint Decoder Training):
+- Training progress: step, phase status, encoder/decoder status
+- Loss metrics: reconstruction_loss, prior_kl, pairwise_kl, total_loss (no specialization losses)
+- Encoder variance monitoring: variance statistics for frozen encoders (maintaining specialization)
+- Pattern-specific variance: variance analysis for each pattern per encoder during frozen state
+- Training focus: decoder-only training with frozen specialized encoders
+
+GENERAL METRICS:
+- Timing: train_time, dataloading_time, throughput
+- Evaluation: shape accuracy, pixel correctness, clustering metrics
+- Visualization: T-SNE plots, generation examples, confidence panels
+- Checkpointing: model state saves and restoration
 """
 
 # from __future__ import annotations  # Not supported in Python 3.6
@@ -1164,16 +1187,25 @@ class StructuredTrainer:
             logging.info(f"✅ Encoder {enc_idx} specialization completed")
         
         # Update the main state with specialized encoders
-        updated_state = state.replace(
-            params=state.params.replace(
-                encoders=tuple(specialized_encoders)
-            )
-        )
+        # Create new params dictionary with specialized encoders
+        new_params = dict(state.params)
+        new_params["encoders"] = tuple(specialized_encoders)
+        
+        updated_state = state.replace(params=new_params)
         
         self.phase1_completed = True
         logging.info("🎉 PHASE 1 COMPLETED: All encoders specialized!")
         logging.info("   - Encoders now have pattern-specific representations")
         logging.info("   - Ready for Phase 2: Joint decoder training")
+        
+        # Log Phase 1 completion metrics to WandB
+        phase1_completion_metrics = {
+            "phase_a/completion/step": step if 'step' in locals() else 0,
+            "phase_a/completion/status": "completed",
+            "phase_a/completion/encoders_trained": len(specialized_encoders),
+            "phase_a/completion/total_encoder_expose_steps": self.encoder_expose_steps,
+        }
+        wandb.log(phase1_completion_metrics)
         
         return updated_state
     
@@ -1260,6 +1292,74 @@ class StructuredTrainer:
             
             if step % 50 == 0:
                 logging.info(f"     Encoder {enc_idx} - Step {step}/{num_steps} - Loss: {float(loss):.6f}")
+                
+                # Log detailed metrics to WandB for Phase A training
+                wandb_metrics = {
+                    f"phase_a/encoder_{enc_idx}/step": step,
+                    f"phase_a/encoder_{enc_idx}/total_steps": num_steps,
+                    f"phase_a/encoder_{enc_idx}/loss": float(loss),
+                    f"phase_a/encoder_{enc_idx}/target_pattern": target_pattern,
+                }
+                
+                # Add contrastive loss metrics if available
+                if "contrastive_loss" in metrics:
+                    wandb_metrics[f"phase_a/encoder_{enc_idx}/contrastive_loss"] = float(metrics["contrastive_loss"])
+                if "contrastive_loss_weighted" in metrics:
+                    wandb_metrics[f"phase_a/encoder_{enc_idx}/contrastive_loss_weighted"] = float(metrics["contrastive_loss_weighted"])
+                if "contrastive_kl_mean" in metrics:
+                    wandb_metrics[f"phase_a/encoder_{enc_idx}/contrastive_kl_mean"] = float(metrics["contrastive_kl_mean"])
+                if "contrastive_sign_mean" in metrics:
+                    wandb_metrics[f"phase_a/encoder_{enc_idx}/contrastive_sign_mean"] = float(metrics["contrastive_sign_mean"])
+                
+                # Log encoder variance metrics for each pattern
+                try:
+                    # Compute encoder variance for this batch
+                    encoder_params = state.params["encoders"][0]
+                    mu_i, logvar_i = self.encoders[enc_idx].apply(
+                        {"params": encoder_params}, 
+                        batch[0], 
+                        batch[1], 
+                        True, 
+                        mutable=False
+                    )
+                    
+                    # Compute variance statistics
+                    var_i = jnp.exp(logvar_i)  # Convert logvar to variance
+                    mean_var = float(jnp.mean(var_i))
+                    std_var = float(jnp.std(var_i))
+                    min_var = float(jnp.min(var_i))
+                    max_var = float(jnp.max(var_i))
+                    
+                    wandb_metrics.update({
+                        f"phase_a/encoder_{enc_idx}/variance/mean": mean_var,
+                        f"phase_a/encoder_{enc_idx}/variance/std": std_var,
+                        f"phase_a/encoder_{enc_idx}/variance/min": min_var,
+                        f"phase_a/encoder_{enc_idx}/variance/max": max_var,
+                        f"phase_a/encoder_{enc_idx}/variance/range": max_var - min_var,
+                    })
+                    
+                    # Pattern-specific variance analysis
+                    pattern_ids = batch[2]
+                    unique_patterns = jnp.unique(pattern_ids)
+                    
+                    for pattern_id in unique_patterns:
+                        pattern_mask = (pattern_ids == pattern_id)
+                        if jnp.any(pattern_mask):
+                            pattern_var = var_i[pattern_mask]
+                            pattern_mean_var = float(jnp.mean(pattern_var))
+                            pattern_std_var = float(jnp.std(pattern_var))
+                            
+                            wandb_metrics.update({
+                                f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/variance_mean": pattern_mean_var,
+                                f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/variance_std": pattern_std_var,
+                                f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/samples": int(jnp.sum(pattern_mask)),
+                            })
+                            
+                except Exception as e:
+                    logging.warning(f"Could not compute encoder variance metrics: {e}")
+                
+                # Log to WandB
+                wandb.log(wandb_metrics, step=step)
         
         # Return trained encoder params
         if "encoders" in state.params and len(state.params["encoders"]) > 0:
@@ -1819,10 +1919,92 @@ class StructuredTrainer:
                     "timing/dataloading_time": time.time() - dataloading_time
                 })
                 
+                # Phase 2: Enhanced metrics logging for joint decoder training
+                phase_b_metrics = {
+                    "phase_b/step": step,
+                    "phase_b/phase": "joint_decoder_training",
+                    "phase_b/encoders_status": "frozen",
+                    "phase_b/decoder_status": "trainable",
+                    "phase_b/batch_size": self.batch_size,
+                    "phase_b/log_every": log_every,
+                }
+                
+                # Add reconstruction loss metrics
+                if "reconstruction_loss" in metrics:
+                    phase_b_metrics["phase_b/reconstruction_loss"] = float(metrics["reconstruction_loss"])
+                if "reconstruction_loss_weighted" in metrics:
+                    phase_b_metrics["phase_b/reconstruction_loss_weighted"] = float(metrics["reconstruction_loss_weighted"])
+                
+                # Add KL divergence metrics
+                if "prior_kl" in metrics:
+                    phase_b_metrics["phase_b/prior_kl"] = float(metrics["prior_kl"])
+                if "prior_kl_weighted" in metrics:
+                    phase_b_metrics["phase_b/prior_kl_weighted"] = float(metrics["prior_kl_weighted"])
+                if "pairwise_kl" in metrics:
+                    phase_b_metrics["phase_b/pairwise_kl"] = float(metrics["pairwise_kl"])
+                if "pairwise_kl_weighted" in metrics:
+                    phase_b_metrics["phase_b/pairwise_kl_weighted"] = float(metrics["pairwise_kl_weighted"])
+                
+                # Add total loss
+                if "total_loss" in metrics:
+                    phase_b_metrics["phase_b/total_loss"] = float(metrics["total_loss"])
+                
+                # Add encoder variance metrics for each pattern (encoders are frozen but we can still analyze their outputs)
+                try:
+                    # Sample a small batch for variance analysis
+                    sample_batch_size = min(16, self.batch_size)
+                    sample_grids = grids[0, :sample_batch_size] if len(grids.shape) > 2 else grids[:sample_batch_size]
+                    sample_shapes = shapes[0, :sample_batch_size] if len(shapes.shape) > 2 else shapes[:sample_batch_size]
+                    
+                    # Analyze each encoder's variance outputs
+                    for enc_idx, enc_params in enumerate(state.params["encoders"]):
+                        try:
+                            mu_i, logvar_i = self.encoders[enc_idx].apply(
+                                {"params": enc_params}, 
+                                sample_grids, 
+                                sample_shapes, 
+                                False,  # eval mode
+                                mutable=False
+                            )
+                            
+                            # Compute variance statistics
+                            var_i = jnp.exp(logvar_i)
+                            mean_var = float(jnp.mean(var_i))
+                            std_var = float(jnp.std(var_i))
+                            
+                            phase_b_metrics[f"phase_b/encoder_{enc_idx}/variance_mean"] = mean_var
+                            phase_b_metrics[f"phase_b/encoder_{enc_idx}/variance_std"] = std_var
+                            
+                            # Pattern-specific variance analysis (if pattern IDs available)
+                            if len(explicit_pattern_ids) >= sample_batch_size:
+                                sample_pattern_ids = explicit_pattern_ids[:sample_batch_size]
+                                unique_patterns = jnp.unique(sample_pattern_ids)
+                                
+                                for pattern_id in unique_patterns:
+                                    pattern_mask = (sample_pattern_ids == pattern_id)
+                                    if jnp.any(pattern_mask):
+                                        pattern_var = var_i[pattern_mask]
+                                        pattern_mean_var = float(jnp.mean(pattern_var))
+                                        pattern_std_var = float(jnp.std(pattern_var))
+                                        
+                                        phase_b_metrics.update({
+                                            f"phase_b/encoder_{enc_idx}/pattern_{pattern_id}/variance_mean": pattern_mean_var,
+                                            f"phase_b/encoder_{enc_idx}/pattern_{pattern_id}/variance_std": pattern_std_var,
+                                            f"phase_b/encoder_{enc_idx}/pattern_{pattern_id}/samples": int(jnp.sum(pattern_mask)),
+                                        })
+                                        
+                        except Exception as e:
+                            logging.warning(f"Could not compute Phase B encoder {enc_idx} variance metrics: {e}")
+                            
+                except Exception as e:
+                    logging.warning(f"Could not compute Phase B encoder variance metrics: {e}")
+                
                 # Phase 2: No contrastive loss (encoders frozen)
                 logging.debug(f"Phase 2: No contrastive loss (encoders frozen)")
                 
-                wandb.log(metrics, step=step)
+                # Log both standard metrics and Phase B specific metrics
+                all_metrics = {**metrics, **phase_b_metrics}
+                wandb.log(all_metrics, step=step)
                 
                 # Save checkpoint
                 if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
@@ -1915,7 +2097,17 @@ class StructuredTrainer:
                     "timing/dataloading_time": time.time() - dataloading_time
                 })
                 
-                # Add contrastive loss to Charts section for better visualization
+                # Phase A: Enhanced metrics logging for individual encoder training
+                phase_a_metrics = {
+                    "phase_a/step": step,
+                    "phase_a/phase": "individual_encoder_training",
+                    "phase_a/encoders_status": "trainable",
+                    "phase_a/decoder_status": "trainable",
+                    "phase_a/batch_size": self.batch_size,
+                    "phase_a/log_every": log_every,
+                    "phase_a/encoder_expose_steps_remaining": self.encoder_expose_steps,
+                }
+                
                 if "contrastive_loss" in metrics:
                     # STABILIZATION: Monitor contrastive loss magnitude and clip if needed
                     try:
@@ -1925,9 +2117,46 @@ class StructuredTrainer:
                         # Safety check: if contrastive loss is exploding, log warning
                         if abs(contrastive_loss_val) > 100.0:
                             logging.warning(f"Contrastive loss is very large: {contrastive_loss_val:.2f}. Consider reducing contrastive_kl coefficient.")
+                        elif abs(contrastive_loss_val) < 0.01:
+                            logging.info(f"Contrastive loss is very small: {contrastive_loss_val:.6f}). Consider increasing contrastive_kl coefficient.")
+                        
+                        # Add additional contrastive loss metrics to Phase A
+                        if "contrastive_kl_mean" in metrics:
+                            phase_a_metrics["phase_a/contrastive_kl_mean"] = float(metrics["contrastive_kl_mean"])
+                        if "contrastive_sign_mean" in metrics:
+                            phase_a_metrics["phase_a/contrastive_sign_mean"] = float(metrics["contrastive_sign_mean"])
+                        
+                        # Debug pattern ID effectiveness
+                        if "contrastive_sign_mean" in metrics:
+                            sign_mean = float(np.array(metrics['contrastive_sign_mean']))
+                            if abs(sign_mean) < 0.1:
+                                logging.warning(f"⚠️  Contrastive sign mean is very small ({sign_mean:.6f})")
+                                logging.warning(f"   This suggests pattern IDs may not be effective")
+                                logging.warning(f"   CRITICAL CHECKS NEEDED:")
+                                logging.warning(f"   - Verify batch contains multiple pattern types")
+                                logging.warning(f"   - Check pattern_ids match actual data content")
+                                logging.warning(f"   - Ensure encoder variance outputs are different")
+                                logging.warning(f"   - Consider increasing contrastive_kl coefficient")
+                            elif abs(sign_mean) > 0.9:
+                                logging.info(f"✅ Contrastive sign mean is strong ({sign_mean:.6f}) - Pattern IDs appear effective")
+                            else:
+                                logging.info(f"⚠️  Contrastive sign mean is moderate ({sign_mean:.6f}) - Pattern IDs may need improvement")
+                        
+                        # Debug encoder specialization progress
+                        if "contrastive_kl_mean" in metrics:
+                            kl_mean = float(np.array(metrics['contrastive_kl_mean']))
+                            if kl_mean < 0.01:
+                                logging.warning(f"Contrastive KL mean is very small ({kl_mean:.6f}). Encoders may not be specializing.")
+                                logging.warning(f"  - Consider increasing contrastive_kl coefficient")
+                                logging.warning(f"  - Check encoder variance outputs")
+                            elif kl_mean > 1.0:
+                                logging.info(f"Contrastive KL mean is large ({kl_mean:.6f}). Encoders are actively specializing ✓")
+                            else:
+                                logging.info(f"Contrastive KL mean is moderate ({kl_mean:.6f}). Encoders showing some specialization.")
                     except Exception as e:
                         logging.warning(f"Could not monitor contrastive loss magnitude: {e}")
                     
+                    # Add contrastive loss to Charts section for better visualization
                     metrics["Charts/contrastive_loss"] = metrics["contrastive_loss"]
                     metrics["Charts/contrastive_loss_weighted"] = metrics["contrastive_loss_weighted"]
                     # Add additional contrastive loss metrics to Charts
@@ -1936,7 +2165,78 @@ class StructuredTrainer:
                     if "contrastive_sign_mean" in metrics:
                         metrics["Charts/contrastive_sign_mean"] = metrics["contrastive_sign_mean"]
                 
-                wandb.log(metrics, step=step)
+                # Add other loss metrics to Phase A
+                if "repulsion_loss" in metrics:
+                    phase_a_metrics["phase_a/repulsion_loss"] = float(metrics["repulsion_loss"])
+                    phase_a_metrics["phase_a/repulsion_loss_weighted"] = float(metrics.get("repulsion_loss_weighted", 0))
+                
+                if "reconstruction_loss" in metrics:
+                    phase_a_metrics["phase_a/reconstruction_loss"] = float(metrics["reconstruction_loss"])
+                    phase_a_metrics["phase_a/reconstruction_loss_weighted"] = float(metrics.get("reconstruction_loss_weighted", 0))
+                
+                if "prior_kl" in metrics:
+                    phase_a_metrics["phase_a/prior_kl"] = float(metrics["prior_kl"])
+                    phase_a_metrics["phase_a/prior_kl_weighted"] = float(metrics.get("prior_kl_weighted", 0))
+                if "pairwise_kl" in metrics:
+                    phase_a_metrics["phase_a/pairwise_kl"] = float(metrics["pairwise_kl"])
+                    phase_a_metrics["phase_a/pairwise_kl_weighted"] = float(metrics.get("pairwise_kl_weighted", 0))
+                
+                if "total_loss" in metrics:
+                    phase_a_metrics["phase_a/total_loss"] = float(metrics["total_loss"])
+                
+                # Add encoder variance metrics for each pattern during Phase A
+                try:
+                    # Sample a small batch for variance analysis
+                    sample_batch_size = min(16, self.batch_size)
+                    sample_grids = grids[0, :sample_batch_size] if len(grids.shape) > 2 else grids[:sample_batch_size]
+                    sample_shapes = shapes[0, :sample_batch_size] if len(shapes.shape) > 2 else shapes[:sample_batch_size]
+                    
+                    # Analyze each encoder's variance outputs
+                    for enc_idx, enc_params in enumerate(state.params["encoders"]):
+                        try:
+                            mu_i, logvar_i = self.encoders[enc_idx].apply(
+                                {"params": enc_params}, 
+                                sample_grids, 
+                                sample_shapes, 
+                                False,  # eval mode
+                                mutable=False
+                            )
+                            
+                            # Compute variance statistics
+                            var_i = jnp.exp(logvar_i)
+                            mean_var = float(jnp.mean(var_i))
+                            std_var = float(jnp.std(var_i))
+                            
+                            phase_a_metrics[f"phase_a/encoder_{enc_idx}/variance_mean"] = mean_var
+                            phase_a_metrics[f"phase_a/encoder_{enc_idx}/variance_std"] = std_var
+                            
+                            # Pattern-specific variance analysis (if pattern IDs available)
+                            if len(explicit_pattern_ids) >= sample_batch_size:
+                                sample_pattern_ids = explicit_pattern_ids[:sample_batch_size]
+                                unique_patterns = jnp.unique(sample_pattern_ids)
+                                
+                                for pattern_id in unique_patterns:
+                                    pattern_mask = (sample_pattern_ids == pattern_id)
+                                    if jnp.any(pattern_mask):
+                                        pattern_var = var_i[pattern_mask]
+                                        pattern_mean_var = float(jnp.mean(pattern_var))
+                                        pattern_std_var = float(jnp.std(pattern_var))
+                                        
+                                        phase_a_metrics.update({
+                                            f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/variance_mean": pattern_mean_var,
+                                            f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/variance_std": pattern_std_var,
+                                            f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/samples": int(jnp.sum(pattern_mask)),
+                                        })
+                                        
+                        except Exception as e:
+                            logging.warning(f"Could not compute Phase A encoder {enc_idx} variance metrics: {e}")
+                            
+                except Exception as e:
+                    logging.warning(f"Could not compute Phase A encoder variance metrics: {e}")
+                
+                # Log both standard metrics and Phase A specific metrics
+                all_metrics = {**metrics, **phase_a_metrics}
+                wandb.log(all_metrics, step=step)
 
                 # Save checkpoint
                 if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:

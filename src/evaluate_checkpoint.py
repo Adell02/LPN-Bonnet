@@ -876,10 +876,10 @@ def evaluate_custom_dataset(
             if es_losses_rows and es_gen_len is not None:
                 es_losses_per_sample = np.vstack(es_losses_rows).astype(np.float32)
                 payload["es_generation_losses_per_sample"] = es_losses_per_sample
-                # Budget per generation (start from gen1)
+                # Budget per generation (start from gen0 to include initial evaluation)
                 if es_pop_size is None:
                     es_pop_size = 1
-                payload["es_budget"] = (np.arange(1, es_gen_len + 1) * int(es_pop_size)).astype(np.int32)
+                payload["es_budget"] = (np.arange(0, es_gen_len) * int(es_pop_size)).astype(np.int32)
             os.makedirs(os.path.dirname(store_path) or ".", exist_ok=True)
             print(f"[store_latents] Saving to {store_path} with keys: {list(payload.keys())}")
             np.savez_compressed(store_path, **payload)
