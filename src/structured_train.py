@@ -14,73 +14,6 @@ The only difference is the model architecture: instead of training both encoder 
 this trains only the decoder while using multiple pre-trained encoders via Product of Experts (PoE).
 
 This eliminates the data size mismatch that was causing training to get stuck.
-
-COMPREHENSIVE METRICS LOGGING TO WANDB:
-
-PHASE A (Individual Encoder Specialization):
-- Training progress: step, total_steps, phase status
-- Loss metrics: contrastive_loss, repulsion_loss, reconstruction_loss, prior_kl, pairwise_kl, total_loss
-- Encoder variance analysis: mean, std, min, max variance for each encoder
-- Pattern-specific variance: variance statistics for each pattern (O, T, L tetrominos) per encoder
-- Contrastive learning metrics: KL mean, sign mean for pattern specialization effectiveness
-- Training status: encoder/decoder trainability, exposure steps remaining
-
-ENCODER VARIANCE DEBUGGING & SPECIALIZATION MONITORING:
-- Variance trend analysis: detect overfitting vs. effective specialization
-- Pattern-specific variance ratios: target pattern should have HIGHER variance (learning)
-- Variance entropy & stability metrics: monitor uncertainty distribution
-- Overfitting warnings: alert when variance consistently drops across all patterns
-- T-SNE visualizations: show encoder latent space evolution during training
-- Average variance per encoder per pattern: monitor pattern-specific specialization progress
-- Overall pattern variance mean: track encoder specialization quality across all patterns
-
-PHASE_A_VARIANCES SECTION (WandB Organization):
-- /basic/: mean, std, min, max, range variance statistics
-- /debug/: entropy, coefficient_variation, stability metrics
-- /patterns/pattern_{id}/: pattern-specific variance analysis
-- /trends/: overall_trend, recent_trend, trend_acceleration
-- /warnings/: overfitting_detected, trend_value, history_length
-- /specialization/: target_pattern_ratio, other_pattern_ratios, status indicators
-- /summary/: overall_variance_mean, training_progress, specialization_quality
-- /context/: step, total_steps, target_pattern information
-- /certainty_panel: Histogram visualizations showing variance distributions for each pattern
-
-WANDB STEP CONTINUITY FIX:
-- Global step counter maintains monotonically increasing values across all encoders
-- Custom step metric "phase_a_global_step" prevents step warnings
-- Each encoder's steps are logged with proper continuity (0, 1, 2, ..., 200, 201, 202, ..., 400, 401, 402, ..., 600)
-- No more "step only supports monotonically increasing values" warnings
-
-INDENTATION FIXES:
-- Fixed misaligned comments and code blocks in pattern-specific variance analysis
-- Corrected indentation for all wandb_metrics.update() calls
-- Ensured proper nesting for if-else statements in variance debugging
-- Resolved IndentationError that was preventing code execution
-
-GLOBAL STEP INTEGRATION:
-- All WandB metrics now use global step counters for proper continuity
-- Phase A: Uses phase_a_global_step for monotonically increasing steps
-- Phase B: Uses standard step counter for joint decoder training
-- All wandb.log calls include appropriate step parameters
-- No more "step only supports monotonically increasing values" warnings
-
-PHASE B (Joint Decoder Training):
-- Training progress: step, phase status, encoder/decoder status
-- Loss metrics: reconstruction_loss, prior_kl, pairwise_kl, total_loss (no specialization losses)
-- Encoder variance monitoring: variance statistics for frozen encoders (maintaining specialization)
-- Pattern-specific variance: variance analysis for each pattern per encoder during frozen state
-- Training focus: decoder-only training with frozen specialized encoders
-- **COMPLETE EVALUATION PIPELINE**: Same metrics and figures as train.py
-- **ALL TEST DATASETS**: Eval datasets, test datasets, JSON datasets
-- **ENHANCED VISUALIZATIONS**: Generation, pixel accuracy, latents, search progress, T-SNE plots
-- **OPTIMIZATION COMPARISON**: Gradient ascent vs. random search comparison plots
-- **COMPREHENSIVE METRICS**: All timing, clustering, and performance metrics
-
-GENERAL METRICS:
-- Timing: train_time, dataloading_time, throughput
-- Evaluation: shape accuracy, pixel correctness, clustering metrics
-- Visualization: T-SNE plots, generation examples, confidence panels
-- Checkpointing: model state saves and restoration
 """
 
 # from __future__ import annotations  # Not supported in Python 3.6
@@ -874,14 +807,15 @@ class StructuredTrainer:
                 shapes_list_pattern.append(shapes[0, 0])  # Extract from batch format
             
             # Stack the samples for this pattern
-            g = jnp.stack(grids_list_pattern, axis=0)
-            s = jnp.stack(shapes_list_pattern, axis=0)
+            grids = jnp.stack(grids_list_pattern, axis=0)
+            shapes = jnp.stack(shapes_list_pattern, axis=0)
+            pattern_ids = jnp.array(pattern_ids_list)
             
             # DEBUG: Log the actual shapes returned by direct dataloader
-            logging.debug(f"Pattern {pattern_id} - grids shape: {g.shape}, shapes shape: {s.shape}")
+            logging.debug(f"Pattern {pattern_id} - grids shape: {grids.shape}, shapes shape: {shapes.shape}")
             
-            grids_list.append(g)
-            shapes_list.append(s)
+            grids_list.append(grids)
+            shapes_list.append(shapes)
         
         # CRITICAL FIX: Align pattern generation with pattern IDs
         # Create explicit pattern IDs that match the concatenation order
@@ -1179,26 +1113,8 @@ class StructuredTrainer:
         logging.info(f"   - Focus: pattern specialization through contrastive learning")
         
         # Store original parameters for restoration
-        # Use tree_map to create deep copies of JAX parameters
-        from jax.tree_util import tree_map
-        self.original_encoder_params = [tree_map(lambda x: x, enc_params) for enc_params in enc_params_list]
-        self.original_decoder_params = tree_map(lambda x: x, state.params["decoder"])
-        
-        # CRITICAL: Initialize global step counter for Phase A to maintain WandB step continuity
-        # This ensures each encoder's steps are logged with monotonically increasing values
-        self.phase_a_global_step = 0
-        self.phase_a_encoder_steps = {}  # Track steps per encoder for logging
-        
-        # CRITICAL: Define custom metrics in WandB to handle step warnings properly
-        # This prevents the "step only supports monotonically increasing values" warning
-        try:
-            # Define custom metrics for Phase A training
-            wandb.define_metric("phase_a/*", step_metric="phase_a_global_step")
-            wandb.define_metric("phase_a_variances/*", step_metric="phase_a_global_step")
-            wandb.define_metric("phase_a/completion/*", step_metric="phase_a_global_step")
-            logging.info("✅ Defined custom WandB metrics for Phase A training")
-        except Exception as e:
-            logging.warning(f"Could not define custom WandB metrics: {e}")
+        self.original_encoder_params = [enc_params.copy() for enc_params in enc_params_list]
+        self.original_decoder_params = state.params["decoder"].copy()
         
         # Create individual training states for each encoder
         specialized_encoders = []
@@ -1207,33 +1123,17 @@ class StructuredTrainer:
             logging.info(f"🔓 Specializing Encoder {enc_idx}...")
             
             # Create individual model with this encoder + original decoder
-            # Ensure encoders is a tuple as expected by StructuredLPN
-            # Use the same encoder module type but with individual parameters
             individual_model = StructuredLPN(
-                encoders=(self.encoders[enc_idx],),  # Single encoder as tuple
+                encoders=(self.encoders[enc_idx],),  # Single encoder
                 decoder=self.decoder
             )
             
-
-
-
-
-
-            
-
-
-
-
-
-
-            
             # Create individual training state
-            # Ensure parameter structure matches the individual model
             individual_state = TrainState.create(
                 apply_fn=individual_model.apply,
                 tx=optax.adamw(self.cfg.training.learning_rate),
                 params={
-                    "encoders": (enc_params,),  # Single encoder as tuple
+                    "encoders": (enc_params,),
                     "decoder": self.original_decoder_params
                 }
             )
@@ -1247,25 +1147,16 @@ class StructuredTrainer:
             logging.info(f"✅ Encoder {enc_idx} specialization completed")
         
         # Update the main state with specialized encoders
-        # Create new params dictionary with specialized encoders
-        new_params = dict(state.params)
-        new_params["encoders"] = tuple(specialized_encoders)
-        
-        updated_state = state.replace(params=new_params)
+        updated_state = state.replace(
+            params=state.params.replace(
+                encoders=tuple(specialized_encoders)
+            )
+        )
         
         self.phase1_completed = True
         logging.info("🎉 PHASE 1 COMPLETED: All encoders specialized!")
         logging.info("   - Encoders now have pattern-specific representations")
         logging.info("   - Ready for Phase 2: Joint decoder training")
-        
-        # Log Phase 1 completion metrics to WandB with proper step continuity
-        phase1_completion_metrics = {
-            "phase_a/completion/step": self.phase_a_global_step,
-            "phase_a/completion/status": "completed",
-            "phase_a/completion/encoders_trained": len(specialized_encoders),
-            "phase_a/completion/total_encoder_expose_steps": self.encoder_expose_steps,
-        }
-        wandb.log(phase1_completion_metrics, step=self.phase_a_global_step)
         
         return updated_state
     
@@ -1295,344 +1186,39 @@ class StructuredTrainer:
         key = jax.random.PRNGKey(self.cfg.training.seed + enc_idx)
         
         for step in range(num_steps):
-            # CRITICAL: Use global step counter for WandB to maintain step continuity
-            # This prevents the "step only supports monotonically increasing values" warning
-            current_global_step = self.phase_a_global_step + step
-            
-            # Track current step for T-SNE visualization
-            self._current_step = step
-            
             # Sample batch from specialized data
             batch = self._sample_specialized_batch(specialized_data, target_pattern)
             
             # Forward pass with contrastive loss
-            # batch is (grids, shapes, pattern_ids) but model expects (pairs, grid_shapes, ...)
-            # grids should be treated as pairs (input/output grids)
-            # shapes should be treated as grid_shapes
-            # Pass encoder parameters explicitly for the individual model
             loss, metrics = model.apply(
                 {"params": state.params},
-                pairs=batch[0],  # grids as pairs
-                grid_shapes=batch[1],  # shapes as grid_shapes
+                *batch,
                 dropout_eval=False,
                 mode=self.cfg.training.inference_mode,
                 rngs={"dropout": key, "latents": key},
                 contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
                 pattern_ids=batch[2],  # pattern IDs
-                encoder_params_list=[state.params["encoders"][0]],  # Single encoder params
-                decoder_params=state.params["decoder"],  # Decoder params
+                method=model.compute_loss
             )
             
             # Compute gradients and update
-            # Use the current state parameters structure for gradient computation
             grads = jax.grad(lambda p: model.apply(
-                {"params": p}, 
-                pairs=batch[0],  # grids as pairs
-                grid_shapes=batch[1],  # shapes as grid_shapes
-                dropout_eval=False,
+                {"params": p}, *batch, dropout_eval=False,
                 mode=self.cfg.training.inference_mode,
                 rngs={"dropout": key, "latents": key},
                 contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
                 pattern_ids=batch[2],
-                encoder_params_list=[p["encoders"][0]],  # Single encoder params
-                decoder_params=p["decoder"],  # Decoder params
+                method=model.compute_loss
             )[0])(state.params)
             
             # Update only encoder parameters
-            # Ensure gradient structure matches the state parameters
-            if "encoders" in grads and "decoder" in grads:
-                # Create zero gradients for decoder parameters (nested structure)
-                from jax.tree_util import tree_map
-                zero_decoder_grads = tree_map(lambda x: jnp.zeros_like(x), grads["decoder"])
-                encoder_grads = {"encoders": grads["encoders"], "decoder": zero_decoder_grads}
-                state = state.apply_gradients(grads=encoder_grads)
-            else:
-                logging.warning(f"Encoder {enc_idx} - Unexpected gradient structure: {list(grads.keys())}")
-                # Try to handle unexpected gradient structure
-                if "encoders" in grads:
-                    # Only encoder gradients available
-                    zero_decoder_grads = tree_map(lambda x: jnp.zeros_like(x), state.params["decoder"])
-                    encoder_grads = {"encoders": grads["encoders"], "decoder": zero_decoder_grads}
-                    state = state.apply_gradients(grads=encoder_grads)
-                else:
-                    logging.error(f"Encoder {enc_idx} - No encoder gradients found, skipping update")
+            encoder_grads = {"encoders": grads["encoders"], "decoder": jnp.zeros_like(grads["decoder"])}
+            state = state.apply_gradients(grads=encoder_grads)
             
             if step % 50 == 0:
                 logging.info(f"     Encoder {enc_idx} - Step {step}/{num_steps} - Loss: {float(loss):.6f}")
         
-                # Log detailed metrics to WandB for Phase A training
-                wandb_metrics = {
-                    f"phase_a/encoder_{enc_idx}/step": step,
-                    f"phase_a/encoder_{enc_idx}/total_steps": num_steps,
-                    f"phase_a/encoder_{enc_idx}/loss": float(loss),
-                    f"phase_a/encoder_{enc_idx}/target_pattern": target_pattern,
-                }
-                
-                # CRITICAL: Add all training losses for comprehensive monitoring
-                if "contrastive_loss" in metrics:
-                    wandb_metrics[f"phase_a/encoder_{enc_idx}/contrastive_loss"] = float(metrics["contrastive_loss"])
-                if "contrastive_loss_weighted" in metrics:
-                    wandb_metrics[f"phase_a/encoder_{enc_idx}/contrastive_loss_weighted"] = float(metrics["contrastive_loss_weighted"])
-                if "contrastive_kl_mean" in metrics:
-                    wandb_metrics[f"phase_a/encoder_{enc_idx}/contrastive_kl_mean"] = float(metrics["contrastive_kl_mean"])
-                if "contrastive_sign_mean" in metrics:
-                    wandb_metrics[f"phase_a/encoder_{enc_idx}/contrastive_sign_mean"] = float(metrics["contrastive_sign_mean"])
-                
-                # Add reconstruction loss (main loss component)
-                wandb_metrics[f"phase_a/encoder_{enc_idx}/reconstruction_loss"] = float(loss)
-                
-                # Add total loss
-                wandb_metrics[f"phase_a/encoder_{enc_idx}/total_loss"] = float(loss)
-                
-                # CRITICAL: Add accuracy metrics for monitoring training progress
-                # Compute accuracy on this batch for each pattern
-                try:
-                    # Get predictions from the model
-                    predictions = model.apply(
-                        {"params": state.params},
-                        pairs=batch[0],
-                        grid_shapes=batch[1],
-                        dropout_eval=True,  # Use dropout for training
-                        mode=self.cfg.training.inference_mode,
-                        rngs={"dropout": key, "latents": key},
-                        contrastive_kl_coeff=self.cfg.training.get("contrastive_kl"),
-                        pattern_ids=batch[2],
-                        encoder_params_list=[state.params["encoders"][0]],
-                        decoder_params=state.params["decoder"],
-                    )
-                    
-                    # For now, log a placeholder accuracy metric
-                    # You can implement specific accuracy computation based on your needs
-                    wandb_metrics[f"phase_a/encoder_{enc_idx}/accuracy_placeholder"] = 0.0
-                    
-                except Exception as e:
-                    logging.warning(f"Could not compute accuracy for Encoder {enc_idx}: {e}")
-                    wandb_metrics[f"phase_a/encoder_{enc_idx}/accuracy_placeholder"] = 0.0
-                
-                # Log encoder variance metrics for each pattern
-                try:
-                    # Compute encoder variance for this batch
-                    encoder_params = state.params["encoders"][0]
-                    mu_i, logvar_i = self.encoders[enc_idx].apply(
-                        {"params": encoder_params}, 
-                        batch[0], 
-                        batch[1], 
-                        True, 
-                        mutable=False
-                    )
-                    
-                    # Compute variance statistics
-                    var_i = jnp.exp(logvar_i)  # Convert logvar to variance
-                    mean_var = float(jnp.mean(var_i))
-                    std_var = float(jnp.std(var_i))
-                    min_var = float(jnp.min(var_i))
-                    max_var = float(jnp.max(var_i))
-                    
-                    # CRITICAL: Add variance debugging metrics to detect overfitting/specialization issues
-                    # These metrics help understand if encoders are improving or degrading
-                    variance_entropy = float(jnp.mean(-jnp.log(var_i + 1e-8)))  # Higher = more uncertainty
-                    variance_cv = std_var / (mean_var + 1e-8)  # Coefficient of variation
-                    
-                    # CRITICAL: Keep only essential variance data under phase_a_variances section
-                    # Focus on mean variance per encoder per pattern for clean monitoring
-                    wandb_metrics.update({
-                        # Only mean variance - the key metric for specialization monitoring
-                        f"phase_a_variances/encoder_{enc_idx}/mean": mean_var,
-                    })
-                    
-                    wandb_metrics.update({
-                        f"phase_a/encoder_{enc_idx}/debug/variance_entropy": variance_entropy,
-                        f"phase_a/encoder_{enc_idx}/debug/variance_cv": variance_cv,
-                        f"phase_a/encoder_{enc_idx}/debug/variance_stability": 1.0 / (1.0 + std_var),  # Higher = more stable
-                    })
-                    
-                    # CRITICAL: Monitor variance dropping trend
-                    if not hasattr(self, f'_encoder_{enc_idx}_variance_history'):
-                        setattr(self, f'_encoder_{enc_idx}_variance_history', [])
-                    
-                    variance_history = getattr(self, f'_encoder_{enc_idx}_variance_history')
-                    variance_history.append(mean_var)
-                    
-                    # Keep last 10 values for trend analysis
-                    if len(variance_history) > 10:
-                        variance_history.pop(0)
-                    
-                    # Initialize overfitting warning
-                    overfitting_warning = False
-                    variance_trend = 0.0
-                    
-                    # Calculate trend (positive = increasing, negative = decreasing)
-                    if len(variance_history) >= 2:
-                        variance_trend = (variance_history[-1] - variance_history[0]) / len(variance_history)
-                        
-                        # Keep variance trend in main phase_a section only
-                        wandb_metrics[f"phase_a/encoder_{enc_idx}/debug/variance_trend"] = variance_trend
-                        
-                        # Alert if variance is consistently dropping (overfitting warning)
-                        if variance_trend < -0.01 and len(variance_history) >= 5:
-                            overfitting_warning = True
-                            logging.warning(f"⚠️  Encoder {enc_idx} variance dropping trend: {variance_trend:.6f} - Possible overfitting!")
-                    
-                    # Keep overfitting warning in main phase_a section for monitoring
-                    # Remove excessive trend analysis from phase_a_variances
-                    
-                    # Store current variance for next iteration
-                    setattr(self, f'_encoder_{enc_idx}_variance_history', variance_history)
-                    
-                    # Pattern-specific variance analysis
-                    pattern_ids = batch[2]
-                    unique_patterns = jnp.unique(pattern_ids)
-                    
-                    for pattern_id in unique_patterns:
-                        pattern_mask = (pattern_ids == pattern_id)
-                        if jnp.any(pattern_mask):
-                            pattern_var = var_i[pattern_mask]
-                            pattern_mean_var = float(jnp.mean(pattern_var))
-                            pattern_std_var = float(jnp.std(pattern_var))
-                            
-                            # Keep pattern-specific variance metrics in main phase_a section only
-                            # Remove from phase_a_variances to reduce clutter
-                                        
-                            # Keep original metrics for backward compatibility
-                            wandb_metrics.update({
-                                f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/variance_mean": pattern_mean_var,
-                                f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/variance_std": pattern_std_var,
-                                f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/samples": int(jnp.sum(pattern_mask)),
-                            })
-                                        
-                            # CRITICAL: Add pattern-specific variance debugging
-                            # Monitor if target pattern gets higher variance (specialization)
-                            if pattern_id == target_pattern:
-                                # Target pattern should have HIGHER variance (more uncertain, learning)
-                                target_variance_ratio = pattern_mean_var / (mean_var + 1e-8)
-                                
-                                # Add to both sections for comprehensive monitoring
-                                wandb_metrics[f"phase_a/encoder_{enc_idx}/debug/target_pattern_variance_ratio"] = target_variance_ratio
-                                wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/specialization/target_pattern_ratio"] = target_variance_ratio
-                                wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/specialization/target_pattern_status"] = "learning" if target_variance_ratio > 0.8 else "overfitting"
-                                
-                                if target_variance_ratio < 0.8:
-                                    logging.warning(f"⚠️  Encoder {enc_idx} target pattern {pattern_id} has LOW variance ratio: {target_variance_ratio:.3f}")
-                                    logging.warning(f"   Target pattern should have HIGHER variance for effective learning!")
-                                else:
-                                    logging.info(f"✅ Encoder {enc_idx} target pattern {pattern_id} variance ratio: {target_variance_ratio:.3f}")
-                            else:
-                                # Other patterns should have LOWER variance (more certain, not learning)
-                                other_variance_ratio = pattern_mean_var / (mean_var + 1e-8)
-                                
-                                # Add to both sections for comprehensive monitoring
-                                wandb_metrics[f"phase_a/encoder_{enc_idx}/debug/other_pattern_{pattern_id}_variance_ratio"] = other_variance_ratio
-                                wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/specialization/other_pattern_{pattern_id}_ratio"] = other_variance_ratio
-                                wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/specialization/other_pattern_{pattern_id}_status"] = "certain" if other_variance_ratio < 1.2 else "uncertain"
-                                
-                                if other_variance_ratio > 1.2:
-                                    logging.warning(f"⚠️  Encoder {enc_idx} other pattern {pattern_id} has HIGH variance ratio: {other_variance_ratio:.3f}")
-                                    logging.warning(f"   Other patterns should have LOWER variance!")
-                                else:
-                                    logging.info(f"✅ Encoder {enc_idx} other pattern {pattern_id} variance ratio: {other_variance_ratio:.3f}")
-                
-                                
-                except Exception as e:
-                    logging.warning(f"Could not compute encoder variance metrics: {e}")
-                
-                # CRITICAL: Add average variance per encoder per pattern for easy monitoring
-                # This provides a quick overview of how each encoder is handling each pattern
-                try:
-                    # Calculate average variance across all patterns for this encoder
-                    pattern_variance_means = []
-                    for pid in [1, 2, 3]:  # O, T, L tetrominos
-                        pattern_mask = (pattern_ids == pid)
-                        if jnp.any(pattern_mask):
-                            pattern_var = var_i[pattern_mask]
-                            pattern_mean_var = float(jnp.mean(pattern_var))
-                            pattern_variance_means.append(pattern_mean_var)
-                            
-                            # Add individual pattern average variance (keep only in main phase_a section)
-                            wandb_metrics[f"phase_a/encoder_{enc_idx}/pattern_{pid}/average_variance"] = pattern_mean_var
-                    
-                    # Calculate overall average variance across all patterns for this encoder
-                    if pattern_variance_means:
-                        # Convert list to numpy array for mean calculation
-                        pattern_variance_means_array = np.array(pattern_variance_means)
-                        overall_pattern_variance_mean = float(np.mean(pattern_variance_means_array))
-                        wandb_metrics[f"phase_a/encoder_{enc_idx}/overall_pattern_variance_mean"] = overall_pattern_variance_mean
-                        # Remove from phase_a_variances to reduce clutter
-                        
-                        logging.info(f"✅ Encoder {enc_idx} - Overall pattern variance mean: {overall_pattern_variance_mean:.6f}")
-                        
-                except Exception as e:
-                    logging.warning(f"Could not compute average variance per pattern for Encoder {enc_idx}: {e}")
-                
-                # CRITICAL: Generate T-SNE visualization for each encoder during Phase A training
-                # This helps visualize how encoders are specializing in different patterns
-                if step % 100 == 0:  # Generate T-SNE every 100 steps to avoid spam
-                    try:
-                        # Log batch shapes for debugging
-                        logging.debug(f"Encoder {enc_idx} T-SNE - Batch shapes: grids={batch[0].shape}, shapes={batch[1].shape}, pattern_ids={batch[2].shape}")
-                        
-                        fig_tsne_encoder = self._create_encoder_tsne_during_training(
-                            enc_idx, encoder_params, batch[0], batch[1], batch[2], target_pattern
-                        )
-                        if fig_tsne_encoder is not None:
-                            wandb_metrics[f"phase_a/encoder_{enc_idx}/tsne_visualization"] = wandb.Image(fig_tsne_encoder)
-                            plt.close(fig_tsne_encoder)
-                            logging.info(f"✅ Generated T-SNE for Encoder {enc_idx} at global step {current_global_step}")
-                    except Exception as e:
-                        logging.warning(f"Could not generate T-SNE for Encoder {enc_idx}: {e}")
-                        # Log additional debug info
-                        logging.debug(f"Encoder {enc_idx} T-SNE error details - Batch shapes: grids={batch[0].shape}, shapes={batch[1].shape}, pattern_ids={batch[2].shape}")
-                
-                # CRITICAL: Generate histogram visualizations for each pattern (certainty panel)
-                # This shows the distribution of variances for each pattern during specialization
-                if step % 100 == 0:  # Generate histograms every 100 steps to avoid spam
-                    try:
-                        # Log batch shapes for debugging
-                        logging.debug(f"Encoder {enc_idx} Histograms - Batch shapes: grids={batch[0].shape}, shapes={batch[1].shape}, pattern_ids={batch[2].shape}")
-                        
-                        fig_histograms = self._create_pattern_variance_histograms(
-                            enc_idx, encoder_params, batch[0], batch[1], batch[2], target_pattern, step
-                        )
-                        if fig_histograms is not None:
-                            wandb_metrics[f"phase_a_variances/encoder_{enc_idx}/certainty_panel"] = wandb.Image(fig_histograms)
-                            plt.close(fig_histograms)
-                            logging.info(f"✅ Generated certainty panel histograms for Encoder {enc_idx} at global step {current_global_step}")
-                    except Exception as e:
-                        logging.warning(f"Could not generate histograms for Encoder {enc_idx}: {e}")
-                        # Log additional debug info
-                        logging.debug(f"Encoder {enc_idx} Histograms error details - Batch shapes: grids={batch[0].shape}, shapes={batch[1].shape}, pattern_ids={batch[2].shape}")
-                
-                # CRITICAL: Generate reconstruction samples for each pattern during Phase A training
-                # This shows how well each encoder can reconstruct different patterns
-                if step % 100 == 0:  # Generate samples every 100 steps to avoid spam
-                    try:
-                        fig_reconstructions = self._create_encoder_reconstruction_samples(
-                            enc_idx, encoder_params, batch[0], batch[1], batch[2], target_pattern, step
-                        )
-                        if fig_reconstructions is not None:
-                            wandb_metrics[f"phase_a/encoder_{enc_idx}/reconstruction_samples"] = wandb.Image(fig_reconstructions)
-                            plt.close(fig_reconstructions)
-                            logging.info(f"✅ Generated reconstruction samples for Encoder {enc_idx} at global step {current_global_step}")
-                    except Exception as e:
-                        logging.warning(f"Could not generate reconstruction samples for Encoder {enc_idx}: {e}")
-                
-                # CRITICAL: Keep only essential metrics in phase_a_variances
-                # Focus on mean variance per encoder per pattern for clean monitoring
-                
-                # Log to WandB with global step for proper continuity
-                wandb.log(wandb_metrics, step=current_global_step)
-        
-        # CRITICAL: Update global step counter after this encoder completes training
-        # This ensures the next encoder starts from the correct step value
-        self.phase_a_global_step += num_steps
-        logging.info(f"   Encoder {enc_idx} completed. Global step now: {self.phase_a_global_step}")
-        
-        # Return trained encoder params
-        if "encoders" in state.params and len(state.params["encoders"]) > 0:
-            return state.params["encoders"][0]  # Return first (and only) encoder params
-        else:
-            logging.error(f"Encoder {enc_idx} - No encoder parameters found in state after training")
-            # Return original parameters as fallback
-            return self.original_encoder_params[enc_idx]
+        return state.params["encoders"][0]  # Return trained encoder params
     
     def _sample_specialized_batch(self, specialized_data: tuple, target_pattern: int) -> tuple:
         """
@@ -1787,31 +1373,10 @@ class StructuredTrainer:
                 shapes_list.append(shapes)
                 pattern_ids_list.append(pattern_id)
         
-        # Stack and return - ensure all samples have the same shape
-        if grids_list:
-            # Get the expected shape from the first sample
-            expected_grid_shape = grids_list[0].shape
-            expected_shape_shape = shapes_list[0].shape
-            
-            # Validate all samples have the same shape
-            for i, (g, s) in enumerate(zip(grids_list, shapes_list)):
-                if g.shape != expected_grid_shape:
-                    logging.warning(f"Sample {i} has unexpected grid shape: {g.shape}, expected {expected_grid_shape}")
-                if s.shape != expected_shape_shape:
-                    logging.warning(f"Sample {i} has unexpected shape: {s.shape}, expected {expected_shape_shape}")
-            
-            # Stack all samples
-            grids = jnp.stack(grids_list, axis=0)
-            shapes = jnp.stack(shapes_list, axis=0)
-            pattern_ids = jnp.array(pattern_ids_list)
-        else:
-            # Fallback if no samples were generated
-            logging.error("No samples were generated for specialized training data")
-            # Create dummy data with expected shapes
-            num_pairs = self.task_generator_kwargs["num_pairs"]
-            grids = jnp.zeros((1, num_pairs, 5, 5, 2), jnp.uint8)
-            shapes = jnp.ones((1, num_pairs, 2, 2), jnp.uint8)
-            pattern_ids = jnp.array([target_pattern])
+        # Stack and return
+        grids = jnp.stack(grids_list, axis=0)
+        shapes = jnp.stack(shapes_list, axis=0)
+        pattern_ids = jnp.array(pattern_ids_list)
         
         logging.info(f"     Generated {len(grids_list)} samples: {target_samples} target, {other_samples} others")
         return grids, shapes, pattern_ids
@@ -1844,11 +1409,7 @@ class StructuredTrainer:
         )
         
         # Extract single sample
-        for i, ((grids, shapes), _) in enumerate(zip(dataloader, range(1))):
-            # The dataloader returns (log_every_n_steps, batch_size, ...) format
-            # Since we set batch_size=1 and log_every_n_steps=1, extract the actual data
-            # grids shape: (1, 1, num_pairs, max_rows, max_cols, 2) -> (num_pairs, max_rows, max_cols, 2)
-            # shapes shape: (1, 1, num_pairs, 2, 2) -> (num_pairs, 2, 2)
+        for (grids, shapes), _ in dataloader:
             return grids[0, 0], shapes[0, 0], pattern_id
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
@@ -1887,14 +1448,6 @@ class StructuredTrainer:
             logging.info(f"   - Training each encoder independently for {self.encoder_expose_steps} steps")
             logging.info(f"   - Using original decoders to prevent interference")
             logging.info(f"   - Focus: pattern specialization through contrastive learning")
-            
-            # CRITICAL: Initialize WandB custom step metric for Phase A
-            # This ensures proper step continuity across all encoders
-            try:
-                wandb.define_metric("phase_a_global_step", summary="min")
-                logging.info("✅ Initialized WandB custom step metric for Phase A")
-            except Exception as e:
-                logging.warning(f"Could not initialize WandB custom step metric: {e}")
             
             # Phase 1: Individual encoder specialization
             state = self._specialize_individual_encoders(state, enc_params_list)
@@ -2075,7 +1628,7 @@ class StructuredTrainer:
                                 else:
                                     logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                             
-                            wandb.log(test_metrics, step=step)
+                            wandb.log(test_metrics)
                             plt.close('all')  # Close all figures to prevent memory leaks
                             # Explicitly close additional T-SNE figures
                             if fig_tsne_samples is not None:
@@ -2120,6 +1673,8 @@ class StructuredTrainer:
             
             dataloading_time = time.time()
             for batches in dataloader:
+                wandb.log({"timing/dataloading_time": time.time() - dataloading_time})
+                
                 # Training - process log_every_n_steps batches at once
                 key, train_key = jax.random.split(key)
                 start = time.time()
@@ -2173,224 +1728,6 @@ class StructuredTrainer:
                 logging.debug(f"🔒 Phase 2: Joint decoder training (encoders frozen)")
                 batches_with_patterns = (grids, shapes, explicit_pattern_ids)
                 state, metrics = self.train_n_steps_phase2(state, batches_with_patterns, train_key)
-                
-                # Update progress for Phase 2
-                end = time.time()
-                pbar.update(log_every)
-                step += log_every
-                
-                # Log encoder status after step update
-                if step % 100 == 0:
-                    encoder_status = "FROZEN"  # Phase 2: encoders are always frozen
-                    logging.info(f"Step {step}/{num_steps}: Encoders {encoder_status} (Phase 2: Joint decoder training)")
-                
-                # Phase 2: Log metrics and handle checkpointing/evaluation
-                throughput = log_every * self.batch_size / (end - start)
-                metrics.update({
-                    "timing/train_time": end - start,
-                    "timing/train_num_samples_per_second": throughput,
-                    "timing/dataloading_time": time.time() - dataloading_time
-                })
-                
-                # Phase 2: Enhanced metrics logging for joint decoder training
-                phase_b_metrics = {
-                    "phase_b/step": step,
-                    "phase_b/phase": "joint_decoder_training",
-                    "phase_b/encoders_status": "frozen",
-                    "phase_b/decoder_status": "trainable",
-                    "phase_b/batch_size": self.batch_size,
-                    "phase_b/log_every": log_every,
-                }
-                
-                # Add reconstruction loss metrics
-                if "reconstruction_loss" in metrics:
-                    phase_b_metrics["phase_b/reconstruction_loss"] = float(metrics["reconstruction_loss"])
-                if "reconstruction_loss_weighted" in metrics:
-                    phase_b_metrics["phase_b/reconstruction_loss_weighted"] = float(metrics["reconstruction_loss_weighted"])
-                
-                # Add KL divergence metrics
-                if "prior_kl" in metrics:
-                    phase_b_metrics["phase_b/prior_kl"] = float(metrics["prior_kl"])
-                if "prior_kl_weighted" in metrics:
-                    phase_b_metrics["phase_b/prior_kl_weighted"] = float(metrics["prior_kl_weighted"])
-                if "pairwise_kl" in metrics:
-                    phase_b_metrics["phase_b/pairwise_kl"] = float(metrics["pairwise_kl"])
-                if "pairwise_kl_weighted" in metrics:
-                    phase_b_metrics["phase_b/pairwise_kl_weighted"] = float(metrics["pairwise_kl_weighted"])
-                
-                # Add total loss
-                if "total_loss" in metrics:
-                    phase_b_metrics["phase_b/total_loss"] = float(metrics["total_loss"])
-                
-                # Add encoder variance metrics for each pattern (encoders are frozen but we can still analyze their outputs)
-                try:
-                    # Sample a small batch for variance analysis
-                    sample_batch_size = min(16, self.batch_size)
-                    sample_grids = grids[0, :sample_batch_size] if len(grids.shape) > 2 else grids[:sample_batch_size]
-                    sample_shapes = shapes[0, :sample_batch_size] if len(shapes.shape) > 2 else shapes[:sample_batch_size]
-                    
-                    # Analyze each encoder's variance outputs
-                    for enc_idx, enc_params in enumerate(state.params["encoders"]):
-                        try:
-                            mu_i, logvar_i = self.encoders[enc_idx].apply(
-                                {"params": enc_params}, 
-                                sample_grids, 
-                                sample_shapes, 
-                                False,  # eval mode
-                                mutable=False
-                            )
-                            
-                            # Compute variance statistics
-                            var_i = jnp.exp(logvar_i)
-                            mean_var = float(jnp.mean(var_i))
-                            std_var = float(jnp.std(var_i))
-                            
-                            phase_b_metrics[f"phase_b/encoder_{enc_idx}/variance_mean"] = mean_var
-                            phase_b_metrics[f"phase_b/encoder_{enc_idx}/variance_std"] = std_var
-                            
-                            # Pattern-specific variance analysis (if pattern IDs available)
-                            if len(explicit_pattern_ids) >= sample_batch_size:
-                                sample_pattern_ids = explicit_pattern_ids[:sample_batch_size]
-                                unique_patterns = jnp.unique(sample_pattern_ids)
-                                
-                                for pattern_id in unique_patterns:
-                                    pattern_mask = (sample_pattern_ids == pattern_id)
-                                    if jnp.any(pattern_mask):
-                                        pattern_var = var_i[pattern_mask]
-                                        pattern_mean_var = float(jnp.mean(pattern_var))
-                                        pattern_std_var = float(jnp.std(pattern_var))
-                                        
-                                        phase_b_metrics.update({
-                                            f"phase_b/encoder_{enc_idx}/pattern_{pattern_id}/variance_mean": pattern_mean_var,
-                                            f"phase_b/encoder_{enc_idx}/pattern_{pattern_id}/variance_std": pattern_std_var,
-                                            f"phase_b/encoder_{enc_idx}/pattern_{pattern_id}/samples": int(jnp.sum(pattern_mask)),
-                                        })
-                                        
-                        except Exception as e:
-                            logging.warning(f"Could not compute Phase B encoder {enc_idx} variance metrics: {e}")
-                            
-                except Exception as e:
-                    logging.warning(f"Could not compute Phase B encoder variance metrics: {e}")
-                
-                # Phase 2: No contrastive loss (encoders frozen)
-                logging.debug(f"Phase 2: No contrastive loss (encoders frozen)")
-                
-                # Log both standard metrics and Phase B specific metrics
-                all_metrics = {**metrics, **phase_b_metrics}
-                wandb.log(all_metrics, step=step)
-                
-                # Save checkpoint
-                if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
-                    try:
-                        logging.info(f"Saving checkpoint at step {step}")
-                        from flax.serialization import msgpack_serialize, to_state_dict
-                        with open("state.msgpack", "wb") as outfile:
-                            outfile.write(msgpack_serialize(to_state_dict(state)))
-                        wandb.save("state.msgpack")
-                    except Exception as e:
-                        logging.warning(f"Checkpoint save failed: {e}")
-                
-                # Evaluation - Phase 2 uses standard evaluation interval (like train.py)
-                eval_interval = cfg.training.get("eval_every_n_logs", 0)
-                if eval_interval and (step // log_every) % eval_interval == 0:
-                    try:
-                        logging.info(f"Running evaluation at step {step}")
-                        key, eval_key, test_key, json_key = jax.random.split(key, 4)
-                        
-                        # Eval datasets evaluation (like train.py)
-                        if hasattr(self, 'eval_datasets') and self.eval_datasets:
-                            for dataset_dict in self.eval_datasets:
-                                try:
-                                    start = time.time()
-                                    eval_metrics = self.eval(state, key=eval_key, **dataset_dict)
-                                    eval_metrics[f"timing/eval_{dataset_dict['dataset_name']}"] = time.time() - start
-                                    wandb.log(eval_metrics, step=step)
-                                    logging.info(f"✅ Eval dataset {dataset_dict['dataset_name']} completed")
-                                except Exception as e:
-                                    logging.warning(f"Eval dataset {dataset_dict['dataset_name']} failed: {e}")
-                        
-                        # Test datasets evaluation with enhanced search progress tracking (like train.py)
-                        if hasattr(self, 'test_datasets') and self.test_datasets:
-                            for dataset_dict in self.test_datasets:
-                                try:
-                                    start = time.time()
-                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
-                                        state, key=test_key, **dataset_dict
-                                    )
-                                    test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
-                                    
-                                    # Upload all figures including search progress (like train.py)
-                                    for fig, name in [
-                                        (fig_grids, "generation"),
-                                        (fig_heatmap, "pixel_accuracy"),
-                                        (fig_latents, "latents"),
-                                        (fig_latents_samples, "latents_samples"),
-                                        (fig_search_progress, "search_progress"),  # Enhanced search progress tracking
-                                        (fig_tsne_samples, "latents_samples"),
-                                    ]:
-                                        if fig is not None:
-                                            test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)
-                                    
-                                    # Upload all pattern-specific T-SNE plots
-                                    pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
-                                    for pattern_idx, fig_tsne_encoders_single in enumerate(fig_tsne_encoders_list, 1):
-                                        if fig_tsne_encoders_single is not None:
-                                            test_metrics[f"test/{dataset_dict['test_name']}/latents_encoders_pattern{pattern_idx}"] = wandb.Image(fig_tsne_encoders_single)
-                                            logging.info(f"✅ Logged T-SNE for pattern {pattern_idx} ({pattern_names[pattern_idx]})")
-                                        else:
-                                            logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
-                                    
-                                    wandb.log(test_metrics, step=step)
-                                    plt.close('all')  # Close all figures to prevent memory leaks
-                                    # Explicitly close additional T-SNE figures
-                                    if fig_tsne_samples is not None:
-                                        plt.close(fig_tsne_samples)
-                                    # Close all pattern-specific T-SNE figures
-                                    for fig_tsne_encoders_single in fig_tsne_encoders_list:
-                                        if fig_tsne_encoders_single is not None:
-                                            plt.close(fig_tsne_encoders_single)
-                                    
-                                    logging.info(f"✅ Test dataset {dataset_dict['test_name']} completed with all figures")
-                                    
-                                except Exception as e:
-                                    logging.warning(f"Test dataset {dataset_dict['test_name']} failed: {e}")
-                        
-                        # JSON test datasets (like train.py)
-                        if hasattr(self, 'json_datasets') and self.json_datasets:
-                            for json_file_dict in self.json_datasets:
-                                try:
-                                    start = time.time()
-                                    test_metrics, fig_grids = self.test_json_submission(state, key=json_key, **json_file_dict)
-                                    json_test_name = json_file_dict["test_name"]
-                                    test_metrics[f"timing/test_{json_test_name}"] = time.time() - start
-                                    if fig_grids is not None:
-                                        test_metrics[f"test/{json_test_name}/generation"] = wandb.Image(fig_grids)
-                                    wandb.log(test_metrics, step=step)
-                                    logging.info(f"✅ JSON test dataset {json_test_name} completed")
-                                except Exception as e:
-                                    logging.warning(f"JSON test dataset {json_test_name} failed: {e}")
-                        
-                        # NEW: Generate optimization comparison plot (like train.py)
-                        try:
-                            comparison_fig = self._generate_optimization_comparison()
-                            if comparison_fig is not None:
-                                comparison_metrics = {
-                                    "optimization_comparison/methods": wandb.Image(comparison_fig)
-                                }
-                                wandb.log(comparison_metrics, step=step)
-                                plt.close(comparison_fig)
-                                logging.info(f"✅ Optimization comparison plot generated and logged")
-                        except Exception as e:
-                            logging.warning(f"Could not generate optimization comparison plot: {e}")
-                        
-                    except Exception as e:
-                        logging.warning(f"Eval failed: {e}")
-                
-                # Exit if the total number of steps is reached
-                if step >= num_steps:
-                    break
-                
-                dataloading_time = time.time()
             else:
                 # Phase 1: Individual encoder training (should not reach here after Phase 1)
                 logging.warning(f"⚠️  Still in Phase 1 during main training loop - this shouldn't happen")
@@ -2408,21 +1745,10 @@ class StructuredTrainer:
                 throughput = log_every * self.batch_size / (end - start)
                 metrics.update({
                     "timing/train_time": end - start,
-                    "timing/train_num_samples_per_second": throughput,
-                    "timing/dataloading_time": time.time() - dataloading_time
+                    "timing/train_num_samples_per_second": throughput
                 })
                 
-                # Phase A: Enhanced metrics logging for individual encoder training
-                phase_a_metrics = {
-                    "phase_a/step": step,
-                    "phase_a/phase": "individual_encoder_training",
-                    "phase_a/encoders_status": "trainable",
-                    "phase_a/decoder_status": "trainable",
-                    "phase_a/batch_size": self.batch_size,
-                    "phase_a/log_every": log_every,
-                    "phase_a/encoder_expose_steps_remaining": self.encoder_expose_steps,
-                }
-                
+                # Add contrastive loss to Charts section for better visualization
                 if "contrastive_loss" in metrics:
                     # STABILIZATION: Monitor contrastive loss magnitude and clip if needed
                     try:
@@ -2432,46 +1758,9 @@ class StructuredTrainer:
                         # Safety check: if contrastive loss is exploding, log warning
                         if abs(contrastive_loss_val) > 100.0:
                             logging.warning(f"Contrastive loss is very large: {contrastive_loss_val:.2f}. Consider reducing contrastive_kl coefficient.")
-                        elif abs(contrastive_loss_val) < 0.01:
-                            logging.info(f"Contrastive loss is very small: {contrastive_loss_val:.6f}). Consider increasing contrastive_kl coefficient.")
-                        
-                        # Add additional contrastive loss metrics to Phase A
-                        if "contrastive_kl_mean" in metrics:
-                            phase_a_metrics["phase_a/contrastive_kl_mean"] = float(metrics["contrastive_kl_mean"])
-                        if "contrastive_sign_mean" in metrics:
-                            phase_a_metrics["phase_a/contrastive_sign_mean"] = float(metrics["contrastive_sign_mean"])
-                        
-                        # Debug pattern ID effectiveness
-                        if "contrastive_sign_mean" in metrics:
-                            sign_mean = float(np.array(metrics['contrastive_sign_mean']))
-                            if abs(sign_mean) < 0.1:
-                                logging.warning(f"⚠️  Contrastive sign mean is very small ({sign_mean:.6f})")
-                                logging.warning(f"   This suggests pattern IDs may not be effective")
-                                logging.warning(f"   CRITICAL CHECKS NEEDED:")
-                                logging.warning(f"   - Verify batch contains multiple pattern types")
-                                logging.warning(f"   - Check pattern_ids match actual data content")
-                                logging.warning(f"   - Ensure encoder variance outputs are different")
-                                logging.warning(f"   - Consider increasing contrastive_kl coefficient")
-                            elif abs(sign_mean) > 0.9:
-                                logging.info(f"✅ Contrastive sign mean is strong ({sign_mean:.6f}) - Pattern IDs appear effective")
-                            else:
-                                logging.info(f"⚠️  Contrastive sign mean is moderate ({sign_mean:.6f}) - Pattern IDs may need improvement")
-                        
-                        # Debug encoder specialization progress
-                        if "contrastive_kl_mean" in metrics:
-                            kl_mean = float(np.array(metrics['contrastive_kl_mean']))
-                            if kl_mean < 0.01:
-                                logging.warning(f"Contrastive KL mean is very small ({kl_mean:.6f}). Encoders may not be specializing.")
-                                logging.warning(f"  - Consider increasing contrastive_kl coefficient")
-                                logging.warning(f"  - Check encoder variance outputs")
-                            elif kl_mean > 1.0:
-                                logging.info(f"Contrastive KL mean is large ({kl_mean:.6f}). Encoders are actively specializing ✓")
-                            else:
-                                logging.info(f"Contrastive KL mean is moderate ({kl_mean:.6f}). Encoders showing some specialization.")
                     except Exception as e:
                         logging.warning(f"Could not monitor contrastive loss magnitude: {e}")
                     
-                    # Add contrastive loss to Charts section for better visualization
                     metrics["Charts/contrastive_loss"] = metrics["contrastive_loss"]
                     metrics["Charts/contrastive_loss_weighted"] = metrics["contrastive_loss_weighted"]
                     # Add additional contrastive loss metrics to Charts
@@ -2480,78 +1769,7 @@ class StructuredTrainer:
                     if "contrastive_sign_mean" in metrics:
                         metrics["Charts/contrastive_sign_mean"] = metrics["contrastive_sign_mean"]
                 
-                # Add other loss metrics to Phase A
-                if "repulsion_loss" in metrics:
-                    phase_a_metrics["phase_a/repulsion_loss"] = float(metrics["repulsion_loss"])
-                    phase_a_metrics["phase_a/repulsion_loss_weighted"] = float(metrics.get("repulsion_loss_weighted", 0))
-                
-                if "reconstruction_loss" in metrics:
-                    phase_a_metrics["phase_a/reconstruction_loss"] = float(metrics["reconstruction_loss"])
-                    phase_a_metrics["phase_a/reconstruction_loss_weighted"] = float(metrics.get("reconstruction_loss_weighted", 0))
-                
-                if "prior_kl" in metrics:
-                    phase_a_metrics["phase_a/prior_kl"] = float(metrics["prior_kl"])
-                    phase_a_metrics["phase_a/prior_kl_weighted"] = float(metrics.get("prior_kl_weighted", 0))
-                if "pairwise_kl" in metrics:
-                    phase_a_metrics["phase_a/pairwise_kl"] = float(metrics["pairwise_kl"])
-                    phase_a_metrics["phase_a/pairwise_kl_weighted"] = float(metrics.get("pairwise_kl_weighted", 0))
-                
-                if "total_loss" in metrics:
-                    phase_a_metrics["phase_a/total_loss"] = float(metrics["total_loss"])
-                
-                # Add encoder variance metrics for each pattern during Phase A
-                try:
-                    # Sample a small batch for variance analysis
-                    sample_batch_size = min(16, self.batch_size)
-                    sample_grids = grids[0, :sample_batch_size] if len(grids.shape) > 2 else grids[:sample_batch_size]
-                    sample_shapes = shapes[0, :sample_batch_size] if len(shapes.shape) > 2 else shapes[:sample_batch_size]
-                    
-                    # Analyze each encoder's variance outputs
-                    for enc_idx, enc_params in enumerate(state.params["encoders"]):
-                        try:
-                            mu_i, logvar_i = self.encoders[enc_idx].apply(
-                                {"params": enc_params}, 
-                                sample_grids, 
-                                sample_shapes, 
-                                False,  # eval mode
-                                mutable=False
-                            )
-                            
-                            # Compute variance statistics
-                            var_i = jnp.exp(logvar_i)
-                            mean_var = float(jnp.mean(var_i))
-                            std_var = float(jnp.std(var_i))
-                            
-                            phase_a_metrics[f"phase_a/encoder_{enc_idx}/variance_mean"] = mean_var
-                            phase_a_metrics[f"phase_a/encoder_{enc_idx}/variance_std"] = std_var
-                            
-                            # Pattern-specific variance analysis (if pattern IDs available)
-                            if len(explicit_pattern_ids) >= sample_batch_size:
-                                sample_pattern_ids = explicit_pattern_ids[:sample_batch_size]
-                                unique_patterns = jnp.unique(sample_pattern_ids)
-                                
-                                for pattern_id in unique_patterns:
-                                    pattern_mask = (sample_pattern_ids == pattern_id)
-                                    if jnp.any(pattern_mask):
-                                        pattern_var = var_i[pattern_mask]
-                                        pattern_mean_var = float(jnp.mean(pattern_var))
-                                        pattern_std_var = float(jnp.std(pattern_var))
-                                        
-                                        phase_a_metrics.update({
-                                            f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/variance_mean": pattern_mean_var,
-                                            f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/variance_std": pattern_std_var,
-                                            f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/samples": int(jnp.sum(pattern_mask)),
-                                        })
-                                        
-                        except Exception as e:
-                            logging.warning(f"Could not compute Phase A encoder {enc_idx} variance metrics: {e}")
-                            
-                except Exception as e:
-                    logging.warning(f"Could not compute Phase A encoder variance metrics: {e}")
-                
-                # Log both standard metrics and Phase A specific metrics
-                all_metrics = {**metrics, **phase_a_metrics}
-                wandb.log(all_metrics, step=step)
+                wandb.log(metrics, step=step)
 
                 # Save checkpoint
                 if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
@@ -3317,7 +2535,7 @@ class StructuredTrainer:
         if fig_tsne_encoders is not None:
             wandb_log_data[f"test/{test_name}/latents_encoders_pattern1"] = wandb.Image(fig_tsne_encoders)
         
-        wandb.log(wandb_log_data, step=step if 'step' in locals() else None)
+        wandb.log(wandb_log_data)
 
         # NEW: Confidence panel per pattern (one task per pattern)
         try:
@@ -3392,7 +2610,7 @@ class StructuredTrainer:
                     pattern_id=pid,  # Pattern ID for filtering
                     pattern_name=pattern_names.get(pid, f"Pattern {pid}"),  # Pattern name
                 )
-                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)}, step=step if 'step' in locals() else None)
+                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)})
                 plt.close(fig_panel)
                 
                 logging.info(f"Generated confidence panel for pattern {pid} with {len(enc_mus[0])} pairs")
@@ -3414,284 +2632,6 @@ class StructuredTrainer:
         # Release large intermediates
         del all_latents, latents_concat, source_ids_np, pattern_ids_concat
         return metrics
-
-    def _create_encoder_tsne_during_training(
-        self,
-        enc_idx: int,
-        enc_params: dict,
-        batch_grids: chex.Array,
-        batch_shapes: chex.Array,
-        batch_pattern_ids: chex.Array,
-        target_pattern: int
-    ) -> Optional[plt.Figure]:
-        """
-        Create T-SNE visualization for a single encoder during Phase A training.
-        
-        This uses the SAME T-SNE function as train.py for consistency.
-        
-        Args:
-            enc_idx: Index of the encoder
-            enc_params: Encoder parameters
-            batch_grids: Batch of grids
-            batch_shapes: Batch of shapes
-            batch_pattern_ids: Pattern IDs for the batch
-            target_pattern: Target pattern this encoder should specialize in
-            
-        Returns:
-            matplotlib Figure with T-SNE visualization
-        """
-        try:
-            # Get encoder latents for this batch
-            mu_i, logvar_i = self.encoders[enc_idx].apply(
-                {"params": enc_params}, 
-                batch_grids, 
-                batch_shapes, 
-                False,  # eval mode
-                mutable=False
-            )
-            
-            # Convert to numpy and reshape - handle potential shape mismatches
-            latents_np = np.array(mu_i)
-            pattern_ids_np = np.array(batch_pattern_ids)
-            
-            # Ensure arrays have compatible shapes
-            if latents_np.ndim > 2:
-                latents_np = latents_np.reshape(-1, latents_np.shape[-1])
-            if pattern_ids_np.ndim > 1:
-                pattern_ids_np = pattern_ids_np.reshape(-1)
-            
-            # Ensure pattern_ids has the same length as latents
-            if len(pattern_ids_np) != len(latents_np):
-                # Truncate to the shorter length
-                min_length = min(len(pattern_ids_np), len(latents_np))
-                latents_np = latents_np[:min_length]
-                pattern_ids_np = pattern_ids_np[:min_length]
-                logging.warning(f"Encoder {enc_idx} T-SNE: Truncated arrays to length {min_length} due to size mismatch")
-            
-            # Use the SAME T-SNE function as train.py for consistency
-            # This ensures the same style, colors, and markers
-            fig_tsne = visualize_tsne_sources(
-                latents=latents_np,
-                program_ids=pattern_ids_np,  # Pattern types (1, 2, 3) for colors
-                source_ids=np.full(len(latents_np), enc_idx, dtype=int),  # All from same encoder
-                max_points=min(200, len(latents_np)),
-                random_state=42,
-                task_ids=np.zeros(len(latents_np), dtype=int),  # No task IDs during training
-            )
-            
-            # Update title to show this is during training
-            if fig_tsne is not None:
-                fig_tsne.suptitle(f"Encoder {enc_idx} T-SNE During Training (Step {getattr(self, '_current_step', 'unknown')})\nTarget Pattern: {target_pattern}", 
-                                fontsize=16, fontweight='bold')
-            
-            return fig_tsne
-            
-        except Exception as e:
-            logging.warning(f"Could not create T-SNE for Encoder {enc_idx}: {e}")
-            return None
-
-    def _create_pattern_variance_histograms(
-        self,
-        enc_idx: int,
-        enc_params: dict,
-        batch_grids: chex.Array,
-        batch_shapes: chex.Array,
-        batch_pattern_ids: chex.Array,
-        target_pattern: int,
-        current_step: int
-    ) -> Optional[plt.Figure]:
-        """
-        Create histogram visualizations for each pattern showing variance distributions.
-        
-        This creates a comprehensive "certainty panel" that visualizes:
-        - Variance distribution for each pattern (O, T, L tetrominos)
-        - Mean and standard deviation for each pattern
-        - Comparison between target pattern and other patterns
-        - Encoder specialization progress visualization
-        
-        Args:
-            enc_idx: Index of the encoder
-            enc_params: Encoder parameters
-            batch_grids: Batch of grids
-            batch_shapes: Batch of shapes
-            batch_pattern_ids: Pattern IDs for the batch
-            target_pattern: Target pattern this encoder should specialize in
-            current_step: Current training step
-            
-        Returns:
-            matplotlib Figure with histogram panel
-        """
-        try:
-            import matplotlib.pyplot as plt
-            import numpy as np
-        except ImportError:
-            logging.warning("matplotlib not available for histogram visualization")
-            return None
-        
-        try:
-            # Get encoder latents and variances for this batch
-            mu_i, logvar_i = self.encoders[enc_idx].apply(
-                {"params": enc_params}, 
-                batch_grids, 
-                batch_shapes, 
-                False,  # eval mode
-                mutable=False
-            )
-            
-            # Convert to numpy and reshape - handle potential shape mismatches
-            var_i = np.exp(np.array(logvar_i))  # Convert logvar to variance
-            pattern_ids_np = np.array(batch_pattern_ids)
-            
-            # Ensure arrays have compatible shapes
-            if var_i.ndim > 2:
-                var_i_flat = var_i.reshape(-1, var_i.shape[-1])  # Flatten to [num_samples, latent_dim]
-            else:
-                var_i_flat = var_i
-            
-            if pattern_ids_np.ndim > 1:
-                pattern_ids_np = pattern_ids_np.reshape(-1)
-            
-            # Ensure pattern_ids has the same length as variances
-            if len(pattern_ids_np) != len(var_i_flat):
-                # Truncate to the shorter length
-                min_length = min(len(pattern_ids_np), len(var_i_flat))
-                var_i_flat = var_i_flat[:min_length]
-                pattern_ids_np = pattern_ids_np[:min_length]
-                logging.warning(f"Encoder {enc_idx} Histograms: Truncated arrays to length {min_length} due to size mismatch")
-            
-            # Create figure with subplots for each pattern
-            fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-            fig.suptitle(f"Encoder {enc_idx} Certainty Panel - Step {current_step}\nTarget Pattern: {target_pattern}", 
-                        fontsize=16, fontweight='bold')
-            
-            # Pattern names for better visualization
-            pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
-            pattern_colors = {1: 'red', 2: 'blue', 3: 'green'}
-            
-            # Calculate mean variance per sample for each pattern
-            pattern_variances = {}
-            pattern_stats = {}
-            
-            for pattern_id in [1, 2, 3]:
-                pattern_mask = (pattern_ids_np == pattern_id)
-                if np.any(pattern_mask):
-                    pattern_var = var_i_flat[pattern_mask]
-                    # Take mean across latent dimensions for each sample
-                    pattern_var_per_sample = np.mean(pattern_var, axis=1)  # [num_samples]
-                    pattern_variances[pattern_id] = pattern_var_per_sample
-                    
-                    # Calculate statistics
-                    mean_var = np.mean(pattern_var_per_sample)
-                    std_var = np.std(pattern_var_per_sample)
-                    pattern_stats[pattern_id] = {'mean': mean_var, 'std': std_var}
-                else:
-                    pattern_variances[pattern_id] = np.array([])
-                    pattern_stats[pattern_id] = {'mean': 0.0, 'std': 0.0}
-            
-            # Plot histograms for each pattern
-            plot_positions = [(0, 0), (0, 1), (1, 0)]
-            for i, pattern_id in enumerate([1, 2, 3]):
-                row, col = plot_positions[i]
-                ax = axes[row, col]
-                
-                if len(pattern_variances[pattern_id]) > 0:
-                    # Create histogram
-                    ax.hist(pattern_variances[pattern_id], bins=20, alpha=0.7, 
-                           color=pattern_colors[pattern_id], edgecolor='black', linewidth=0.5)
-                    
-                    # Add mean and std lines
-                    mean_val = pattern_stats[pattern_id]['mean']
-                    std_val = pattern_stats[pattern_id]['std']
-                    
-                    ax.axvline(mean_val, color='darkred', linestyle='--', linewidth=2, 
-                              label=f'Mean: {mean_val:.4f}')
-                    ax.axvline(mean_val + std_val, color='orange', linestyle=':', linewidth=2,
-                              label=f'Mean+Std: {mean_val + std_val:.4f}')
-                    ax.axvline(mean_val - std_val, color='orange', linestyle=':', linewidth=2,
-                              label=f'Mean-Std: {mean_val - std_val:.4f}')
-                    
-                    # Highlight target pattern
-                    if pattern_id == target_pattern:
-                        ax.set_title(f"{pattern_names[pattern_id]} (TARGET - Learning)", 
-                                   fontweight='bold', color='red')
-                        ax.patch.set_facecolor('lightcoral')
-                    else:
-                        ax.set_title(f"{pattern_names[pattern_id]} (Other - Should be Certain)", 
-                                   fontweight='bold', color='blue')
-                        ax.patch.set_facecolor('lightblue')
-                    
-                    # Add statistics text
-                    stats_text = f"Mean: {mean_val:.4f}\nStd: {std_val:.4f}\nSamples: {len(pattern_variances[pattern_id])}"
-                    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
-                           verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-                    
-                    ax.set_xlabel("Variance")
-                    ax.set_ylabel("Frequency")
-                    ax.legend()
-                    ax.grid(True, alpha=0.3)
-                else:
-                    ax.text(0.5, 0.5, f"No samples for\n{pattern_names[pattern_id]}", 
-                           ha='center', va='center', transform=ax.transAxes, fontsize=12)
-                    ax.set_title(f"{pattern_names[pattern_id]} (No Data)")
-                    ax.set_xlabel("Variance")
-                    ax.set_ylabel("Frequency")
-            
-            # Create summary comparison plot in the bottom right
-            ax_summary = axes[1, 1]
-            
-            # Plot mean variances for all patterns
-            pattern_ids = list(pattern_stats.keys())
-            means = [pattern_stats[pid]['mean'] for pid in pattern_ids]
-            stds = [pattern_stats[pid]['std'] for pid in pattern_ids]
-            colors = [pattern_colors[pid] for pid in pattern_ids]
-            
-            # Create bar plot
-            bars = ax_summary.bar(pattern_ids, means, yerr=stds, capsize=5, 
-                                color=colors, alpha=0.7, edgecolor='black')
-            
-            # Highlight target pattern
-            for i, pid in enumerate(pattern_ids):
-                if pid == target_pattern:
-                    bars[i].set_edgecolor('red')
-                    bars[i].set_linewidth(3)
-            
-            ax_summary.set_title("Pattern Variance Comparison", fontweight='bold')
-            ax_summary.set_xlabel("Pattern ID")
-            ax_summary.set_ylabel("Mean Variance")
-            ax_summary.set_xticks(pattern_ids)
-            ax_summary.set_xticklabels([f"{pid}\n{pattern_names[pid]}" for pid in pattern_ids])
-            ax_summary.grid(True, alpha=0.3)
-            
-            # Add specialization analysis
-            if target_pattern in pattern_stats:
-                target_mean = pattern_stats[target_pattern]['mean']
-                other_means = [pattern_stats[pid]['mean'] for pid in pattern_ids if pid != target_pattern]
-                
-                if other_means:
-                    avg_other_mean = np.mean(other_means)
-                    specialization_ratio = target_mean / (avg_other_mean + 1e-8)
-                    
-                    # Add specialization status
-                    if specialization_ratio > 1.2:
-                        status = "GOOD - Target pattern has higher variance (learning)"
-                        status_color = "green"
-                    elif specialization_ratio > 0.8:
-                        status = "MODERATE - Target pattern variance is acceptable"
-                        status_color = "orange"
-                    else:
-                        status = "POOR - Target pattern has low variance (overfitting)"
-                        status_color = "red"
-                    
-                    ax_summary.text(0.02, 0.98, f"Specialization Ratio: {specialization_ratio:.3f}\nStatus: {status}", 
-                                  transform=ax_summary.transAxes, verticalalignment='top',
-                                  bbox=dict(boxstyle='round', facecolor=status_color, alpha=0.3))
-            
-            plt.tight_layout()
-            return fig
-            
-        except Exception as e:
-            logging.error(f"Failed to create pattern variance histograms: {e}")
-            return None
 
     def _create_pattern_specific_tsne(
         self,
@@ -4314,193 +3254,6 @@ class StructuredTrainer:
                         logging.warning(f"Test clustering metrics computation failed: {e}")
         
         return metrics, fig_gen, fig_heatmap, fig_latents, None, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list
-
-    def _generate_optimization_comparison(self) -> Optional[plt.Figure]:
-        """Simplified: Generate comparison plot between optimization methods if data is available"""
-        if not hasattr(self, '_optimization_data') or len(self._optimization_data) == 0:
-            logging.debug("No optimization data available for comparison")
-            return None
-        
-        # Simple approach: take the first method that has both optimization types
-        logging.debug(f"Available optimization data: {list(self._optimization_data.keys())}")
-        for method_name, data in self._optimization_data.items():
-            grad_data = data.get('gradient_ascent', {})
-            search_data = data.get('random_search', {})
-            logging.debug(f"Method {method_name} - grad_data steps: {list(grad_data.keys())}, search_data steps: {list(search_data.keys())}")
-            
-            if len(grad_data) > 0 and len(search_data) > 0:
-                try:
-                    # Get common steps
-                    common_steps = sorted(set(grad_data.keys()) & set(search_data.keys()))
-                    logging.debug(f"Common steps: {common_steps}")
-                    if len(common_steps) < 2:
-                        logging.debug(f"Not enough common steps ({len(common_steps)} < 2)")
-                        continue
-                    
-                    # Find maximum budget size
-                    max_budget = 0
-                    for step in common_steps:
-                        max_budget = max(max_budget, len(grad_data[step]['accs']), len(search_data[step]['accs']))
-                    
-                    logging.debug(f"Max budget: {max_budget}")
-                    if max_budget < 2:
-                        logging.debug(f"Max budget too small ({max_budget} < 2)")
-                        continue
-                    
-                    # Create accuracy grids
-                    budgets = list(range(max_budget))
-                    acc_grad = np.full((max_budget, len(common_steps)), np.nan)
-                    acc_search = np.full((max_budget, len(common_steps)), np.nan)
-                    logging.debug(f"Creating plot with {len(common_steps)} steps and {max_budget} budget points")
-                    
-                    # Fill data
-                    for j, step in enumerate(common_steps):
-                        if step in grad_data:
-                            accs = grad_data[step]['accs']
-                            for i, acc in enumerate(accs):
-                                if i < max_budget:
-                                    acc_grad[i, j] = acc
-                        
-                        if step in search_data:
-                            accs = search_data[step]['accs']
-                            for i, acc in enumerate(accs):
-                                if i < max_budget:
-                                    acc_search[i, j] = acc
-                    
-                    # Generate plot
-                    logging.debug("Successfully generating optimization comparison plot!")
-                    try:
-                        from visualization import visualize_optimization_comparison
-                        return visualize_optimization_comparison(
-                            steps=np.array(common_steps),
-                            budgets=np.array(budgets),
-                            acc_A=acc_grad,
-                            acc_B=acc_search,
-                            method_A_name="Gradient Ascent",
-                            method_B_name="Random Search"
-                        )
-                    except ImportError:
-                        logging.warning("visualize_optimization_comparison not available, skipping optimization comparison plot")
-                        return None
-                except Exception as e:
-                    logging.warning(f"Error generating optimization comparison: {e}")
-                    continue
-        
-        return None
-    
-    def _create_encoder_reconstruction_samples(
-        self,
-        enc_idx: int,
-        enc_params: dict,
-        batch_grids: chex.Array,
-        batch_shapes: chex.Array,
-        batch_pattern_ids: chex.Array,
-        target_pattern: int,
-        current_step: int
-    ) -> Optional[plt.Figure]:
-        """
-        Create reconstruction samples for each pattern during Phase A training.
-        
-        This shows how well each encoder can reconstruct different patterns.
-        
-        Args:
-            enc_idx: Index of the encoder
-            enc_params: Encoder parameters
-            batch_grids: Batch of grids
-            batch_shapes: Batch of shapes
-            batch_pattern_ids: Pattern IDs for the batch
-            target_pattern: Target pattern this encoder should specialize in
-            current_step: Current training step
-            
-        Returns:
-            matplotlib Figure with reconstruction samples
-        """
-        try:
-            import matplotlib.pyplot as plt
-            import numpy as np
-        except ImportError:
-            logging.warning("matplotlib not available for reconstruction visualization")
-            return None
-        
-        try:
-            # Get encoder latents for this batch
-            mu_i, logvar_i = self.encoders[enc_idx].apply(
-                {"params": enc_params}, 
-                batch_grids, 
-                batch_shapes, 
-                False,  # eval mode
-                mutable=False
-            )
-            
-            # Sample from the encoder
-            key = jax.random.PRNGKey(42)  # Fixed seed for reproducibility
-            latents = mu_i + jnp.sqrt(jnp.exp(logvar_i)) * jax.random.normal(key, mu_i.shape)
-            
-            # Get decoder outputs (reconstructions)
-            # Note: This is a simplified version - you may need to adapt based on your model structure
-            decoder_outputs = self.decoder.apply(
-                {"params": self.original_decoder_params},
-                latents,
-                batch_shapes,
-                dropout_eval=False,  # eval mode
-                mutable=False
-            )
-            
-            # Convert to numpy for visualization
-            grids_np = np.array(batch_grids)
-            pattern_ids_np = np.array(batch_pattern_ids)
-            reconstructions_np = np.array(decoder_outputs)
-            
-            # Create figure with subplots for each pattern
-            fig, axes = plt.subplots(3, 4, figsize=(16, 12))
-            fig.suptitle(f"Encoder {enc_idx} Reconstruction Samples - Step {current_step}\nTarget Pattern: {target_pattern}", 
-                        fontsize=16, fontweight='bold')
-            
-            # Pattern names for better visualization
-            pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
-            pattern_colors = {1: 'red', 2: 'blue', 3: 'green'}
-            
-            # Show samples for each pattern
-            for pattern_id in [1, 2, 3]:
-                pattern_mask = (pattern_ids_np == pattern_id)
-                if np.any(pattern_mask):
-                    # Get first sample for this pattern
-                    sample_idx = np.where(pattern_mask)[0][0]
-                    
-                    # Original input
-                    ax = axes[pattern_id-1, 0]
-                    ax.imshow(grids_np[sample_idx, 0], cmap='Blues', alpha=0.8)
-                    ax.set_title(f"Pattern {pattern_id} - Input", fontsize=12)
-                    ax.axis('off')
-                    
-                    # Reconstruction
-                    ax = axes[pattern_id-1, 1]
-                    ax.imshow(reconstructions_np[sample_idx, 0], cmap='Blues', alpha=0.8)
-                    ax.set_title(f"Pattern {pattern_id} - Reconstruction", fontsize=12)
-                    ax.axis('off')
-                    
-                    # Target output
-                    ax = axes[pattern_id-1, 2]
-                    ax.imshow(grids_np[sample_idx, 1], cmap='Blues', alpha=0.8)
-                    ax.set_title(f"Pattern {pattern_id} - Target", fontsize=12)
-                    ax.axis('off')
-                    
-                    # Reconstruction quality indicator
-                    ax = axes[pattern_id-1, 3]
-                    # Simple quality metric (you can implement more sophisticated ones)
-                    quality = np.mean(np.abs(reconstructions_np[sample_idx, 0] - grids_np[sample_idx, 1]))
-                    ax.text(0.5, 0.5, f"Quality: {quality:.3f}\n{'Good' if quality < 0.1 else 'Poor'}", 
-                           ha='center', va='center', transform=ax.transAxes, fontsize=12,
-                           bbox=dict(boxstyle="round,pad=0.3", facecolor=pattern_colors[pattern_id], alpha=0.3))
-                    ax.set_title(f"Pattern {pattern_id} - Quality", fontsize=12)
-                    ax.axis('off')
-            
-            plt.tight_layout()
-            return fig
-            
-        except Exception as e:
-            logging.warning(f"Could not create reconstruction samples for Encoder {enc_idx}: {e}")
-            return None
 
 
 @hydra.main(config_path="configs", version_base=None, config_name="structured")
