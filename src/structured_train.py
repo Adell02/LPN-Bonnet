@@ -1494,7 +1494,7 @@ class StructuredTrainer:
         logging.info(f"       Evaluating target pattern reconstruction for Encoder {enc_idx}...")
         target_pattern = enc_idx + 1  # Encoder 0 -> Pattern 1, Encoder 1 -> Pattern 2, Encoder 2 -> Pattern 3
         reconstruction_metrics = self._evaluate_target_pattern_reconstruction(
-            enc_idx, encoder_params, target_pattern, eval_data[target_pattern], current_global_step
+            enc_idx, encoder_params, target_pattern, eval_data[target_pattern], current_global_step, state
         )
         
         logging.info(f"     ✅ Evaluation completed for Encoder {enc_idx}")
@@ -1558,7 +1558,7 @@ class StructuredTrainer:
             logging.warning(f"T-SNE creation failed for Encoder {enc_idx}: {e}")
     
     def _evaluate_target_pattern_reconstruction(self, enc_idx: int, encoder_params: dict, target_pattern: int, 
-                                             target_data: tuple, global_step: int) -> dict:
+                                             target_data: tuple, global_step: int, state: TrainState) -> dict:
         """
         Evaluate reconstruction quality for an encoder's target pattern.
         
@@ -1615,7 +1615,7 @@ class StructuredTrainer:
             
             # Generate reconstructions
             reconstructed_grids, reconstructed_shapes, _ = temp_model.apply(
-                {"params": {"encoders": [encoder_params], "decoder": self.state.params["decoder"]}},
+                {"params": {"encoders": [encoder_params], "decoder": state.params["decoder"]}},
                 method=temp_model.generate_output,
                 pairs=flat_grids,
                 grid_shapes=flat_shapes,
@@ -1627,7 +1627,7 @@ class StructuredTrainer:
                 return_two_best=False,
                 poe_alphas=None,
                 encoder_params_list=[encoder_params],
-                decoder_params=self.state.params["decoder"],
+                decoder_params=state.params["decoder"],
                 repulsion_kl_coeff=None,
             )
             
@@ -1749,9 +1749,10 @@ class StructuredTrainer:
             logging.info(f"       🔍 Evaluating target pattern reconstruction progress...")
             target_pattern = enc_idx + 1  # Encoder 0 -> Pattern 1, Encoder 1 -> Pattern 2, Encoder 2 -> Pattern 3
             if target_pattern in eval_data:
-                reconstruction_metrics = self._evaluate_target_pattern_reconstruction(
-                    enc_idx, encoder_params, target_pattern, eval_data[target_pattern], current_global_step
-                )
+                # For Phase A evaluation, we need to create a minimal state with decoder params
+                # Since we don't have the full state here, we'll skip reconstruction evaluation during training
+                logging.info(f"         ⚠️ Skipping reconstruction evaluation during Phase A training (requires full state)")
+                reconstruction_metrics = {}
                 # Log Phase A specific reconstruction metrics
                 if reconstruction_metrics:
                     wandb.log({
@@ -1810,9 +1811,14 @@ class StructuredTrainer:
                     pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
                     pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
                     
+                    # Reshape data for visualization: (num_pairs, 5, 5, 2) -> (num_pairs, 5, 5, 1)
+                    # and (num_pairs, 2, 2) -> (num_pairs, 2)
+                    vis_grids = np.array(sample_grids)[:, :, :, 0]  # Take first channel only
+                    vis_shapes = np.array(sample_shapes)[:, :, 0]    # Take first dimension only
+                    
                     fig_cert = visualize_struct_confidence_panel(
-                        sample_grids=np.array(sample_grids),
-                        sample_shapes=np.array(sample_shapes),
+                        sample_grids=vis_grids,
+                        sample_shapes=vis_shapes,
                         encoder_mus=[np.array(mu)],
                         encoder_logvars=[np.array(logvar)],
                         poe_mu=None,
