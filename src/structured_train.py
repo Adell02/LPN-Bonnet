@@ -3196,11 +3196,69 @@ class StructuredTrainer:
         return grids, shapes, pattern_ids
     
     def _create_pattern_dataset(self, pattern_id: int, num_samples: int) -> tuple:
+        """Create a dataset composed solely of a single pattern by loading from pre-existing datasets.
+
+        This loads the actual struct_pattern_1, struct_pattern_2, struct_pattern_3 datasets
+        instead of generating synthetic data, ensuring consistent evaluation data.
+
+        Args:
+            pattern_id: Pattern to generate (1, 2, or 3).
+            num_samples: Number of samples to generate for this pattern.
+
+        Returns:
+            Tuple of (grids, shapes, pattern_ids) each with ``num_samples``
+            entries corresponding to ``pattern_id``.
+        """
+        import numpy as np
+        import os
+        
+        # Map pattern_id to dataset folder names
+        pattern_to_folder = {
+            1: "struct_pattern_1",
+            2: "struct_pattern_2", 
+            3: "struct_pattern_3"
+        }
+        
+        if pattern_id not in pattern_to_folder:
+            logging.warning(f"Unknown pattern_id {pattern_id}, using pattern 1")
+            pattern_id = 1
+            
+        dataset_folder = pattern_to_folder[pattern_id]
+        pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
+        
+        logging.info(f"      Loading {num_samples} samples from {dataset_folder} ({pattern_names[pattern_id]})")
+        
+        # Load the pre-existing dataset
+        try:
+            dataset_path = os.path.join("src/datasets", dataset_folder)
+            grids = np.load(os.path.join(dataset_path, "grids.npy")).astype(np.uint8)
+            shapes = np.load(os.path.join(dataset_path, "shapes.npy")).astype(np.uint8)
+            
+            # Ensure we have enough samples
+            available_samples = len(grids)
+            if available_samples < num_samples:
+                logging.warning(f"      Dataset {dataset_folder} only has {available_samples} samples, using all available")
+                num_samples = available_samples
+            
+            # Take the first num_samples from the dataset
+            grids = grids[:num_samples]
+            shapes = shapes[:num_samples]
+            pattern_ids = np.full(num_samples, pattern_id, dtype=np.uint8)
+            
+            logging.info(f"      Loaded {num_samples} samples from {dataset_folder}: {grids.shape}, {shapes.shape}")
+            return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
+            
+        except Exception as e:
+            logging.error(f"      Failed to load dataset {dataset_folder}: {e}")
+            logging.info(f"      Falling back to synthetic data generation for pattern {pattern_id}")
+            
+            # Fallback to the original synthetic generation method
+            return self._create_pattern_dataset_synthetic(pattern_id, num_samples)
+    
+    def _create_pattern_dataset_synthetic(self, pattern_id: int, num_samples: int) -> tuple:
         """Create a dataset composed solely of a single pattern with clean tetromino shapes.
 
-        This is used for evaluation/visualization so that variance statistics
-        are computed from examples of the intended pattern only. Creates clean,
-        consistent tetromino patterns for reliable evaluation.
+        This is the original synthetic data generation method, kept as a fallback.
 
         Args:
             pattern_id: Pattern to generate (1, 2, or 3).
@@ -3243,7 +3301,7 @@ class StructuredTrainer:
             pattern_id = 1
         
         pattern_info = pattern_definitions[pattern_id]
-        logging.info(f"      Creating {num_samples} samples of {pattern_info['name']} (Pattern {pattern_id})")
+        logging.info(f"      Creating {num_samples} synthetic samples of {pattern_info['name']} (Pattern {pattern_id})")
         
         # Initialize arrays
         grids = np.zeros((num_samples, num_pairs, 5, 5, 2), dtype=np.uint8)
@@ -3275,10 +3333,10 @@ class StructuredTrainer:
                 # Store in arrays
                 grids[sample_idx, pair_idx, :, :, 0] = input_grid
                 grids[sample_idx, pair_idx, :, :, 1] = output_grid
-                shapes[sample_idx, pair_idx, 0] = [5, 5]  # [input_rows, input_cols]
-                shapes[sample_idx, pair_idx, 1] = [5, 5]  # [output_rows, output_cols]
+                shapes[sample_idx, pair_idx, 0] = [5, 5] # [input_rows, input_cols]
+                shapes[sample_idx, pair_idx, 1] = [5, 5] # [output_rows, output_cols]
         
-        logging.info(f"      Generated {num_samples} samples: {grids.shape}, {shapes.shape}")
+        logging.info(f"      Generated {num_samples} synthetic samples: {grids.shape}, {shapes.shape}")
         return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
     
     def _create_single_pattern_sample(self, pattern_id: int) -> tuple:
@@ -3345,7 +3403,7 @@ class StructuredTrainer:
             fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
             return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
 
-    def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 1.0) -> float:
+    def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 5.0) -> float:
         """
         Compute repulsion loss to push current encoder away from previous encoders' latent targets.
         
@@ -3364,6 +3422,29 @@ class StructuredTrainer:
         logging.info(f"   - target_latents_store keys: {list(target_latents_store.keys()) if target_latents_store else 'None'}")
         logging.info(f"   - current_latents shape: {current_latents.shape}")
         logging.info(f"   - margin: {margin}")
+        
+        # Adaptive margin: if margin is too small, compute a reasonable one based on data
+        if margin < 1.0:
+            # Sample some distances to estimate a reasonable margin
+            sample_distances = []
+            for prev_enc_idx in range(current_encoder_idx):
+                if prev_enc_idx in target_latents_store:
+                    prev_targets = target_latents_store[prev_enc_idx]
+                    for pattern_id, target_latents in prev_targets.items():
+                        if target_latents is not None and len(target_latents) > 0:
+                            if len(target_latents) == len(current_latents):
+                                sample_dist = jnp.linalg.norm(current_latents - target_latents, axis=1)
+                                sample_distances.append(float(jnp.mean(sample_dist)))
+                                break  # Just need one sample per encoder
+                            if len(sample_distances) >= 2:  # Get samples from 2 encoders
+                                break
+                    if len(sample_distances) >= 2:
+                        break
+            
+            if sample_distances:
+                adaptive_margin = max(1.0, min(sample_distances) * 0.8)  # 80% of minimum observed distance
+                logging.info(f"   - Adaptive margin computed: {adaptive_margin:.3f} (from sample distances: {sample_distances})")
+                margin = adaptive_margin
         
         if not target_latents_store or current_encoder_idx == 0:
             # No previous encoders to repulse from
