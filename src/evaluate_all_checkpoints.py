@@ -1465,18 +1465,20 @@ def main():
             print(f"⚙️  Overriding evolutionary_search mutation_std -> {base_methods['evolutionary_search']['mutation_std']}")
         except Exception:
             pass
-    if args.es_population is not None:
-        try:
-            base_methods["evolutionary_search"]["population_size"] = int(args.es_population)
-            print(f"⚙️  Overriding evolutionary_search population_size -> {base_methods['evolutionary_search']['population_size']}")
-        except Exception:
-            pass
-    if args.es_generations is not None:
-        try:
-            base_methods["evolutionary_search"]["num_generations"] = int(args.es_generations)
-            print(f"⚙️  Overriding evolutionary_search num_generations -> {base_methods['evolutionary_search']['num_generations']}")
-        except Exception:
-            pass
+    # FIXED: Only set population_size and num_generations if explicitly provided AND we want fixed values
+    # Otherwise, let the budget-based scaling work automatically
+    if args.es_population is not None and args.es_generations is not None:
+        # User wants fixed values for all budgets
+        base_methods["evolutionary_search"]["population_size"] = int(args.es_population)
+        base_methods["evolutionary_search"]["num_generations"] = int(args.es_generations)
+        print(f"⚙️  Using fixed ES configuration: population={args.es_population}, generations={args.es_generations}")
+    else:
+        # User wants automatic budget-based scaling - remove fixed values
+        if "population_size" in base_methods["evolutionary_search"]:
+            del base_methods["evolutionary_search"]["population_size"]
+        if "num_generations" in base_methods["evolutionary_search"]:
+            del base_methods["evolutionary_search"]["num_generations"]
+        print(f"⚙️  Using automatic budget-based ES scaling with multiplier: {args.es_budget_multiplier}x")
     if args.es_mutation_decay is not None:
         try:
             base_methods["evolutionary_search"]["mutation_decay"] = float(args.es_mutation_decay)
@@ -1494,11 +1496,12 @@ def main():
         print(f"⚙️  Enabling evolutionary_search track_progress")
     
     # Evolutionary search budget: balance population and generations first.
-    # Choose population ≈ sqrt(budget), enforce at least 3 and cap at 32, then set generations = ceil(budget / population)
+    # Choose population ≈ sqrt(budget), enforce at least 3 and cap at 100, then set generations = ceil(budget / population)
     # Apply budget multiplier to scale both population and generations
     # If explicit population/generations are provided, use those instead
     es_configs = []  # list of {budget, population_size, num_generations}
-    max_pop = base_methods["evolutionary_search"]["population_size"]
+    # FIXED: Only get max_pop if it exists, otherwise use reasonable default
+    max_pop = base_methods["evolutionary_search"].get("population_size", 100)
     
     # Check if explicit values are provided
     explicit_pop = base_methods["evolutionary_search"].get("population_size")
@@ -1519,7 +1522,9 @@ def main():
             # Apply budget multiplier
             scaled_budget = b * args.es_budget_multiplier
             proposed_pop = int(round(np.sqrt(scaled_budget)))
-            proposed_pop = max(3, min(max_pop, proposed_pop))
+            # FIXED: Use a reasonable max_pop when not explicitly set
+            max_pop_reasonable = 100  # Allow larger populations for higher budgets
+            proposed_pop = max(3, min(max_pop_reasonable, proposed_pop))
             gens = int(max(1, int(np.ceil(scaled_budget / proposed_pop))))
             es_configs.append({
                 "budget": int(b), 
@@ -1668,9 +1673,6 @@ def main():
                 except ValueError:
                     training_progress = 0
             
-            # FIXED: Use actual step number for CSV, not version number
-            csv_step = step  # Use the actual training step (e.g., 346)
-            
             denom = max(len(checkpoints) - 1, 1)
             pct = int((training_progress / denom) * 100)
 
@@ -1753,7 +1755,7 @@ def main():
                             results["failed_evals"] += 1
 
                         # Prepare CSV row with subspace parameters if enabled
-                        csv_row = [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], csv_step, "gradient_ascent", "budget", compute_budget, 
+                        csv_row = [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], training_progress, "gradient_ascent", "budget", compute_budget, 
                                   acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
                                   metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
                                   metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", ""),
@@ -1823,7 +1825,7 @@ def main():
                             results["failed_evals"] += 1
 
                         # Prepare CSV row with subspace parameters if enabled
-                        csv_row = [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], csv_step, "random_search", "num_samples", num_samples, 
+                        csv_row = [time.strftime("%Y-%m-%d %H:%M:%S"), args.run_name, checkpoint["name"], training_progress, "random_search", "num_samples", num_samples, 
                                   acc or "", metrics.get("top_1_shape_accuracy", ""), metrics.get("top_1_accuracy", ""),
                                   metrics.get("top_1_pixel_correctness", ""), metrics.get("top_2_shape_accuracy", ""),
                                   metrics.get("top_2_accuracy", ""), metrics.get("top_2_pixel_correctness", ""),
@@ -1926,7 +1928,7 @@ def main():
                             time.strftime("%Y-%m-%d %H:%M:%S"),
                             args.run_name,
                             checkpoint["name"],
-                            csv_step,
+                            training_progress,
                             "evolutionary_search",
                             "budget",
                             es_cfg["budget"],
@@ -2087,6 +2089,23 @@ def main():
                             all_steps = sorted(all_steps)
                             all_budgets = sorted(shared_budgets)
 
+                            # SAFETY CHECK: Prevent extremely large arrays that would cause plotting issues
+                            if len(all_steps) > 1000 or len(all_budgets) > 1000:
+                                print(f"⚠️  WARNING: Extremely large data dimensions detected!")
+                                print(f"   Steps: {len(all_steps)} (range: {min(all_steps)} to {max(all_steps)})")
+                                print(f"   Budgets: {len(all_budgets)} (range: {min(all_budgets)} to {max(all_budgets)})")
+                                print(f"   This would create a {len(all_budgets)}x{len(all_steps)} array = {len(all_budgets) * len(all_steps)} elements")
+                                print(f"   Skipping plot generation to prevent memory/plotting issues")
+                                continue
+
+                            # Additional safety check for reasonable step values
+                            if max(all_steps) > 10000:
+                                print(f"⚠️  WARNING: Extremely large step numbers detected!")
+                                print(f"   Max step: {max(all_steps)}")
+                                print(f"   All steps: {all_steps[:10]}...")  # Show first 10
+                                print(f"   Skipping plot generation due to unreasonable step values")
+                                continue
+
                             if all_steps and all_budgets:
                                 # Create data arrays for selected methods
                                 method_arrays = {}
@@ -2197,17 +2216,6 @@ def main():
                                 print(f"   📈 Available steps: {all_steps}")
                                 print(f"   💰 Available budgets: {all_budgets}")
                                 print(f"   🔍 Data coverage: {data_point_count} data points")
-                                print(f"   🖼️  Plot saved to: {step_plot_path}")
-                                print(f"   ☁️  Plot uploaded to W&B under: checkpoint_{training_progress}/optimization_comparison")
-
-                                # Verify plot file was created and uploaded successfully
-                                if step_plot_path.exists():
-                                    file_size = step_plot_path.stat().st_size
-                                    print(f"   ✅ Plot file verified: {file_size} bytes")
-                                    print(f"   🎯 SUCCESS: Comparison heatmap generated and uploaded to W&B!")
-                                else:
-                                    print(f"   ❌ WARNING: Plot file not found at {step_plot_path}")
-                                    print(f"   🚨 ERROR: Failed to generate comparison heatmap!")
 
                                 # Generate additional loss plots if --loss flag is enabled
                                 if args.loss and len(args.plot_methods) == 2:
@@ -2339,23 +2347,6 @@ def main():
 
                     steps_sorted = sorted(set(steps_list))
                     actual_budgets = shared_budgets
-
-                    # SAFETY CHECK: Prevent extremely large arrays that would cause plotting issues
-                    if len(steps_sorted) > 1000 or len(actual_budgets) > 1000:
-                        print(f"⚠️  WARNING: Extremely large data dimensions detected in final plot!")
-                        print(f"   Steps: {len(steps_sorted)} (range: {min(steps_sorted) if steps_sorted else 'N/A'} to {max(steps_sorted) if steps_sorted else 'N/A'})")
-                        print(f"   Budgets: {len(actual_budgets)} (range: {min(actual_budgets) if actual_budgets else 'N/A'} to {max(actual_budgets) if actual_budgets else 'N/A'})")
-                        print(f"   This would create a {len(actual_budgets)}x{len(steps_sorted)} array = {len(actual_budgets) * len(steps_sorted)} elements")
-                        print(f"   Skipping final plot generation to prevent memory/plotting issues")
-                        continue
-
-                    # Additional safety check for reasonable step values
-                    if steps_sorted and max(steps_sorted) > 10000:
-                        print(f"⚠️  WARNING: Extremely large step numbers detected in final plot!")
-                        print(f"   Max step: {max(steps_sorted)}")
-                        print(f"   All steps: {steps_sorted[:10]}...")  # Show first 10
-                        print(f"   Skipping final plot generation due to unreasonable step values")
-                        continue
 
                     # Create data arrays for selected methods
                     method_arrays = {}
@@ -2519,7 +2510,6 @@ def main():
             print(f"   • Output directory: {args.out_dir}")
             print(f"   • CSV saved to: {out_csv}")
             print(f"   • File generation: {'enabled' if not args.no_files else 'disabled (--no_files flag)'}")
-            print(f"   • Comparison heatmaps: {'Generated and uploaded to W&B' if not args.no_files else 'Disabled (--no_files flag)'}")
             print(f"📅 Timestamp: {timestamp}")
             print("📈 Available metrics in CSV:")
             print("   - overall_accuracy")
