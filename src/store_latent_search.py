@@ -159,9 +159,21 @@ class Trace:
 
 def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
     # values associated with the *trajectory* points (GA path or ES path)
+    # CRITICAL FIX: For GA, prioritize losses_per_sample over trajectory_losses
+    if prefix == "ga_":
+        # For GA, check losses_per_sample first (full trajectory)
+        if f"{prefix}losses_per_sample" in npz:
+            losses_per_sample = np.array(npz[f"{prefix}losses_per_sample"])
+            if losses_per_sample.ndim >= 2:
+                # Take the mean across samples to get trajectory values
+                trajectory_losses = np.mean(losses_per_sample, axis=0)
+                print(f"[plot] Using GA losses_per_sample for trajectory: {trajectory_losses.shape}")
+                return trajectory_losses
+    
+    # Then check other keys
     for k in [
-        f"{prefix}trajectory_losses",  # New: direct trajectory losses (GA)
-        f"{prefix}trajectory_scores",  # New: direct trajectory scores (GA)
+        f"{prefix}trajectory_losses",  # Fallback: direct trajectory losses (GA)
+        f"{prefix}trajectory_scores",  # Fallback: direct trajectory scores (GA)
         f"{prefix}losses",
         f"{prefix}scores",
         f"{prefix}all_losses",
@@ -177,21 +189,9 @@ def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
                 print(f"[plot] Using values key '{k}', length={arr.size}")
                 return arr
     
-    # CRITICAL FIX: Special handling for GA with full trajectory data
+    # CRITICAL FIX: Special handling for GA with log_probs if losses_per_sample not available
     if prefix == "ga_":
-        print(f"[plot] GA trajectory found but no values - attempting to extract from available data")
-        print(f"[plot] Available keys: {list(npz.keys())}")
-        
-        # Try to use ga_losses_per_sample for the full trajectory
-        if f"{prefix}losses_per_sample" in npz:
-            losses_per_sample = np.array(npz[f"{prefix}losses_per_sample"])
-            if losses_per_sample.ndim >= 2:
-                # Take the mean across samples to get trajectory values
-                trajectory_losses = np.mean(losses_per_sample, axis=0)
-                print(f"[plot] Using GA losses_per_sample for trajectory: {trajectory_losses.shape}")
-                return trajectory_losses
-        
-        # Try to use ga_log_probs to create trajectory values
+        # Try to use ga_log_probs to create trajectory values as fallback
         if f"{prefix}log_probs" in npz:
             try:
                 log_probs = np.array(npz[f"{prefix}log_probs"])

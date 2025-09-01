@@ -65,7 +65,7 @@ training:
   # This coefficient controls the strength of contrastive loss
   # Lower values = more stable, higher values = more aggressive specialization
   # The system will dynamically adjust this coefficient based on specialization progress
-  contrastive_kl: 0.5  # variance amplification for pre-trained encoders (stronger amplification)
+  contrastive_kl: 1.0  # variance amplification for pre-trained encoders (increased for stronger effect)
   # Target pattern ratio controls the balance between target and other patterns in each batch
   target_pattern_ratio: 0.7  # 70% target, 30% others
   log_every_n_steps: 5

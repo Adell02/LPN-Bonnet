@@ -549,10 +549,15 @@ class StructuredLPN(nn.Module):
         other_count = jnp.sum(1.0 - mask, axis=1)  # (E,)
         avg_var_other = jnp.where(other_count > 0, other_var_sum / other_count, 0.0)  # (E,)
         
-        # STABILIZATION: Clip variances to prevent extreme values
+        # STABILIZATION: Clip variances to prevent extreme values and ensure numerical stability
         clip_threshold = 10.0
-        avg_var_target = jnp.clip(avg_var_target, 0.0, clip_threshold)
-        avg_var_other = jnp.clip(avg_var_other, 0.0, clip_threshold)
+        min_threshold = 0.01  # Prevent variances from becoming too small (numerical stability)
+        
+        avg_var_target = jnp.clip(avg_var_target, min_threshold, clip_threshold)
+        avg_var_other = jnp.clip(avg_var_other, min_threshold, clip_threshold)
+        
+        # ADDITIONAL STABILIZATION: Log the variance values for monitoring
+        logging.debug(f"Variance stats - Target: {avg_var_target}, Other: {avg_var_other}")
         
         # SIMPLE APPROACH: Amplify existing variance differences
         # Since encoders are pre-trained, target variance should already be < other variance
@@ -561,19 +566,13 @@ class StructuredLPN(nn.Module):
         # Loss: encourage target variance to become even lower relative to other variance
         # This amplifies the existing specialization rather than forcing new specialization
         
-        # RESTORE WORKING IMPLEMENTATION: Both target and other variance terms
-        # This is what was working in commit ca8477f3611fcbaae6c2106ccea90de61cb2942f
+        # FIXED: Correct contrastive loss implementation
+        # We want: target variance LOW (specialized) and other variance HIGH (uncertain)
+        # Loss = avg_var_target - avg_var_other
+        # This encourages: target variance ↓ and other variance ↑
         
-        # Compute variance control loss
-        # L = λ_pos * avg_var_target + λ_neg * avg_var_other
-        # Where λ_pos > 0 (encourage low target variance) and λ_neg < 0 (encourage high other variance)
-        # For simplicity, we use λ_pos = 1.0 and λ_neg = -1.0
-        
-        lambda_pos = 1.0   # Positive coefficient for target variance (minimize)
-        lambda_neg = -1.0  # Negative coefficient for other variance (maximize)
-        
-        # Per-encoder loss: each encoder gets both terms
-        per_encoder_loss = lambda_pos * avg_var_target + lambda_neg * avg_var_other  # (E,)
+        # Per-encoder loss: encourage specialization
+        per_encoder_loss = avg_var_target - avg_var_other  # (E,)
         
         # Total loss: sum across encoders
         variance_loss = jnp.sum(per_encoder_loss)
@@ -582,6 +581,9 @@ class StructuredLPN(nn.Module):
         variance_loss = contrastive_kl_coeff * variance_loss
         
         # Return metrics for monitoring
+        # variance_loss: should be positive when target < other (good specialization)
+        # avg_var_target: should be LOW (specialized, confident)
+        # avg_var_other: should be HIGH (uncertain, diverse)
         return variance_loss, jnp.mean(avg_var_target), jnp.mean(avg_var_other)
 
 
