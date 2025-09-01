@@ -1516,6 +1516,9 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             with np.load(ga_npz_path, allow_pickle=True) as f:
                 if 'ga_budget' in f:
                     ga_budget = np.array(f['ga_budget']).reshape(-1)
+                    print(f"[loss] Debug: GA budget loaded from NPZ: {ga_budget}")
+                else:
+                    print(f"[loss] Debug: GA budget NOT found in NPZ")
                 if (dataset_length is not None and dataset_length > 1) and 'ga_losses_per_sample' in f:
                     L = np.array(f['ga_losses_per_sample'])  # (N, S)
                     x = ga_budget if ga_budget is not None and len(ga_budget) == L.shape[1] else np.arange(L.shape[1])
@@ -1537,10 +1540,12 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
         if ga_steps is not None:
             ga_budget = 2 * np.arange(1, len(ga.vals) + 1)
             print(f"[loss] GA budget calculation: {len(ga.vals)} steps → budget points: {ga_budget}")
+            print(f"[loss] Debug: GA fallback budget: {ga_budget}")
             ax.plot(ga_budget, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
                     markersize=6, label=f"Gradient Ascent (2×{ga_steps} steps)", zorder=3)
         else:
             ga_steps_indices = np.arange(len(ga.vals))
+            print(f"[loss] Debug: GA using step indices as budget: {ga_steps_indices}")
             ax.plot(ga_steps_indices, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
                     markersize=6, label="Gradient Ascent", zorder=3)
         # Track y extents
@@ -1554,6 +1559,9 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             with np.load(es_npz_path, allow_pickle=True) as f:
                 if 'es_budget' in f:
                     es_budget = np.array(f['es_budget']).reshape(-1)
+                    print(f"[loss] Debug: ES budget loaded from NPZ: {es_budget}")
+                else:
+                    print(f"[loss] Debug: ES budget NOT found in NPZ")
                 if (dataset_length is not None and dataset_length > 1) and 'es_generation_losses_per_sample' in f:
                     L = np.array(f['es_generation_losses_per_sample'])  # (N, G)
                     x = es_budget if es_budget is not None and len(es_budget) == L.shape[1] else np.arange(1, L.shape[1]+1)
@@ -1580,14 +1588,17 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             else:
                 es_budget = np.arange(len(es.vals)) * es_population
             if len(es_budget) == len(es.vals):
+                print(f"[loss] Debug: ES fallback budget: {es_budget}")
                 ax.plot(es_budget, es.vals, color="#DB74DB", linewidth=3.0, marker='s', 
                         markersize=6, label=f"Evolutionary Search ({es_population}×{es_generations})", zorder=3)
             else:
                 es_steps_indices = np.arange(len(es.vals))
+                print(f"[loss] Debug: ES using step indices as budget: {es_steps_indices}")
                 ax.plot(es_steps_indices, es.vals, color="#DB74DB", linewidth=3.0, marker='s', 
                         markersize=6, label="Evolutionary Search", zorder=3)
         else:
             es_steps_indices = np.arange(len(es.vals))
+            print(f"[loss] Debug: ES using step indices as budget: {es_steps_indices}")
             ax.plot(es_steps_indices, es.vals, color="#DB74DB", linewidth=3.0, marker='s', 
                     markersize=6, label="Evolutionary Search", zorder=3)
         # Track y extents
@@ -1759,6 +1770,10 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Add dashed vertical lines where each method achieves accuracy = 1
     print(f"[loss] Adding accuracy = 1 markers...")
     
+    # Debug: show what keys are available for accuracy = 1 detection
+    print(f"[loss] Debug: Checking for accuracy = 1 markers...")
+    print(f"[loss] Debug: dataset_length = {dataset_length}")
+    
     # Function to find first budget where accuracy = 1
     def find_first_accuracy_one(accuracies, budget_points, method_name):
         """Find the first budget point where accuracy = 1"""
@@ -1786,6 +1801,28 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     if ga_npz_path and os.path.exists(ga_npz_path):
         try:
             with np.load(ga_npz_path, allow_pickle=True) as f:
+                # Debug: show available keys for GA
+                print(f"[loss] Debug: GA NPZ keys: {list(f.keys())}")
+                if dataset_length == 1:
+                    # For single sample, show what accuracy-related keys are available
+                    accuracy_keys = [k for k in f.keys() if 'accuracy' in k.lower()]
+                    print(f"[loss] Debug: GA accuracy-related keys: {accuracy_keys}")
+                    if 'ga_overall_accuracy' in f:
+                        ga_overall = safe_array_to_scalar(np.array(f['ga_overall_accuracy']))
+                        print(f"[loss] Debug: GA overall accuracy: {ga_overall}")
+                    elif 'overall_accuracy' in f:
+                        overall = safe_array_to_scalar(np.array(f['overall_accuracy']))
+                        print(f"[loss] Debug: GA overall accuracy (fallback): {overall}")
+                    
+                    # Debug: show what accuracy values we're checking
+                    print(f"[loss] Debug: GA checking accuracy keys: ['ga_overall_accuracy', 'overall_accuracy', 'ga_accuracy', 'accuracy']")
+                    for key in ['ga_overall_accuracy', 'overall_accuracy', 'ga_accuracy', 'accuracy']:
+                        if key in f:
+                            val = safe_array_to_scalar(np.array(f[key]))
+                            print(f"[loss] Debug: GA {key} = {val}")
+                        else:
+                            print(f"[loss] Debug: GA {key} = NOT FOUND")
+                
                 # Try to get per-sample accuracies for dataset_length > 1 case
                 if dataset_length and dataset_length > 1 and 'per_sample_accuracy' in f:
                     per_sample_acc = np.array(f['per_sample_accuracy']).reshape(-1)
@@ -1823,34 +1860,45 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                         if key in f:
                             overall_acc = safe_array_to_scalar(np.array(f[key]))
                             if overall_acc is not None and np.isclose(overall_acc, 1.0, atol=1e-6):
-                                # For single sample, check if we have per-step accuracies to find first step = 1
-                                if 'ga_accuracies' in f:
-                                    step_accuracies = np.array(f['ga_accuracies']).reshape(-1)
-                                    if step_accuracies.size > 0:
-                                        # Find first step where accuracy = 1
-                                        accuracy_one_indices = np.where(np.isclose(step_accuracies, 1.0, atol=1e-6))[0]
-                                        if len(accuracy_one_indices) > 0:
-                                            first_step_idx = accuracy_one_indices[0]
-                                            if ga_budget is not None and first_step_idx < len(ga_budget):
-                                                ga_accuracy_one_budget = ga_budget[first_step_idx]
-                                                print(f"[loss] GA: First step with accuracy = 1 at step {first_step_idx}, budget {ga_accuracy_one_budget}")
+                                # For single sample, we need to check if any step achieves accuracy = 1
+                                # Since we don't have per-step accuracies, we'll check if the final accuracy is 1
+                                # and use the budget where we first achieve this
+                                if ga_budget is not None and len(ga_budget) > 0:
+                                    # Check if we have per-step losses to determine when we first achieve good performance
+                                    if 'ga_losses' in f:
+                                        ga_losses = np.array(f['ga_losses']).reshape(-1)
+                                        if ga_losses.size > 0:
+                                            # Find the first step where loss is close to minimum (indicating good performance)
+                                            # Use a threshold based on the final loss
+                                            final_loss = ga_losses[-1]
+                                            if final_loss < 0.1:  # If final loss is very low, accuracy is likely 1
+                                                # Find first step where loss is close to final loss
+                                                loss_threshold = final_loss + 0.1  # Allow some tolerance
+                                                accuracy_one_indices = np.where(ga_losses <= loss_threshold)[0]
+                                                if len(accuracy_one_indices) > 0:
+                                                    first_step_idx = accuracy_one_indices[0]
+                                                    ga_accuracy_one_budget = ga_budget[first_step_idx]
+                                                    print(f"[loss] GA: First step with good performance (loss <= {loss_threshold:.3f}) at step {first_step_idx}, budget {ga_accuracy_one_budget}")
+                                                else:
+                                                    # Fallback: use last budget point
+                                                    ga_accuracy_one_budget = ga_budget[-1]
+                                                    print(f"[loss] GA: Overall accuracy = 1, using final budget: {ga_accuracy_one_budget}")
                                             else:
-                                                # Fallback: use last budget point
-                                                ga_accuracy_one_budget = ga_budget[-1] if ga_budget is not None and len(ga_budget) > 0 else None
-                                                print(f"[loss] GA: Overall accuracy = 1, using final budget: {ga_accuracy_one_budget}")
+                                                # Final loss is not low enough, no accuracy = 1 achieved
+                                                ga_accuracy_one_budget = None
+                                                print(f"[loss] GA: Final loss {final_loss:.3f} not low enough for accuracy = 1")
                                         else:
-                                            # No step with accuracy = 1, use last budget point
-                                            ga_accuracy_one_budget = ga_budget[-1] if ga_budget is not None and len(ga_budget) > 0 else None
+                                            # No losses available, use last budget point
+                                            ga_accuracy_one_budget = ga_budget[-1]
                                             print(f"[loss] GA: Overall accuracy = 1, using final budget: {ga_accuracy_one_budget}")
                                     else:
-                                        # No per-step accuracies, use last budget point
-                                        ga_accuracy_one_budget = ga_budget[-1] if ga_budget is not None and len(ga_budget) > 0 else None
-                                        print(f"[loss] GA: Overall accuracy = 1, using final budget: {ga_accuracy_one_budget}")
-                                else:
-                                    # No per-step accuracies, use last budget point
-                                    if ga_budget is not None and len(ga_budget) > 0:
+                                        # No losses available, use last budget point
                                         ga_accuracy_one_budget = ga_budget[-1]
                                         print(f"[loss] GA: Overall accuracy = 1, using final budget: {ga_accuracy_one_budget}")
+                                else:
+                                    # No budget available
+                                    ga_accuracy_one_budget = None
+                                    print(f"[loss] GA: Overall accuracy = 1 but no budget information available")
                                 break
         except Exception as e:
             print(f"[loss] Failed to check GA accuracy = 1: {e}")
@@ -1860,6 +1908,28 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     if es_npz_path and os.path.exists(es_npz_path):
         try:
             with np.load(es_npz_path, allow_pickle=True) as f:
+                # Debug: show available keys for ES
+                print(f"[loss] Debug: ES NPZ keys: {list(f.keys())}")
+                if dataset_length == 1:
+                    # For single sample, show what accuracy-related keys are available
+                    accuracy_keys = [k for k in f.keys() if 'accuracy' in k.lower()]
+                    print(f"[loss] Debug: ES accuracy-related keys: {accuracy_keys}")
+                    if 'es_overall_accuracy' in f:
+                        es_overall = safe_array_to_scalar(np.array(f['es_overall_accuracy']))
+                        print(f"[loss] Debug: ES overall accuracy: {es_overall}")
+                    elif 'overall_accuracy' in f:
+                        overall = safe_array_to_scalar(np.array(f['overall_accuracy']))
+                        print(f"[loss] Debug: ES overall accuracy (fallback): {overall}")
+                    
+                    # Debug: show what accuracy values we're checking
+                    print(f"[loss] Debug: ES checking accuracy keys: ['es_overall_accuracy', 'overall_accuracy', 'es_accuracy', 'accuracy']")
+                    for key in ['es_overall_accuracy', 'overall_accuracy', 'es_accuracy', 'accuracy']:
+                        if key in f:
+                            val = safe_array_to_scalar(np.array(f[key]))
+                            print(f"[loss] Debug: ES {key} = {val}")
+                        else:
+                            print(f"[loss] Debug: ES {key} = NOT FOUND")
+                
                 # Try to get per-sample accuracies for dataset_length > 1 case
                 if dataset_length and dataset_length > 1 and 'per_sample_accuracy' in f:
                     per_sample_acc = np.array(f['per_sample_accuracy']).reshape(-1)
@@ -1897,34 +1967,45 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                         if key in f:
                             overall_acc = safe_array_to_scalar(np.array(f[key]))
                             if overall_acc is not None and np.isclose(overall_acc, 1.0, atol=1e-6):
-                                # For single sample, check if we have per-generation accuracies to find first generation = 1
-                                if 'es_generation_accuracies' in f:
-                                    gen_accuracies = np.array(f['es_generation_accuracies']).reshape(-1)
-                                    if gen_accuracies.size > 0:
-                                        # Find first generation where accuracy = 1
-                                        accuracy_one_indices = np.where(np.isclose(gen_accuracies, 1.0, atol=1e-6))[0]
-                                        if len(accuracy_one_indices) > 0:
-                                            first_gen_idx = accuracy_one_indices[0]
-                                            if es_budget is not None and first_gen_idx < len(es_budget):
-                                                es_accuracy_one_budget = es_budget[first_gen_idx]
-                                                print(f"[loss] ES: First generation with accuracy = 1 at generation {first_gen_idx}, budget {es_accuracy_one_budget}")
+                                # For single sample, we need to check if any generation achieves accuracy = 1
+                                # Since we don't have per-generation accuracies, we'll check if the final accuracy is 1
+                                # and use the budget where we first achieve this
+                                if es_budget is not None and len(es_budget) > 0:
+                                    # Check if we have per-generation losses to determine when we first achieve good performance
+                                    if 'es_generation_losses' in f:
+                                        es_gen_losses = np.array(f['es_generation_losses']).reshape(-1)
+                                        if es_gen_losses.size > 0:
+                                            # Find the first generation where loss is close to minimum (indicating good performance)
+                                            # Use a threshold based on the final loss
+                                            final_loss = es_gen_losses[-1]
+                                            if final_loss < 0.1:  # If final loss is very low, accuracy is likely 1
+                                                # Find first generation where loss is close to final loss
+                                                loss_threshold = final_loss + 0.1  # Allow some tolerance
+                                                accuracy_one_indices = np.where(es_gen_losses <= loss_threshold)[0]
+                                                if len(accuracy_one_indices) > 0:
+                                                    first_gen_idx = accuracy_one_indices[0]
+                                                    es_accuracy_one_budget = es_budget[first_gen_idx]
+                                                    print(f"[loss] ES: First generation with good performance (loss <= {loss_threshold:.3f}) at generation {first_gen_idx}, budget {es_accuracy_one_budget}")
+                                                else:
+                                                    # Fallback: use last budget point
+                                                    es_accuracy_one_budget = es_budget[-1]
+                                                    print(f"[loss] ES: Overall accuracy = 1, using final budget: {es_accuracy_one_budget}")
                                             else:
-                                                # Fallback: use last budget point
-                                                es_accuracy_one_budget = es_budget[-1] if es_budget is not None and len(es_budget) > 0 else None
-                                                print(f"[loss] ES: Overall accuracy = 1, using final budget: {es_accuracy_one_budget}")
+                                                # Final loss is not low enough, no accuracy = 1 achieved
+                                                es_accuracy_one_budget = None
+                                                print(f"[loss] ES: Final loss {final_loss:.3f} not low enough for accuracy = 1")
                                         else:
-                                            # No generation with accuracy = 1, use last budget point
-                                            es_accuracy_one_budget = es_budget[-1] if es_budget is not None and len(es_budget) > 0 else None
+                                            # No losses available, use last budget point
+                                            es_accuracy_one_budget = es_budget[-1]
                                             print(f"[loss] ES: Overall accuracy = 1, using final budget: {es_accuracy_one_budget}")
                                     else:
-                                        # No per-generation accuracies, use last budget point
-                                        es_accuracy_one_budget = es_budget[-1] if es_budget is not None and len(es_budget) > 0 else None
-                                        print(f"[loss] ES: Overall accuracy = 1, using final budget: {es_accuracy_one_budget}")
-                                else:
-                                    # No per-generation accuracies, use last budget point
-                                    if es_budget is not None and len(es_budget) > 0:
+                                        # No losses available, use last budget point
                                         es_accuracy_one_budget = es_budget[-1]
                                         print(f"[loss] ES: Overall accuracy = 1, using final budget: {es_accuracy_one_budget}")
+                                else:
+                                    # No budget available
+                                    es_accuracy_one_budget = None
+                                    print(f"[loss] ES: Overall accuracy = 1 but no budget information available")
                                 break
         except Exception as e:
             print(f"[loss] Failed to check ES accuracy = 1: {e}")
@@ -1946,6 +2027,16 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Update legend to include the new lines
     if ga_accuracy_one_budget is not None or es_accuracy_one_budget is not None:
         ax.legend(loc="upper right", frameon=True, fontsize=10)
+    
+    # Summary of accuracy = 1 detection
+    print(f"[loss] Summary of accuracy = 1 detection:")
+    print(f"[loss]   GA accuracy = 1 at budget: {ga_accuracy_one_budget}")
+    print(f"[loss]   ES accuracy = 1 at budget: {es_accuracy_one_budget}")
+    if ga_accuracy_one_budget is None and es_accuracy_one_budget is None:
+        print(f"[loss]   ⚠️  No accuracy = 1 markers found - this may indicate:")
+        print(f"[loss]     - Final accuracy is not 1.0")
+        print(f"[loss]     - Missing accuracy data in NPZ files")
+        print(f"[loss]     - Dataset length = 1 with insufficient per-step data")
     
     # Tight layout and save
     plt.tight_layout()
