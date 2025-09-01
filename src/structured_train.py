@@ -857,7 +857,9 @@ class StructuredTrainer:
         
         # 1. Sample from target pattern (T) - known pattern
         for i in range(K_T):
-            sample_seed = step * 1000 + target_pattern * 100 + i * 10
+            # CRITICAL FIX: Convert step to Python int to avoid JAX tracer issues
+            step_int = int(step) if hasattr(step, '__int__') else int(step)
+            sample_seed = step_int * 1000 + target_pattern * 100 + i * 10
             grids, shapes, _ = self._create_single_pattern_sample_with_seed(target_pattern, sample_seed)
             grids_list.append(grids)
             shapes_list.append(shapes)
@@ -867,13 +869,15 @@ class StructuredTrainer:
         other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
         
         # Fresh reshuffling: use step to ensure new O samples every batch
-        np.random.seed(step * 1000 + target_pattern * 100)  # Deterministic but fresh per batch
+        # CRITICAL FIX: Convert step to Python int for np.random.seed
+        step_int = int(step) if hasattr(step, '__int__') else int(step)
+        np.random.seed(step_int * 1000 + target_pattern * 100)  # Deterministic but fresh per batch
         other_patterns_shuffled = np.random.permutation(other_patterns)
         
         for i in range(K_O):
             pattern_idx = i % len(other_patterns)
             pattern_id = other_patterns_shuffled[pattern_idx]
-            sample_seed = step * 1000 + pattern_id * 100 + i * 10
+            sample_seed = step_int * 1000 + pattern_id * 100 + i * 10
             grids, shapes, _ = self._create_single_pattern_sample_with_seed(pattern_id, sample_seed)
             grids_list.append(grids)
             shapes_list.append(shapes)

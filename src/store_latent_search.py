@@ -1592,8 +1592,14 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     else:
                         # Create budget array that matches the per-sample losses length
                         # FIX: Handle the case where trajectory was doubled but losses weren't
-                        # The budget should start from 0 and increment by 2 for each step
-                        x = 2 * np.arange(0, L.shape[1])  # Start from 0, increment by 2
+                        # The budget should start from 0 and increment appropriately for each step
+                        # If trajectory is doubled, use smaller increment to maintain proper budget scaling
+                        if ga_steps is not None and L.shape[1] > ga_steps + 1:
+                            print(f"[loss] 🔧 Per-sample trajectory appears to be doubled: {ga_steps + 1} expected → {L.shape[1]} actual")
+                            print(f"[loss] 🔧 Using increment of 1 for budget calculation")
+                            x = np.arange(0, L.shape[1])  # Start from 0, increment by 1 for each step
+                        else:
+                            x = 2 * np.arange(0, L.shape[1])  # Start from 0, increment by 2 for each step
                         print(f"[loss] Created GA budget array to match per-sample losses: {x.shape}")
                         if ga_budget is not None:
                             print(f"[loss] ⚠️  Budget length mismatch: NPZ budget={len(ga_budget)}, losses={L.shape[1]}")
@@ -1632,7 +1638,14 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             # Create budget array that covers the full trajectory
             # FIX: Budget should start from 0 and increment by 2 for each step
             # This prevents the "2 points at budget 0" issue
-            ga_budget = 2 * np.arange(0, budget_steps)  # Start from 0, increment by 2
+            # Also handle the case where trajectory has been doubled (e.g., 1000 steps → 2000 steps)
+            if budget_steps > ga_steps + 1:
+                print(f"[loss] 🔧 Trajectory appears to be doubled: {ga_steps + 1} expected → {budget_steps} actual")
+                print(f"[loss] 🔧 Adjusting budget increment to account for doubling")
+                # If trajectory is doubled, use smaller increment to maintain proper budget scaling
+                ga_budget = np.arange(0, budget_steps)  # Start from 0, increment by 1 for each step
+            else:
+                ga_budget = 2 * np.arange(0, budget_steps)  # Start from 0, increment by 2 for each step
             
             print(f"[loss] GA budget calculation: {budget_steps} steps → budget points: {ga_budget}")
             print(f"[loss] Debug: GA fallback budget: {ga_budget}")
