@@ -500,7 +500,13 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
                 # FIX: Don't truncate trajectory - let it keep its full length
                 # The budget calculation will be adjusted later to match the actual trajectory length
                 # This prevents the mismatch where trajectory has 2000 steps but budget only has 1001 points
-                t.pts = _collapse_to_steps(t.pts, steps_len=len(t.pts) if t.pts.ndim >= 2 else len(t.pts))
+                steps_len = t.vals.shape[0]
+                t.pts = _collapse_to_steps(t.pts, steps_len=steps_len)
+                if t.pts.shape[0] != steps_len:
+                    min_len = min(t.pts.shape[0], steps_len)
+                    t.pts = t.pts[:min_len]
+                    t.vals = t.vals[:min_len]
+                    print(f"[plot] GA alignment: truncated to {min_len} steps to match latents and values")
                 print(f"[plot] GA shape after fix: pts={t.pts.shape}, vals={t.vals.shape}")
             
             t.best_per_gen = _extract_best_per_gen(f, prefix)
