@@ -3479,9 +3479,19 @@ class StructuredTrainer:
                             # Repulsion loss: penalize when distance < margin
                             # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2^2)
                             repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
-                            logging.info(f"         * Repulsion term: {float(repulsion_term):.6f}")
                             
-                            repulsion_loss += repulsion_term
+                            # Alternative: soft repulsion using inverse distance (always non-zero)
+                            # This ensures we always have some repulsion effect
+                            soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))  # Add small epsilon to avoid division by zero
+                            
+                            # Use the maximum of both approaches
+                            final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)  # Scale soft term down
+                            
+                            logging.info(f"         * Repulsion term: {float(repulsion_term):.6f}")
+                            logging.info(f"         * Soft repulsion term: {float(soft_repulsion_term):.6f}")
+                            logging.info(f"         * Final repulsion term: {float(final_repulsion_term):.6f}")
+                            
+                            repulsion_loss += final_repulsion_term
                             num_repulsion_terms += 1
                         else:
                             logging.warning(f"         * Batch size mismatch: {len(target_latents)} != {len(current_latents)}")
@@ -3510,9 +3520,18 @@ class StructuredTrainer:
                                 
                                 # Repulsion loss: penalize when distance < margin
                                 repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
-                                logging.info(f"         * Resized repulsion term: {float(repulsion_term):.6f}")
                                 
-                                repulsion_loss += repulsion_term
+                                # Alternative: soft repulsion using inverse distance (always non-zero)
+                                soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))
+                                
+                                # Use the maximum of both approaches
+                                final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)
+                                
+                                logging.info(f"         * Resized repulsion term: {float(repulsion_term):.6f}")
+                                logging.info(f"         * Resized soft repulsion term: {float(soft_repulsion_term):.6f}")
+                                logging.info(f"         * Resized final repulsion term: {float(final_repulsion_term):.6f}")
+                                
+                                repulsion_loss += final_repulsion_term
                                 num_repulsion_terms += 1
                                 
                             except Exception as resize_error:
