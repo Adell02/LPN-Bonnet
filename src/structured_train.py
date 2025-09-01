@@ -1205,7 +1205,9 @@ class StructuredTrainer:
             
             # Store target latents from this encoder for future repulsion
             if repulsion_kl > 0:
-                target_latents_store[enc_idx] = self._extract_target_latents(enc_idx, specialized_encoder, individual_state)
+                # Only show verbose output if repulsion is actually being used
+                verbose = repulsion_kl > 0
+                target_latents_store[enc_idx] = self._extract_target_latents(enc_idx, specialized_encoder, individual_state, verbose=verbose)
                 logging.info(f"   📦 Stored target latents for Encoder {enc_idx} (will be used for repulsion)")
             
             # Evaluate the specialized encoder and create visualizations
@@ -1354,15 +1356,19 @@ class StructuredTrainer:
                 if target_latents_store and self.cfg.training.get("repulsion_kl", 0) > 0:
                     # Compute repulsion from previous encoders' targets
                     # Use a more appropriate margin based on observed distances (~7.4)
+                    repulsion_coeff = self.cfg.training.get("repulsion_kl", 0)
+                    # Only show verbose output if repulsion is actually being used (coefficient > 0)
+                    verbose = repulsion_coeff > 0
+                    
                     repulsion_loss = self._compute_repulsion_loss(
                         current_latents=mu.mean(axis=-2),  # Use mean over pairs
                         target_latents_store=target_latents_store,
                         current_encoder_idx=enc_idx,
-                        margin=5.0  # Increased from 1.0 to be more effective given observed distances
+                        margin=5.0,  # Increased from 1.0 to be more effective given observed distances
+                        verbose=verbose
                     )
                     
                     # Scale repulsion loss by the coefficient
-                    repulsion_coeff = self.cfg.training.get("repulsion_kl", 0)
                     repulsion_loss = repulsion_coeff * repulsion_loss
                     
                     if step % 50 == 0:
@@ -4065,7 +4071,7 @@ class StructuredTrainer:
         
         return repulsion_loss
     
-    def _extract_target_latents(self, encoder_idx: int, encoder_params: dict, state: TrainState) -> dict:
+    def _extract_target_latents(self, encoder_idx: int, encoder_params: dict, state: TrainState, verbose: bool = True) -> dict:
         """
         Extract target latent representations from a trained encoder for repulsion loss.
         
@@ -4073,18 +4079,21 @@ class StructuredTrainer:
             encoder_idx: Index of the encoder
             encoder_params: Encoder parameters
             state: Training state
+            verbose: Whether to output detailed debugging information
             
         Returns:
             Dictionary mapping pattern_id to target latent representations
         """
-        logging.info(f"🔍 EXTRACTING TARGET LATENTS for Encoder {encoder_idx}")
+        if verbose:
+            logging.info(f"🔍 EXTRACTING TARGET LATENTS for Encoder {encoder_idx}")
         target_latents = {}
         
         # CRITICAL FIX: Use the same batch size as training to avoid mismatch
         # This ensures target latents have the same batch size as current latents during training
         num_samples = self.batch_size  # Use batch_size instead of fixed 32
-        logging.info(f"   - Using batch_size={num_samples} for target latents (matching training)")
-        logging.info(f"   - This prevents batch size mismatches in repulsion loss computation")
+        if verbose:
+            logging.info(f"   - Using batch_size={num_samples} for target latents (matching training)")
+            logging.info(f"   - This prevents batch size mismatches in repulsion loss computation")
         
         # Create evaluation data for each pattern
         for pattern_id in [1, 2, 3]:
@@ -4092,7 +4101,8 @@ class StructuredTrainer:
                 # Generate pattern-specific data
                 pattern_data = self._create_pattern_dataset(pattern_id, num_samples=num_samples)
                 grids, shapes, _ = pattern_data
-                logging.info(f"   - Pattern {pattern_id}: grids shape={grids.shape}, shapes shape={shapes.shape}")
+                if verbose:
+                    logging.info(f"   - Pattern {pattern_id}: grids shape={grids.shape}, shapes shape={shapes.shape}")
                 
                 # Get encoder outputs
                 mu, logvar = self.encoders[encoder_idx].apply(
@@ -4103,19 +4113,22 @@ class StructuredTrainer:
                     mutable=False
                 )
                 
-                logging.info(f"   - Pattern {pattern_id}: mu shape={mu.shape}, logvar shape={logvar.shape}")
+                if verbose:
+                    logging.info(f"   - Pattern {pattern_id}: mu shape={mu.shape}, logvar shape={logvar.shape}")
                 
                 # Use mean of latents as target (or could use multiple samples)
                 target_lat = mu.mean(axis=-2)  # Mean over pairs
                 target_latents[pattern_id] = jnp.array(target_lat)
                 
-                logging.info(f"   - Pattern {pattern_id}: target_lat shape={target_lat.shape}, mean={float(jnp.mean(target_lat)):.6f}")
+                if verbose:
+                    logging.info(f"   - Pattern {pattern_id}: target_lat shape={target_lat.shape}, mean={float(jnp.mean(target_lat)):.6f}")
                 
             except Exception as e:
                 logging.warning(f"Failed to extract target latents for Encoder {encoder_idx}, Pattern {pattern_id}: {e}")
                 target_latents[pattern_id] = None
         
-        logging.info(f"   - Final target_latents keys: {list(target_latents.keys())}")
+        if verbose:
+            logging.info(f"   - Final target_latents keys: {list(target_latents.keys())}")
         return target_latents
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
