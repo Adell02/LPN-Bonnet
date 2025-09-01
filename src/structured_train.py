@@ -1336,10 +1336,11 @@ class StructuredTrainer:
                 # FIXED: Contrastive loss: minimize target variance, maximize other variance
                 # We want: target_var << other_var (target pattern gets high confidence, others get low confidence)
                 
-                # FIXED: Use stronger coefficients to drive specialization
-                # The original coefficients were too weak to overcome small variance differences
-                lambda_pos = -10.0  # Strong negative coefficient for target variance (minimize)
-                lambda_neg = 10.0   # Strong positive coefficient for other variance (maximize)
+                # FIXED: Correct coefficient signs for proper specialization
+                # We want: target variance ↓ (encoder becomes certain on its pattern)
+                #         other variance ↑ (encoder becomes uncertain on other patterns)
+                lambda_pos = 10.0   # Positive coefficient for target variance (minimize)
+                lambda_neg = -10.0  # Negative coefficient for other variance (maximize)
                 
                 contrastive_loss = lambda_pos * avg_target_var + lambda_neg * avg_other_var
                 
@@ -1398,9 +1399,10 @@ class StructuredTrainer:
                     avg_other_var = jnp.mean(other_var)
                     
                     # FIXED: Loss: minimize target variance, maximize other variance
-                    # Use stronger coefficients to drive specialization
-                    lambda_pos = -10.0  # Strong negative coefficient for target variance (minimize)
-                    lambda_neg = 10.0   # Strong positive coefficient for other variance (maximize)
+                    # We want: target variance ↓ (encoder becomes certain on its pattern)
+                    #         other variance ↑ (encoder becomes uncertain on other patterns)
+                    lambda_pos = 10.0   # Positive coefficient for target variance (minimize)
+                    lambda_neg = -10.0  # Negative coefficient for other variance (maximize)
                     
                     loss = lambda_pos * avg_target_var + lambda_neg * avg_other_var
                     

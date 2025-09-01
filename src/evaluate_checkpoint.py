@@ -638,18 +638,22 @@ def evaluate_custom_dataset(
             payload = {}
 
             # GA trajectory -> save as ga_latents, ga_log_probs, derive ga_path, ga_scores/ga_losses
+            print(f"[store_latents] Checking for GA trajectory in info0...")
             if isinstance(info0, dict) and "optimization_trajectory" in info0 and info0["optimization_trajectory"]:
                 traj = info0["optimization_trajectory"]
                 print(f"[store_latents] Found optimization_trajectory: {traj}")
+                print(f"[store_latents] Trajectory type: {type(traj)}")
                 try:
                     traj = jax.device_get(traj)
                     print(f"[store_latents] After device_get: {traj}")
+                    print(f"[store_latents] After device_get type: {type(traj)}")
                 except Exception as e:
                     print(f"[store_latents] device_get failed: {e}")
                     pass
                 if isinstance(traj, dict):
                     print(f"[store_latents] GA traj keys: {list(traj.keys())}")
                     print(f"[store_latents] GA traj content: {traj}")
+                    print(f"[store_latents] GA traj content types: {[(k, type(v)) for k, v in traj.items()]}")
                     
                     # Initialize variables
                     ga_lat = None
@@ -659,14 +663,23 @@ def evaluate_custom_dataset(
                         ga_lat = np.array(traj["latents"])  # (*B, steps, C, H)
                         print(f"[store_latents] ga_latents shape: {getattr(ga_lat, 'shape', None)}")
                         print(f"[store_latents] ga_latents content: {ga_lat}")
+                        print(f"[store_latents] ga_latents type: {type(ga_lat)}")
                         payload["ga_latents"] = ga_lat
+                    else:
+                        print(f"[store_latents] WARNING: 'latents' key not found in GA trajectory!")
+                        
                     if "log_probs" in traj:
                         ga_lp = np.array(traj["log_probs"])  # could be (*B, N, steps?, C) or similar
                         print(f"[store_latents] ga_log_probs shape: {getattr(ga_lp, 'shape', None)}")
                         print(f"[store_latents] ga_log_probs content: {ga_lp}")
+                        print(f"[store_latents] ga_log_probs type: {type(ga_lp)}")
                         payload["ga_log_probs"] = ga_lp
+                    else:
+                        print(f"[store_latents] WARNING: 'log_probs' key not found in GA trajectory!")
                     
                     # ✅ FIXED: GA path derivation moved inside the scope where variables exist
+                    print(f"[store_latents] Attempting GA path derivation...")
+                    print(f"[store_latents] ga_lat: {ga_lat is not None}, ga_lp: {ga_lp is not None}")
                     if ga_lat is not None and ga_lp is not None:
                         try:
                             lat = ga_lat
@@ -727,16 +740,53 @@ def evaluate_custom_dataset(
                             payload["ga_trajectory_losses"] = -best_scores
                             
                             print(f"[store_latents] ✅ GA path derivation successful")
+                            print(f"[store_latents] Final payload keys: {list(payload.keys())}")
+                            print(f"[store_latents] Final payload content: {[(k, type(v), getattr(v, 'shape', 'no shape') if hasattr(v, 'shape') else 'no shape') for k, v in payload.items()]}")
                         except Exception as _pe:
                             print(f"[store_latents] GA path/score derivation failed: {_pe!r}")
+                            print(f"[store_latents] Exception type: {type(_pe)}")
+                            import traceback
+                            print(f"[store_latents] Full traceback: {traceback.format_exc()}")
                     else:
                         print(f"[store_latents] Skipping GA path derivation: missing latents or log_probs")
+                        print(f"[store_latents] ga_lat type: {type(ga_lat) if ga_lat is not None else 'None'}")
+                        print(f"[store_latents] ga_lp type: {type(ga_lp) if ga_lp is not None else 'None'}")
+                        
+                        # Still save the raw data even if path derivation fails
+                        if ga_lat is not None:
+                            payload["ga_latents"] = ga_lat
+                            print(f"[store_latents] Saved ga_latents despite path derivation failure")
+                        if ga_lp is not None:
+                            payload["ga_log_probs"] = ga_lp
+                            print(f"[store_latents] Saved ga_log_probs despite path derivation failure")
+                            
+                            # Try to create simple losses from log_probs as fallback
+                            try:
+                                # Take the mean over candidates and context dimensions to get per-step scores
+                                lp_array = np.array(ga_lp)
+                                if lp_array.ndim >= 3:
+                                    # Average over candidates and context: (B, C, T) -> (T,)
+                                    simple_scores = lp_array.mean(axis=tuple(range(lp_array.ndim - 1)))
+                                    simple_losses = -simple_scores  # Convert scores to losses
+                                    payload["ga_losses"] = simple_losses
+                                    print(f"[store_latents] Created fallback ga_losses: {simple_losses.shape}")
+                                else:
+                                    print(f"[store_latents] Could not create fallback losses from log_probs shape: {lp_array.shape}")
+                            except Exception as e:
+                                print(f"[store_latents] Fallback loss creation failed: {e}")
+                            
+                        print(f"[store_latents] Partial payload keys: {list(payload.keys())}")
                 else:
                     print(f"[store_latents] GA traj is not a dict: {type(traj)}")
                     print(f"[store_latents] GA traj value: {traj}")
             else:
                 print(f"[store_latents] No optimization_trajectory found in info0")
                 print(f"[store_latents] info0 keys: {list(info0.keys()) if isinstance(info0, dict) else 'not a dict'}")
+                if isinstance(info0, dict):
+                    print(f"[store_latents] info0 content types: {[(k, type(v)) for k, v in info0.items()]}")
+                    if "optimization_trajectory" in info0:
+                        print(f"[store_latents] optimization_trajectory exists but is falsy: {info0['optimization_trajectory']}")
+                        print(f"[store_latents] optimization_trajectory type: {type(info0['optimization_trajectory'])}")
 
             # ES trajectory -> save best_latents_per_generation, per-generation losses, and populations
             if isinstance(info0, dict) and "evolutionary_trajectory" in info0 and info0["evolutionary_trajectory"]:
