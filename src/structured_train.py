@@ -4262,6 +4262,16 @@ class StructuredTrainer:
         Returns:
             Tuple of (grids, shapes, pattern_ids)
         """
+        # CRITICAL DEBUG: Catch invalid pattern IDs at the source
+        if pattern_id not in [1, 2, 3]:
+            import traceback
+            logging.error(f"🚨 CRITICAL BUG: Invalid pattern_id {pattern_id} passed to _create_single_pattern_sample_with_seed")
+            logging.error(f"   Valid pattern IDs are only 1, 2, 3")
+            logging.error(f"   Call stack:")
+            for line in traceback.format_stack():
+                logging.error(f"     {line.strip()}")
+            # Force crash to stop execution
+            raise ValueError(f"Invalid pattern_id {pattern_id} - only 1, 2, 3 are allowed")
         # Use the existing pattern generation logic with variable seed
         from datasets.task_gen.dataloader import make_task_gen_dataloader
         
