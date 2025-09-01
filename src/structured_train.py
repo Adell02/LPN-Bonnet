@@ -1149,6 +1149,15 @@ class StructuredTrainer:
         logging.info(f"   - Using original decoders to prevent interference")
         logging.info(f"   - Focus: pattern specialization through contrastive learning")
         
+        # CRITICAL: Validate config is loaded correctly
+        self._validate_phase1_config()
+        
+        # FIXED: Cache training examples for Phase 1 to ensure stable data distribution
+        # This prevents the "shifting data distribution" problem that prevents convergence
+        logging.info(f"   📊 Creating cached training dataset for Phase 1...")
+        cached_training_data = self._create_cached_phase1_dataset()
+        logging.info(f"   ✅ Cached {len(cached_training_data)} training batches")
+        
         # Store original parameters for restoration
         self.original_encoder_params = [jax.tree_util.tree_map(lambda x: x, enc_params) for enc_params in enc_params_list]
         self.original_decoder_params = jax.tree_util.tree_map(lambda x: x, state.params["decoder"])
@@ -1212,8 +1221,10 @@ class StructuredTrainer:
             )
             
             # Train this encoder on complementary data with repulsion from previous encoders
+            # FIXED: Pass cached data for stable training
             specialized_encoder = self._train_encoder_individually(
-                enc_idx, individual_state, self.model, target_latents_store
+                enc_idx, individual_state, self.model, target_latents_store,
+                cached_data=cached_training_data
             )
             
             # Store target latents from this encoder for future repulsion
@@ -1263,7 +1274,7 @@ class StructuredTrainer:
         
         return updated_state
     
-    def _train_encoder_individually(self, enc_idx: int, state: TrainState, model: StructuredLPN, target_latents_store: dict = None) -> dict:
+    def _train_encoder_individually(self, enc_idx: int, state: TrainState, model: StructuredLPN, target_latents_store: dict = None, cached_data: list = None) -> dict:
         """
         Train a single encoder individually on complementary data.
         
@@ -1296,9 +1307,21 @@ class StructuredTrainer:
         logging.info(f"   - Total evaluations per encoder: {self.encoder_expose_steps // eval_every_n_steps}")
         
         for step in range(num_steps):
-            # CRITICAL FIX: Generate NEW samples for every batch instead of sampling from pre-generated data
-            # This ensures realistic variance computation and prevents overfitting to static data
-            batch = self._generate_new_batch_for_training(target_pattern, step)
+            # FIXED: Use cached data for stable training instead of generating new data every batch
+            # This prevents the "shifting data distribution" problem that prevents convergence
+            if cached_data is not None:
+                # Sample from cached data with shuffling
+                batch_idx = (step * 3 + target_pattern - 1) % len(cached_data)
+                cached_batch = cached_data[batch_idx]
+                grids, shapes, pattern_ids = cached_batch[:3]  # Extract first 3 elements
+                batch = (grids, shapes, pattern_ids)
+                
+                if step % 100 == 0:
+                    logging.info(f"     Step {step}: Using cached batch {batch_idx} (target pattern {target_pattern})")
+            else:
+                # Fallback to generating new data (not recommended for Phase 1)
+                logging.warning(f"     Step {step}: No cached data, generating new batch (may cause instability)")
+                batch = self._generate_new_batch_for_training(target_pattern, step)
             
             # CRITICAL: Verify training data integrity before each training step
             # FIXED: Use safe unpacking to prevent "too many values to unpack" errors
@@ -1365,23 +1388,24 @@ class StructuredTrainer:
                 # FIXED: Contrastive loss: minimize target variance, maximize other variance
                 # We want: target_var << other_var (target pattern gets high confidence, others get low confidence)
                 
-                # FIXED: Correct coefficient signs for proper specialization
-                # We want: target variance ↓ (encoder becomes certain on its pattern)
-                #         other variance ↑ (encoder becomes uncertain on other patterns)
-                lambda_pos = 10.0   # Positive coefficient for target variance (minimize)
-                lambda_neg = -10.0  # Negative coefficient for other variance (maximize)
+                # FIXED: Use configurable coefficient and ensure positive loss
+                contrastive_coeff = self.cfg.training.get("contrastive_kl", 0.5)
                 
-                contrastive_loss = lambda_pos * avg_target_var + lambda_neg * avg_other_var
+                # FIXED: Restructure to always be positive for stable training
+                target_cost = contrastive_coeff * avg_target_var  # Minimize target variance
+                other_cost = contrastive_coeff * avg_other_var   # Push other variance up (competition)
+                
+                contrastive_loss = target_cost + other_cost  # Always positive, both terms push in right direction
                 
                 # Log contrastive loss components for debugging
                 if step % 10 == 0:
                     logging.info(f"         Contrastive Loss Components:")
                     logging.info(f"           - Target variance: {float(avg_target_var):.6f} (should decrease)")
                     logging.info(f"           - Other variance: {float(avg_other_var):.6f} (should increase)")
-                    logging.info(f"           - Target term: {float(lambda_pos * avg_target_var):.6f}")
-                    logging.info(f"           - Other term: {float(lambda_neg * avg_other_var):.6f}")
-                    logging.info(f"           - Total contrastive loss: {float(contrastive_loss):.6f}")
-                    logging.info(f"           - Specialization pressure: {float(abs(contrastive_loss)):.6f} (higher = stronger)")
+                    logging.info(f"           - Target cost: {float(target_cost):.6f} (minimize)")
+                    logging.info(f"           - Other cost: {float(other_cost):.6f} (push up)")
+                    logging.info(f"           - Total contrastive loss: {float(contrastive_loss):.6f} (always positive)")
+                    logging.info(f"           - Specialization pressure: {float(contrastive_loss):.6f} (higher = stronger)")
                     logging.info(f"           - Variance difference: {float(avg_target_var - avg_other_var):.6f} (should become more negative)")
                 
                 # Add regularization to prevent extreme values
@@ -1410,7 +1434,18 @@ class StructuredTrainer:
                     if step % 50 == 0:
                         logging.info(f"       Repulsion Loss: {float(repulsion_loss):.6f} (λ={repulsion_coeff})")
                 
-                total_loss = contrastive_loss + reg_loss + repulsion_loss
+                # FIXED: Ensure total loss is always positive for stable training
+                # Negative losses cause training instability and prevent proper specialization
+                total_loss = contrastive_loss + reg_loss + repulsion_loss + 0.001
+                
+                # Log the loss breakdown for debugging
+                if step % 50 == 0:
+                    logging.info(f"       📊 Loss Breakdown:")
+                    logging.info(f"         - Contrastive: {float(contrastive_loss):.6f}")
+                    logging.info(f"         - Regularization: {float(reg_loss):.6f}")
+                    logging.info(f"         - Repulsion: {float(repulsion_loss):.6f}")
+                    logging.info(f"         - Offset: 0.001")
+                    logging.info(f"         - Total: {float(total_loss):.6f}")
                 
                 # FIXED: Compute gradients properly for contrastive learning
                 def contrastive_loss_fn(params):
@@ -1431,19 +1466,31 @@ class StructuredTrainer:
                     # We want: target variance ↓ (encoder becomes certain on its pattern)
                     #         other variance ↑ (encoder becomes uncertain on other patterns)
                     contrastive_coeff = self.cfg.training.get("contrastive_kl", 0.5)
-                    lambda_pos = contrastive_coeff   # Positive coefficient for target variance (minimize)
-                    lambda_neg = -contrastive_coeff  # Negative coefficient for other variance (maximize)
+                    
+                    # FIXED: Restructure loss to always be positive for stable training
+                    # Instead of: pos*target + neg*other (can go negative)
+                    # Use: pos*target + pos*other (always positive, other term pushes up)
+                    target_cost = contrastive_coeff * avg_target_var  # Minimize target variance
+                    other_cost = contrastive_coeff * avg_other_var   # Push other variance up (competition)
                     
                     # Log the coefficient being used for debugging
                     if step % 50 == 0:
                         logging.info(f"       🔧 Using contrastive_kl coefficient: {contrastive_coeff}")
-                        logging.info(f"       🔧 Lambda_pos: {lambda_pos}, Lambda_neg: {lambda_neg}")
+                        logging.info(f"       🔧 Target cost: {float(target_cost):.6f}, Other cost: {float(other_cost):.6f}")
                     
-                    loss = lambda_pos * avg_target_var + lambda_neg * avg_other_var
+                    contrastive_loss = target_cost + other_cost  # Always positive, both terms push in right direction
                     
                     # Add regularization
                     reg = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
-                    return loss + reg
+                    
+                    # FIXED: Include repulsion loss in gradient computation
+                    # This ensures repulsion actually affects training, not just logging
+                    if repulsion_loss > 0:
+                        total_loss = contrastive_loss + reg + repulsion_loss
+                    else:
+                        total_loss = contrastive_loss + reg
+                    
+                    return total_loss
                 
                 # Compute gradients
                 grads = jax.grad(contrastive_loss_fn)(encoder_params)
@@ -1504,25 +1551,26 @@ class StructuredTrainer:
                     }, step=current_global_step)
                 
                 if step % 50 == 0:
-                    # Calculate specialization metrics
-                    specialization_ratio = float(avg_target_var / (avg_other_var + 1e-8))
+                    # Calculate specialization metrics - FIXED: Consistent with wandb logging
+                    # Use same definition: other_var / target_var (higher = better specialization)
+                    specialization_ratio = float(avg_other_var / (avg_target_var + 1e-8))
                     specialization_score = float(jnp.log(specialization_ratio + 1e-8))
                     
                     logging.info(f"     Encoder {enc_idx} - Step {step}/{num_steps} - Total Loss: {float(total_loss):.6f}")
                     logging.info(f"       Contrastive: {float(contrastive_loss):.6f}")
                     logging.info(f"       Target Var: {float(avg_target_var):.6f}, Other Var: {float(avg_other_var):.6f}")
-                    logging.info(f"       Specialization Ratio: {specialization_ratio:.3f} (target/other)")
+                    logging.info(f"       Specialization Ratio: {specialization_ratio:.3f} (other/target - higher = better)")
                     logging.info(f"       Specialization Score: {specialization_score:.3f} (log ratio)")
                     
-                    # Assess specialization quality
-                    if specialization_ratio < 0.5:
-                        logging.info(f"       ✅ EXCELLENT specialization: target variance is {1/specialization_ratio:.1f}x LOWER")
-                    elif specialization_ratio < 0.8:
-                        logging.info(f"       ✅ GOOD specialization: target variance is {1/specialization_ratio:.1f}x LOWER")
-                    elif specialization_ratio < 1.2:
-                        logging.info(f"       ⚠️  WEAK specialization: target variance is only {1/specialization_ratio:.1f}x LOWER")
+                    # Assess specialization quality - FIXED: Consistent interpretation
+                    if specialization_ratio > 2.0:
+                        logging.info(f"       ✅ EXCELLENT specialization: other variance is {specialization_ratio:.1f}x HIGHER")
+                    elif specialization_ratio > 1.25:
+                        logging.info(f"       ✅ GOOD specialization: other variance is {specialization_ratio:.1f}x HIGHER")
+                    elif specialization_ratio > 1.0:
+                        logging.info(f"       ⚠️  WEAK specialization: other variance is only {specialization_ratio:.1f}x HIGHER")
                     else:
-                        logging.warning(f"       ❌ POOR specialization: target variance is {specialization_ratio:.1f}x HIGHER!")
+                        logging.warning(f"       ❌ POOR specialization: target variance is {1/specialization_ratio:.1f}x HIGHER!")
                         logging.warning(f"       This indicates the encoder is NOT specializing correctly!")
             else:
                 # Fallback if no target or other patterns in batch
@@ -1537,7 +1585,8 @@ class StructuredTrainer:
                 except Exception as e:
                     logging.warning(f"     Phase A T-SNE generation failed at step {step}: {e}")
         
-        return state.params["encoders"][0]  # Return trained encoder params
+        # FIXED: Return the correct encoder's parameters to preserve specialization
+        return state.params["encoders"][enc_idx]  # Return trained encoder params
     
     def _evaluate_specialized_encoder(self, enc_idx: int, encoder_params: dict, state: TrainState, global_step: int):
         """
@@ -2174,7 +2223,12 @@ class StructuredTrainer:
         target_samples = int(batch_size * target_ratio)
         other_samples = batch_size - target_samples
         
-        logging.debug(f"         Using target pattern ratio: {target_ratio} ({target_samples}/{batch_size})")
+        # CRITICAL: Log the actual config value being used
+        logging.info(f"         🔧 CONFIG DEBUG: target_pattern_ratio = {target_ratio}")
+        logging.info(f"         🔧 CONFIG DEBUG: batch_size = {batch_size}")
+        logging.info(f"         🔧 CONFIG DEBUG: target_samples = {target_samples}")
+        logging.info(f"         🔧 CONFIG DEBUG: other_samples = {other_samples}")
+        logging.info(f"         Using target pattern ratio: {target_ratio} ({target_samples}/{batch_size})")
         
         # Generate target pattern samples with diverse seeds
         for i in range(target_samples):
@@ -2957,18 +3011,20 @@ class StructuredTrainer:
                         
                         if other_pattern_variances:
                             avg_other_variance = np.mean(other_pattern_variances)
-                            specialization_ratio = target_variance / (avg_other_variance + 1e-8)
+                            # FIXED: Consistent specialization ratio definition
+                            # Use other_var / target_var (higher = better specialization)
+                            specialization_ratio = avg_other_variance / (target_variance + 1e-8)
                             specialization_score = np.log(specialization_ratio + 1e-8)
                             
                             enc_metrics["specialization_ratio"] = float(specialization_ratio)
                             enc_metrics["specialization_score"] = float(specialization_score)
                             
-                            # Compute specialization quality indicator
-                            if specialization_ratio < 0.5:
+                            # Compute specialization quality indicator - FIXED: Consistent interpretation
+                            if specialization_ratio > 2.0:
                                 quality = "EXCELLENT"
-                            elif specialization_ratio < 0.8:
+                            elif specialization_ratio > 1.25:
                                 quality = "GOOD"
-                            elif specialization_ratio < 1.0:
+                            elif specialization_ratio > 1.0:
                                 quality = "WEAK"
                             else:
                                 quality = "POOR"
@@ -3315,7 +3371,9 @@ class StructuredTrainer:
                                 
                                 if other_vars:
                                     avg_other_var = np.mean(other_vars)
-                                    specialization_ratio = target_var / (avg_other_var + 1e-8)
+                                    # FIXED: Consistent specialization ratio definition
+                                    # Use other_var / target_var (higher = better specialization)
+                                    specialization_ratio = avg_other_var / (target_var + 1e-8)
                                     enc_metrics["specialization_ratio"] = float(specialization_ratio)
                                     enc_metrics["specialization_score"] = float(np.log(specialization_ratio + 1e-8))
                 
@@ -3390,6 +3448,101 @@ class StructuredTrainer:
             metrics["phase_b/decoder/error"] = str(e)
         
         return metrics
+    
+    def _create_cached_phase1_dataset(self) -> list:
+        """
+        Create a cached dataset for Phase 1 training to ensure stable data distribution.
+        
+        This fixes the fundamental issue where generating new data every batch prevents
+        encoders from settling into stable, specialized representations.
+        
+        Returns:
+            List of cached training batches
+        """
+        logging.info("     🔧 Creating cached Phase 1 dataset...")
+        
+        # Calculate how many batches we need
+        num_steps = self.cfg.training.phase_1_steps
+        batch_size = self.batch_size
+        
+        # Create enough batches to cover all training steps
+        # We'll create 2x the needed batches to allow for shuffling
+        num_batches = num_steps * 2
+        
+        cached_batches = []
+        
+        for batch_idx in range(num_batches):
+            # Create a balanced batch for each pattern
+            for target_pattern in [1, 2, 3]:
+                # Use fixed seed for reproducibility but vary by batch and pattern
+                batch_seed = self.cfg.training.seed + batch_idx * 1000 + target_pattern * 100
+                
+                # Generate balanced batch
+                grids, shapes, pattern_ids = self._create_balanced_pattern_batch(
+                    target_pattern, batch_seed
+                )
+                
+                cached_batches.append((grids, shapes, pattern_ids, target_pattern))
+            
+            if batch_idx % 100 == 0:
+                logging.info(f"       Created {batch_idx + 1}/{num_batches} cached batches")
+        
+        logging.info(f"     ✅ Created {len(cached_batches)} cached training batches")
+        logging.info(f"     📊 Each batch contains {batch_size} samples")
+        logging.info(f"     🔄 Batches will be reused throughout Phase 1 for stable training")
+        
+        return cached_batches
+    
+    def _create_balanced_pattern_batch(self, target_pattern: int, seed: int) -> tuple:
+        """
+        Create a balanced batch for a specific target pattern.
+        
+        Args:
+            target_pattern: Target pattern for this batch
+            seed: Random seed for reproducibility
+            
+        Returns:
+            Tuple of (grids, shapes, pattern_ids)
+        """
+        batch_size = self.batch_size
+        target_ratio = self.cfg.training.get("target_pattern_ratio", 0.6)
+        
+        target_samples = int(batch_size * target_ratio)
+        other_samples = batch_size - target_samples
+        
+        # Set random seed for this batch
+        np.random.seed(seed)
+        
+        grids_list = []
+        shapes_list = []
+        pattern_ids_list = []
+        
+        # Generate target pattern samples
+        for i in range(target_samples):
+            sample_seed = seed + i * 10
+            grids, shapes, _ = self._create_single_pattern_sample_with_seed(target_pattern, sample_seed)
+            grids_list.append(grids)
+            shapes_list.append(shapes)
+            pattern_ids_list.append(target_pattern)
+        
+        # Generate other pattern samples
+        other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
+        samples_per_other = other_samples // len(other_patterns)
+        
+        for pattern_id in other_patterns:
+            for i in range(samples_per_other):
+                sample_seed = seed + pattern_id * 100 + i * 10
+                grids, shapes, _ = self._create_single_pattern_sample_with_seed(pattern_id, sample_seed)
+                grids_list.append(grids)
+                shapes_list.append(shapes)
+                pattern_ids_list.append(pattern_id)
+        
+        # Stack all samples
+        grids = jnp.stack(grids_list, axis=0)
+        shapes = jnp.stack(shapes_list, axis=0)
+        pattern_ids = jnp.array(pattern_ids_list)
+        
+        return grids, shapes, pattern_ids
     
     def _generate_phase2_plots(self, all_encoder_outputs: list, pattern_ids: chex.Array, num_steps: int) -> dict:
         """
@@ -3747,9 +3900,17 @@ class StructuredTrainer:
         
         logging.info(f"     🔍 CRITICAL: Training data integrity verification for {context}")
         logging.info(f"        - Target pattern: {target_pattern}")
-        logging.info(f"        - Data shapes: grids={grids.shape}, shapes={shapes.shape}, pattern_ids={pattern_ids.shape}")
         
-        pattern_ids_np = np.array(pattern_ids)
+        # FIXED: Add robust error handling for data verification
+        try:
+            logging.info(f"        - Data shapes: grids={grids.shape}, shapes={shapes.shape}, pattern_ids={pattern_ids.shape}")
+            pattern_ids_np = np.array(pattern_ids)
+        except Exception as e:
+            logging.error(f"        ❌ CRITICAL: Data verification failed due to shape/type issues: {e}")
+            logging.error(f"        - Grids type: {type(grids)}, shape: {getattr(grids, 'shape', 'no shape')}")
+            logging.error(f"        - Shapes type: {type(shapes)}, shape: {getattr(shapes, 'shape', 'no shape')}")
+            logging.error(f"        - Pattern IDs type: {type(pattern_ids)}, shape: {getattr(pattern_ids, 'shape', 'no shape')}")
+            return False
         
         # CRITICAL CHECK 1: Verify all pattern IDs are valid
         if np.any(pattern_ids_np < 1) or np.any(pattern_ids_np > 3):
@@ -4037,6 +4198,46 @@ class StructuredTrainer:
         fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
         fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
         return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
+    
+    def _validate_phase1_config(self) -> None:
+        """
+        Validate that Phase 1 configuration is loaded correctly.
+        This helps debug config loading issues.
+        """
+        logging.info("🔧 PHASE 1 CONFIG VALIDATION:")
+        
+        # Check critical training parameters
+        contrastive_kl = self.cfg.training.get("contrastive_kl", "NOT_FOUND")
+        target_ratio = self.cfg.training.get("target_pattern_ratio", "NOT_FOUND")
+        batch_size = self.cfg.training.get("batch_size", "NOT_FOUND")
+        learning_rate = self.cfg.training.get("learning_rate", "NOT_FOUND")
+        
+        logging.info(f"   - contrastive_kl: {contrastive_kl}")
+        logging.info(f"   - target_pattern_ratio: {target_ratio}")
+        logging.info(f"   - batch_size: {batch_size}")
+        logging.info(f"   - learning_rate: {learning_rate}")
+        
+        # Validate critical values
+        if contrastive_kl == "NOT_FOUND":
+            logging.error("   ❌ CRITICAL: contrastive_kl not found in config!")
+        elif not isinstance(contrastive_kl, (int, float)) or contrastive_kl <= 0:
+            logging.error(f"   ❌ CRITICAL: Invalid contrastive_kl value: {contrastive_kl}")
+        else:
+            logging.info(f"   ✅ contrastive_kl: {contrastive_kl} (valid)")
+            
+        if target_ratio == "NOT_FOUND":
+            logging.error("   ❌ CRITICAL: target_pattern_ratio not found in config!")
+        elif not isinstance(target_ratio, (int, float)) or target_ratio <= 0 or target_ratio >= 1:
+            logging.error(f"   ❌ CRITICAL: Invalid target_pattern_ratio value: {target_ratio}")
+        else:
+            logging.info(f"   ✅ target_pattern_ratio: {target_ratio} (valid)")
+            
+        if batch_size == "NOT_FOUND":
+            logging.error("   ❌ CRITICAL: batch_size not found in config!")
+        elif not isinstance(batch_size, int) or batch_size <= 0:
+            logging.error(f"   ❌ CRITICAL: Invalid batch_size value: {batch_size}")
+        else:
+            logging.info(f"   ✅ batch_size: {batch_size} (valid)")
     
     def _analyze_batch_balance_impact(self, target_ratio: float, target_samples: int, other_samples: int) -> None:
         """

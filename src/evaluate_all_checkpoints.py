@@ -2204,17 +2204,42 @@ def main():
                                 # Create plot with selected methods
                                 if len(args.plot_methods) == 2:
                                     if args.loss:
-                                        # Loss difference plotting: show difference between methods
+                                        # Loss difference plotting: show difference between methods with log scaling
                                         # For loss, lower is better, so we show method_B - method_A (positive = method_A better)
                                         loss_diff = method_arrays[args.plot_methods[1]] - method_arrays[args.plot_methods[0]]
-                                        fig = visualize_optimization_comparison(
-                                            steps=np.array(all_steps),
-                                            budgets=np.array(all_budgets),
-                                            acc_A=loss_diff,  # This will be the loss difference
-                                            acc_B=np.full_like(loss_diff, np.nan),  # Not used for difference plot
-                                            method_A_name=f"Loss Diff ({args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()})",
-                                            method_B_name="",
-                                        )
+                                        
+                                        print(f"📊 Creating checkpoint-level loss difference heatmap...")
+                                        print(f"   Steps: {len(all_steps)} (range: {min(all_steps)} to {max(all_steps)})")
+                                        print(f"   Budgets: {len(all_budgets)} (range: {min(all_budgets)} to {max(all_budgets)})")
+                                        print(f"   Method A: {args.plot_methods[0]}")
+                                        print(f"   Method B: {args.plot_methods[1]}")
+                                        
+                                        try:
+                                            # Use the specialized loss difference visualization with log scaling
+                                            from visualization import visualize_loss_difference_heatmap
+                                            fig = visualize_loss_difference_heatmap(
+                                                steps=np.array(all_steps),
+                                                budgets=np.array(all_budgets),
+                                                loss_diff=loss_diff,
+                                                method_A_name=args.plot_methods[0].replace("_", " ").title(),  # First method (typically GA)
+                                                method_B_name=args.plot_methods[1].replace("_", " ").title(),  # Second method (typically ES)
+                                            )
+                                            print(f"✅ Successfully created checkpoint-level loss difference heatmap")
+                                        except Exception as e:
+                                            print(f"❌ Failed to create checkpoint-level loss difference heatmap: {e}")
+                                            print(f"   Error type: {type(e).__name__}")
+                                            import traceback
+                                            print(f"   Traceback: {traceback.format_exc()}")
+                                            # Fall back to regular comparison plot
+                                            print(f"📊 Falling back to regular comparison plot...")
+                                            fig = visualize_optimization_comparison(
+                                                steps=np.array(all_steps),
+                                                budgets=np.array(all_budgets),
+                                                acc_A=loss_diff,  # This will be the loss difference
+                                                acc_B=np.full_like(loss_diff, np.nan),  # Not used for difference plot
+                                                method_A_name=f"Loss Diff ({args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()})",
+                                                method_B_name="",
+                                            )
                                     else:
                                         # Regular accuracy comparison
                                         fig = visualize_optimization_comparison(
@@ -2548,7 +2573,7 @@ def main():
                             # where positive values = method_A (GA) better, negative = method_B (ES) better
                             loss_diff = method_arrays[args.plot_methods[1]] - method_arrays[args.plot_methods[0]]
                             
-                            print(f"📊 Creating loss difference heatmap...")
+                            print(f"📊 Creating final loss difference heatmap...")
                             print(f"   Steps array shape: {np.array(steps_sorted).shape}")
                             print(f"   Budgets array shape: {np.array(actual_budgets).shape}")
                             print(f"   Loss diff array shape: {loss_diff.shape}")
@@ -2556,7 +2581,7 @@ def main():
                             print(f"   Method B: {args.plot_methods[1]}")
                             
                             try:
-                                # Use the new specialized loss difference visualization
+                                # Use the new specialized loss difference visualization with log scaling
                                 from visualization import visualize_loss_difference_heatmap
                                 fig = visualize_loss_difference_heatmap(
                                     steps=np.array(steps_sorted),
@@ -2565,9 +2590,9 @@ def main():
                                     method_A_name=args.plot_methods[0].replace("_", " ").title(),  # First method (typically GA)
                                     method_B_name=args.plot_methods[1].replace("_", " ").title(),  # Second method (typically ES)
                                 )
-                                print(f"✅ Successfully created loss difference heatmap")
+                                print(f"✅ Successfully created final loss difference heatmap")
                             except Exception as e:
-                                print(f"❌ Failed to create loss difference heatmap: {e}")
+                                print(f"❌ Failed to create final loss difference heatmap: {e}")
                                 print(f"   Error type: {type(e).__name__}")
                                 import traceback
                                 print(f"   Traceback: {traceback.format_exc()}")
@@ -2583,42 +2608,24 @@ def main():
                                 )
                         else:
                             # Regular accuracy comparison
-                            print(f"📊 Creating regular accuracy comparison plot...")
-                            try:
-                                fig = visualize_optimization_comparison(
-                                    steps=np.array(steps_sorted),
-                                    budgets=np.array(actual_budgets),
-                                    acc_A=method_arrays[args.plot_methods[0]],
-                                    acc_B=method_arrays[args.plot_methods[1]],
-                                    method_A_name=args.plot_methods[0].replace("_", " ").title(),
-                                    method_B_name=args.plot_methods[1].replace("_", " ").title(),
-                                )
-                                print(f"✅ Successfully created accuracy comparison plot")
-                            except Exception as e:
-                                print(f"❌ Failed to create accuracy comparison plot: {e}")
-                                print(f"   Error type: {type(e).__name__}")
-                                import traceback
-                                print(f"   Traceback: {traceback.format_exc()}")
-                                raise
-                    else:
-                        # Single method or more than 2 methods - create simple heatmap for first method
-                        print(f"📊 Creating single method plot for {args.plot_methods[0]}...")
-                        try:
                             fig = visualize_optimization_comparison(
                                 steps=np.array(steps_sorted),
                                 budgets=np.array(actual_budgets),
                                 acc_A=method_arrays[args.plot_methods[0]],
-                                acc_B=np.full_like(method_arrays[args.plot_methods[0]], np.nan),
+                                acc_B=method_arrays[args.plot_methods[1]],
                                 method_A_name=args.plot_methods[0].replace("_", " ").title(),
-                                method_B_name="",
+                                method_B_name=args.plot_methods[1].replace("_", " ").title(),
                             )
-                            print(f"✅ Successfully created single method plot")
-                        except Exception as e:
-                            print(f"❌ Failed to create single method plot: {e}")
-                            print(f"   Error type: {type(e).__name__}")
-                            import traceback
-                            print(f"   Traceback: {traceback.format_exc()}")
-                            raise
+                    else:
+                        # Single method or more than 2 methods - create simple heatmap for first method
+                        fig = visualize_optimization_comparison(
+                            steps=np.array(steps_sorted),
+                            budgets=np.array(actual_budgets),
+                            acc_A=method_arrays[args.plot_methods[0]],
+                            acc_B=np.full_like(method_arrays[args.plot_methods[0]], np.nan),
+                            method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                            method_B_name="",
+                        )
 
                     # SAFETY CHECK: Ensure steps_sorted is not empty before calling max()
                     if not steps_sorted:
