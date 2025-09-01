@@ -857,8 +857,10 @@ class StructuredTrainer:
         
         # 1. Sample from target pattern (T) - known pattern
         for i in range(K_T):
-            # CRITICAL FIX: Convert step to Python int to avoid JAX tracer issues
-            step_int = int(step) if hasattr(step, '__int__') else int(step)
+            # CRITICAL FIX: Use safe conversion to avoid JAX tracer issues
+            logging.debug(f"Converting step {step} (type: {type(step)}) to int for target pattern")
+            step_int = self._safe_convert_to_int(step)
+            logging.debug(f"Converted step {step} to {step_int}")
             sample_seed = step_int * 1000 + target_pattern * 100 + i * 10
             grids, shapes, _ = self._create_single_pattern_sample_with_seed(target_pattern, sample_seed)
             grids_list.append(grids)
@@ -869,8 +871,10 @@ class StructuredTrainer:
         other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
         
         # Fresh reshuffling: use step to ensure new O samples every batch
-        # CRITICAL FIX: Convert step to Python int for np.random.seed
-        step_int = int(step) if hasattr(step, '__int__') else int(step)
+        # CRITICAL FIX: Use safe conversion for np.random.seed
+        logging.debug(f"Converting step {step} (type: {type(step)}) to int for np.random.seed")
+        step_int = self._safe_convert_to_int(step)
+        logging.debug(f"Converted step {step} to {step_int} for np.random.seed")
         np.random.seed(step_int * 1000 + target_pattern * 100)  # Deterministic but fresh per batch
         other_patterns_shuffled = np.random.permutation(other_patterns)
         
@@ -3451,12 +3455,14 @@ class StructuredTrainer:
         for batch_idx in range(num_batches):
             # Create a balanced batch for each pattern
             for target_pattern in [1, 2, 3]:
-                # Use fixed seed for reproducibility but vary by batch and pattern
-                batch_seed = self.cfg.training.seed + batch_idx * 1000 + target_pattern * 100
+                # CRITICAL FIX: Use safe conversion to avoid JAX tracer issues
+                logging.debug(f"Converting batch_idx {batch_idx} (type: {type(batch_idx)}) to int")
+                batch_idx_int = self._safe_convert_to_int(batch_idx)
+                logging.debug(f"Converted batch_idx {batch_idx} to {batch_idx_int}")
                 
                 # Generate balanced batch
                 grids, shapes, pattern_ids = self._create_balanced_pattern_batch(
-                    target_pattern, batch_idx
+                    target_pattern, batch_idx_int
                 )
                 
                 cached_batches.append((grids, shapes, pattern_ids, target_pattern))
@@ -4180,6 +4186,41 @@ class StructuredTrainer:
         
         return grids, shapes, pattern_ids
     
+    def _safe_convert_to_int(self, value) -> int:
+        """
+        Safely convert a value to a Python integer, handling JAX tracers and arrays.
+        
+        This prevents the "The only supported seed types are: None, int, float, str, bytes, and bytearray" error
+        that occurs when JAX tracers are passed to functions expecting regular Python types.
+        
+        Args:
+            value: Value to convert (can be JAX tracer, array, or regular Python type)
+            
+        Returns:
+            Python integer
+        """
+        try:
+            # Handle JAX arrays and tracers
+            if hasattr(value, 'item'):
+                result = int(value.item())
+                logging.debug(f"Converted JAX array {type(value)} to int: {result}")
+                return result
+            elif hasattr(value, '__int__'):
+                result = int(value)
+                logging.debug(f"Converted {type(value)} to int: {result}")
+                return result
+            elif hasattr(value, '__index__'):
+                result = int(value.__index__())
+                logging.debug(f"Converted {type(value)} to int: {result}")
+                return result
+            else:
+                result = int(value)
+                logging.debug(f"Converted {type(value)} to int: {result}")
+                return result
+        except (ValueError, TypeError, AttributeError) as e:
+            logging.warning(f"Failed to convert {type(value)} to int: {e}, using fallback value 0")
+            return 0
+    
     def _create_single_pattern_sample_with_seed(self, pattern_id: int, seed: int) -> tuple:
         """
         Create a single sample for a specific pattern with a given seed.
@@ -4194,6 +4235,11 @@ class StructuredTrainer:
         Returns:
             Tuple of (grids, shapes, pattern_ids)
         """
+        # CRITICAL FIX: Safely convert seed to Python int to avoid JAX tracer issues
+        logging.debug(f"Converting seed {seed} (type: {type(seed)}) to int")
+        seed = self._safe_convert_to_int(seed)
+        logging.debug(f"Converted seed {seed} to {seed}")
+        
         # CRITICAL DEBUG: Catch invalid pattern IDs at the source
         if pattern_id not in [1, 2, 3]:
             import traceback
