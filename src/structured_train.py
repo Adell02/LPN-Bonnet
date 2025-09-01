@@ -302,6 +302,9 @@ class StructuredTrainer:
         # Store original encoder params for individual training
         self.original_encoder_params = None
         self.original_decoder_params = None
+        
+        # Initialize pattern dataset cache to avoid regenerating data for certainty plots
+        self._pattern_dataset_cache = {}
 
         # Training/eval datasets - Use task generator like train.py for on-the-fly generation
         if cfg.training.get("struct_patterns_balanced", False):
@@ -3029,6 +3032,13 @@ class StructuredTrainer:
         import numpy as np
         import random
         
+        # Check if we already have cached data for this pattern and sample size
+        cache_key = f"pattern_{pattern_id}_samples_{num_samples}"
+        if cache_key in self._pattern_dataset_cache:
+            logging.debug(f"      Using cached data for {cache_key}")
+            cached_data = self._pattern_dataset_cache[cache_key]
+            return cached_data[0], cached_data[1], cached_data[2]
+        
         # Set random seed for reproducibility
         random.seed(self.cfg.training.seed + pattern_id)
         
@@ -3095,7 +3105,12 @@ class StructuredTrainer:
                 shapes[sample_idx, pair_idx, 1] = [5, 5]  # [output_rows, output_cols]
         
         logging.info(f"      Generated {num_samples} samples: {grids.shape}, {shapes.shape}")
-        return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
+        
+        # Cache the generated data for future use
+        result = (jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids))
+        self._pattern_dataset_cache[cache_key] = result
+        
+        return result
     
     def _create_single_pattern_sample(self, pattern_id: int) -> tuple:
         """
