@@ -5390,17 +5390,16 @@ class StructuredTrainer:
                 eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
             
             # Create a figure with subplots for each pattern (histogram + Gaussian function)
-            fig, axes = plt.subplots(2, 3, figsize=(20, 12))
+            # Changed from 2x3 to 1x3 layout (removed third row)
+            fig, axes = plt.subplots(1, 3, figsize=(20, 8))
             if len(axes.shape) == 1:
                 axes = axes.reshape(1, -1)
             
             pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
             
             for pattern_idx, pattern_id in enumerate([1, 2, 3]):
-                # Top row: histograms
-                ax_hist = axes[0, pattern_idx]
-                # Bottom row: Gaussian functions
-                ax_gauss = axes[1, pattern_idx]
+                # Single row: histograms with overlaid normalized Gaussian functions
+                ax = axes[0, pattern_idx]
                 
                 if pattern_id in eval_data:
                     grids, shapes, pattern_ids = eval_data[pattern_id]
@@ -5437,20 +5436,21 @@ class StructuredTrainer:
                     # Use different colors for each encoder
                     colors = ['#FBB998', '#DB74DB', '#5361E5']  # Orange, Pink, Blue
                     
+                    # Plot histograms first
                     for enc_idx, (variances, label, color) in enumerate(zip(all_encoder_variances, encoder_labels, colors)):
                         # Create histogram with transparency for overlap
-                        ax_hist.hist(variances, bins=30, alpha=0.7, label=label, color=color, 
-                                   edgecolor='black', linewidth=0.5)
+                        ax.hist(variances, bins=30, alpha=0.7, label=label, color=color, 
+                               edgecolor='black', linewidth=0.5)
                     
-                    # Customize the histogram subplot
-                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances', 
-                                   fontsize=14, fontweight='bold')
-                    ax_hist.set_xlabel('Variance', fontsize=12)
-                    ax_hist.set_ylabel('Frequency', fontsize=12)
-                    ax_hist.legend(fontsize=10)
-                    ax_hist.grid(True, alpha=0.3)
+                    # Customize the subplot
+                    ax.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances with Normalized Gaussians', 
+                               fontsize=14, fontweight='bold')
+                    ax.set_xlabel('Variance', fontsize=12)
+                    ax.set_ylabel('Frequency', fontsize=12)
+                    ax.legend(fontsize=10)
+                    ax.grid(True, alpha=0.3)
                     
-                    # Add statistics text to histogram
+                    # Add statistics text
                     stats_text = []
                     for enc_idx, variances in enumerate(all_encoder_variances):
                         mean_var = np.mean(variances)
@@ -5458,50 +5458,43 @@ class StructuredTrainer:
                         stats_text.append(f'E{enc_idx}: μ={mean_var:.4f}, σ={std_var:.4f}')
                     
                     stats_str = '\n'.join(stats_text)
-                    ax_hist.text(0.02, 0.98, stats_str, transform=ax_hist.transAxes, 
-                               verticalalignment='top', fontsize=9, 
-                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    ax.text(0.02, 0.98, stats_str, transform=ax.transAxes, 
+                           verticalalignment='top', fontsize=9, 
+                           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                     
-                    # Create Gaussian function plots for this pattern
-                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions', 
-                                     fontsize=14, fontweight='bold')
-                    ax_gauss.set_xlabel('Variance', fontsize=12)
-                    ax_gauss.set_ylabel('Density', fontsize=12)
-                    
+                    # Overlay normalized Gaussian functions on the same plot
                     # Get range for x-axis based on all encoder variances for this pattern
                     all_vars = np.concatenate(all_encoder_variances)
                     x_min, x_max = np.min(all_vars), np.max(all_vars)
                     x_range = x_max - x_min
                     x_plot = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, 1000)
                     
-                    # Plot Gaussian for each encoder
+                    # Plot normalized Gaussian for each encoder
                     for enc_idx, (variances, color) in enumerate(zip(all_encoder_variances, colors)):
                         mean_var = np.mean(variances)
                         std_var = np.std(variances)
                         
-                        # For variances, we'll use a log-normal approximation since variances are always positive
-                        # Use the mean variance as the scale parameter
-                        gaussian = norm.pdf(x_plot, mean_var, mean_var * 0.5)  # Approximate log-normal with normal
-                        ax_gauss.plot(x_plot, gaussian, color=color, linewidth=2, alpha=0.8, 
-                                    label=f'Encoder {enc_idx}')
+                        # Create normalized Gaussian function
+                        gaussian = norm.pdf(x_plot, mean_var, std_var)
+                        
+                        # Normalize to match histogram scale (scale to max histogram height)
+                        max_hist_height = max([np.histogram(var, bins=30)[0].max() for var in all_encoder_variances])
+                        gaussian_normalized = gaussian * (max_hist_height / gaussian.max())
+                        
+                        ax.plot(x_plot, gaussian_normalized, color=color, linewidth=2, alpha=0.8, 
+                               label=f'Encoder {enc_idx} (Gaussian)')
                         
                         # Add vertical line at mean variance
-                        ax_gauss.axvline(mean_var, color=color, linestyle='--', alpha=0.6, linewidth=1)
+                        ax.axvline(mean_var, color=color, linestyle='--', alpha=0.6, linewidth=1)
                     
-                    ax_gauss.legend(fontsize=10)
-                    ax_gauss.grid(True, alpha=0.3)
-                    
-                    logging.info(f"       ✅ Pattern {pattern_id} merged histogram and Gaussian plots created with {len(all_encoder_variances)} encoders")
+                    logging.info(f"       ✅ Pattern {pattern_id} merged histogram and normalized Gaussian plots created with {len(all_encoder_variances)} encoders")
                 else:
-                    ax_hist.text(0.5, 0.5, f'No data for Pattern {pattern_id}', 
-                               ha='center', va='center', transform=ax_hist.transAxes)
-                    ax_hist.set_title(f'Pattern {pattern_id} - No Data')
-                    ax_gauss.text(0.5, 0.5, f'No data for Pattern {pattern_id}', 
-                                ha='center', va='center', transform=ax_gauss.transAxes)
-                    ax_gauss.set_title(f'Pattern {pattern_id} - No Data')
+                    ax.text(0.5, 0.5, f'No data for Pattern {pattern_id}', 
+                           ha='center', va='center', transform=ax.transAxes)
+                    ax.set_title(f'Pattern {pattern_id} - No Data')
             
             # Set overall title
-            fig.suptitle(f'Merged Encoder Certainty Panel - All Patterns (Step {step})', 
+            fig.suptitle(f'Merged Encoder Certainty Panel - Histograms with Normalized Gaussians (Step {step})', 
                         fontsize=16, fontweight='bold')
             
             plt.tight_layout()
