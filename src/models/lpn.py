@@ -870,6 +870,9 @@ class LPN(nn.Module):
         )(self.decoder, (latents, opt_state), None)
 
         # Concatenate original latents to all_latents and flatten all the latents.
+        # Store original latents for trajectory tracking before modification
+        original_latents_for_trajectory = latents
+        
         latents = jnp.concatenate([latents[..., None, :], all_latents], axis=-2).reshape(
             *latents.shape[:-2], -1, latents.shape[-1]
         )
@@ -889,14 +892,14 @@ class LPN(nn.Module):
                 # FIXED: Use the original latents before reshaping for initial mean
                 # The original latents are the starting point for gradient ascent
                 # FIX: Extract only the first step (initial latents), not all_latents.shape[-2] steps
-                original_latents = latents[..., :1, :]  # Get back to original shape (just the initial step)
+                original_latents = original_latents_for_trajectory[..., :1, :]  # Get back to original shape (just the initial step)
                 
                 # Get initial log probs for the starting latents
                 initial_log_probs = vmap_log_probs_fn(original_latents, input_seq, output_seq, self.decoder)
                 
                 # Concatenate: [initial, step1, step2, ..., stepN]
-                trajectory_latents = jnp.concatenate([original_latents[..., None, :, :], all_latents], axis=-2)
-                trajectory_log_probs = jnp.concatenate([initial_log_probs[..., None, :], all_log_probs], axis=-2)
+                trajectory_latents = jnp.concatenate([original_latents, all_latents], axis=-2)
+                trajectory_log_probs = jnp.concatenate([initial_log_probs, all_log_probs], axis=-2)
                 
                 # Debug logging to show the fix is working
                 print(f"         🔧 GA trajectory fix: original_latents shape={original_latents.shape}, all_latents shape={all_latents.shape}")
