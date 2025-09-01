@@ -571,8 +571,8 @@ class StructuredLPN(nn.Module):
         # For simplicity, we use λ_pos = -1.0 and λ_neg = 1.0
         # This can be made configurable through the contrastive_kl_coeff parameter
         
-        lambda_pos = -1.0  # Negative coefficient for target variance (minimize)
-        lambda_neg = 1.0   # Positive coefficient for other variance (maximize)
+        lambda_pos = -10.0  # Strong negative coefficient for target variance (minimize)
+        lambda_neg = 10.0   # Strong positive coefficient for other variance (maximize)
         
         variance_loss = lambda_pos * jnp.mean(avg_var_target) + lambda_neg * jnp.mean(avg_var_other)
         

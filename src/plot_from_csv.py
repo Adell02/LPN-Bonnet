@@ -1077,36 +1077,19 @@ def upload_csv_to_wandb(csv_path: str, output_path: Path, csv_name: str) -> None
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Plot optimization comparison from CSV data")
-    parser.add_argument("--csv", type=str, required=True, help="Path to CSV file")
-    parser.add_argument("--output_dir", type=str, default="plots", help="Output directory for plots")
-    parser.add_argument("--method_a", type=str, default=None, help="First method name (auto-detect if omitted)")
-    parser.add_argument("--method_b", type=str, default=None, help="Second method name (auto-detect if omitted)")
-    parser.add_argument("--no_save", action="store_true", help="Don't save plots to files")
-    parser.add_argument("--show", action="store_true", help="Show plots interactively")
-    parser.add_argument("--zdim", type=int, default=None, help="Latent dimension to show in title")
-    parser.add_argument("--detailed_analysis", action="store_true", help="Generate detailed analysis plots (accuracy vs budget and vs training step)")
-    parser.add_argument("--checkpoint_subplots", action="store_true", help="Generate checkpoint subplots showing accuracy vs budget for each training checkpoint")
+    parser = argparse.ArgumentParser(description="Generate optimization comparison plots from CSV data")
+    parser.add_argument("--csv", required=True, help="Path to CSV file with evaluation results")
+    parser.add_argument("--output_dir", default="plots", help="Output directory for plots")
+    parser.add_argument("--simple", action="store_true", help="Use simple plotting for single-checkpoint cases")
     
     args = parser.parse_args()
     
-    # Check if CSV exists
-    if not Path(args.csv).exists():
-        print(f"❌ CSV file not found: {args.csv}")
-        return
-    
-    # Run plotting
-    plot_optimization_comparison(
-        csv_path=args.csv,
-        output_dir=args.output_dir,
-        method_a=args.method_a,
-        method_b=args.method_b,
-        save_plots=not args.no_save,
-        show_plots=args.show,
-        zdim=args.zdim,
-        detailed_analysis=args.detailed_analysis,
-        checkpoint_subplots=args.checkpoint_subplots,
-    )
+    if args.simple:
+        # Use simple plotting for single-checkpoint cases
+        create_simple_evaluation_plots(args.csv, args.output_dir)
+    else:
+        # Use the original detailed plotting
+        create_detailed_analysis_plots_from_csv(args.csv, args.output_dir)
 
 
 if __name__ == "__main__":

@@ -1336,9 +1336,10 @@ class StructuredTrainer:
                 # FIXED: Contrastive loss: minimize target variance, maximize other variance
                 # We want: target_var << other_var (target pattern gets high confidence, others get low confidence)
                 
-                # Use the same corrected coefficients as in StructuredLPN model
-                lambda_pos = -1.0  # Negative coefficient for target variance (minimize)
-                lambda_neg = 1.0   # Positive coefficient for other variance (maximize)
+                # FIXED: Use stronger coefficients to drive specialization
+                # The original coefficients were too weak to overcome small variance differences
+                lambda_pos = -10.0  # Strong negative coefficient for target variance (minimize)
+                lambda_neg = 10.0   # Strong positive coefficient for other variance (maximize)
                 
                 contrastive_loss = lambda_pos * avg_target_var + lambda_neg * avg_other_var
                 
@@ -1350,6 +1351,8 @@ class StructuredTrainer:
                     logging.info(f"           - Target term: {float(lambda_pos * avg_target_var):.6f}")
                     logging.info(f"           - Other term: {float(lambda_neg * avg_other_var):.6f}")
                     logging.info(f"           - Total contrastive loss: {float(contrastive_loss):.6f}")
+                    logging.info(f"           - Specialization pressure: {float(abs(contrastive_loss)):.6f} (higher = stronger)")
+                    logging.info(f"           - Variance difference: {float(avg_target_var - avg_other_var):.6f} (should become more negative)")
                 
                 # Add regularization to prevent extreme values
                 reg_loss = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
@@ -1395,9 +1398,9 @@ class StructuredTrainer:
                     avg_other_var = jnp.mean(other_var)
                     
                     # FIXED: Loss: minimize target variance, maximize other variance
-                    # Use the same corrected coefficients as in StructuredLPN model
-                    lambda_pos = -1.0  # Negative coefficient for target variance (minimize)
-                    lambda_neg = 1.0   # Positive coefficient for other variance (maximize)
+                    # Use stronger coefficients to drive specialization
+                    lambda_pos = -10.0  # Strong negative coefficient for target variance (minimize)
+                    lambda_neg = 10.0   # Strong positive coefficient for other variance (maximize)
                     
                     loss = lambda_pos * avg_target_var + lambda_neg * avg_other_var
                     

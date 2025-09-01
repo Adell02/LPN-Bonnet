@@ -497,8 +497,20 @@ def generate_checkpoint_figure(checkpoint_name: str, checkpoint_step: int, train
                               shared_budgets: List[int], plot_methods: List[str]) -> str:
     """Generate a figure for the current checkpoint and return the file path."""
     try:
+        # Check if we have enough data to create a meaningful plot
+        if not results_data or len(results_data) == 0:
+            print("⚠️  No results data available for checkpoint figure generation")
+            return None
+            
+        # Limit the number of methods to prevent extremely wide images
+        max_methods = min(4, len(plot_methods)) if plot_methods else 2
+        
+        # Calculate appropriate figure size based on data
+        fig_width = min(20, max(8, max_methods * 3))  # Cap width at 20 inches
+        fig_height = 6
+        
         # Create a simple progress visualization
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(fig_width, fig_height))
         
         # Plot 1: Training Progress
         progress_pct = (training_progress / max(total_checkpoints - 1, 1)) * 100
@@ -510,7 +522,7 @@ def generate_checkpoint_figure(checkpoint_name: str, checkpoint_step: int, train
         
         # Plot 2: Method Performance (if we have data)
         if results_data:
-            methods = list(set([r['method'] for r in results_data]))
+            methods = list(set([r['method'] for r in results_data]))[:max_methods]  # Limit methods
             # Use custom color palette
             method_colors = ['#FBB998', '#DB74DB', '#5361E5', '#96DCF8']
             
@@ -528,6 +540,10 @@ def generate_checkpoint_figure(checkpoint_name: str, checkpoint_step: int, train
         ax2.set_ylabel('Accuracy')
         ax2.set_title('Method Performance (Current Checkpoint)')
         ax2.set_ylim(0, 1)
+        
+        # Rotate x-axis labels if there are many methods
+        if len(methods) > 3:
+            ax2.tick_params(axis='x', labelrotation=45, ha='right')
         
         # Overall title
         fig.suptitle(f'Checkpoint {checkpoint_name} - Step {checkpoint_step}', fontsize=16, y=0.95)

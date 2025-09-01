@@ -683,28 +683,49 @@ def evaluate_custom_dataset(
                             else:
                                 lp0 = lp
                             # Ensure we have explicit dims
-                            # Identify time dimension: if lat0.shape[-3] > 1 use that as steps; else use candidate axis as time
+                            # Identify time dimension: check the actual time axis correctly
                             Ndim = lat0.shape[0]
-                            steps_dim = lat0.shape[-3]
-                            cand_dim = lat0.shape[-2]
-                            # pick first pair
-                            lat_pair = lat0[0]  # (S, C, H) or (1, C, H)
-                            lp_pair = lp0[0]    # (S, C) or (1, C)
-                            if steps_dim > 1 and lat_pair.ndim == 3:
-                                # Standard case: time along axis 0, candidates along axis 1
-                                idx = np.argmax(lp_pair, axis=-1)               # (S,)
-                                best_path = lat_pair[np.arange(lat_pair.shape[0]), idx]  # (S, H)
-                                best_scores = np.max(lp_pair, axis=-1)         # (S,)
+                            # The time dimension is the one with size > 1 that's not the last dimension
+                            time_axes = [i for i in range(lat0.ndim - 1) if lat0.shape[i] > 1]
+                            if time_axes:
+                                time_axis = time_axes[-1]  # Take the last one (usually the steps dimension)
                             else:
-                                # Steps collapsed to 1 and candidates represent iterations
-                                # Use candidates as time
-                                # transpose (1, C, H) -> (C, H)
-                                best_path = lat_pair.reshape(-1, lat_pair.shape[-1])  # (C, H)
-                                best_scores = np.max(lp_pair, axis=0).reshape(-1) if lp_pair.ndim == 2 else lp_pair.reshape(-1)
+                                time_axis = lat0.ndim - 2  # Fallback to second-to-last
+                            
+                            steps_dim = lat0.shape[time_axis]
+                            cand_dim = lat0.shape[lat0.ndim - 2]  # Candidates are usually second-to-last
+                            
+                            # pick first pair
+                            lat_pair = lat0[0]  # (C, T, H) or (T, C, H) depending on time_axis
+                            lp_pair = lp0[0]    # (C, T) or (T, C) depending on time_axis
+                            
+                            # Determine the actual layout and extract accordingly
+                            print(f"[store_latents] GA shape analysis: lat0.shape={lat0.shape}, time_axis={time_axis}, steps_dim={steps_dim}, cand_dim={cand_dim}")
+                            print(f"[store_latents] GA pair shapes: lat_pair={lat_pair.shape}, lp_pair={lp_pair.shape}")
+                            
+                            if time_axis == lat0.ndim - 2:  # Time is second-to-last: (C, T, H)
+                                # Candidates first, then time: (C, T, H) -> extract best candidate per time step
+                                print(f"[store_latents] GA layout: (C, T, H) - extracting best candidate per time step")
+                                idx = np.argmax(lp_pair, axis=0)               # (T,) - best candidate per time step
+                                best_path = lat_pair[idx, np.arange(lat_pair.shape[1])]  # (T, H) - best latent per time step
+                                best_scores = np.max(lp_pair, axis=0)         # (T,) - best score per time step
+                            else:  # Time is first: (T, C, H)
+                                # Time first, then candidates: (T, C, H) -> extract best candidate per time step
+                                print(f"[store_latents] GA layout: (T, C, H) - extracting best candidate per time step")
+                                idx = np.argmax(lp_pair, axis=-1)               # (T,) - best candidate per time step
+                                best_path = lat_pair[np.arange(lat_pair.shape[0]), idx]  # (T, H) - best latent per time step
+                                best_scores = np.max(lp_pair, axis=-1)         # (T,) - best score per time step
+                            
+                            print(f"[store_latents] GA extracted: best_path.shape={best_path.shape}, best_scores.shape={best_scores.shape}")
                             if best_path.shape[-1] == 2:
                                 payload["ga_path"] = best_path
                             payload["ga_scores"] = best_scores
                             payload["ga_losses"] = -best_scores
+                            
+                            # Also save the raw trajectory data for debugging and alternative plotting
+                            payload["ga_trajectory_latents"] = best_path
+                            payload["ga_trajectory_losses"] = -best_scores
+                            
                             print(f"[store_latents] ✅ GA path derivation successful")
                         except Exception as _pe:
                             print(f"[store_latents] GA path/score derivation failed: {_pe!r}")

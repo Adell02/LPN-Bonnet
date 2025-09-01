@@ -113,6 +113,7 @@ def try_extract_2d_points(npz: np.lib.npyio.NpzFile, prefix: str) -> Optional[np
     # For GA, also check for the stored trajectory data
     if prefix == "ga_":
         preferred = [
+            f"{prefix}trajectory_latents",  # New: direct trajectory latents
             f"{prefix}path",
             f"{prefix}latents",  # This should contain the full trajectory
             f"{prefix}all_latents",
@@ -154,6 +155,8 @@ class Trace:
 def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
     # values associated with the *trajectory* points (GA path or ES path)
     for k in [
+        f"{prefix}trajectory_losses",  # New: direct trajectory losses (GA)
+        f"{prefix}trajectory_scores",  # New: direct trajectory scores (GA)
         f"{prefix}losses",
         f"{prefix}scores",
         f"{prefix}all_losses",
