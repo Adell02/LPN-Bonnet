@@ -20,6 +20,9 @@ This eliminates the data size mismatch that was causing training to get stuck.
 
 import logging
 import matplotlib.pyplot as plt
+# Set matplotlib to use non-interactive backend to prevent weakref warnings
+import matplotlib
+matplotlib.use("Agg")
 import time
 from functools import partial
 from typing import Optional, Sequence
@@ -5915,6 +5918,14 @@ class StructuredTrainer:
                     except Exception as e:
                         logging.warning(f"Test clustering metrics computation failed: {e}")
         
+        # Clean up matplotlib to prevent weakref warnings
+        try:
+            import matplotlib.pyplot as plt
+            plt.close('all')
+            logging.info("🧹 Matplotlib cleanup completed in test_dataset_submission")
+        except Exception as e:
+            logging.warning(f"Matplotlib cleanup failed in test_dataset_submission: {e}")
+        
         return metrics, fig_gen, fig_heatmap, fig_latents, None, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list
 
     def _create_merged_encoder_certainty_panel(self, state: TrainState, step: int) -> Optional[plt.Figure]:
@@ -6282,6 +6293,14 @@ def run(cfg: omegaconf.DictConfig):
     # Final evaluation with the final step value
     final_step = cfg.training.total_num_steps
     trainer.evaluate(state, enc_params_list, final_step)
+    
+    # Clean up matplotlib to prevent weakref warnings
+    try:
+        import matplotlib.pyplot as plt
+        plt.close('all')
+        logging.info("🧹 Final matplotlib cleanup completed")
+    except Exception as e:
+        logging.warning(f"Final matplotlib cleanup failed: {e}")
 
 
 if __name__ == "__main__":
