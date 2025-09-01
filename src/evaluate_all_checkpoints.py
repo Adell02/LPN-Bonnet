@@ -1742,8 +1742,21 @@ def main():
                 except ValueError:
                     training_progress = 0
             
-            denom = max(len(checkpoints) - 1, 1)
-            pct = int((training_progress / denom) * 100)
+            # Calculate training progress percentage based on actual checkpoint versions
+            # Find the maximum training progress value across all checkpoints
+            max_training_progress = 0
+            for cp in checkpoints:
+                cp_name = cp["name"]
+                if "--checkpoint:" in cp_name:
+                    try:
+                        version_part = cp_name.split("--checkpoint:")[1]
+                        version_num = int(version_part[1:])
+                        max_training_progress = max(max_training_progress, version_num)
+                    except ValueError:
+                        pass
+            
+            denom = max(max_training_progress, 1)
+            pct = int((training_progress / denom) * 100) if denom > 0 else 0
 
             print("\n" + "=" * 60)
             print(f"📊 Checkpoint {i}/{len(checkpoints)}: Step {step} (v{training_progress})")
@@ -1830,6 +1843,8 @@ def main():
                             csv_row.extend([False, "", "", ""])  # Not applicable for gradient ascent
                         
                         writer.writerow(csv_row)
+                        f_csv.flush()  # Ensure data is written to disk immediately
+                        print(f"📝 CSV: Written row for {method} budget {compute_budget} -> loss: {metrics.get('total_final_loss', 'N/A')}")
                 elif method == "random_search":
                     print("\n🔧 Testing random_search across budgets...")
                     for num_samples in rs_samples:
@@ -1892,6 +1907,8 @@ def main():
                             csv_row.extend([False, "", "", ""])  # Not applicable for random search
                         
                         writer.writerow(csv_row)
+                        f_csv.flush()  # Ensure data is written to disk immediately
+                        print(f"📝 CSV: Written row for {method} budget {es_cfg['budget']} -> loss: {metrics.get('total_final_loss', 'N/A')}")
                 elif method == "evolutionary_search":
                     print("\n🔧 Testing evolutionary_search across budgets...")
                     for es_cfg in es_configs:
@@ -1986,6 +2003,8 @@ def main():
                             csv_row.extend([True, args.es_subspace_dim, args.es_ga_step_length, args.es_trust_region_radius or ""])
 
                         writer.writerow(csv_row)
+                        f_csv.flush()  # Ensure data is written to disk immediately
+                        print(f"📝 CSV: Written row for evolutionary_search budget {es_cfg['budget']} -> loss: {metrics.get('total_final_loss', 'N/A')}")
 
                 # Progress update after each checkpoint
                 total_evals = results["successful_evals"] + results["failed_evals"]
@@ -2001,6 +2020,15 @@ def main():
                 print(f"   ⏱️  Timing info available in W&B logs for each method and budget")
                 if args.n_samples > 1:
                     print(f"   🧪 Multiple samples: {args.n_samples} runs per evaluation")
+                
+                # Debug: Check CSV file status
+                try:
+                    csv_size = out_csv.stat().st_size if out_csv.exists() else 0
+                    print(f"   📝 CSV file size: {csv_size} bytes")
+                    if csv_size > 0:
+                        print(f"   📁 CSV file: {out_csv}")
+                except Exception as e:
+                    print(f"   ⚠️  Could not check CSV file status: {e}")
 
             
             # Generate and upload analysis figure for this checkpoint (unless --no_files is specified)
@@ -2087,7 +2115,21 @@ def main():
                         method_to_step_to_budget[method] = {}
 
                     if out_csv.exists():
+                        print(f"📖 Reading CSV file: {out_csv}")
+                        csv_size = out_csv.stat().st_size
+                        print(f"   📏 CSV file size: {csv_size} bytes")
+                        
                         with out_csv.open("r") as f:
+                            reader = csv.DictReader(f)
+                            row_count = 0
+                            for row in reader:
+                                row_count += 1
+                                if row_count <= 3:  # Show first 3 rows for debugging
+                                    print(f"   📋 Row {row_count}: {dict(row)}")
+                            print(f"   📊 Total rows read: {row_count}")
+                            
+                            # Reset file pointer to beginning
+                            f.seek(0)
                             reader = csv.DictReader(f)
                             for row in reader:
                                 try:
@@ -2426,7 +2468,21 @@ def main():
                     for method in args.plot_methods:
                         method_maps[method] = {}
 
+                    print(f"📖 Reading final CSV file: {out_csv}")
+                    csv_size = out_csv.stat().st_size
+                    print(f"   📏 CSV file size: {csv_size} bytes")
+                    
                     with out_csv.open("r") as f:
+                        reader = csv.DictReader(f)
+                        row_count = 0
+                        for row in reader:
+                            row_count += 1
+                            if row_count <= 3:  # Show first 3 rows for debugging
+                                print(f"   📋 Row {row_count}: {dict(row)}")
+                        print(f"   📊 Total rows read: {row_count}")
+                        
+                        # Reset file pointer to beginning
+                        f.seek(0)
                         reader = csv.DictReader(f)
                         for row in reader:
                             try:

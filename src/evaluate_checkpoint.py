@@ -716,17 +716,51 @@ def evaluate_custom_dataset(
                             print(f"[store_latents] GA shape analysis: lat0.shape={lat0.shape}, time_axis={time_axis}, steps_dim={steps_dim}, cand_dim={cand_dim}")
                             print(f"[store_latents] GA pair shapes: lat_pair={lat_pair.shape}, lp_pair={lp_pair.shape}")
                             
+                            # CRITICAL FIX: Handle shape mismatch between latents and log probabilities
+                            # This can happen when trajectory creation doubles the steps but log_probs don't get doubled
+                            lat_steps = lat_pair.shape[1] if time_axis == lat0.ndim - 2 else lat_pair.shape[0]
+                            lp_steps = lp_pair.shape[1] if time_axis == lat0.ndim - 2 else lp_pair.shape[0]
+                            
+                            print(f"[store_latents] GA step count check: lat_steps={lat_steps}, lp_steps={lp_steps}")
+                            
+                            if lat_steps != lp_steps:
+                                print(f"[store_latents] ⚠️  Shape mismatch detected: latents have {lat_steps} steps, log_probs have {lp_steps} steps")
+                                print(f"[store_latents] This usually happens when trajectory creation doubles the steps")
+                                
+                                # Strategy: Use the smaller number of steps to ensure compatibility
+                                if lat_steps > lp_steps:
+                                    # Truncate latents to match log_probs
+                                    if time_axis == lat0.ndim - 2:  # (C, T, H)
+                                        lat_pair = lat_pair[:, :lp_steps, :]
+                                    else:  # (T, C, H)
+                                        lat_pair = lat_pair[:lp_steps, :, :]
+                                    print(f"[store_latents] Truncated latents to {lp_steps} steps to match log_probs")
+                                else:
+                                    # Truncate log_probs to match latents
+                                    if time_axis == lat0.ndim - 2:  # (C, T)
+                                        lp_pair = lp_pair[:, :lat_steps]
+                                    else:  # (T, C)
+                                        lp_pair = lp_pair[:lat_steps, :]
+                                    print(f"[store_latents] Truncated log_probs to {lat_steps} steps to match latents")
+                                
+                                # Update step counts after truncation
+                                lat_steps = lat_pair.shape[1] if time_axis == lat0.ndim - 2 else lat_pair.shape[0]
+                                lp_steps = lp_pair.shape[1] if time_axis == lat0.ndim - 2 else lp_pair.shape[0]
+                                print(f"[store_latents] After truncation: lat_steps={lat_steps}, lp_steps={lp_steps}")
+                            
                             if time_axis == lat0.ndim - 2:  # Time is second-to-last: (C, T, H)
                                 # Candidates first, then time: (C, T, H) -> extract best candidate per time step
                                 print(f"[store_latents] GA layout: (C, T, H) - extracting best candidate per time step")
                                 idx = np.argmax(lp_pair, axis=0)               # (T,) - best candidate per time step
-                                best_path = lat_pair[idx, np.arange(lat_pair.shape[1])]  # (T, H) - best latent per time step
+                                # CRITICAL FIX: Use lp_steps instead of lat_pair.shape[1] to ensure compatibility
+                                best_path = lat_pair[idx, np.arange(lp_steps)]  # (T, H) - best latent per time step
                                 best_scores = np.max(lp_pair, axis=0)         # (T,) - best score per time step
                             else:  # Time is first: (T, C, H)
                                 # Time first, then candidates: (T, C, H) -> extract best candidate per time step
                                 print(f"[store_latents] GA layout: (T, C, H) - extracting best candidate per time step")
                                 idx = np.argmax(lp_pair, axis=-1)               # (T,) - best candidate per time step
-                                best_path = lat_pair[np.arange(lat_pair.shape[0]), idx]  # (T, H) - best latent per time step
+                                # CRITICAL FIX: Use lp_steps instead of lat_pair.shape[0] to ensure compatibility
+                                best_path = lat_pair[np.arange(lp_steps), idx]  # (T, H) - best latent per time step
                                 best_scores = np.max(lp_pair, axis=-1)         # (T,) - best score per time step
                             
                             print(f"[store_latents] GA extracted: best_path.shape={best_path.shape}, best_scores.shape={best_scores.shape}")
@@ -761,19 +795,55 @@ def evaluate_custom_dataset(
                             print(f"[store_latents] Saved ga_log_probs despite path derivation failure")
                             
                             # Try to create simple losses from log_probs as fallback
-                            try:
-                                # Take the mean over candidates and context dimensions to get per-step scores
-                                lp_array = np.array(ga_lp)
-                                if lp_array.ndim >= 3:
-                                    # Average over candidates and context: (B, C, T) -> (T,)
-                                    simple_scores = lp_array.mean(axis=tuple(range(lp_array.ndim - 1)))
-                                    simple_losses = -simple_scores  # Convert scores to losses
-                                    payload["ga_losses"] = simple_losses
-                                    print(f"[store_latents] Created fallback ga_losses: {simple_losses.shape}")
-                                else:
-                                    print(f"[store_latents] Could not create fallback losses from log_probs shape: {lp_array.shape}")
-                            except Exception as e:
-                                print(f"[store_latents] Fallback loss creation failed: {e}")
+                        try:
+                            # Take the mean over candidates and context dimensions to get per-step scores
+                            lp_array = np.array(ga_lp)
+                            if lp_array.ndim >= 3:
+                                # Average over candidates and context: (B, C, T) -> (T,)
+                                simple_scores = lp_array.mean(axis=tuple(range(lp_array.ndim - 1)))
+                                simple_losses = -simple_scores  # Convert scores to losses
+                                payload["ga_losses"] = simple_losses
+                                print(f"[store_latents] Created fallback ga_losses: {simple_losses.shape}")
+                                
+                                # ENHANCED FALLBACK: Also try to create a simple trajectory from latents
+                                if ga_lat is not None:
+                                    try:
+                                        lat_array = np.array(ga_lat)
+                                        if lat_array.ndim >= 4:
+                                            # Extract the first context and first candidate for a simple trajectory
+                                            # Shape: (B, N, S, C, H) -> extract (S, H) where S is steps
+                                            if lat_array.shape[0] == 1:  # Single batch
+                                                if lat_array.shape[1] == 1:  # Single context
+                                                    simple_trajectory = lat_array[0, 0, :, 0, :]  # (S, H)
+                                                    payload["ga_trajectory_latents"] = simple_trajectory
+                                                    print(f"[store_latents] Created fallback ga_trajectory_latents: {simple_trajectory.shape}")
+                                                else:
+                                                    # Multiple contexts, take first
+                                                    simple_trajectory = lat_array[0, 0, :, 0, :]  # (S, H)
+                                                    payload["ga_trajectory_latents"] = simple_trajectory
+                                                    print(f"[store_latents] Created fallback ga_trajectory_latents (first context): {simple_trajectory.shape}")
+                                            else:
+                                                # Multiple batches, take first
+                                                simple_trajectory = lat_array[0, 0, :, 0, :]  # (S, H)
+                                                payload["ga_trajectory_latents"] = simple_trajectory
+                                                print(f"[store_latents] Created fallback ga_trajectory_latents (first batch): {simple_trajectory.shape}")
+                                    except Exception as traj_e:
+                                        print(f"[store_latents] Fallback trajectory creation failed: {traj_e}")
+                                
+                                # ENHANCED FALLBACK: Also create a budget array for the fallback case
+                                if "ga_losses" in payload and "ga_trajectory_latents" in payload:
+                                    try:
+                                        num_steps = payload["ga_losses"].shape[0]
+                                        # Create budget array: [0, 2, 4, 6, ...] for GA (2 evaluations per step)
+                                        fallback_budget = np.concatenate([[0], (2 * np.arange(1, num_steps + 1))]).astype(np.int32)
+                                        payload["ga_budget"] = fallback_budget
+                                        print(f"[store_latents] Created fallback ga_budget: {fallback_budget.shape}")
+                                    except Exception as budget_e:
+                                        print(f"[store_latents] Fallback budget creation failed: {budget_e}")
+                            else:
+                                print(f"[store_latents] Could not create fallback losses from log_probs shape: {lp_array.shape}")
+                        except Exception as e:
+                            print(f"[store_latents] Fallback loss creation failed: {e}")
                             
                         print(f"[store_latents] Partial payload keys: {list(payload.keys())}")
                 else:
