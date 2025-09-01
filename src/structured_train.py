@@ -1348,11 +1348,12 @@ class StructuredTrainer:
                 repulsion_loss = 0.0
                 if target_latents_store and self.cfg.training.get("repulsion_kl", 0) > 0:
                     # Compute repulsion from previous encoders' targets
+                    # Use a more appropriate margin based on observed distances (~7.4)
                     repulsion_loss = self._compute_repulsion_loss(
                         current_latents=mu.mean(axis=-2),  # Use mean over pairs
                         target_latents_store=target_latents_store,
                         current_encoder_idx=enc_idx,
-                        margin=1.0
+                        margin=5.0  # Increased from 1.0 to be more effective given observed distances
                     )
                     
                     # Scale repulsion loss by the coefficient
@@ -1818,6 +1819,20 @@ class StructuredTrainer:
                     # Show a sample of the first grid to verify pattern
                     sample_grid = np.array(grids[0, 0, :, :, 1])  # First sample, first pair, output channel
                     logging.info(f"         Pattern {pattern_id} sample output grid:\n{sample_grid}")
+            
+            # CRITICAL: Store Phase A data for comparison with merged panel
+            # This helps debug why histograms are destroyed in subsequent calls
+            self._last_phase_a_data = {}
+            for pattern_id in [1, 2, 3]:
+                if pattern_id in eval_data:
+                    grids, shapes, pattern_ids = eval_data[pattern_id]
+                    self._last_phase_a_data[pattern_id] = {
+                        'grids': grids,
+                        'shapes': shapes,
+                        'pattern_ids': pattern_ids
+                    }
+                    logging.info(f"         💾 Stored Phase A data for pattern {pattern_id}: {len(grids)} samples")
+            
             self._generate_phase_a_certainty_plots(enc_idx, encoder_params, eval_data, current_global_step, step, total_steps)
             
             # Evaluate target pattern reconstruction during Phase A training
@@ -3385,8 +3400,11 @@ class StructuredTrainer:
         
         pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
         
-        # CRITICAL DEBUG: Log the call parameters
+        # CRITICAL DEBUG: Log the call parameters and call stack
+        import traceback
+        call_stack = traceback.format_stack()[-3:-1]  # Get last few stack frames
         logging.info(f"      🔍 _create_pattern_dataset called with pattern_id={pattern_id}, num_samples={num_samples}")
+        logging.info(f"      🔍 Call stack: {' -> '.join([frame.split('/')[-1].split(':')[0] for frame in call_stack])}")
         
         # Use pre-loaded datasets from initialization - SAME APPROACH AS TRAINING
         if hasattr(self, 'pattern_datasets') and pattern_id in self.pattern_datasets:
@@ -3417,12 +3435,19 @@ class StructuredTrainer:
             else:
                 logging.info(f"        ✅ Pattern IDs validation passed")
             
-            # CRITICAL: Return ALL samples for this pattern (not limited by num_samples)
-            logging.info(f"      ✅ Using ALL {available_samples} pre-loaded samples from pattern {pattern_id} ({pattern_names[pattern_id]})")
-            logging.info(f"      ✅ This ensures 100% pattern isolation - no mixing with other patterns")
-            
-            # CRITICAL: Return the EXACT same data every time
-            return grids, shapes, pattern_ids
+                            # CRITICAL: Return ALL samples for this pattern (not limited by num_samples)
+                logging.info(f"      ✅ Using ALL {available_samples} pre-loaded samples from pattern {pattern_id} ({pattern_names[pattern_id]})")
+                logging.info(f"      ✅ This ensures 100% pattern isolation - no mixing with other patterns")
+                
+                # CRITICAL WARNING: Check if sample count is suspiciously low
+                if available_samples < 100:
+                    logging.warning(f"      ⚠️  WARNING: Pattern {pattern_id} has only {available_samples} samples!")
+                    logging.warning(f"         This is much lower than Phase A data (1260 samples)")
+                    logging.warning(f"         This explains why histograms show fewer samples!")
+                    logging.warning(f"         Expected: 1260 samples, Got: {available_samples} samples")
+                
+                # CRITICAL: Return the EXACT same data every time
+                return grids, shapes, pattern_ids
         
         else:
             logging.error(f"      ❌ CRITICAL ERROR: No pre-loaded dataset for pattern {pattern_id}")
@@ -3615,46 +3640,22 @@ class StructuredTrainer:
 
     def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 5.0) -> float:
         """
-        Compute repulsion loss to push current encoder away from previous encoders' latent targets.
+        Compute repulsion loss to encourage encoder specialization.
         
         Args:
-            current_latents: Current encoder's latent representations [batch_size, latent_dim]
-            target_latents_store: Dictionary of {encoder_idx: {pattern_id: target_latents}} from previous encoders
-            current_encoder_idx: Index of the current encoder being trained
-            margin: Distance margin for repulsion (default: 1.0)
+            current_latents: Current encoder's latent representations (batch_size, latent_dim)
+            target_latents_store: Dictionary mapping encoder_idx to pattern_id to target latents
+            current_encoder_idx: Index of the current encoder
+            margin: Minimum desired distance between encoders
             
         Returns:
             Repulsion loss value
         """
-        # DEBUG: Log repulsion loss computation
         logging.info(f"🔍 REPULSION LOSS COMPUTATION DEBUG:")
         logging.info(f"   - current_encoder_idx: {current_encoder_idx}")
-        logging.info(f"   - target_latents_store keys: {list(target_latents_store.keys()) if target_latents_store else 'None'}")
+        logging.info(f"   - target_latents_store keys: {list(target_latents_store.keys())}")
         logging.info(f"   - current_latents shape: {current_latents.shape}")
         logging.info(f"   - margin: {margin}")
-        
-        # Adaptive margin: if margin is too small, compute a reasonable one based on data
-        if margin < 1.0:
-            # Sample some distances to estimate a reasonable margin
-            sample_distances = []
-            for prev_enc_idx in range(current_encoder_idx):
-                if prev_enc_idx in target_latents_store:
-                    prev_targets = target_latents_store[prev_enc_idx]
-                    for pattern_id, target_latents in prev_targets.items():
-                        if target_latents is not None and len(target_latents) > 0:
-                            if len(target_latents) == len(current_latents):
-                                sample_dist = jnp.linalg.norm(current_latents - target_latents, axis=1)
-                                sample_distances.append(float(jnp.mean(sample_dist)))
-                                break  # Just need one sample per encoder
-                            if len(sample_distances) >= 2:  # Get samples from 2 encoders
-                                break
-                    if len(sample_distances) >= 2:
-                        break
-            
-            if sample_distances:
-                adaptive_margin = max(1.0, min(sample_distances) * 0.8)  # 80% of minimum observed distance
-                logging.info(f"   - Adaptive margin computed: {adaptive_margin:.3f} (from sample distances: {sample_distances})")
-                margin = adaptive_margin
         
         if not target_latents_store or current_encoder_idx == 0:
             # No previous encoders to repulse from
@@ -3662,6 +3663,10 @@ class StructuredTrainer:
             logging.info(f"     * target_latents_store: {target_latents_store}")
             logging.info(f"     * current_encoder_idx: {current_encoder_idx}")
             return 0.0
+        
+        # CRITICAL FIX: Use consistent batch size for target latents
+        # Extract target latents with the same batch size as current latents to avoid resizing
+        current_batch_size = current_latents.shape[0]
         
         repulsion_loss = 0.0
         num_repulsion_terms = 0
@@ -3678,75 +3683,69 @@ class StructuredTrainer:
                     logging.info(f"       - Pattern {pattern_id}: target_latents type={type(target_latents)}, shape={target_latents.shape if hasattr(target_latents, 'shape') else 'No shape'}")
                     
                     if target_latents is not None and len(target_latents) > 0:
-                        # Ensure target latents have the same batch size
-                        if len(target_latents) == len(current_latents):
-                            logging.info(f"         * Batch sizes match: {len(target_latents)} == {len(current_latents)}")
-                            
-                            # Compute L2 distance between current and target latents
-                            distances = jnp.linalg.norm(current_latents - target_latents, axis=1)
-                            logging.info(f"         * Distances shape: {distances.shape}, mean: {float(jnp.mean(distances)):.6f}")
-                            
-                            # Repulsion loss: penalize when distance < margin
-                            # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2^2)
-                            repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
-                            
-                            # Alternative: soft repulsion using inverse distance (always non-zero)
-                            # This ensures we always have some repulsion effect
-                            soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))  # Add small epsilon to avoid division by zero
-                            
-                            # Use the maximum of both approaches
-                            final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)  # Scale soft term down
-                            
-                            logging.info(f"         * Repulsion term: {float(repulsion_term):.6f}")
-                            logging.info(f"         * Soft repulsion term: {float(soft_repulsion_term):.6f}")
-                            logging.info(f"         * Final repulsion term: {float(final_repulsion_term):.6f}")
-                            
-                            repulsion_loss += final_repulsion_term
-                            num_repulsion_terms += 1
-                        else:
-                            logging.warning(f"         * Batch size mismatch: {len(target_latents)} != {len(current_latents)}")
-                            logging.warning(f"         * Attempting to resize target latents to match current batch size")
-                            
-                            # Try to resize target latents to match current batch size
-                            try:
-                                if len(target_latents) > len(current_latents):
+                        # CRITICAL FIX: Always resize target latents to match current batch size
+                        # This ensures consistent computation and avoids batch size mismatches
+                        try:
+                            if len(target_latents) != current_batch_size:
+                                logging.info(f"         * Resizing target latents from {len(target_latents)} to {current_batch_size}")
+                                
+                                if len(target_latents) > current_batch_size:
                                     # Sample from target latents to match current batch size
-                                    indices = np.random.choice(len(target_latents), len(current_latents), replace=False)
+                                    indices = np.random.choice(len(target_latents), current_batch_size, replace=False)
                                     resized_target_latents = target_latents[indices]
                                 else:
                                     # Repeat target latents to match current batch size
-                                    repeat_factor = len(current_latents) // len(target_latents)
-                                    remainder = len(current_latents) % len(target_latents)
+                                    repeat_factor = current_batch_size // len(target_latents)
+                                    remainder = current_batch_size % len(target_latents)
                                     resized_target_latents = np.tile(target_latents, (repeat_factor, 1))
                                     if remainder > 0:
                                         additional = target_latents[:remainder]
                                         resized_target_latents = np.vstack([resized_target_latents, additional])
                                 
                                 logging.info(f"         * Resized target latents from {len(target_latents)} to {len(resized_target_latents)}")
-                                
-                                # Compute L2 distance between current and resized target latents
-                                distances = jnp.linalg.norm(current_latents - resized_target_latents, axis=1)
-                                logging.info(f"         * Resized distances shape: {distances.shape}, mean: {float(jnp.mean(distances)):.6f}")
-                                
-                                # Repulsion loss: penalize when distance < margin
-                                repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
-                                
-                                # Alternative: soft repulsion using inverse distance (always non-zero)
-                                soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))
-                                
-                                # Use the maximum of both approaches
-                                final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)
-                                
-                                logging.info(f"         * Resized repulsion term: {float(repulsion_term):.6f}")
-                                logging.info(f"         * Resized soft repulsion term: {float(soft_repulsion_term):.6f}")
-                                logging.info(f"         * Resized final repulsion term: {float(final_repulsion_term):.6f}")
-                                
-                                repulsion_loss += final_repulsion_term
-                                num_repulsion_terms += 1
-                                
-                            except Exception as resize_error:
-                                logging.warning(f"         * Failed to resize target latents: {resize_error}")
-                                logging.warning(f"         * Skipping this repulsion term")
+                            else:
+                                resized_target_latents = target_latents
+                                logging.info(f"         * Batch sizes already match: {len(target_latents)} == {current_batch_size}")
+                            
+                            # Compute L2 distance between current and target latents
+                            distances = jnp.linalg.norm(current_latents - resized_target_latents, axis=1)
+                            logging.info(f"         * Distances shape: {distances.shape}, mean: {float(jnp.mean(distances)):.6f}")
+                            
+                            # IMPROVED REPULSION LOSS: Use a more effective repulsion strategy
+                            # Option 1: Exponential repulsion that increases as distances get smaller
+                            # This provides strong repulsion when encoders are too close together
+                            exp_repulsion = jnp.mean(jnp.exp(-distances / margin))
+                            
+                            # Option 2: Inverse distance repulsion (always non-zero)
+                            # This ensures continuous repulsion even when distances are large
+                            inv_repulsion = jnp.mean(1.0 / (distances + 1e-6))
+                            
+                            # Option 3: Margin-based repulsion (only when distance < margin)
+                            # This enforces a minimum distance threshold
+                            margin_repulsion = jnp.mean(jnp.maximum(0, margin - distances))
+                            
+                            # Combine all three approaches for robust repulsion
+                            # Scale them appropriately to balance their contributions
+                            # - Exponential: 50% weight for strong local repulsion
+                            # - Inverse: 30% weight for continuous global repulsion  
+                            # - Margin: 20% weight for explicit distance enforcement
+                            final_repulsion_term = (
+                                0.5 * exp_repulsion +      # Exponential: strong repulsion for small distances
+                                0.3 * inv_repulsion * 0.1 + # Inverse: always some repulsion
+                                0.2 * margin_repulsion     # Margin: explicit distance enforcement
+                            )
+                            
+                            logging.info(f"         * Exp repulsion: {float(exp_repulsion):.6f}")
+                            logging.info(f"         * Inv repulsion: {float(inv_repulsion * 0.1):.6f}")
+                            logging.info(f"         * Margin repulsion: {float(margin_repulsion):.6f}")
+                            logging.info(f"         * Final repulsion term: {float(final_repulsion_term):.6f}")
+                            
+                            repulsion_loss += final_repulsion_term
+                            num_repulsion_terms += 1
+                            
+                        except Exception as resize_error:
+                            logging.warning(f"         * Failed to process target latents: {resize_error}")
+                            logging.warning(f"         * Skipping this repulsion term")
                     else:
                         logging.warning(f"         * Invalid target_latents: {target_latents}")
             else:
@@ -3776,9 +3775,11 @@ class StructuredTrainer:
         logging.info(f"🔍 EXTRACTING TARGET LATENTS for Encoder {encoder_idx}")
         target_latents = {}
         
-        # Use the same batch size as training to avoid mismatch
+        # CRITICAL FIX: Use the same batch size as training to avoid mismatch
+        # This ensures target latents have the same batch size as current latents during training
         num_samples = self.batch_size  # Use batch_size instead of fixed 32
         logging.info(f"   - Using batch_size={num_samples} for target latents (matching training)")
+        logging.info(f"   - This prevents batch size mismatches in repulsion loss computation")
         
         # Create evaluation data for each pattern
         for pattern_id in [1, 2, 3]:
@@ -5885,11 +5886,32 @@ class StructuredTrainer:
             
             # CRITICAL DEBUG: Track data creation for consistency
             logging.info(f"🔍 Creating evaluation data for certainty plots at step {step}")
+            logging.info(f"🔍 This is the MERGED ENCODER CERTAINTY PANEL - should use pre-loaded datasets")
             
-            for pattern_id in [1, 2, 3]:
-                # Use ALL samples for each pattern (like training does) - no artificial limits
-                logging.info(f"   📊 Creating dataset for pattern {pattern_id}")
-                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_samples=None)
+            # CRITICAL COMPARISON: Check if we have Phase A data to compare against
+            if hasattr(self, '_last_phase_a_data') and self._last_phase_a_data:
+                logging.info(f"🔍 COMPARING with Phase A data from previous step:")
+                for pattern_id in [1, 2, 3]:
+                    if pattern_id in self._last_phase_a_data:
+                        phase_a_grids = self._last_phase_a_data[pattern_id]['grids']
+                        logging.info(f"   Phase A Pattern {pattern_id}: {len(phase_a_grids)} samples, shape: {phase_a_grids.shape}")
+            
+            # CRITICAL DECISION: Use Phase A data if available to ensure consistency
+            # This prevents the histogram destruction issue
+            if hasattr(self, '_last_phase_a_data') and self._last_phase_a_data:
+                logging.info(f"🔍 USING Phase A data for consistency (prevents histogram destruction):")
+                for pattern_id in [1, 2, 3]:
+                    if pattern_id in self._last_phase_a_data:
+                        eval_data[pattern_id] = self._last_phase_a_data[pattern_id]
+                        grids, shapes, pattern_ids = eval_data[pattern_id]
+                        logging.info(f"   ✅ Pattern {pattern_id}: Using Phase A data with {len(grids)} samples")
+                logging.info(f"   ✅ This ensures histograms show the SAME samples as Phase A")
+            else:
+                logging.info(f"🔍 No Phase A data available, using pre-loaded datasets:")
+                for pattern_id in [1, 2, 3]:
+                    # Use ALL samples for each pattern (like training does) - no artificial limits
+                    logging.info(f"   📊 Creating dataset for pattern {pattern_id}")
+                    eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_samples=None)
                 
                 # CRITICAL VALIDATION: Verify the data we just got
                 grids, shapes, pattern_ids = eval_data[pattern_id]
@@ -5899,6 +5921,17 @@ class StructuredTrainer:
                 logging.info(f"      - Pattern IDs: {pattern_ids.shape}")
                 logging.info(f"      - Pattern IDs unique: {np.unique(pattern_ids)}")
                 logging.info(f"      - Pattern IDs first 5: {pattern_ids[:5]}")
+                
+                # CRITICAL COMPARISON: Compare with Phase A data if available
+                if hasattr(self, '_last_phase_a_data') and pattern_id in self._last_phase_a_data:
+                    phase_a_grids = self._last_phase_a_data[pattern_id]['grids']
+                    if len(grids) != len(phase_a_grids):
+                        logging.error(f"   ❌ CRITICAL MISMATCH: Pattern {pattern_id} sample count differs!")
+                        logging.error(f"      Phase A: {len(phase_a_grids)} samples")
+                        logging.error(f"      Merged Panel: {len(grids)} samples")
+                        logging.error(f"      This explains why histograms are destroyed!")
+                    else:
+                        logging.info(f"   ✅ Sample count matches Phase A: {len(grids)} samples")
                 
                 # CRITICAL CHECK: Ensure pattern IDs are correct
                 if not np.all(pattern_ids == pattern_id):
