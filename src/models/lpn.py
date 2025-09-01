@@ -921,15 +921,19 @@ class LPN(nn.Module):
                 
                 print(f"         🔧 DEBUG: reshaped_all_latents shape: {reshaped_all_latents.shape}")
                 print(f"         🔧 DEBUG: reshaped_all_log_probs shape: {reshaped_all_log_probs.shape}")
-                
-                # Ensure initial_log_probs has the right shape for concatenation
-                # If initial_log_probs is (1, 4, 1), we need to expand it to (1, 4, 1, 1) to match the pattern
-                if initial_log_probs.ndim == 3:  # (1, 4, 1)
-                    print(f"         🔧 DEBUG: Expanding initial_log_probs from {initial_log_probs.shape} to (1, 4, 1, 1)")
-                    initial_log_probs = initial_log_probs[..., None]  # Add dimension at the end
-                
+
+                # Ensure initial_log_probs has the right shape for concatenation.
+                # Gradient ascent log_probs are 3D (B, pair, steps) while latents are
+                # 4D (B, pair, steps, latent_dim). Concatenation should therefore be
+                # done along the last dimension for log_probs and the penultimate
+                # dimension for latents.
+                if initial_log_probs.ndim < reshaped_all_log_probs.ndim:
+                    # Expand initial_log_probs so that both tensors have matching dims
+                    expand_dims = reshaped_all_log_probs.ndim - initial_log_probs.ndim
+                    initial_log_probs = initial_log_probs[(...,) + (None,) * expand_dims]
+
                 trajectory_latents = jnp.concatenate([original_latents, reshaped_all_latents], axis=-2)
-                trajectory_log_probs = jnp.concatenate([initial_log_probs, reshaped_all_log_probs], axis=-2)
+                trajectory_log_probs = jnp.concatenate([initial_log_probs, reshaped_all_log_probs], axis=-1)
                 
                 # Debug logging to show the fix is working
                 print(f"         🔧 GA trajectory fix: original_latents shape={original_latents.shape}, reshaped_all_latents shape={reshaped_all_latents.shape}")
