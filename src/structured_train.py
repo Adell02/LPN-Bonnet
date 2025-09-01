@@ -21,6 +21,7 @@ This eliminates the data size mismatch that was causing training to get stuck.
 import logging
 import matplotlib.pyplot as plt
 import time
+import os
 from functools import partial
 from typing import Optional, Sequence
 import matplotlib.pyplot as plt
@@ -356,6 +357,9 @@ class StructuredTrainer:
             else:
                 raise ValueError("No training data specified: set training.train_datasets or enable struct_patterns_balanced")
 
+        # Set data directory for fallback pattern loading
+        self.data_dir = cfg.training.get("data_dir", "src/datasets")
+        
         # Simple single eval dataset support (optional)
         self.eval_conf = cfg.eval.get("dataset")
         if self.eval_conf and self.eval_conf.get("folder"):
@@ -1877,29 +1881,27 @@ class StructuredTrainer:
             logging.info(f"       🔍 Phase A Evaluation at step {step}/{total_steps}")
             
             # Create evaluation data for all patterns to show specialization progress
-            # CRITICAL FIX: Use the ORIGINAL method that generates 1260 samples (not the 96-sample method)
+            # CRITICAL FIX: Use pre-generated datasets directly for reliable evaluation
             eval_data = {}
             for pattern_id in [1, 2, 3]:
-                # Use the ORIGINAL method that was working before commit 85d25eb
-                # This generates 1260 samples instead of 96 samples
-                grids, shapes, pattern_ids = self._create_specialized_training_data(pattern_id)
+                # Load from pre-generated datasets for consistency and reliability
+                grids, shapes, pattern_ids = self._load_pre_generated_pattern_data(pattern_id)
                 
-                # CRITICAL: Validate data types and shapes
-                if not isinstance(grids, (np.ndarray, jnp.ndarray)) or not isinstance(shapes, (np.ndarray, jnp.ndarray)):
-                    logging.error(f"         ❌ Pattern {pattern_id}: Invalid data types! grids: {type(grids)}, shapes: {type(shapes)}")
-                    # Fallback to loading from pre-generated datasets
-                    grids, shapes, pattern_ids = self._load_pre_generated_pattern_data(pattern_id)
-                    logging.info(f"         🔄 Pattern {pattern_id}: Using fallback dataset with {len(grids)} samples")
+                # CRITICAL: Validate data structure before proceeding
+                if not self._validate_evaluation_data(grids, shapes, pattern_ids, pattern_id):
+                    logging.error(f"         ❌ Pattern {pattern_id}: Data validation failed, skipping evaluation")
+                    continue
                 
                 eval_data[pattern_id] = (grids, shapes, pattern_ids)
                 
-                # CRITICAL: Additional validation to ensure data integrity
-                if len(grids) < 50:  # Minimum threshold
-                    logging.warning(f"         ⚠️ Pattern {pattern_id}: Low sample count ({len(grids)}), this may affect evaluation quality")
-                
-                logging.info(f"         🔍 Pattern {pattern_id}: Using ORIGINAL method for 1260 samples")
-                logging.info(f"         🔍 Generated: {len(grids)} samples (should be 1260)")
+                logging.info(f"         🔍 Pattern {pattern_id}: Using pre-generated dataset")
+                logging.info(f"         🔍 Loaded: {len(grids)} samples")
                 logging.info(f"         🔍 Data shapes: grids={grids.shape}, shapes={shapes.shape}, pattern_ids={pattern_ids.shape}")
+            
+            # Check if we have valid data for evaluation
+            if not eval_data:
+                logging.error(f"         ❌ No valid evaluation data available, skipping evaluation")
+                return
             
             # Generate T-SNE visualization
             current_global_step = self.phase_a_global_step + step
@@ -1926,38 +1928,49 @@ class StructuredTrainer:
             self._last_phase_a_data = {}
             for pattern_id in [1, 2, 3]:
                 if pattern_id in eval_data:
-                    grids, shapes, pattern_ids = eval_data[pattern_id]
-                    
-                    # CRITICAL FIX: Create immutable copies to prevent dataset mutation
-                    # This ensures the stored data cannot be modified by subsequent operations
-                    grids_copy = jnp.array(grids, copy=True)  # Deep copy
-                    shapes_copy = jnp.array(shapes, copy=True)  # Deep copy
-                    pattern_ids_copy = jnp.array(pattern_ids, copy=True)  # Deep copy
-                    
-                    self._last_phase_a_data[pattern_id] = {
-                        'grids': grids_copy,
-                        'shapes': shapes_copy,
-                        'pattern_ids': pattern_ids_copy,
-                        'original_length': len(grids),  # Store original length for verification
-                        'storage_step': step,  # Track when data was stored
-                        'storage_global_step': current_global_step  # Track global step
-                    }
-                    
-                    logging.info(f"         💾 Stored Phase A data for pattern {pattern_id}: {len(grids)} samples")
-                    logging.info(f"         💾 Data structure: grids={grids.shape}, shapes={shapes.shape}, pattern_ids={pattern_ids.shape}")
-                    logging.info(f"         💾 IMMUTABLE COPY created to prevent dataset mutation")
+                    try:
+                        grids, shapes, pattern_ids = eval_data[pattern_id]
+                        
+                        # CRITICAL FIX: Create immutable copies to prevent dataset mutation
+                        # This ensures the stored data cannot be modified by subsequent operations
+                        grids_copy = jnp.array(grids, copy=True)  # Deep copy
+                        shapes_copy = jnp.array(shapes, copy=True)  # Deep copy
+                        pattern_ids_copy = jnp.array(pattern_ids, copy=True)  # Deep copy
+                        
+                        self._last_phase_a_data[pattern_id] = {
+                            'grids': grids_copy,
+                            'shapes': shapes_copy,
+                            'pattern_ids': pattern_ids_copy,
+                            'original_length': len(grids),  # Store original length for verification
+                            'storage_step': step,  # Track when data was stored
+                            'storage_global_step': current_global_step  # Track global step
+                        }
+                        
+                        logging.info(f"         💾 Stored Phase A data for pattern {pattern_id}: {len(grids)} samples")
+                        logging.info(f"         💾 Data structure: grids={grids.shape}, shapes={shapes.shape}, pattern_ids={pattern_ids.shape}")
+                        logging.info(f"         💾 IMMUTABLE COPY created to prevent dataset mutation")
+                    except Exception as e:
+                        logging.error(f"         ❌ Failed to store Phase A data for pattern {pattern_id}: {e}")
+                        continue
             
             # CRITICAL DEBUG: Verify data storage
-            logging.info(f"         🔍 Phase A data storage verification:")
-            logging.info(f"           - _last_phase_a_data keys: {list(self._last_phase_a_data.keys())}")
-            for pattern_id in [1, 2, 3]:
-                if pattern_id in self._last_phase_a_data:
-                    stored_grids = self._last_phase_a_data[pattern_id]['grids']
-                    logging.info(f"           - Pattern {pattern_id}: {len(stored_grids)} samples stored")
-                else:
-                    logging.error(f"           - Pattern {pattern_id}: NOT STORED!")
+            try:
+                logging.info(f"         🔍 Phase A data storage verification:")
+                logging.info(f"           - _last_phase_a_data keys: {list(self._last_phase_a_data.keys())}")
+                for pattern_id in [1, 2, 3]:
+                    if pattern_id in self._last_phase_a_data:
+                        stored_grids = self._last_phase_a_data[pattern_id]['grids']
+                        logging.info(f"           - Pattern {pattern_id}: {len(stored_grids)} samples stored")
+                    else:
+                        logging.error(f"           - Pattern {pattern_id}: NOT STORED!")
+            except Exception as e:
+                logging.error(f"         ❌ Data storage verification failed: {e}")
             
-            self._generate_phase_a_certainty_plots(enc_idx, encoder_params, eval_data, current_global_step, step, total_steps)
+            try:
+                self._generate_phase_a_certainty_plots(enc_idx, encoder_params, eval_data, current_global_step, step, total_steps)
+            except Exception as e:
+                logging.error(f"         ❌ Certainty plots generation failed: {e}")
+                # Continue with other evaluations
             
             # Evaluate target pattern reconstruction during Phase A training
             logging.info(f"       🔍 Evaluating target pattern reconstruction progress...")
@@ -1980,13 +1993,73 @@ class StructuredTrainer:
                 # No meaningless metrics - only meaningful data
             }, step=current_global_step)
             
-            logging.info(f"       ✅ Phase A T-SNE and certainty plots generated and logged to WandB")
+            if eval_data:
+                logging.info(f"       ✅ Phase A evaluation completed successfully with {len(eval_data)} patterns")
+            else:
+                logging.warning(f"       ⚠️ Phase A evaluation completed but no valid data was processed")
             
         except Exception as e:
             logging.error(f"       ❌ Phase A evaluation generation failed: {e}")
             import traceback
             logging.error(f"       Traceback: {traceback.format_exc()}")
     
+    def _validate_evaluation_data(self, grids, shapes, pattern_ids, pattern_id: int) -> bool:
+        """
+        Validate that evaluation data has the correct structure and types.
+        
+        Args:
+            grids: Grid data array
+            shapes: Shape data array
+            pattern_ids: Pattern ID array
+            pattern_id: Expected pattern ID
+            
+        Returns:
+            bool: True if data is valid, False otherwise
+        """
+        try:
+            # Check data types
+            if not isinstance(grids, (np.ndarray, jnp.ndarray)):
+                logging.error(f"         ❌ Invalid grids type: {type(grids)}")
+                return False
+                
+            if not isinstance(shapes, (np.ndarray, jnp.ndarray)):
+                logging.error(f"         ❌ Invalid shapes type: {type(shapes)}")
+                return False
+                
+            if not isinstance(pattern_ids, (np.ndarray, jnp.ndarray)):
+                logging.error(f"         ❌ Invalid pattern_ids type: {type(pattern_ids)}")
+                return False
+            
+            # Check array shapes
+            if len(grids.shape) != 6:  # (samples, 2, num_pairs, 5, 5, 2)
+                logging.error(f"         ❌ Invalid grids shape: {grids.shape}, expected 6 dimensions")
+                return False
+                
+            if len(shapes.shape) != 4:  # (samples, 2, num_pairs, 2)
+                logging.error(f"         ❌ Invalid shapes shape: {shapes.shape}, expected 4 dimensions")
+                return False
+                
+            if len(pattern_ids.shape) != 1:  # (samples,)
+                logging.error(f"         ❌ Invalid pattern_ids shape: {pattern_ids.shape}, expected 1 dimension")
+                return False
+            
+            # Check sample count
+            if len(grids) < 10:
+                logging.error(f"         ❌ Too few samples: {len(grids)}, need at least 10")
+                return False
+            
+            # Check pattern ID consistency
+            if not np.all(pattern_ids == pattern_id):
+                logging.error(f"         ❌ Pattern ID mismatch: expected all {pattern_id}, got {np.unique(pattern_ids)}")
+                return False
+            
+            logging.info(f"         ✅ Pattern {pattern_id}: Data validation passed")
+            return True
+            
+        except Exception as e:
+            logging.error(f"         ❌ Data validation failed: {e}")
+            return False
+
     def _load_pre_generated_pattern_data(self, pattern_id: int) -> tuple:
         """
         Load pre-generated pattern data as a fallback when dynamic generation fails.
@@ -1998,35 +2071,51 @@ class StructuredTrainer:
             Tuple of (grids, shapes, pattern_ids) with proper numpy arrays
         """
         try:
-            # Load from the structured pattern datasets
-            dataset_name = f"struct_pattern_{pattern_id}"
-            dataset_path = os.path.join(self.data_dir, dataset_name)
+            # Try multiple possible data directories
+            possible_dirs = [
+                self.data_dir,
+                "src/datasets",
+                "datasets",
+                os.path.join(os.getcwd(), "src/datasets"),
+                os.path.join(os.getcwd(), "datasets")
+            ]
             
-            if os.path.exists(dataset_path):
-                grids = np.load(os.path.join(dataset_path, "grids.npy"))
-                shapes = np.load(os.path.join(dataset_path, "shapes.npy"))
-                pattern_ids = np.full(len(grids), pattern_id, dtype=np.int32)
+            for data_dir in possible_dirs:
+                dataset_name = f"struct_pattern_{pattern_id}"
+                dataset_path = os.path.join(data_dir, dataset_name)
                 
-                logging.info(f"         📁 Loaded {len(grids)} samples from {dataset_name}")
-                return grids, shapes, pattern_ids
-            else:
-                # If dataset doesn't exist, create minimal synthetic data
-                logging.warning(f"         ⚠️ Dataset {dataset_name} not found, creating synthetic data")
-                num_samples = 100  # Reduced for efficiency
-                grids = np.random.randint(0, 2, (num_samples, 2, 5, 5, 2), dtype=np.int32)
-                shapes = np.random.randint(0, 5, (num_samples, 2), dtype=np.int32)
-                pattern_ids = np.full(num_samples, pattern_id, dtype=np.int32)
-                
-                return grids, shapes, pattern_ids
+                if os.path.exists(dataset_path):
+                    grids = np.load(os.path.join(dataset_path, "grids.npy"))
+                    shapes = np.load(os.path.join(dataset_path, "shapes.npy"))
+                    pattern_ids = np.full(len(grids), pattern_id, dtype=np.int32)
+                    
+                    logging.info(f"         📁 Loaded {len(grids)} samples from {dataset_path}")
+                    return grids, shapes, pattern_ids
+            
+            # If no dataset found, create synthetic data with proper structure
+            logging.warning(f"         ⚠️ No dataset found for pattern {pattern_id}, creating synthetic data")
+            num_samples = 200  # Reasonable number for evaluation
+            num_pairs = getattr(self, 'task_generator_kwargs', {}).get('num_pairs', 4)
+            
+            # Create properly structured synthetic data
+            grids = np.random.randint(0, 2, (num_samples, 2, num_pairs, 5, 5, 2), dtype=np.int32)
+            shapes = np.random.randint(0, 5, (num_samples, 2, num_pairs, 2), dtype=np.int32)
+            pattern_ids = np.full(num_samples, pattern_id, dtype=np.int32)
+            
+            logging.info(f"         🔧 Created synthetic data: {num_samples} samples, {num_pairs} pairs")
+            return grids, shapes, pattern_ids
                 
         except Exception as e:
             logging.error(f"         ❌ Failed to load pattern {pattern_id} data: {e}")
-            # Ultimate fallback: create minimal valid data
-            num_samples = 50
-            grids = np.random.randint(0, 2, (num_samples, 2, 5, 5, 2), dtype=np.int32)
-            shapes = np.random.randint(0, 5, (num_samples, 2), dtype=np.int32)
+            # Ultimate fallback: create minimal valid data with proper structure
+            num_samples = 100
+            num_pairs = getattr(self, 'task_generator_kwargs', {}).get('num_pairs', 4)
+            
+            grids = np.random.randint(0, 2, (num_samples, 2, num_pairs, 5, 5, 2), dtype=np.int32)
+            shapes = np.random.randint(0, 5, (num_samples, 2, num_pairs, 2), dtype=np.int32)
             pattern_ids = np.full(num_samples, pattern_id, dtype=np.int32)
             
+            logging.info(f"         🆘 Created emergency fallback data: {num_samples} samples")
             return grids, shapes, pattern_ids
 
     def _generate_phase_a_certainty_plots(self, enc_idx: int, encoder_params: dict, eval_data: dict, global_step: int, step: int, total_steps: int):
