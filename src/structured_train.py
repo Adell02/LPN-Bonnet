@@ -1588,11 +1588,36 @@ class StructuredTrainer:
         else:
             logging.error(f"🔍 CRITICAL ERROR: No Phase A data available!")
             logging.error(f"   This will cause poor histogram quality (96 vs 1260 samples)")
-            logging.error(f"   Falling back to pre-loaded datasets (inferior quality)")
+            logging.error(f"   CRITICAL FIX: Generate 1260 samples per pattern to match Phase A data")
+            
+            # Generate the SAME data as Phase A to ensure consistency
+            eval_data = {}
             for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_samples=None)
-                grids, shapes, pattern_ids = eval_data[pattern_id]
-                logging.info(f"   ⚠️ Pattern {pattern_id}: Using pre-loaded data with {len(grids)} samples (vs 1260 expected)")
+                logging.info(f"   🔧 Pattern {pattern_id}: Generating 1260 samples to match Phase A data")
+                
+                # Generate 1260 samples for each pattern using the single pattern sample generator
+                # This ensures the SAME data source as the correct plot
+                grids_list = []
+                shapes_list = []
+                pattern_ids_list = []
+                
+                num_samples = 1260  # Generate the same number as Phase A
+                for i in range(num_samples):
+                    if i % 200 == 0:  # Progress logging
+                        logging.info(f"   🔧 Pattern {pattern_id}: Generated {i}/{num_samples} samples")
+                    
+                    grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
+                    grids_list.append(grids)
+                    shapes_list.append(shapes)
+                    pattern_ids_list.append(pattern_id)
+                
+                # Stack all samples
+                grids = jnp.stack(grids_list, axis=0)
+                shapes = jnp.stack(shapes_list, axis=0)
+                pattern_ids = jnp.array(pattern_ids_list)
+                
+                eval_data[pattern_id] = (grids, shapes, pattern_ids)
+                logging.info(f"   ✅ Pattern {pattern_id}: Generated {len(grids)} samples (matches Phase A)")
 
         
         # Compute encoder variances per pattern
@@ -1672,7 +1697,7 @@ class StructuredTrainer:
                     encoder_logvars=[np.array(logvar)],
                     poe_mu=None,
                     poe_logvar=None,
-                    title=f"Encoder {enc_idx} Certainty",
+                    title=f"Encoder {enc_idx} - {pattern_names.get(pattern_id, f'Pattern {pattern_id}')} - Evaluation",
                     encoder_labels=[f"Encoder {enc_idx}"],
                     encoder_indices=[enc_idx],
                     pattern_id=pattern_id,
