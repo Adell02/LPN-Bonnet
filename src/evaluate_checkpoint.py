@@ -777,6 +777,20 @@ def evaluate_custom_dataset(
                         payload["es_final_best_fitness"] = np.array(traj["final_best_fitness"])  # negative of loss
                     elif "final_best_accuracy" in traj:  # Fallback for old key names
                         payload["es_final_best_accuracy"] = np.array(traj["final_best_accuracy"])    
+            else:
+                # DEBUG: Log what's actually in info0 for evolutionary search
+                if isinstance(info0, dict):
+                    print(f"[store_latents] DEBUG: info0 keys for ES: {list(info0.keys())}")
+                    if "evolutionary_trajectory" not in info0:
+                        print(f"[store_latents] DEBUG: evolutionary_trajectory NOT found in info0")
+                        # Check if there are any other trajectory-related keys
+                        traj_keys = [k for k in info0.keys() if 'trajectory' in k.lower() or 'evolutionary' in k.lower()]
+                        if traj_keys:
+                            print(f"[store_latents] DEBUG: Found potential trajectory keys: {traj_keys}")
+                        else:
+                            print(f"[store_latents] DEBUG: No trajectory keys found in info0")
+                else:
+                    print(f"[store_latents] DEBUG: info0 is not a dict, type: {type(info0)}")
 
             # Save compressed
             if not payload:

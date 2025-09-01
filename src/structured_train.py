@@ -306,14 +306,14 @@ class StructuredTrainer:
 
         # Training/eval datasets - Use task generator like train.py for on-the-fly generation
         if cfg.training.get("struct_patterns_balanced", False):
-            # Use task generator for on-the-fly sample generation (like train.py)
-            logging.info("Using task generator for on-the-fly sample generation (like train.py)")
+            # Use task generator for on-the-fly sample generation with FIXED pattern separation
+            logging.info("Using task generator for on-the-fly sample generation with FIXED pattern separation")
             self.task_generator = True
             self.task_generator_kwargs = {
                 "num_workers": cfg.training.get("num_workers", 4),
                 "num_pairs": int(cfg.training.get("struct_num_pairs", 4)),
                 "class": "STRUCT_PATTERN",
-                "pattern": 0,  # pattern=0 mixes all 3 patterns uniformly
+                "pattern": 1,  # FIXED: Use pattern 1 as base (will be overridden per pattern in _create_balanced_pattern_batch)
                 "pattern_per_task": True,
                 "num_rows": 5,
                 "num_cols": 5,
@@ -833,12 +833,15 @@ class StructuredTrainer:
         This ensures each batch contains exactly the same number of samples from each pattern,
         which is crucial for proper contrastive loss computation.
         
+        FIXED: Now generates NEW data every batch while maintaining strict pattern control.
+        Each encoder gets samples from its target pattern with fresh data every batch.
+        
         Args:
             batch_size: Total batch size (must be divisible by 3)
             samples_per_pattern: Number of samples per pattern per batch
             
         Returns:
-            Tuple of (grids_list, shapes_list) with balanced pattern distribution
+            Tuple of (grids, shapes, pattern_ids) with balanced pattern distribution
         """
         if batch_size % 3 != 0:
             raise ValueError(f"Batch size {batch_size} must be divisible by 3 for uniform pattern distribution")
@@ -852,6 +855,10 @@ class StructuredTrainer:
             # Use make_task_gen_dataloader directly since make_dataset doesn't support STRUCT_PATTERN
             from datasets.task_gen.dataloader import make_task_gen_dataloader
             
+            # CRITICAL FIX: Use unique seed for each pattern AND batch
+            # This ensures new data every batch while maintaining pattern separation
+            pattern_seed = self.cfg.training.seed + (pattern_id * 1000) + (self._batch_counter if hasattr(self, '_batch_counter') else 0) * 10000
+            
             # Create dataloader for this specific pattern
             dataloader = make_task_gen_dataloader(
                 batch_size=1,
@@ -860,9 +867,9 @@ class StructuredTrainer:
                 task_generator_class="STRUCT_PATTERN",
                 num_pairs=self.task_generator_kwargs["num_pairs"],
                 online_data_augmentation=self.cfg.training.online_data_augmentation,
-                seed=self.cfg.training.seed + pattern_id + (self._batch_counter if hasattr(self, '_batch_counter') else 0),
-                pattern=pattern_id,  # Specific pattern
-                pattern_per_task=True,
+                seed=pattern_seed,  # FIXED: Unique seed per pattern per batch
+                pattern=pattern_id,  # FIXED: Specific pattern (not 0)
+                pattern_per_task=True,  # FIXED: Ensure consistent pattern per task
                 num_rows=self.task_generator_kwargs.get("num_rows", 5),
                 num_cols=self.task_generator_kwargs.get("num_cols", 5),
             )
@@ -903,6 +910,7 @@ class StructuredTrainer:
         # DEBUG: Log the final concatenated shapes and pattern alignment
         logging.debug(f"Final balanced batch - grids shape: {balanced_grids.shape}, shapes shape: {balanced_shapes.shape}")
         logging.debug(f"Pattern IDs: {pattern_ids[:10]}... (first 10) - should be [1,1,1,...,2,2,2,...,3,3,3,...]")
+        logging.debug(f"Batch {self._batch_counter if hasattr(self, '_batch_counter') else 0}: Generated NEW data with pattern separation maintained")
         
         # Increment batch counter for different seeds
         if not hasattr(self, '_batch_counter'):
@@ -4422,6 +4430,8 @@ class StructuredTrainer:
                 start = time.time()
                 
                 # CRITICAL: Extract explicit pattern IDs from balanced dataloader
+                # FIXED: Each batch now generates NEW data while maintaining strict pattern separation
+                # Encoder 0 gets pattern 1, Encoder 1 gets pattern 2, Encoder 2 gets pattern 3
                 if hasattr(self, 'task_generator') and self.task_generator:
                     # Balanced dataloader provides (grids, shapes, pattern_ids)
                     if len(batches) == 3:
