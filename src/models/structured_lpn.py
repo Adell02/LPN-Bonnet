@@ -494,35 +494,25 @@ class StructuredLPN(nn.Module):
         pattern_ids: chex.Array,
         contrastive_kl_coeff: float = 1.0,  # Add configurable coefficient
     ) -> chex.Array:
-        """Compute direct variance control loss for encoder specialization.
+        """Simple variance calibration for pre-trained encoders.
         
-        This loss directly controls the variance of each encoder:
-        - Target pattern: variance → 0 (high certainty)
-        - Other patterns: variance → ∞ (low certainty)
+        Since encoders are already specialized from pre-training (leave-one-out approach),
+        we just need to calibrate their variance behavior:
+        - Reduce variance on their trained pattern (increase confidence)
+        - Increase variance on untrained patterns (decrease confidence)
         
-        The loss function is now per-encoder weighted:
-        L_total = Σ_e [λ_pos * avg_var_target_e + λ_neg * avg_var_other_e]
-        
-        Where for each encoder e:
-        - avg_var_target_e: average variance of target pattern samples for encoder e
-        - avg_var_other_e: average variance of non-target pattern samples for encoder e
-        - λ_pos: coefficient for target pattern variance (positive = minimize target variance)
-        - λ_neg: coefficient for other pattern variance (negative = maximize other variance)
-        
-        This encourages:
-        - Encoder e to have LOW variance (high certainty) on pattern p_e
-        - Encoder e to have HIGH variance (low certainty) on other patterns
+        This is much simpler than trying to re-learn specialization!
         
         Args:
-            mus: (E, B, N, H) - means from each encoder (not used in this implementation)
+            mus: (E, B, N, H) - means from each encoder
             logvars: (E, B, N, H) - log variances from each encoder  
             mu_poe: (B, N, H) - mean from PoE aggregation (not used)
             logvar_poe: (B, N, H) - log variance from PoE aggregation (not used)
             pattern_ids: (B,) - pattern ID for each sample in batch (1, 2, or 3)
-            contrastive_kl_coeff: float - scaling coefficient for the contrastive loss
+            contrastive_kl_coeff: float - scaling coefficient for variance calibration
             
         Returns:
-            variance_loss: scalar - encourages encoder specialization through direct variance control
+            variance_loss: scalar - encourages variance calibration
             avg_var_target: scalar - average target pattern variance across all encoders
             avg_var_other: scalar - average other pattern variance across all encoders
         """
@@ -535,8 +525,7 @@ class StructuredLPN(nn.Module):
         # CRITICAL: Validate pattern IDs
         unique_patterns = jnp.unique(pattern_ids)
         if len(unique_patterns) < 2:
-            # Need at least 2 patterns for contrastive learning to work
-            logging.warning(f"Variance control loss requires at least 2 patterns, got {len(unique_patterns)}")
+            logging.warning(f"Variance calibration requires at least 2 patterns, got {len(unique_patterns)}")
             return 0.0, 0.0, 0.0
         
         # Convert log variances to variances
@@ -562,26 +551,33 @@ class StructuredLPN(nn.Module):
         avg_var_other = jnp.where(other_count > 0, other_var_sum / other_count, 0.0)  # (E,)
         
         # STABILIZATION: Clip variances to prevent extreme values
-        # This prevents numerical instability while maintaining the contrastive effect
         clip_threshold = 10.0
         avg_var_target = jnp.clip(avg_var_target, 0.0, clip_threshold)
         avg_var_other = jnp.clip(avg_var_other, 0.0, clip_threshold)
         
-        # IMPROVED: Per-encoder weighted loss instead of global averaging
-        # This provides stronger specialization pressure for each individual encoder
+        # SIMPLE APPROACH: Just encourage the natural specialization that already exists
+        # Since encoders are pre-trained, we just need to amplify their variance differences
         
-        # Dynamic coefficients based on contrastive_kl_coeff
-        # Higher values = more aggressive specialization
-        lambda_pos = contrastive_kl_coeff * 0.5   # Positive coefficient for target variance (minimize)
-        lambda_neg = -contrastive_kl_coeff * 0.5  # Negative coefficient for other variance (maximize)
+        # Loss: encourage target variance to be lower than other variance
+        # This is just fine-tuning, not re-learning specialization
         
-        # Per-encoder loss: each encoder gets its own specialization signal
-        per_encoder_loss = lambda_pos * avg_var_target + lambda_neg * avg_var_other  # (E,)
+        # Simple ratio-based loss: target_var / other_var should be < 1
+        variance_ratio = avg_var_target / (avg_var_other + 1e-8)  # (E,)
         
-        # Total loss: sum across encoders (not average) for stronger pressure
+        # We want ratio < 1, so loss = max(0, ratio - 0.5)
+        # This encourages target variance to be at least 2x lower than other variance
+        target_ratio = 0.5  # Target variance should be 2x lower than other variance
+        
+        # Per-encoder loss: encourage each encoder to maintain its specialization
+        per_encoder_loss = jnp.maximum(0.0, variance_ratio - target_ratio)  # (E,)
+        
+        # Total loss: sum across encoders
         variance_loss = jnp.sum(per_encoder_loss)
         
-        # Return metrics for monitoring (averaged for logging purposes)
+        # Scale by coefficient
+        variance_loss = contrastive_kl_coeff * variance_loss
+        
+        # Return metrics for monitoring
         return variance_loss, jnp.mean(avg_var_target), jnp.mean(avg_var_other)
 
 
