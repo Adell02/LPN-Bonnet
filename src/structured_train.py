@@ -1336,25 +1336,20 @@ class StructuredTrainer:
                 # FIXED: Contrastive loss: minimize target variance, maximize other variance
                 # We want: target_var << other_var (target pattern gets high confidence, others get low confidence)
                 
-                # Dynamic coefficient adjustment based on specialization progress
-                base_coeff = self.cfg.training.get("contrastive_kl", 1e-3)
-                current_specialization_ratio = avg_target_var / (avg_other_var + 1e-8)
+                # Use the same corrected coefficients as in StructuredLPN model
+                lambda_pos = -1.0  # Negative coefficient for target variance (minimize)
+                lambda_neg = 1.0   # Positive coefficient for other variance (maximize)
                 
-                # If specialization is poor, increase coefficient
-                if current_specialization_ratio > 1.0:
-                    # Target variance is HIGHER than other variance (bad!)
-                    dynamic_coeff = base_coeff * 10.0  # Increase coefficient aggressively
-                    logging.debug(f"       Poor specialization detected (ratio: {current_specialization_ratio:.3f}), increasing coefficient to {dynamic_coeff:.6f}")
-                elif current_specialization_ratio > 0.8:
-                    # Target variance is only slightly lower than other variance
-                    dynamic_coeff = base_coeff * 5.0  # Increase coefficient moderately
-                    logging.debug(f"       Weak specialization detected (ratio: {current_specialization_ratio:.3f}), increasing coefficient to {dynamic_coeff:.6f}")
-                else:
-                    # Good specialization, use base coefficient
-                    dynamic_coeff = base_coeff
-                    logging.debug(f"       Good specialization (ratio: {current_specialization_ratio:.3f}), using base coefficient {dynamic_coeff:.6f}")
+                contrastive_loss = lambda_pos * avg_target_var + lambda_neg * avg_other_var
                 
-                contrastive_loss = avg_target_var + dynamic_coeff * (1.0 / (avg_other_var + 1e-8))
+                # Log contrastive loss components for debugging
+                if step % 10 == 0:
+                    logging.info(f"         Contrastive Loss Components:")
+                    logging.info(f"           - Target variance: {float(avg_target_var):.6f} (should decrease)")
+                    logging.info(f"           - Other variance: {float(avg_other_var):.6f} (should increase)")
+                    logging.info(f"           - Target term: {float(lambda_pos * avg_target_var):.6f}")
+                    logging.info(f"           - Other term: {float(lambda_neg * avg_other_var):.6f}")
+                    logging.info(f"           - Total contrastive loss: {float(contrastive_loss):.6f}")
                 
                 # Add regularization to prevent extreme values
                 reg_loss = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
@@ -1399,21 +1394,12 @@ class StructuredTrainer:
                     avg_target_var = jnp.mean(target_var)
                     avg_other_var = jnp.mean(other_var)
                     
-                    # Loss: target_var + coefficient * (1/other_var) 
-                    # This drives target_var DOWN and other_var UP
+                    # FIXED: Loss: minimize target variance, maximize other variance
+                    # Use the same corrected coefficients as in StructuredLPN model
+                    lambda_pos = -1.0  # Negative coefficient for target variance (minimize)
+                    lambda_neg = 1.0   # Positive coefficient for other variance (maximize)
                     
-                    # Use the same dynamic coefficient logic
-                    base_coeff = self.cfg.training.get("contrastive_kl", 1e-3)
-                    current_specialization_ratio = avg_target_var / (avg_other_var + 1e-8)
-                    
-                    if current_specialization_ratio > 1.0:
-                        dynamic_coeff = base_coeff * 10.0
-                    elif current_specialization_ratio > 0.8:
-                        dynamic_coeff = base_coeff * 5.0
-                    else:
-                        dynamic_coeff = base_coeff
-                    
-                    loss = avg_target_var + dynamic_coeff * (1.0 / (avg_other_var + 1e-8))
+                    loss = lambda_pos * avg_target_var + lambda_neg * avg_other_var
                     
                     # Add regularization
                     reg = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
