@@ -61,11 +61,11 @@ training:
   pairwise_kl_coeff: null
   total_num_steps: 200
   encoder_expose_steps: 400  # number of initial gradient steps encoders are trainable
-  repulsion_kl: 0
+  repulsion_kl: 0.1  # Not needed for variance differences
   # This coefficient controls the strength of contrastive loss
   # Lower values = more stable, higher values = more aggressive specialization
   # The system will dynamically adjust this coefficient based on specialization progress
-  contrastive_kl: 5.0  # variance calibration for pre-trained encoders (moderate strength)
+  contrastive_kl: 10.0  # variance amplification for pre-trained encoders (stronger amplification)
   log_every_n_steps: 5
   eval_every_n_logs: 5       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable

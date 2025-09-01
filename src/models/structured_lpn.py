@@ -494,14 +494,12 @@ class StructuredLPN(nn.Module):
         pattern_ids: chex.Array,
         contrastive_kl_coeff: float = 1.0,  # Add configurable coefficient
     ) -> chex.Array:
-        """Simple variance calibration for pre-trained encoders.
+        """Amplify existing variance differences for pre-trained encoders.
         
         Since encoders are already specialized from pre-training (leave-one-out approach),
-        we just need to calibrate their variance behavior:
-        - Reduce variance on their trained pattern (increase confidence)
-        - Increase variance on untrained patterns (decrease confidence)
+        they naturally have lower variance on their trained patterns and higher variance on others.
         
-        This is much simpler than trying to re-learn specialization!
+        This loss just AMPLIFIES those existing differences rather than forcing new ones.
         
         Args:
             mus: (E, B, N, H) - means from each encoder
@@ -509,10 +507,10 @@ class StructuredLPN(nn.Module):
             mu_poe: (B, N, H) - mean from PoE aggregation (not used)
             logvar_poe: (B, N, H) - log variance from PoE aggregation (not used)
             pattern_ids: (B,) - pattern ID for each sample in batch (1, 2, or 3)
-            contrastive_kl_coeff: float - scaling coefficient for variance calibration
+            contrastive_kl_coeff: float - scaling coefficient for variance amplification
             
         Returns:
-            variance_loss: scalar - encourages variance calibration
+            variance_loss: scalar - encourages amplification of existing variance differences
             avg_var_target: scalar - average target pattern variance across all encoders
             avg_var_other: scalar - average other pattern variance across all encoders
         """
@@ -525,7 +523,7 @@ class StructuredLPN(nn.Module):
         # CRITICAL: Validate pattern IDs
         unique_patterns = jnp.unique(pattern_ids)
         if len(unique_patterns) < 2:
-            logging.warning(f"Variance calibration requires at least 2 patterns, got {len(unique_patterns)}")
+            logging.warning(f"Variance amplification requires at least 2 patterns, got {len(unique_patterns)}")
             return 0.0, 0.0, 0.0
         
         # Convert log variances to variances
@@ -555,21 +553,19 @@ class StructuredLPN(nn.Module):
         avg_var_target = jnp.clip(avg_var_target, 0.0, clip_threshold)
         avg_var_other = jnp.clip(avg_var_other, 0.0, clip_threshold)
         
-        # SIMPLE APPROACH: Just encourage the natural specialization that already exists
-        # Since encoders are pre-trained, we just need to amplify their variance differences
+        # SIMPLE APPROACH: Amplify existing variance differences
+        # Since encoders are pre-trained, target variance should already be < other variance
+        # We just want to make this difference bigger
         
-        # Loss: encourage target variance to be lower than other variance
-        # This is just fine-tuning, not re-learning specialization
+        # Loss: encourage target variance to become even lower relative to other variance
+        # This amplifies the existing specialization rather than forcing new specialization
         
-        # Simple ratio-based loss: target_var / other_var should be < 1
-        variance_ratio = avg_var_target / (avg_var_other + 1e-8)  # (E,)
+        # Simple amplification loss: make target variance even smaller
+        # We want target_var << other_var, so loss = target_var (minimize target variance)
+        # This will naturally make the difference bigger
         
-        # We want ratio < 1, so loss = max(0, ratio - 0.5)
-        # This encourages target variance to be at least 2x lower than other variance
-        target_ratio = 0.5  # Target variance should be 2x lower than other variance
-        
-        # Per-encoder loss: encourage each encoder to maintain its specialization
-        per_encoder_loss = jnp.maximum(0.0, variance_ratio - target_ratio)  # (E,)
+        # Per-encoder loss: each encoder reduces variance on its target pattern
+        per_encoder_loss = avg_var_target  # (E,) - minimize target variance
         
         # Total loss: sum across encoders
         variance_loss = jnp.sum(per_encoder_loss)
