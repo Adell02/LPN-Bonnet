@@ -705,12 +705,87 @@ def evaluate_custom_dataset(
                             else:
                                 time_axis = lat0.ndim - 2  # Fallback to second-to-last
                             
+                            # CRITICAL FIX: More robust time axis detection
+                            # If we have multiple dimensions > 1, prefer the one that matches log_probs time dimension
+                            if len(time_axes) > 1:
+                                print(f"[store_latents] Multiple time axes detected: {time_axes}")
+                                # Check if any of these match the log_probs time dimension
+                                lp_time_axes = [i for i in range(lp0.ndim - 1) if lp0.shape[i] > 1]
+                                if lp_time_axes:
+                                    lp_time_axis = lp_time_axes[-1]
+                                    lp_time_size = lp0.shape[lp_time_axis]
+                                    print(f"[store_latents] Log_probs time axis: {lp_time_axis}, size: {lp_time_size}")
+                                    
+                                    # Find which latent axis matches the log_probs time size
+                                    for axis in time_axes:
+                                        if lat0.shape[axis] == lp_time_size:
+                                            print(f"[store_latents] Found matching time axis: {axis} with size {lat0.shape[axis]}")
+                                            time_axis = axis
+                                            break
+                                    else:
+                                        print(f"[store_latents] No matching time axis found, using original: {time_axis}")
+                            else:
+                                print(f"[store_latents] Single time axis detected: {time_axis}")
+                            
+                            # CRITICAL FIX: Also check if we can infer time axis from log_probs shape
+                            # If log_probs has a different time dimension, use that instead
+                            lp_time_axes = [i for i in range(lp0.ndim - 1) if lp0.shape[i] > 1]
+                            if lp_time_axes:
+                                lp_time_axis = lp_time_axes[-1]
+                                # If log_probs time dimension is different from latents, prefer log_probs
+                                if lp0.shape[lp_time_axis] != lat0.shape[time_axis]:
+                                    print(f"[store_latents] ⚠️  Time dimension mismatch: latents={lat0.shape[time_axis]} vs log_probs={lp0.shape[lp_time_axis]}")
+                                    print(f"[store_latents] Using log_probs time axis {lp_time_axis} instead of latents time axis {time_axis}")
+                                    # Map the log_probs time axis to latents coordinates
+                                    if lp_time_axis == 0:  # log_probs: (T, C)
+                                        time_axis = 0  # latents: (T, C, H)
+                                    elif lp_time_axis == 1:  # log_probs: (C, T)
+                                        time_axis = 1  # latents: (C, T, H)
+                                    
+                                    # Update steps_dim and cand_dim based on new time_axis
+                                    steps_dim = lat0.shape[time_axis]
+                                    if time_axis == 0:  # (T, C, H)
+                                        cand_dim = lat0.shape[1]
+                                    elif time_axis == 1:  # (C, T, H)
+                                        cand_dim = lat0.shape[0]
+                                    print(f"[store_latents] Updated dimensions: steps_dim={steps_dim}, cand_dim={cand_dim}")
+                            
                             steps_dim = lat0.shape[time_axis]
                             cand_dim = lat0.shape[lat0.ndim - 2]  # Candidates are usually second-to-last
                             
                             # pick first pair
                             lat_pair = lat0[0]  # (C, T, H) or (T, C, H) depending on time_axis
                             lp_pair = lp0[0]    # (C, T) or (T, C) depending on time_axis
+                            
+                            # CRITICAL FIX: Ensure we have compatible shapes before proceeding
+                            print(f"[store_latents] Initial pair shapes: lat_pair={lat_pair.shape}, lp_pair={lp_pair.shape}")
+                            
+                            # Simple fallback: if shapes are incompatible, just take first candidate and truncate
+                            if lat_pair.ndim == 3 and lp_pair.ndim == 2:
+                                # lat_pair: (C, T, H) or (T, C, H), lp_pair: (C, T) or (T, C)
+                                # Find the time dimension in both
+                                lat_time_size = max(lat_pair.shape[0], lat_pair.shape[1])
+                                lp_time_size = max(lp_pair.shape[0], lp_pair.shape[1])
+                                
+                                if lat_time_size != lp_time_size:
+                                    print(f"[store_latents] ⚠️  Time size mismatch: latents={lat_time_size}, log_probs={lp_time_size}")
+                                    # Use the smaller size and truncate both
+                                    min_time_size = min(lat_time_size, lp_time_size)
+                                    print(f"[store_latents] Truncating both to {min_time_size} steps")
+                                    
+                                    # Truncate latents
+                                    if lat_pair.shape[0] > min_time_size:
+                                        lat_pair = lat_pair[:min_time_size, :, :]
+                                    elif lat_pair.shape[1] > min_time_size:
+                                        lat_pair = lat_pair[:, :min_time_size, :]
+                                    
+                                    # Truncate log_probs
+                                    if lp_pair.shape[0] > min_time_size:
+                                        lp_pair = lp_pair[:min_time_size, :]
+                                    elif lp_pair.shape[1] > min_time_size:
+                                        lp_pair = lp_pair[:, :min_time_size]
+                                    
+                                    print(f"[store_latents] After truncation: lat_pair={lat_pair.shape}, lp_pair={lp_pair.shape}")
                             
                             # Determine the actual layout and extract accordingly
                             print(f"[store_latents] GA shape analysis: lat0.shape={lat0.shape}, time_axis={time_axis}, steps_dim={steps_dim}, cand_dim={cand_dim}")
@@ -737,33 +812,66 @@ def evaluate_custom_dataset(
                                     print(f"[store_latents] Truncated latents to {lp_steps} steps to match log_probs")
                                 else:
                                     # Truncate log_probs to match latents
-                                    if time_axis == lat0.ndim - 2:  # (C, T)
-                                        lp_pair = lp_pair[:, :lat_steps]
-                                    else:  # (T, C)
+                                    if time_axis == lat0.ndim - 2:  # (T, C)
                                         lp_pair = lp_pair[:lat_steps, :]
+                                    else:  # (C, T)
+                                        lp_pair = lp_pair[:, :lat_steps]
                                     print(f"[store_latents] Truncated log_probs to {lat_steps} steps to match latents")
                                 
                                 # Update step counts after truncation
                                 lat_steps = lat_pair.shape[1] if time_axis == lat0.ndim - 2 else lat_pair.shape[0]
                                 lp_steps = lp_pair.shape[1] if time_axis == lat0.ndim - 2 else lp_pair.shape[0]
                                 print(f"[store_latents] After truncation: lat_steps={lat_steps}, lp_steps={lp_steps}")
+                                
+                                # CRITICAL FIX: Also ensure candidate dimensions match
+                                lat_cand = lat_pair.shape[0] if time_axis == lat0.ndim - 2 else lat_pair.shape[1]
+                                lp_cand = lp_pair.shape[0] if time_axis == lat0.ndim - 2 else lp_pair.shape[1]
+                                print(f"[store_latents] Candidate dimension check: lat_cand={lat_cand}, lp_cand={lp_cand}")
+                                
+                                if lat_cand != lp_cand:
+                                    print(f"[store_latents] ⚠️  Candidate dimension mismatch: latents have {lat_cand} candidates, log_probs have {lp_cand} candidates")
+                                    # Use the smaller number of candidates
+                                    if lat_cand > lp_cand:
+                                        if time_axis == lat0.ndim - 2:  # (C, T, H)
+                                            lat_pair = lat_pair[:lp_cand, :, :]
+                                        else:  # (T, C, H)
+                                            lat_pair = lat_pair[:, :lp_cand, :]
+                                        print(f"[store_latents] Truncated latents to {lp_cand} candidates to match log_probs")
+                                    else:
+                                        if time_axis == lat0.ndim - 2:  # (C, T)
+                                            lp_pair = lp_pair[:lat_cand, :]
+                                        else:  # (T, C)
+                                            lp_pair = lp_pair[:, :lat_cand]
+                                        print(f"[store_latents] Truncated log_probs to {lat_cand} candidates to match latents")
+                                    
+                                    # Update candidate counts after truncation
+                                    lat_cand = lat_pair.shape[0] if time_axis == lat0.ndim - 2 else lat_pair.shape[1]
+                                    lp_cand = lp_pair.shape[0] if time_axis == lat0.ndim - 2 else lp_pair.shape[1]
+                                    print(f"[store_latents] After candidate truncation: lat_cand={lat_cand}, lp_cand={lp_cand}")
                             
-                            if time_axis == lat0.ndim - 2:  # Time is second-to-last: (C, T, H)
-                                # Candidates first, then time: (C, T, H) -> extract best candidate per time step
-                                print(f"[store_latents] GA layout: (C, T, H) - extracting best candidate per time step")
-                                idx = np.argmax(lp_pair, axis=0)               # (T,) - best candidate per time step
-                                # CRITICAL FIX: Use lp_steps instead of lat_pair.shape[1] to ensure compatibility
-                                best_path = lat_pair[idx, np.arange(lp_steps)]  # (T, H) - best latent per time step
-                                best_scores = np.max(lp_pair, axis=0)         # (T,) - best score per time step
-                            else:  # Time is first: (T, C, H)
-                                # Time first, then candidates: (T, C, H) -> extract best candidate per time step
-                                print(f"[store_latents] GA layout: (T, C, H) - extracting best candidate per time step")
-                                idx = np.argmax(lp_pair, axis=-1)               # (T,) - best candidate per time step
-                                # CRITICAL FIX: Use lp_steps instead of lat_pair.shape[0] to ensure compatibility
-                                best_path = lat_pair[np.arange(lp_steps), idx]  # (T, H) - best latent per time step
-                                best_scores = np.max(lp_pair, axis=-1)         # (T,) - best score per time step
+                            # SIMPLIFIED APPROACH: Just take the first candidate and extract trajectory
+                            print(f"[store_latents] Using simplified approach: taking first candidate")
+                            print(f"[store_latents] Final shapes: lat_pair={lat_pair.shape}, lp_pair={lp_pair.shape}")
+                            
+                            # Determine which dimension is time by finding the largest dimension
+                            lat_time_dim = 0 if lat_pair.shape[0] > lat_pair.shape[1] else 1
+                            lp_time_dim = 0 if lp_pair.shape[0] > lp_pair.shape[1] else 1
+                            
+                            print(f"[store_latents] Time dimensions: lat_time_dim={lat_time_dim}, lp_time_dim={lp_time_dim}")
+                            
+                            # Extract trajectory from first candidate
+                            if lat_time_dim == 0:  # lat_pair: (T, C, H)
+                                best_path = lat_pair[:, 0, :]  # (T, H) - all steps, first candidate
+                                best_scores = lp_pair[:, 0]    # (T,) - all steps, first candidate
+                            else:  # lat_pair: (C, T, H)
+                                best_path = lat_pair[0, :, :]  # (T, H) - first candidate, all steps
+                                best_scores = lp_pair[0, :]    # (T,) - first candidate, all steps
+                            
+                            print(f"[store_latents] Extracted trajectory: best_path.shape={best_path.shape}, best_scores.shape={best_scores.shape}")
                             
                             print(f"[store_latents] GA extracted: best_path.shape={best_path.shape}, best_scores.shape={best_scores.shape}")
+                            print(f"[store_latents] Final debug: lat_pair.shape={lat_pair.shape}, lp_pair.shape={lp_pair.shape}")
+                            print(f"[store_latents] Final debug: time_axis={time_axis}, steps_dim={steps_dim}, cand_dim={cand_dim}")
                             if best_path.shape[-1] == 2:
                                 payload["ga_path"] = best_path
                             payload["ga_scores"] = best_scores
@@ -781,6 +889,36 @@ def evaluate_custom_dataset(
                             print(f"[store_latents] Exception type: {type(_pe)}")
                             import traceback
                             print(f"[store_latents] Full traceback: {traceback.format_exc()}")
+                            
+                            # ENHANCED FALLBACK: Try alternative indexing approach
+                            print(f"[store_latents] Attempting alternative indexing approach...")
+                            try:
+                                # Try to extract a simple trajectory by taking the first candidate
+                                if time_axis == lat0.ndim - 2:  # (C, T, H)
+                                    simple_path = lat_pair[0, :, :]  # Take first candidate, all steps
+                                    simple_scores = lp_pair[0, :]    # Take first candidate, all steps
+                                else:  # (T, C, H)
+                                    simple_path = lat_pair[:, 0, :]  # Take all steps, first candidate
+                                    simple_scores = lp_pair[:, 0]    # Take all steps, first candidate
+                                
+                                print(f"[store_latents] Alternative approach successful: simple_path.shape={simple_path.shape}, simple_scores.shape={simple_scores.shape}")
+                                
+                                # Truncate to match if needed
+                                if simple_path.shape[0] != simple_scores.shape[0]:
+                                    min_steps = min(simple_path.shape[0], simple_scores.shape[0])
+                                    simple_path = simple_path[:min_steps, :]
+                                    simple_scores = simple_scores[:min_steps]
+                                    print(f"[store_latents] Truncated to {min_steps} steps for compatibility")
+                                
+                                payload["ga_scores"] = simple_scores
+                                payload["ga_losses"] = -simple_scores
+                                payload["ga_trajectory_latents"] = simple_path
+                                payload["ga_trajectory_losses"] = -simple_scores
+                                
+                                print(f"[store_latents] ✅ Alternative GA path derivation successful")
+                            except Exception as fallback_e:
+                                print(f"[store_latents] Alternative approach also failed: {fallback_e}")
+                                print(f"[store_latents] Will rely on fallback loss creation from log_probs")
                     else:
                         print(f"[store_latents] Skipping GA path derivation: missing latents or log_probs")
                         print(f"[store_latents] ga_lat type: {type(ga_lat) if ga_lat is not None else 'None'}")

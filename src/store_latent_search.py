@@ -1786,9 +1786,11 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Add dashed vertical lines where each method achieves accuracy = 1
     print(f"[loss] Adding accuracy = 1 markers...")
     
-    # Debug: show what keys are available for accuracy = 1 detection
+        # Debug: show what keys are available for accuracy = 1 detection
     print(f"[loss] Debug: Checking for accuracy = 1 markers...")
     print(f"[loss] Debug: dataset_length = {dataset_length}")
+    print(f"[loss] Debug: GA NPZ path: {ga_npz_path}")
+    print(f"[loss] Debug: ES NPZ path: {es_npz_path}")
     
     # Function to find first budget where accuracy = 1
     def find_first_accuracy_one(accuracies, budget_points, method_name):
