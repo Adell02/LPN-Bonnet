@@ -888,7 +888,8 @@ class LPN(nn.Module):
             try:
                 # FIXED: Use the original latents before reshaping for initial mean
                 # The original latents are the starting point for gradient ascent
-                original_latents = latents[..., :all_latents.shape[-2], :]  # Get back to original shape
+                # FIX: Extract only the first step (initial latents), not all_latents.shape[-2] steps
+                original_latents = latents[..., :1, :]  # Get back to original shape (just the initial step)
                 
                 # Get initial log probs for the starting latents
                 initial_log_probs = vmap_log_probs_fn(original_latents, input_seq, output_seq, self.decoder)
