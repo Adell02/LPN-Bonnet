@@ -2257,7 +2257,7 @@ def main():
                                         print(f"   Method B: {args.plot_methods[1]}")
                                         
                                         try:
-                                            # Use the specialized loss difference visualization with log scaling
+                                            # Use the specialized loss difference visualization (raw delta)
                                             from visualization import visualize_loss_difference_heatmap
                                             fig = visualize_loss_difference_heatmap(
                                                 steps=np.array(all_steps),
@@ -2628,9 +2628,9 @@ def main():
                     # Create plot with selected methods
                     if len(args.plot_methods) == 2:
                         if args.loss:
-                            # Loss difference plotting: show difference between methods with log scaling
+                            # Loss difference plotting: show difference between methods (raw delta)
                             # For loss, lower is better, so we show method_B - method_A (positive = method_A better)
-                            # This creates a n_checkpoints × n_budgets matrix showing log-scaled loss differences
+                            # This creates a n_checkpoints × n_budgets matrix showing raw loss differences (delta)
                             # where positive values = method_A (GA) better, negative = method_B (ES) better
                             loss_diff = method_arrays[args.plot_methods[1]] - method_arrays[args.plot_methods[0]]
                             
@@ -2642,7 +2642,7 @@ def main():
                             print(f"   Method B: {args.plot_methods[1]}")
                             
                             try:
-                                # Use the new specialized loss difference visualization with log scaling
+                                # Use the new specialized loss difference visualization (raw delta)
                                 from visualization import visualize_loss_difference_heatmap
                                 fig = visualize_loss_difference_heatmap(
                                     steps=np.array(steps_sorted),
