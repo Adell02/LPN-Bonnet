@@ -3573,7 +3573,7 @@ class StructuredTrainer:
             if sample_distances:
                 sample_array = jnp.stack(sample_distances)
                 adaptive_margin = jnp.maximum(1.0, jnp.min(sample_array) * 0.8)
-                jax.debug.print("   - Adaptive margin computed: {m:.3f}", m=adaptive_margin)
+                jax.debug.print("   - Adaptive margin computed: {m}", m=adaptive_margin)
                 margin = adaptive_margin
         
         if not target_latents_store or current_encoder_idx == 0:
@@ -3608,9 +3608,11 @@ class StructuredTrainer:
                             
                             # Compute L2 distance between current and target latents
                             distances = jnp.linalg.norm(current_latents - target_latents, axis=1)
-                            jax.debug.print("         * Distances shape: {shape}, mean: {mean:.6f}",
-                                             shape=distances.shape,
-                                             mean=jnp.mean(distances))
+                            jax.debug.print(
+                                "         * Distances shape: {shape}, mean: {mean}",
+                                shape=distances.shape,
+                                mean=jnp.mean(distances),
+                            )
                             
                             # Repulsion loss: penalize when distance < margin
                             # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2^2)
@@ -3623,9 +3625,15 @@ class StructuredTrainer:
                             # Use the maximum of both approaches
                             final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)  # Scale soft term down
                             
-                            jax.debug.print("         * Repulsion term: {rt:.6f}", rt=repulsion_term)
-                            jax.debug.print("         * Soft repulsion term: {srt:.6f}", srt=soft_repulsion_term)
-                            jax.debug.print("         * Final repulsion term: {frt:.6f}", frt=final_repulsion_term)
+                            jax.debug.print("         * Repulsion term: {rt}", rt=repulsion_term)
+                            jax.debug.print(
+                                "         * Soft repulsion term: {srt}",
+                                srt=soft_repulsion_term,
+                            )
+                            jax.debug.print(
+                                "         * Final repulsion term: {frt}",
+                                frt=final_repulsion_term,
+                            )
                             
                             repulsion_loss += final_repulsion_term
                             num_repulsion_terms += 1
@@ -3651,7 +3659,7 @@ class StructuredTrainer:
 
                                 distances = jnp.linalg.norm(current_latents - resized_target_latents, axis=1)
                                 jax.debug.print(
-                                    "         * Resized distances shape: {shape}, mean: {mean:.6f}",
+                                    "         * Resized distances shape: {shape}, mean: {mean}",
                                     shape=distances.shape,
                                     mean=jnp.mean(distances),
                                 )
@@ -3660,10 +3668,16 @@ class StructuredTrainer:
                                 soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))
                                 final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)
 
-                                jax.debug.print("         * Resized repulsion term: {rt:.6f}", rt=repulsion_term)
-                                jax.debug.print("         * Resized soft repulsion term: {srt:.6f}", srt=soft_repulsion_term)
                                 jax.debug.print(
-                                    "         * Resized final repulsion term: {frt:.6f}",
+                                    "         * Resized repulsion term: {rt}",
+                                    rt=repulsion_term,
+                                )
+                                jax.debug.print(
+                                    "         * Resized soft repulsion term: {srt}",
+                                    srt=soft_repulsion_term,
+                                )
+                                jax.debug.print(
+                                    "         * Resized final repulsion term: {frt}",
                                     frt=final_repulsion_term,
                                 )
 
@@ -3684,9 +3698,14 @@ class StructuredTrainer:
         # Average over all repulsion terms
         if num_repulsion_terms > 0:
             repulsion_loss = repulsion_loss / num_repulsion_terms
-            jax.debug.print("   - Final repulsion loss: {loss:.6f} (from {n} terms)",
-                            loss=repulsion_loss, n=num_repulsion_terms)
-            logging.info(f"   ✅ REPULSION LOSS COMPUTATION SUCCESSFUL: {float(repulsion_loss):.6f} from {num_repulsion_terms} terms")
+            jax.debug.print(
+                "   - Final repulsion loss: {loss} (from {n} terms)",
+                loss=repulsion_loss,
+                n=num_repulsion_terms,
+            )
+            logging.info(
+                f"   ✅ REPULSION LOSS COMPUTATION SUCCESSFUL: {repulsion_loss} from {num_repulsion_terms} terms"
+            )
         else:
             jax.debug.print("   - No repulsion terms computed, returning 0.0")
             logging.warning(f"   ⚠️  REPULSION LOSS COMPUTATION FAILED - no valid terms")
