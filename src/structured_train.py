@@ -1492,10 +1492,11 @@ class StructuredTrainer:
         
         # Generate evaluation data for all patterns using PRE-LOADED datasets from initialization
         # This ensures the EXACT SAME data is used every time, preventing dataset mixing
+        # CRITICAL: Uses SAME APPROACH as training - takes ALL samples for each pattern
         eval_data = {}
-        num_eval_samples = 100  # same number for each pattern to ensure even coverage
         for pattern_id in [1, 2, 3]:
-            eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
+            # Use ALL samples for each pattern (like training does) - no artificial limits
+            eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_samples=None)
 
         
         # Compute encoder variances per pattern
@@ -3252,38 +3253,37 @@ class StructuredTrainer:
 
         This method now uses the datasets loaded ONCE at initialization,
         ensuring the same data is used every time for consistent certainty plots.
+        
+        CRITICAL: Uses the SAME APPROACH as training - takes ALL samples that belong to the targeted pattern.
 
         Args:
             pattern_id: Pattern to generate (1, 2, or 3).
-            num_samples: Number of samples to generate for this pattern.
+            num_samples: Number of samples to generate for this pattern. 
+                       If None, uses ALL available samples (recommended for certainty plots).
 
         Returns:
-            Tuple of (grids, shapes, pattern_ids) each with ``num_samples``
-            entries corresponding to ``pattern_id``.
+            Tuple of (grids, shapes, pattern_ids) each with the requested number of samples
+            corresponding to ``pattern_id``.
         """
         import numpy as np
         
         pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
         
-        # Use pre-loaded datasets from initialization
+        # Use pre-loaded datasets from initialization - SAME APPROACH AS TRAINING
         if hasattr(self, 'pattern_datasets') and pattern_id in self.pattern_datasets:
             dataset_data = self.pattern_datasets[pattern_id]
             grids = dataset_data['grids']
             shapes = dataset_data['shapes']
             pattern_ids = dataset_data['pattern_ids']
             
-            # Ensure we have enough samples
+            # CRITICAL: Take ALL samples that belong to the targeted pattern (like training does)
+            # Don't limit by num_samples - use all available samples for this pattern
             available_samples = len(grids)
-            if available_samples < num_samples:
-                logging.warning(f"      Dataset pattern {pattern_id} only has {available_samples} samples, using all available")
-                num_samples = available_samples
             
-            # Take the first num_samples from the pre-loaded dataset
-            grids = grids[:num_samples]
-            shapes = shapes[:num_samples]
-            pattern_ids = pattern_ids[:num_samples]
+            logging.info(f"      Using ALL {available_samples} pre-loaded samples from pattern {pattern_id} ({pattern_names[pattern_id]}): {grids.shape}")
+            logging.info(f"      This ensures 100% pattern isolation - no mixing with other patterns")
             
-            logging.info(f"      Using {num_samples} pre-loaded samples from pattern {pattern_id} ({pattern_names[pattern_id]}): {grids.shape}")
+            # Return ALL samples for this pattern (not limited by num_samples)
             return grids, shapes, pattern_ids
         
         else:
@@ -5729,10 +5729,11 @@ class StructuredTrainer:
             
             # Create evaluation data for all patterns using PRE-LOADED datasets from initialization
             # This ensures the EXACT SAME data is used every time, preventing dataset mixing
+            # CRITICAL: Uses SAME APPROACH as training - takes ALL samples for each pattern
             eval_data = {}
-            num_eval_samples = 100  # Same number for each pattern to ensure even coverage
             for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
+                # Use ALL samples for each pattern (like training does) - no artificial limits
+                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_samples=None)
             
             # Create a figure with subplots for each pattern (histogram + Gaussian function)
             fig, axes = plt.subplots(2, 3, figsize=(20, 12))
@@ -5750,32 +5751,42 @@ class StructuredTrainer:
                 if pattern_id in eval_data:
                     grids, shapes, pattern_ids = eval_data[pattern_id]
                     
-                    # Select a consistent sample for this pattern (same as Phase 1 approach)
-                    sample_index = (pattern_id - 1) % len(grids)
-                    sample_grids = grids[sample_index]
-                    sample_shapes = shapes[sample_index]
+                    # Use multiple samples from the pattern dataset for better statistics
+                    # Take up to 20 samples or all available if less (since we now have ALL samples)
+                    num_samples_to_use = min(20, len(grids))
+                    sample_indices = list(range(num_samples_to_use))
+                    logging.info(f"       📊 Pattern {pattern_id}: Using {num_samples_to_use} samples from {len(grids)} available")
                     
-                    # Collect encoder outputs for ALL encoders on this sample
+                    # Collect encoder outputs for ALL encoders on multiple samples
                     all_encoder_variances = []
                     encoder_labels = []
                     
                     for enc_idx in range(len(self.encoders)):
                         encoder_params = state.params["encoders"][enc_idx]
                         
-                        # Forward pass through this encoder
-                        mu, logvar = self.encoders[enc_idx].apply(
-                            {"params": encoder_params},
-                            sample_grids[None, ...],  # Add batch dimension back
-                            sample_shapes[None, ...],  # Add batch dimension back
-                            dropout_eval=False,
-                            mutable=False,
-                        )
+                        # Collect variances from multiple samples
+                        pattern_variances = []
                         
-                        # Convert logvar to variance and flatten
-                        var = np.exp(np.array(logvar))  # Convert to numpy
-                        var_flat = var.flatten()  # Flatten to 1D array
+                        for sample_idx in sample_indices:
+                            sample_grids = grids[sample_idx]
+                            sample_shapes = shapes[sample_idx]
+                            
+                            # Forward pass through this encoder
+                            mu, logvar = self.encoders[enc_idx].apply(
+                                {"params": encoder_params},
+                                sample_grids[None, ...],  # Add batch dimension back
+                                sample_shapes[None, ...],  # Add batch dimension back
+                                dropout_eval=False,
+                                mutable=False,
+                            )
+                            
+                            # Convert logvar to variance and flatten
+                            var = np.exp(np.array(logvar))  # Convert to numpy
+                            var_flat = var.flatten()  # Flatten to 1D array
+                            pattern_variances.extend(var_flat)
                         
-                        all_encoder_variances.append(var_flat)
+                        # Store all variances for this encoder across all samples
+                        all_encoder_variances.append(np.array(pattern_variances))
                         encoder_labels.append(f"Encoder {enc_idx}")
                     
                     # Create merged histogram for this pattern
@@ -5788,7 +5799,7 @@ class StructuredTrainer:
                                    edgecolor='black', linewidth=0.5)
                     
                     # Customize the histogram subplot
-                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances', 
+                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances ({num_samples_to_use} samples)', 
                                    fontsize=14, fontweight='bold')
                     ax_hist.set_xlabel('Variance', fontsize=12)
                     ax_hist.set_ylabel('Frequency', fontsize=12)
@@ -5808,8 +5819,8 @@ class StructuredTrainer:
                                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                     
                     # Create Gaussian function plots for this pattern
-                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions', 
-                                     fontsize=14, fontweight='bold')
+                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions ({num_samples_to_use} samples)', 
+                                       fontsize=14, fontweight='bold')
                     ax_gauss.set_xlabel('Variance', fontsize=12)
                     ax_gauss.set_ylabel('Density', fontsize=12)
                     
