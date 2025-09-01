@@ -302,9 +302,6 @@ class StructuredTrainer:
         # Store original encoder params for individual training
         self.original_encoder_params = None
         self.original_decoder_params = None
-        
-        # Initialize pattern dataset cache to avoid regenerating data for certainty plots
-        self._pattern_dataset_cache = {}
 
         # Training/eval datasets - Use task generator like train.py for on-the-fly generation
         if cfg.training.get("struct_patterns_balanced", False):
@@ -1172,8 +1169,9 @@ class StructuredTrainer:
         
         logging.info("🎉 PHASE 1 COMPLETED: All encoders specialized!")
         logging.info(f"   - Total Phase A evaluations: {total_phase_a_evals}")
-        logging.info(f"   - Each evaluation includes: T-SNE visualization + certainty plots for all 3 patterns")
+        logging.info(f"   - Each evaluation includes: T-SNE visualization + certainty plots + clustering metrics for all 3 patterns")
         logging.info("   - Encoders now have pattern-specific representations")
+        logging.info("   - Clustering metrics computed and logged for each encoder")
         logging.info("   - Ready for Phase 2: Joint decoder training")
         
         return updated_state
@@ -1531,6 +1529,24 @@ class StructuredTrainer:
         # Create essential T-SNE visualization only (like train.py)
         logging.info(f"       Creating T-SNE plot for Encoder {enc_idx}...")
         self._create_encoder_tsne(enc_idx, encoder_params, eval_data, current_global_step)
+        
+        # Compute and log clustering metrics for Phase 1
+        logging.info(f"       Computing clustering metrics for Encoder {enc_idx}...")
+        try:
+            # Create clustering data for this encoder
+            clustering_data = self._create_encoder_clustering_data(enc_idx, encoder_params, eval_data)
+            if clustering_data:
+                # Compute clustering metrics
+                clustering_metrics = self._compute_phase1_clustering_metrics(clustering_data, enc_idx)
+                # Log clustering metrics to WandB with the correct step
+                for metric_name, metric_value in clustering_metrics.items():
+                    if metric_value is not None:  # Skip None values (e.g., silhouette scores when sklearn unavailable)
+                        wandb.log({f"phase_1/clustering/encoder_{enc_idx}/{metric_name}": metric_value}, step=current_global_step)
+                logging.info(f"       ✅ Clustering metrics computed and logged for Encoder {enc_idx}")
+            else:
+                logging.warning(f"       ❌ Failed to create clustering data for Encoder {enc_idx}")
+        except Exception as e:
+            logging.warning(f"       ❌ Clustering metrics computation failed for Encoder {enc_idx}: {e}")
         
         # Evaluate target pattern reconstruction quality
         logging.info(f"       Evaluating target pattern reconstruction for Encoder {enc_idx}...")
@@ -2571,6 +2587,171 @@ class StructuredTrainer:
         
         return specialization_metrics
     
+    def _create_encoder_clustering_data(self, enc_idx: int, encoder_params: dict, eval_data: dict) -> Optional[dict]:
+        """
+        Create clustering data for a single encoder during Phase 1.
+        
+        Args:
+            enc_idx: Index of the encoder
+            encoder_params: Encoder parameters
+            eval_data: Evaluation data for all patterns
+            
+        Returns:
+            Dictionary containing clustering data or None if creation fails
+        """
+        try:
+            clustering_data = {}
+            
+            # Collect latents for this encoder across all patterns
+            pattern_latents = {}
+            pattern_ids_list = []
+            
+            for pattern_id in [1, 2, 3]:
+                if pattern_id in eval_data:
+                    grids, shapes, pattern_ids = eval_data[pattern_id]
+                    
+                    # Get encoder outputs for this pattern
+                    mu, logvar = self.encoders[enc_idx].apply(
+                        {"params": encoder_params},
+                        grids,
+                        shapes,
+                        dropout_eval=False,
+                        mutable=False,
+                    )
+                    
+                    # Use mean of latents over pairs
+                    latents = mu.mean(axis=-2)  # (batch_size, latent_dim)
+                    
+                    # Store pattern data
+                    pattern_latents[pattern_id] = np.array(latents)
+                    pattern_ids_list.extend([pattern_id] * len(latents))
+            
+            if pattern_latents:
+                # Create combined data for cross-pattern analysis
+                all_latents_list = []
+                all_pattern_ids_list = []
+                
+                for pattern_id in [1, 2, 3]:
+                    if pattern_id in pattern_latents:
+                        all_latents_list.append(pattern_latents[pattern_id])
+                        all_pattern_ids_list.extend([pattern_id] * len(pattern_latents[pattern_id]))
+                
+                if all_latents_list:
+                    combined_data = {
+                        'latents': np.concatenate(all_latents_list, axis=0),
+                        'pattern_ids': np.array(all_pattern_ids_list)
+                    }
+                    
+                    clustering_data = {
+                        'pattern_data': pattern_latents,
+                        'combined_data': combined_data
+                    }
+                    
+                    logging.info(f"       ✅ Clustering data created for Encoder {enc_idx}: {len(combined_data['latents'])} total samples")
+                    return clustering_data
+            
+            logging.warning(f"       ❌ No valid clustering data created for Encoder {enc_idx}")
+            return None
+            
+        except Exception as e:
+            logging.warning(f"       ❌ Clustering data creation failed for Encoder {enc_idx}: {e}")
+            return None
+    
+    def _compute_phase1_clustering_metrics(self, clustering_data: dict, enc_idx: int) -> dict:
+        """
+        Compute clustering metrics for Phase 1 encoder evaluation.
+        
+        Args:
+            clustering_data: Clustering data for the encoder
+            enc_idx: Index of the encoder
+            
+        Returns:
+            Dictionary containing clustering metrics
+        """
+        clustering_metrics = {}
+        
+        try:
+            if 'combined_data' not in clustering_data or clustering_data['combined_data'] is None:
+                return clustering_metrics
+            
+            combined_data = clustering_data['combined_data']
+            latents_concat = combined_data['latents']
+            pattern_ids_concat = combined_data['pattern_ids']
+            
+            # Compute metrics for different k values to check sensitivity
+            k_values = [2, 3, 5]
+            
+            # Compute clustering metrics on pattern-based clustering
+            for k in k_values:
+                if k <= len(np.unique(pattern_ids_concat)):
+                    # Modularity Q on pattern-based clustering
+                    modularity_q = compute_modularity_q(latents_concat, pattern_ids_concat, k=k)
+                    clustering_metrics[f"modularity_q_k{k}"] = modularity_q
+                    
+                    # Adjusted Rand Index on pattern-based clustering
+                    ari_score = compute_adjusted_rand_index(latents_concat, pattern_ids_concat, k=k)
+                    clustering_metrics[f"ari_k{k}"] = ari_score
+                    
+                    # Silhouette score for pattern separation
+                    try:
+                        from sklearn.metrics import silhouette_score
+                        from sklearn.cluster import KMeans
+                        
+                        # Perform K-means clustering
+                        kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+                        cluster_labels = kmeans.fit_predict(latents_concat)
+                        
+                        # Compute silhouette score
+                        silhouette_avg = silhouette_score(latents_concat, cluster_labels)
+                        clustering_metrics[f"silhouette_k{k}"] = silhouette_avg
+                        
+                    except ImportError:
+                        logging.warning(f"       ⚠️  sklearn not available, skipping silhouette score for k={k}")
+                        clustering_metrics[f"silhouette_k{k}"] = None
+            
+            # Compute pattern separation metrics
+            unique_patterns = np.unique(pattern_ids_concat)
+            if len(unique_patterns) >= 2:
+                # Compute pairwise distances between pattern centroids
+                pattern_centroids = {}
+                for pattern_id in unique_patterns:
+                    pattern_mask = (pattern_ids_concat == pattern_id)
+                    if np.any(pattern_mask):
+                        pattern_latents = latents_concat[pattern_mask]
+                        pattern_centroids[pattern_id] = np.mean(pattern_latents, axis=0)
+                
+                # Compute inter-pattern distances
+                pattern_pairs = []
+                for i, pid1 in enumerate(unique_patterns):
+                    for j, pid2 in enumerate(unique_patterns[i+1:], i+1):
+                        if pid1 in pattern_centroids and pid2 in pattern_centroids:
+                            centroid_dist = np.linalg.norm(pattern_centroids[pid1] - pattern_centroids[pid2])
+                            pattern_pairs.append((pid1, pid2, centroid_dist))
+                            clustering_metrics[f"centroid_distance_pattern_{pid1}_vs_{pid2}"] = float(centroid_dist)
+                
+                # Compute intra-pattern compactness
+                for pattern_id in unique_patterns:
+                    pattern_mask = (pattern_ids_concat == pattern_id)
+                    if np.any(pattern_mask):
+                        pattern_latents = latents_concat[pattern_mask]
+                        if len(pattern_latents) > 1:
+                            # Compute average distance to centroid
+                            centroid = pattern_centroids[pattern_id]
+                            distances_to_centroid = np.linalg.norm(pattern_latents - centroid, axis=1)
+                            mean_distance = float(np.mean(distances_to_centroid))
+                            std_distance = float(np.std(distances_to_centroid))
+                            
+                            clustering_metrics[f"intra_pattern_{pattern_id}_mean_distance_to_centroid"] = mean_distance
+                            clustering_metrics[f"intra_pattern_{pattern_id}_std_distance_to_centroid"] = std_distance
+            
+            logging.info(f"       ✅ Phase 1 clustering metrics computed for Encoder {enc_idx}: {len(clustering_metrics)} metrics")
+            
+        except Exception as e:
+            logging.warning(f"       ❌ Phase 1 clustering metrics computation failed for Encoder {enc_idx}: {e}")
+            clustering_metrics["error"] = str(e)
+        
+        return clustering_metrics
+    
     def _compute_encoder_specialization_metrics(self, all_encoder_outputs: list, pattern_ids: chex.Array) -> dict:
         """
         Compute metrics showing how well frozen encoders maintain specialization.
@@ -3032,13 +3213,6 @@ class StructuredTrainer:
         import numpy as np
         import random
         
-        # Check if we already have cached data for this pattern and sample size
-        cache_key = f"pattern_{pattern_id}_samples_{num_samples}"
-        if cache_key in self._pattern_dataset_cache:
-            logging.debug(f"      Using cached data for {cache_key}")
-            cached_data = self._pattern_dataset_cache[cache_key]
-            return cached_data[0], cached_data[1], cached_data[2]
-        
         # Set random seed for reproducibility
         random.seed(self.cfg.training.seed + pattern_id)
         
@@ -3105,12 +3279,7 @@ class StructuredTrainer:
                 shapes[sample_idx, pair_idx, 1] = [5, 5]  # [output_rows, output_cols]
         
         logging.info(f"      Generated {num_samples} samples: {grids.shape}, {shapes.shape}")
-        
-        # Cache the generated data for future use
-        result = (jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids))
-        self._pattern_dataset_cache[cache_key] = result
-        
-        return result
+        return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
     
     def _create_single_pattern_sample(self, pattern_id: int) -> tuple:
         """
@@ -5390,16 +5559,17 @@ class StructuredTrainer:
                 eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
             
             # Create a figure with subplots for each pattern (histogram + Gaussian function)
-            # Changed from 2x3 to 1x3 layout (removed third row)
-            fig, axes = plt.subplots(1, 3, figsize=(20, 8))
+            fig, axes = plt.subplots(2, 3, figsize=(20, 12))
             if len(axes.shape) == 1:
                 axes = axes.reshape(1, -1)
             
             pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
             
             for pattern_idx, pattern_id in enumerate([1, 2, 3]):
-                # Single row: histograms with overlaid normalized Gaussian functions
-                ax = axes[0, pattern_idx]
+                # Top row: histograms
+                ax_hist = axes[0, pattern_idx]
+                # Bottom row: Gaussian functions
+                ax_gauss = axes[1, pattern_idx]
                 
                 if pattern_id in eval_data:
                     grids, shapes, pattern_ids = eval_data[pattern_id]
@@ -5436,21 +5606,20 @@ class StructuredTrainer:
                     # Use different colors for each encoder
                     colors = ['#FBB998', '#DB74DB', '#5361E5']  # Orange, Pink, Blue
                     
-                    # Plot histograms first
                     for enc_idx, (variances, label, color) in enumerate(zip(all_encoder_variances, encoder_labels, colors)):
                         # Create histogram with transparency for overlap
-                        ax.hist(variances, bins=30, alpha=0.7, label=label, color=color, 
-                               edgecolor='black', linewidth=0.5)
+                        ax_hist.hist(variances, bins=30, alpha=0.7, label=label, color=color, 
+                                   edgecolor='black', linewidth=0.5)
                     
-                    # Customize the subplot
-                    ax.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances with Normalized Gaussians', 
-                               fontsize=14, fontweight='bold')
-                    ax.set_xlabel('Variance', fontsize=12)
-                    ax.set_ylabel('Frequency', fontsize=12)
-                    ax.legend(fontsize=10)
-                    ax.grid(True, alpha=0.3)
+                    # Customize the histogram subplot
+                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances', 
+                                   fontsize=14, fontweight='bold')
+                    ax_hist.set_xlabel('Variance', fontsize=12)
+                    ax_hist.set_ylabel('Frequency', fontsize=12)
+                    ax_hist.legend(fontsize=10)
+                    ax_hist.grid(True, alpha=0.3)
                     
-                    # Add statistics text
+                    # Add statistics text to histogram
                     stats_text = []
                     for enc_idx, variances in enumerate(all_encoder_variances):
                         mean_var = np.mean(variances)
@@ -5458,43 +5627,50 @@ class StructuredTrainer:
                         stats_text.append(f'E{enc_idx}: μ={mean_var:.4f}, σ={std_var:.4f}')
                     
                     stats_str = '\n'.join(stats_text)
-                    ax.text(0.02, 0.98, stats_str, transform=ax.transAxes, 
-                           verticalalignment='top', fontsize=9, 
-                           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    ax_hist.text(0.02, 0.98, stats_str, transform=ax_hist.transAxes, 
+                               verticalalignment='top', fontsize=9, 
+                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                     
-                    # Overlay normalized Gaussian functions on the same plot
+                    # Create Gaussian function plots for this pattern
+                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions', 
+                                     fontsize=14, fontweight='bold')
+                    ax_gauss.set_xlabel('Variance', fontsize=12)
+                    ax_gauss.set_ylabel('Density', fontsize=12)
+                    
                     # Get range for x-axis based on all encoder variances for this pattern
                     all_vars = np.concatenate(all_encoder_variances)
                     x_min, x_max = np.min(all_vars), np.max(all_vars)
                     x_range = x_max - x_min
                     x_plot = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, 1000)
                     
-                    # Plot normalized Gaussian for each encoder
+                    # Plot Gaussian for each encoder
                     for enc_idx, (variances, color) in enumerate(zip(all_encoder_variances, colors)):
                         mean_var = np.mean(variances)
                         std_var = np.std(variances)
                         
-                        # Create normalized Gaussian function
-                        gaussian = norm.pdf(x_plot, mean_var, std_var)
-                        
-                        # Normalize to match histogram scale (scale to max histogram height)
-                        max_hist_height = max([np.histogram(var, bins=30)[0].max() for var in all_encoder_variances])
-                        gaussian_normalized = gaussian * (max_hist_height / gaussian.max())
-                        
-                        ax.plot(x_plot, gaussian_normalized, color=color, linewidth=2, alpha=0.8, 
-                               label=f'Encoder {enc_idx} (Gaussian)')
+                        # For variances, we'll use a log-normal approximation since variances are always positive
+                        # Use the mean variance as the scale parameter
+                        gaussian = norm.pdf(x_plot, mean_var, mean_var * 0.5)  # Approximate log-normal with normal
+                        ax_gauss.plot(x_plot, gaussian, color=color, linewidth=2, alpha=0.8, 
+                                    label=f'Encoder {enc_idx}')
                         
                         # Add vertical line at mean variance
-                        ax.axvline(mean_var, color=color, linestyle='--', alpha=0.6, linewidth=1)
+                        ax_gauss.axvline(mean_var, color=color, linestyle='--', alpha=0.6, linewidth=1)
                     
-                    logging.info(f"       ✅ Pattern {pattern_id} merged histogram and normalized Gaussian plots created with {len(all_encoder_variances)} encoders")
+                    ax_gauss.legend(fontsize=10)
+                    ax_gauss.grid(True, alpha=0.3)
+                    
+                    logging.info(f"       ✅ Pattern {pattern_id} merged histogram and Gaussian plots created with {len(all_encoder_variances)} encoders")
                 else:
-                    ax.text(0.5, 0.5, f'No data for Pattern {pattern_id}', 
-                           ha='center', va='center', transform=ax.transAxes)
-                    ax.set_title(f'Pattern {pattern_id} - No Data')
+                    ax_hist.text(0.5, 0.5, f'No data for Pattern {pattern_id}', 
+                               ha='center', va='center', transform=ax_hist.transAxes)
+                    ax_hist.set_title(f'Pattern {pattern_id} - No Data')
+                    ax_gauss.text(0.5, 0.5, f'No data for Pattern {pattern_id}', 
+                                ha='center', va='center', transform=ax_gauss.transAxes)
+                    ax_gauss.set_title(f'Pattern {pattern_id} - No Data')
             
             # Set overall title
-            fig.suptitle(f'Merged Encoder Certainty Panel - Histograms with Normalized Gaussians (Step {step})', 
+            fig.suptitle(f'Merged Encoder Certainty Panel - All Patterns (Step {step})', 
                         fontsize=16, fontweight='bold')
             
             plt.tight_layout()
