@@ -355,7 +355,7 @@ class StructuredTrainer:
                 self.task_generator = False
             else:
                 raise ValueError("No training data specified: set training.train_datasets or enable struct_patterns_balanced")
-
+        
         # Simple single eval dataset support (optional)
         self.eval_conf = cfg.eval.get("dataset")
         if self.eval_conf and self.eval_conf.get("folder"):
@@ -1279,27 +1279,14 @@ class StructuredTrainer:
                 # Add regularization to prevent extreme values
                 reg_loss = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
                 
-                # Add repulsion loss to push away from previous encoders' latent targets
-                repulsion_loss = 0.0
-                if target_latents_store and self.cfg.training.get("repulsion_kl", 0) > 0:
-                    # Compute repulsion from previous encoders' targets
-                    repulsion_loss = self._compute_repulsion_loss(
-                        current_latents=mu.mean(axis=-2),  # Use mean over pairs
-                        target_latents_store=target_latents_store,
-                        current_encoder_idx=enc_idx,
-                        margin=1.0
-                    )
-                    
-                    # Scale repulsion loss by the coefficient
-                    repulsion_coeff = self.cfg.training.get("repulsion_kl", 0)
-                    repulsion_loss = repulsion_coeff * repulsion_loss
-                    
-                    if step % 50 == 0:
-                        logging.info(f"       Repulsion Loss: {float(repulsion_loss):.6f} (λ={repulsion_coeff})")
+                # Repulsion loss will be computed inside contrastive_loss_fn for proper gradients
+                # We'll extract it from the function call for logging purposes
                 
-                total_loss = contrastive_loss + reg_loss + repulsion_loss
+                # Compute the total loss including repulsion for logging
+                # Note: repulsion_loss will be computed inside contrastive_loss_fn
+                total_loss = contrastive_loss + reg_loss  # repulsion will be added after function call
                 
-                # FIXED: Compute gradients properly for contrastive learning
+                # FIXED: Compute gradients properly for contrastive learning including repulsion
                 def contrastive_loss_fn(params):
                     # Forward pass through encoder
                     mu, logvar = encoder.apply(
@@ -1328,14 +1315,48 @@ class StructuredTrainer:
                     else:
                         dynamic_coeff = base_coeff
                     
-                    loss = avg_target_var + dynamic_coeff * (1.0 / (avg_other_var + 1e-8))
+                    contrastive_loss = avg_target_var + dynamic_coeff * (1.0 / (avg_other_var + 1e-8))
                     
                     # Add regularization
-                    reg = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
-                    return loss + reg
+                    reg_loss = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
+                    
+                    # CRITICAL FIX: Include repulsion loss in the differentiable function
+                    # This ensures repulsion affects parameter updates, not just logging
+                    repulsion_loss = 0.0
+                    if target_latents_store and self.cfg.training.get("repulsion_kl", 0) > 0:
+                        # Compute repulsion from previous encoders' targets
+                        # Use mean over pairs for consistency with the outer computation
+                        current_latents = mu.mean(axis=-2)
+                        repulsion_loss = self._compute_repulsion_loss(
+                            current_latents=current_latents,
+                            target_latents_store=target_latents_store,
+                            current_encoder_idx=enc_idx,
+                            margin=1.0
+                        )
+                        
+                        # Scale repulsion loss by the coefficient
+                        repulsion_coeff = self.cfg.training.get("repulsion_kl", 0)
+                        repulsion_loss = repulsion_coeff * repulsion_loss
+                    
+                    # Return total differentiable loss including repulsion
+                    return contrastive_loss + reg_loss + repulsion_loss
                 
-                # Compute gradients
-                grads = jax.grad(contrastive_loss_fn)(encoder_params)
+                # Compute gradients and get the total loss value for logging
+                # We need both the gradients and the loss value to extract repulsion loss
+                loss_value, grads = jax.value_and_grad(contrastive_loss_fn, has_aux=False)(encoder_params)
+                
+                # Extract repulsion loss from the total loss for logging
+                # The function returns: contrastive_loss + reg_loss + repulsion_loss
+                # We already have contrastive_loss + reg_loss, so repulsion_loss = loss_value - (contrastive_loss + reg_loss)
+                repulsion_loss = loss_value - (contrastive_loss + reg_loss)
+                
+                # Update total_loss to include repulsion for logging
+                total_loss = contrastive_loss + reg_loss + repulsion_loss
+                
+                # Log repulsion loss if it's significant
+                if step % 50 == 0 and repulsion_loss > 0:
+                    repulsion_coeff = self.cfg.training.get("repulsion_kl", 0)
+                    logging.info(f"       Repulsion Loss: {float(repulsion_loss):.6f} (λ={repulsion_coeff})")
                 
                 # Update encoder parameters
                 new_encoder_params = jax.tree_util.tree_map(
@@ -1425,6 +1446,26 @@ class StructuredTrainer:
                     self._generate_phase_a_tsne(enc_idx, encoder_params, step, num_steps)
                 except Exception as e:
                     logging.warning(f"     Phase A T-SNE generation failed at step {step}: {e}")
+        
+        # CRITICAL: Generate final certainty plots at the end of training (step 200/200)
+        # This ensures we capture the final encoder state even if it doesn't align with eval_every_n_steps
+        try:
+            logging.info(f"     🔍 Phase A Final Evaluation at step {num_steps}/{num_steps}")
+            # Create evaluation data for final certainty plots
+            eval_data = {}
+            num_eval_samples = 100  # Same as in _evaluate_specialized_encoder for consistency
+            for pattern_id in [1, 2, 3]:
+                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
+            
+            # Generate final certainty plots with step 200/200
+            current_global_step = self.phase_a_global_step + num_steps
+            self._generate_phase_a_certainty_plots(enc_idx, encoder_params, eval_data, current_global_step, num_steps, num_steps)
+            
+            logging.info(f"     ✅ Final Phase A certainty plots generated and logged to WandB")
+        except Exception as e:
+            logging.warning(f"     Final Phase A certainty plots generation failed: {e}")
+            import traceback
+            logging.error(f"     Traceback: {traceback.format_exc()}")
         
         return state.params["encoders"][enc_idx]  # Return trained encoder params
     
@@ -1746,7 +1787,7 @@ class StructuredTrainer:
             logging.error(f"       ❌ Phase A evaluation generation failed: {e}")
             import traceback
             logging.error(f"       Traceback: {traceback.format_exc()}")
-    
+
     def _generate_phase_a_certainty_plots(self, enc_idx: int, encoder_params: dict, eval_data: dict, global_step: int, step: int, total_steps: int):
         """
         Generate certainty plots for all patterns during Phase A training to monitor encoder specialization progress.
@@ -2363,11 +2404,11 @@ class StructuredTrainer:
                 logging.warning("Phase 2: No encoder samples found for encoder samples clustering; skipping")
             
             # OPTION 2: Full latent space clustering (current implementation) - for source analysis
-            for k in k_values:
-                # Modularity Q on all embeddings (sources: encoders vs context)
-                modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
+                for k in k_values:
+                    # Modularity Q on all embeddings (sources: encoders vs context)
+                    modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
                 clustering_metrics[f"phase_2/clustering/source/modularity_q_k{k}"] = modularity_q
-                
+                    
                 # Adjusted Rand Index on all embeddings (sources: encoders vs context)
                 ari_score = compute_adjusted_rand_index(latents_concat, source_ids_np, k=k)
                 clustering_metrics[f"phase_2/clustering/source/ari_k{k}"] = ari_score
@@ -2949,7 +2990,7 @@ class StructuredTrainer:
                     ax.set_ylabel('Mean Variance')
                     ax.grid(True, alpha=0.3)
                     ax.legend()
-                else:
+            else:
                     ax.text(0.5, 0.5, f'No data for Encoder {enc_idx}', 
                            ha='center', va='center', transform=ax.transAxes)
                     ax.set_title(f'Encoder {enc_idx} - No Data')
@@ -2960,7 +3001,7 @@ class StructuredTrainer:
         except Exception as e:
             logging.warning(f"Encoder specialization plot creation failed: {e}")
             return None
-    
+
     def _create_poe_aggregation_plot(self, all_encoder_outputs: list, pattern_ids: chex.Array) -> Optional[plt.Figure]:
         """
         Create plot showing PoE aggregation effectiveness.
@@ -3169,11 +3210,11 @@ class StructuredTrainer:
 
         This loads the actual struct_pattern_1, struct_pattern_2, struct_pattern_3 datasets
         instead of generating synthetic data, ensuring consistent evaluation data.
-
+        
         Args:
             pattern_id: Pattern to generate (1, 2, or 3).
             num_samples: Number of samples to generate for this pattern.
-
+            
         Returns:
             Tuple of (grids, shapes, pattern_ids) each with ``num_samples``
             entries corresponding to ``pattern_id``.
@@ -3216,7 +3257,7 @@ class StructuredTrainer:
             
             logging.info(f"      Loaded {num_samples} samples from {dataset_folder}: {grids.shape}, {shapes.shape}")
             return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
-            
+                
         except Exception as e:
             logging.error(f"      Failed to load dataset {dataset_folder}: {e}")
             logging.info(f"      Falling back to synthetic data generation for pattern {pattern_id}")
@@ -3228,11 +3269,11 @@ class StructuredTrainer:
         """Create a dataset composed solely of a single pattern with clean tetromino shapes.
 
         This is the original synthetic data generation method, kept as a fallback.
-
+        
         Args:
             pattern_id: Pattern to generate (1, 2, or 3).
             num_samples: Number of samples to generate for this pattern.
-
+            
         Returns:
             Tuple of (grids, shapes, pattern_ids) each with ``num_samples``
             entries corresponding to ``pattern_id``.
@@ -3371,7 +3412,7 @@ class StructuredTrainer:
             fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
             fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
             return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
-
+        
     def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 5.0) -> float:
         """
         Compute repulsion loss to push current encoder away from previous encoders' latent targets.
@@ -3523,12 +3564,12 @@ class StructuredTrainer:
     def _extract_target_latents(self, encoder_idx: int, encoder_params: dict, state: TrainState) -> dict:
         """
         Extract target latent representations from a trained encoder for repulsion loss.
-        
+
         Args:
             encoder_idx: Index of the encoder
             encoder_params: Encoder parameters
             state: Training state
-            
+
         Returns:
             Dictionary mapping pattern_id to target latent representations
         """
@@ -5654,7 +5695,7 @@ class StructuredTrainer:
                     
                     for enc_idx in range(len(self.encoders)):
                         encoder_params = state.params["encoders"][enc_idx]
-                        
+                            
                         # Forward pass through this encoder
                         mu, logvar = self.encoders[enc_idx].apply(
                             {"params": encoder_params},
@@ -5702,7 +5743,7 @@ class StructuredTrainer:
                     
                     # Create Gaussian function plots for this pattern
                     ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions', 
-                                     fontsize=14, fontweight='bold')
+                                       fontsize=14, fontweight='bold')
                     ax_gauss.set_xlabel('Variance', fontsize=12)
                     ax_gauss.set_ylabel('Density', fontsize=12)
                     
@@ -5751,7 +5792,7 @@ class StructuredTrainer:
             import traceback
             logging.error(f"       Traceback: {traceback.format_exc()}")
             return None
-
+    
 
 
 
