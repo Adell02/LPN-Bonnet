@@ -905,8 +905,18 @@ class LPN(nn.Module):
                 print(f"         🔧 DEBUG: all_log_probs shape: {all_log_probs.shape}")
                 
                 # Remove the extra dimension: (1, 4, 1, 1000, 8) -> (1, 4, 1000, 8)
+                # For latents: (1, 4, 1, 1000, 8) -> (1, 4, 1000, 8)
+                # For log_probs: (1, 4, 1, 1000) -> (1, 4, 1000)
                 reshaped_all_latents = all_latents.squeeze(-3)  # Remove the size-1 dimension at position -3
-                reshaped_all_log_probs = all_log_probs.squeeze(-3)  # Remove the size-1 dimension at position -3
+                
+                # Handle log_probs differently since it has a different shape
+                print(f"         🔧 DEBUG: all_log_probs.ndim = {all_log_probs.ndim}")
+                if all_log_probs.ndim == 4:  # (1, 4, 1, 1000)
+                    print(f"         🔧 DEBUG: Removing dimension -2 from log_probs")
+                    reshaped_all_log_probs = all_log_probs.squeeze(-2)  # Remove the size-1 dimension at position -2
+                else:
+                    print(f"         🔧 DEBUG: Keeping log_probs as is (ndim = {all_log_probs.ndim})")
+                    reshaped_all_log_probs = all_log_probs  # Keep as is
                 
                 print(f"         🔧 DEBUG: reshaped_all_latents shape: {reshaped_all_latents.shape}")
                 print(f"         🔧 DEBUG: reshaped_all_log_probs shape: {reshaped_all_log_probs.shape}")

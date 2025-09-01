@@ -4211,6 +4211,19 @@ class StructuredTrainer:
         shapes = jnp.stack(shapes_list, axis=0)
         pattern_ids = jnp.array(pattern_ids_list)
         
+        # CRITICAL DEBUG: Check if we're getting real data or just fallback data
+        grids_sum = jnp.sum(grids)
+        shapes_sum = jnp.sum(shapes)
+        logging.info(f"     🔍 CRITICAL: Data validation check:")
+        logging.info(f"        - Grids sum: {grids_sum} (should be > 0 for real data)")
+        logging.info(f"        - Shapes sum: {shapes_sum} (should be > 0 for real data)")
+        if grids_sum == 0:
+            logging.error(f"     🚨 CRITICAL BUG: All grids are zero! Task generator is failing!")
+            logging.error(f"        This means all samples are identical and contrastive loss cannot work!")
+        if shapes_sum == 0:
+            logging.error(f"     🚨 CRITICAL BUG: All shapes are zero! Task generator is failing!")
+            logging.error(f"        This means all samples are identical and contrastive loss cannot work!")
+        
         # CRITICAL: Verify pattern ID integrity in generated training data
         logging.info(f"     🔍 CRITICAL: Verifying pattern ID integrity in generated training data...")
         pattern_ids_np = np.array(pattern_ids)
@@ -4235,6 +4248,14 @@ class StructuredTrainer:
         unique_patterns, counts = np.unique(pattern_ids_np, return_counts=True)
         pattern_distribution = dict(zip(unique_patterns, counts))
         logging.info(f"     ✅ Pattern distribution verified: {pattern_distribution}")
+        
+        # CRITICAL DEBUG: Check if we have the right pattern diversity
+        if len(unique_patterns) < 2:
+            logging.error(f"     🚨 CRITICAL BUG: Only {len(unique_patterns)} unique patterns found!")
+            logging.error(f"        Need at least 2 patterns for contrastive loss to work!")
+            logging.error(f"        This explains why specialization_score = 0!")
+        else:
+            logging.info(f"     ✅ Pattern diversity: {len(unique_patterns)} unique patterns found")
         
         logging.info(f"     Generated {len(grids_list)} samples: {target_samples} target, {other_samples} others")
         logging.info(f"     ✅ CRITICAL FIX: Used diverse seeds to prevent identical sample copies")
@@ -4329,17 +4350,28 @@ class StructuredTrainer:
         
         # Extract single sample - handle different dataloader output formats
         try:
+            # CRITICAL DEBUG: Log what we're trying to generate
+            logging.debug(f"     🔍 Generating pattern {pattern_id} with seed {seed}")
+            
             # Try the expected format first
             for batch in dataloader:
+                logging.debug(f"     📊 Batch format: {len(batch)} elements, types: {[type(x) for x in batch]}")
+                
                 if len(batch) == 2:
                     # Format: (grids, shapes)
                     grids, shapes = batch
+                    logging.debug(f"     📊 Grids shape: {grids.shape}, Shapes shape: {shapes.shape}")
                     # Extract from batch format: (log_every_n_steps, batch_size, ...)
-                    return grids[0, 0], shapes[0, 0], pattern_id
+                    result = grids[0, 0], shapes[0, 0], pattern_id
+                    logging.debug(f"     ✅ Successfully generated pattern {pattern_id}")
+                    return result
                 elif len(batch) == 3:
                     # Format: (grids, shapes, pattern_ids)
                     grids, shapes, _ = batch
-                    return grids[0, 0], shapes[0, 0], pattern_id
+                    logging.debug(f"     📊 Grids shape: {grids.shape}, Shapes shape: {shapes.shape}")
+                    result = grids[0, 0], shapes[0, 0], pattern_id
+                    logging.debug(f"     ✅ Successfully generated pattern {pattern_id}")
+                    return result
                 else:
                     # Unexpected format, try to handle gracefully
                     logging.warning(f"Unexpected dataloader output format: {len(batch)} elements")
@@ -4347,22 +4379,26 @@ class StructuredTrainer:
                         grids = batch[0] if len(batch) > 0 else None
                         shapes = batch[1] if len(batch) > 1 else None
                         if grids is not None and shapes is not None:
-                            return grids[0, 0], shapes[0, 0], pattern_id
+                            result = grids[0, 0], shapes[0, 0], pattern_id
+                            logging.debug(f"     ✅ Successfully generated pattern {pattern_id} (graceful fallback)")
+                            return result
                     
                     # Fallback: create minimal sample
                     logging.warning(f"Creating fallback sample for pattern {pattern_id}")
                     num_pairs = self.task_generator_kwargs["num_pairs"]
                     fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
                     fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
+                    logging.warning(f"     🚨 FALLBACK: Using all-zero grids for pattern {pattern_id}!")
                     return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
                     
         except Exception as e:
             logging.error(f"Error creating single pattern sample for pattern {pattern_id}: {e}")
+            logging.error(f"     🚨 Exception details: {type(e).__name__}: {str(e)}")
             # Create minimal fallback sample
             num_pairs = self.task_generator_kwargs["num_pairs"]
             fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
             fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
-            logging.info(f"     ✅ Created fallback sample for pattern {pattern_id} due to error")
+            logging.warning(f"     🚨 FALLBACK: Using all-zero grids for pattern {pattern_id} due to error!")
             return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
         
         # CRITICAL: Ensure we always return exactly 3 values
