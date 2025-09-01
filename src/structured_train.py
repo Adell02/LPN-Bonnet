@@ -1904,27 +1904,36 @@ class StructuredTrainer:
             logging.info(f"       🔍 Phase A Evaluation at step {step}/{total_steps}")
             
             # Create evaluation data for all patterns to show specialization progress
-            # CRITICAL FIX: Use pre-generated datasets directly for reliable evaluation
+            # CRITICAL FIX: Generate 1260 samples per pattern for rich evaluation
             eval_data = {}
             for pattern_id in [1, 2, 3]:
-                # Load from pre-generated datasets for consistency and reliability
-                grids, shapes, pattern_ids = self._load_pre_generated_pattern_data(pattern_id)
+                # Generate 1260 samples for each pattern using the single pattern sample generator
+                # This ensures rich, detailed evaluation data like before
+                grids_list = []
+                shapes_list = []
+                pattern_ids_list = []
                 
-                # CRITICAL: Validate data structure before proceeding
-                if not self._validate_evaluation_data(grids, shapes, pattern_ids, pattern_id):
-                    logging.error(f"         ❌ Pattern {pattern_id}: Data validation failed, skipping evaluation")
-                    continue
+                num_samples = 1260  # Generate the same number as before
+                logging.info(f"         🔍 Pattern {pattern_id}: Generating {num_samples} samples for rich evaluation")
+                
+                for i in range(num_samples):
+                    if i % 100 == 0:  # Progress logging
+                        logging.info(f"         🔍 Pattern {pattern_id}: Generated {i}/{num_samples} samples")
+                    
+                    grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
+                    grids_list.append(grids)
+                    shapes_list.append(shapes)
+                    pattern_ids_list.append(pattern_id)
+                
+                # Stack all samples
+                grids = jnp.stack(grids_list, axis=0)
+                shapes = jnp.stack(shapes_list, axis=0)
+                pattern_ids = jnp.array(pattern_ids_list)
                 
                 eval_data[pattern_id] = (grids, shapes, pattern_ids)
                 
-                logging.info(f"         🔍 Pattern {pattern_id}: Using pre-generated dataset")
-                logging.info(f"         🔍 Loaded: {len(grids)} samples")
+                logging.info(f"         🔍 Pattern {pattern_id}: Generated {len(grids)} samples (should be {num_samples})")
                 logging.info(f"         🔍 Data shapes: grids={grids.shape}, shapes={shapes.shape}, pattern_ids={pattern_ids.shape}")
-            
-            # Check if we have valid data for evaluation
-            if not eval_data:
-                logging.error(f"         ❌ No valid evaluation data available, skipping evaluation")
-                return
             
             # Generate T-SNE visualization
             current_global_step = self.phase_a_global_step + step
