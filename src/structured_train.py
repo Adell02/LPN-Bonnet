@@ -1511,18 +1511,61 @@ class StructuredTrainer:
             decoder=self.decoder
         )
         
-        # Generate evaluation data for all patterns using PRE-LOADED datasets from initialization
-        # This ensures the EXACT SAME data is used every time, preventing dataset mixing
-        # CRITICAL: Uses SAME APPROACH as training - takes ALL samples for each pattern
+        # Generate evaluation data for all patterns
+        # CRITICAL FIX: Use Phase A data if available to prevent histogram destruction
+        # The pre-loaded datasets only have 96 samples vs Phase A's 1260 samples
         eval_data = {}
-        for pattern_id in [1, 2, 3]:
-            # Use ALL samples for each pattern (like training does) - no artificial limits
-            eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_samples=None)
+        
+        # CRITICAL DEBUG: Check Phase A data availability
+        logging.info(f"🔍 PHASE A DATA CHECK for evaluation:")
+        logging.info(f"   - Has _last_phase_a_data attribute: {hasattr(self, '_last_phase_a_data')}")
+        if hasattr(self, '_last_phase_a_data'):
+            logging.info(f"   - _last_phase_a_data is None: {self._last_phase_a_data is None}")
+            logging.info(f"   - _last_phase_a_data keys: {list(self._last_phase_a_data.keys()) if self._last_phase_a_data else 'None'}")
+            if self._last_phase_a_data:
+                for pattern_id in [1, 2, 3]:
+                    if pattern_id in self._last_phase_a_data:
+                        data = self._last_phase_a_data[pattern_id]
+                        grids = data['grids']
+                        logging.info(f"   - Pattern {pattern_id}: {len(grids)} samples, shape: {grids.shape}")
+                    else:
+                        logging.info(f"   - Pattern {pattern_id}: NOT FOUND in Phase A data")
+        
+        if hasattr(self, '_last_phase_a_data') and self._last_phase_a_data:
+            logging.info(f"🔍 USING Phase A data for evaluation (prevents histogram destruction):")
+            for pattern_id in [1, 2, 3]:
+                if pattern_id in self._last_phase_a_data:
+                    eval_data[pattern_id] = self._last_phase_a_data[pattern_id]
+                    grids, shapes, pattern_ids = eval_data[pattern_id]
+                    logging.info(f"   ✅ Pattern {pattern_id}: Using Phase A data with {len(grids)} samples")
+                    
+                    # CRITICAL VERIFICATION: Ensure we got the right number of samples
+                    if len(grids) == 1260:
+                        logging.info(f"   ✅ Pattern {pattern_id}: CORRECT sample count (1260 samples)")
+                    else:
+                        logging.error(f"   ❌ Pattern {pattern_id}: WRONG sample count! Expected 1260, got {len(grids)}")
+                        logging.error(f"      This indicates Phase A data corruption!")
+            
+            logging.info(f"   ✅ This ensures evaluation uses the SAME rich data as Phase A")
+        else:
+            logging.error(f"🔍 CRITICAL ERROR: No Phase A data available!")
+            logging.error(f"   This will cause poor histogram quality (96 vs 1260 samples)")
+            logging.error(f"   Falling back to pre-loaded datasets (inferior quality)")
+            for pattern_id in [1, 2, 3]:
+                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_samples=None)
+                grids, shapes, pattern_ids = eval_data[pattern_id]
+                logging.info(f"   ⚠️ Pattern {pattern_id}: Using pre-loaded data with {len(grids)} samples (vs 1260 expected)")
 
         
         # Compute encoder variances per pattern
         pattern_variances = {}
-        for pattern_id, (grids, shapes, pattern_ids) in eval_data.items():
+        for pattern_id, data in eval_data.items():
+            # Handle both Phase A data (dict) and pre-loaded data (tuple)
+            if isinstance(data, dict):
+                grids, shapes, pattern_ids = data['grids'], data['shapes'], data['pattern_ids']
+            else:
+                grids, shapes, pattern_ids = data
+            
             # Sample a subset for evaluation
             if len(grids) > 100:
                 indices = np.random.choice(len(grids), 100, replace=False)
@@ -1832,6 +1875,17 @@ class StructuredTrainer:
                         'pattern_ids': pattern_ids
                     }
                     logging.info(f"         💾 Stored Phase A data for pattern {pattern_id}: {len(grids)} samples")
+                    logging.info(f"         💾 Data structure: grids={grids.shape}, shapes={shapes.shape}, pattern_ids={pattern_ids.shape}")
+            
+            # CRITICAL DEBUG: Verify data storage
+            logging.info(f"         🔍 Phase A data storage verification:")
+            logging.info(f"           - _last_phase_a_data keys: {list(self._last_phase_a_data.keys())}")
+            for pattern_id in [1, 2, 3]:
+                if pattern_id in self._last_phase_a_data:
+                    stored_grids = self._last_phase_a_data[pattern_id]['grids']
+                    logging.info(f"           - Pattern {pattern_id}: {len(stored_grids)} samples stored")
+                else:
+                    logging.error(f"           - Pattern {pattern_id}: NOT STORED!")
             
             self._generate_phase_a_certainty_plots(enc_idx, encoder_params, eval_data, current_global_step, step, total_steps)
             
@@ -5896,8 +5950,8 @@ class StructuredTrainer:
                         phase_a_grids = self._last_phase_a_data[pattern_id]['grids']
                         logging.info(f"   Phase A Pattern {pattern_id}: {len(phase_a_grids)} samples, shape: {phase_a_grids.shape}")
             
-            # CRITICAL DECISION: Use Phase A data if available to ensure consistency
-            # This prevents the histogram destruction issue
+            # CRITICAL DECISION: ALWAYS use Phase A data if available to ensure consistency
+            # This prevents the histogram destruction issue caused by smaller pre-loaded datasets
             if hasattr(self, '_last_phase_a_data') and self._last_phase_a_data:
                 logging.info(f"🔍 USING Phase A data for consistency (prevents histogram destruction):")
                 for pattern_id in [1, 2, 3]:
@@ -5906,8 +5960,11 @@ class StructuredTrainer:
                         grids, shapes, pattern_ids = eval_data[pattern_id]
                         logging.info(f"   ✅ Pattern {pattern_id}: Using Phase A data with {len(grids)} samples")
                 logging.info(f"   ✅ This ensures histograms show the SAME samples as Phase A")
+                logging.info(f"   ✅ NO MORE HISTOGRAM DESTRUCTION - consistent 1260 samples")
             else:
-                logging.info(f"🔍 No Phase A data available, using pre-loaded datasets:")
+                logging.error(f"🔍 CRITICAL ERROR: No Phase A data available!")
+                logging.error(f"   This will cause poor histogram quality (96 vs 1260 samples)")
+                logging.error(f"   Falling back to pre-loaded datasets (inferior quality)")
                 for pattern_id in [1, 2, 3]:
                     # Use ALL samples for each pattern (like training does) - no artificial limits
                     logging.info(f"   📊 Creating dataset for pattern {pattern_id}")
