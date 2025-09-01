@@ -897,9 +897,13 @@ class LPN(nn.Module):
                 # Get initial log probs for the starting latents
                 initial_log_probs = vmap_log_probs_fn(original_latents, input_seq, output_seq, self.decoder)
                 
-                # Concatenate: [initial, step1, step2, ..., stepN]
-                trajectory_latents = jnp.concatenate([original_latents, all_latents], axis=-2)
-                trajectory_log_probs = jnp.concatenate([initial_log_probs, all_log_probs], axis=-2)
+                # Fix: reshape all_latents to match original_latents dimensions
+                # all_latents has shape (1, 4, 1, 1000, 8) -> need (1, 4, 1000, 8)
+                # Move the steps dimension to the correct position
+                reshaped_all_latents = all_latents.reshape(*all_latents.shape[:-2], -1, all_latents.shape[-1])
+                reshaped_all_log_probs = all_log_probs.reshape(*all_log_probs.shape[:-2], -1, all_log_probs.shape[-1])
+                trajectory_latents = jnp.concatenate([original_latents, reshaped_all_latents], axis=-2)
+                trajectory_log_probs = jnp.concatenate([initial_log_probs, reshaped_all_log_probs], axis=-2)
                 
                 # Debug logging to show the fix is working
                 print(f"         🔧 GA trajectory fix: original_latents shape={original_latents.shape}, all_latents shape={all_latents.shape}")

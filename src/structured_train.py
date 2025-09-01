@@ -1355,31 +1355,40 @@ class StructuredTrainer:
                 other_var = jnp.exp(logvar[other_mask])
                 avg_other_var = jnp.mean(other_var)
                 
-                # FIXED: Contrastive loss: minimize target variance, maximize other variance
+                # CRITICAL FIX: Contrastive loss that actually works for specialization
                 # We want: target_var << other_var (target pattern gets high confidence, others get low confidence)
                 
-                # FIXED: Use configurable coefficient and ensure positive loss
-                contrastive_coeff = self.cfg.training.get("contrastive_kl", 0.5)
+                # Use configurable coefficients
+                alpha_T = self.cfg.training.get("contrastive_kl", 0.1)  # Target pattern coefficient
+                alpha_O = self.cfg.training.get("contrastive_kl", 0.1)  # Other patterns coefficient
+                margin = self.cfg.training.get("contrastive_margin", 5.0)  # Target variance margin for other patterns
                 
-                # FIXED: Restructure to always be positive for stable training
-                target_cost = contrastive_coeff * avg_target_var  # Minimize target variance
-                other_cost = contrastive_coeff * avg_other_var   # Push other variance up (competition)
+                # Target subset (T): minimize variance (uncertainty down)
+                L_T = alpha_T * avg_target_var
                 
-                contrastive_loss = target_cost + other_cost  # Always positive, both terms push in right direction
+                # Other subset (O): push variance above margin (uncertainty up)
+                # Use hinge loss: max(0, margin - other_var) to push other_var above margin
+                L_O = alpha_O * jnp.mean(jnp.maximum(0, margin - avg_other_var))
+                
+                # Total contrastive loss: minimize target variance + push other variance above margin
+                contrastive_loss = L_T + L_O
                 
                 # Log contrastive loss components for debugging
                 if step % 10 == 0:
                     logging.info(f"         Contrastive Loss Components:")
                     logging.info(f"           - Target variance: {float(avg_target_var):.6f} (should decrease)")
-                    logging.info(f"           - Other variance: {float(avg_other_var):.6f} (should increase)")
-                    logging.info(f"           - Target cost: {float(target_cost):.6f} (minimize)")
-                    logging.info(f"           - Other cost: {float(other_cost):.6f} (push up)")
-                    logging.info(f"           - Total contrastive loss: {float(contrastive_loss):.6f} (always positive)")
+                    logging.info(f"           - Other variance: {float(avg_other_var):.6f} (should increase above {margin})")
+                    logging.info(f"           - L_T (target): {float(L_T):.6f} (minimize target variance)")
+                    logging.info(f"           - L_O (other): {float(L_O):.6f} (push other variance above {margin})")
+                    logging.info(f"           - Total contrastive loss: {float(contrastive_loss):.6f}")
                     logging.info(f"           - Specialization pressure: {float(contrastive_loss):.6f} (higher = stronger)")
                     logging.info(f"           - Variance difference: {float(avg_target_var - avg_other_var):.6f} (should become more negative)")
+                    logging.info(f"           - Margin violation: {float(jnp.maximum(0, margin - avg_other_var)):.6f} (should decrease)")
                 
                 # Add regularization to prevent extreme values
-                reg_loss = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
+                # CRITICAL FIX: Only regularize target variance, not other variance
+                # We want other variance to be HIGH, so don't penalize it
+                reg_loss = 0.01 * jnp.mean(target_var ** 2)  # Only regularize target variance
                 
                 # Add repulsion loss to push away from previous encoders' latent targets
                 repulsion_loss = 0.0
@@ -1447,7 +1456,8 @@ class StructuredTrainer:
                     contrastive_loss = L_T + L_O
                     
                     # Add regularization
-                    reg = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
+                    # CRITICAL FIX: Only regularize target variance, not other variance
+                    reg = 0.01 * jnp.mean(target_var ** 2)  # Only regularize target variance
                     
                     # Include repulsion loss in gradient computation
                     if repulsion_loss > 0:
@@ -3568,6 +3578,12 @@ class StructuredTrainer:
                 
                 if prev_target_pattern in prev_target_latents:
                     prev_latents = prev_target_latents[prev_target_pattern]
+                    
+                    # CRITICAL FIX: Validate latent shape before adding to list
+                    if len(prev_latents.shape) != 2 or prev_latents.shape[1] != current_latents.shape[1]:
+                        logging.warning(f"         ⚠️  Skipping Encoder {prev_enc_idx}: incompatible latent shape {prev_latents.shape}")
+                        continue
+                    
                     prev_latents_list.append(prev_latents)
                     
                     if verbose:
@@ -3581,16 +3597,35 @@ class StructuredTrainer:
             
             # SIMPLE: Compute mean of all previous target latents
             # This is the minimal, effective approach you recommended
-            prev_latents_mean = jnp.mean(jnp.stack(prev_latents_list, axis=0), axis=0)  # [latent_dim]
+            # Stack: [num_encoders, num_samples, latent_dim] -> mean over all samples and encoders -> [latent_dim]
+            stacked_latents = jnp.stack(prev_latents_list, axis=0)
+            logging.debug(f"         📊 Stacked latents shape: {stacked_latents.shape}")
+            
+            # CRITICAL FIX: Handle variable batch sizes by flattening all samples
+            # Reshape: [num_encoders, num_samples, latent_dim] -> [total_samples, latent_dim]
+            total_samples = stacked_latents.shape[0] * stacked_latents.shape[1]
+            flattened_latents = stacked_latents.reshape(total_samples, stacked_latents.shape[-1])
+            
+            # Compute mean over all samples: [total_samples, latent_dim] -> [latent_dim]
+            prev_latents_mean = jnp.mean(flattened_latents, axis=0)  # [latent_dim]
             
             if verbose:
                 logging.info(f"         📊 Current latents shape: {current_latents.shape}")
                 logging.info(f"         📊 Previous mean latents shape: {prev_latents_mean.shape}")
+                logging.info(f"         📊 Stacked latents shape: {jnp.stack(prev_latents_list, axis=0).shape}")
+                logging.info(f"         📊 Expected final shape: (32,)")
             
             # SIMPLE: Compute distances from current latents to previous mean
             # current_latents: [batch_size, latent_dim]
             # prev_latents_mean: [latent_dim]
             # distances: [batch_size]
+            
+            # CRITICAL FIX: Validate shapes before computation
+            if prev_latents_mean.shape != (current_latents.shape[1],):
+                logging.error(f"       🚨 SHAPE MISMATCH: prev_latents_mean {prev_latents_mean.shape} != expected {(current_latents.shape[1],)}")
+                logging.error(f"       🚨 This will cause broadcasting error. Returning 0.0 loss.")
+                return 0.0
+            
             distances = jnp.sqrt(jnp.sum((current_latents - prev_latents_mean[None, :]) ** 2, axis=1))
             
             # SIMPLE: Hinge loss - no penalty when distance > margin, otherwise push away
@@ -3606,6 +3641,7 @@ class StructuredTrainer:
                 
         except Exception as e:
             logging.warning(f"       ⚠️  Error computing repulsion loss: {e}")
+            logging.warning(f"       ⚠️  Stack trace: {traceback.format_exc()}")
             return 0.0
     
     def _generate_phase2_plots(self, all_encoder_outputs: list, pattern_ids: chex.Array, num_steps: int) -> dict:
@@ -3881,6 +3917,7 @@ class StructuredTrainer:
         
         logging.info(f"🔍 CRITICAL: Pattern ID integrity verification for {context}")
         logging.info(f"   - Data keys: {list(data_dict.keys())}")
+        logging.info(f"   - Data types: {[(k, type(data_dict[k])) for k in data_dict.keys()]}")
         
         all_valid = True
         
@@ -3890,7 +3927,30 @@ class StructuredTrainer:
                 all_valid = False
                 continue
                 
-            grids, shapes, pattern_ids = data_dict[pattern_id]
+            # Handle both tuple and dictionary formats
+            pattern_data = data_dict[pattern_id]
+            if isinstance(pattern_data, dict):
+                # New format: dictionary with keys 'grids', 'shapes', 'pattern_ids'
+                grids = pattern_data.get('grids')
+                shapes = pattern_data.get('shapes')
+                pattern_ids = pattern_data.get('pattern_ids')
+                
+                # Validate that all required keys are present
+                if grids is None or shapes is None or pattern_ids is None:
+                    logging.error(f"   ❌ Pattern {pattern_id}: Missing required keys in dictionary format")
+                    logging.error(f"      Available keys: {list(pattern_data.keys())}")
+                    all_valid = False
+                    continue
+                    
+            elif isinstance(pattern_data, (tuple, list)) and len(pattern_data) == 3:
+                # Old format: tuple of (grids, shapes, pattern_ids)
+                grids, shapes, pattern_ids = pattern_data
+            else:
+                logging.error(f"   ❌ Pattern {pattern_id}: Invalid data format: {type(pattern_data)}")
+                logging.error(f"      Expected: dict with 'grids', 'shapes', 'pattern_ids' keys OR tuple of 3 elements")
+                logging.error(f"      Got: {type(pattern_data)} with {len(pattern_data) if hasattr(pattern_data, '__len__') else 'no length'} elements")
+                all_valid = False
+                continue
             
             # CRITICAL CHECK 1: Verify pattern_ids array exists and has correct shape
             if pattern_ids is None:
