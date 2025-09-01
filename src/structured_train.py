@@ -3487,7 +3487,9 @@ class StructuredTrainer:
         logging.info(f"🔍 REPULSION LOSS COMPUTATION DEBUG:")
         logging.info(f"   - current_encoder_idx: {current_encoder_idx}")
         logging.info(f"   - target_latents_store keys: {list(target_latents_store.keys()) if target_latents_store else 'None'}")
-        logging.info(f"   - current_latents shape: {current_latents.shape}")
+        # Convert JAX tensor shape to Python tuple for safe logging
+        current_shape = tuple(current_latents.shape) if hasattr(current_latents, 'shape') else 'No shape'
+        logging.info(f"   - current_latents shape: {current_shape}")
         logging.info(f"   - margin: {margin}")
         
         # Adaptive margin: if margin is too small, compute a reasonable one based on data
@@ -3533,12 +3535,16 @@ class StructuredTrainer:
                 
                 # For each pattern, compute repulsion from previous encoder's targets
                 for pattern_id, target_latents in prev_targets.items():
-                    logging.info(f"       - Pattern {pattern_id}: target_latents type={type(target_latents)}, shape={target_latents.shape if hasattr(target_latents, 'shape') else 'No shape'}")
+                    # Convert JAX tensor shape to Python tuple for safe logging
+                    target_shape = tuple(target_latents.shape) if hasattr(target_latents, 'shape') else 'No shape'
+                    logging.info(f"       - Pattern {pattern_id}: target_latents type={type(target_latents)}, shape={target_shape}")
                     
                     if target_latents is not None and len(target_latents) > 0:
                         # Ensure target latents have the same batch size
-                        if len(target_latents) == len(current_latents):
-                            logging.info(f"         * Batch sizes match: {len(target_latents)} == {len(current_latents)}")
+                        target_len = int(target_latents.shape[0]) if hasattr(target_latents, 'shape') else len(target_latents)
+                        current_len = int(current_latents.shape[0]) if hasattr(current_latents, 'shape') else len(current_latents)
+                        if target_len == current_len:
+                            logging.info(f"         * Batch sizes match: {target_len} == {current_len}")
                             
                             # Compute L2 distance between current and target latents
                             distances = jnp.linalg.norm(current_latents - target_latents, axis=1)
@@ -3564,28 +3570,39 @@ class StructuredTrainer:
                             repulsion_loss += final_repulsion_term
                             num_repulsion_terms += 1
                         else:
-                            logging.warning(f"         * Batch size mismatch: {len(target_latents)} != {len(current_latents)}")
+                            logging.warning(f"         * Batch size mismatch: {target_len} != {current_len}")
                             logging.warning(f"         * Attempting to resize target latents to match current batch size")
                             
                             # Try to resize target latents to match current batch size
                             try:
-                                if len(target_latents) > len(current_latents):
+                                # Convert JAX tensors to numpy arrays for safe numpy operations
+                                if hasattr(target_latents, 'numpy'):
+                                    target_latents_np = target_latents.numpy()
+                                else:
+                                    target_latents_np = np.array(target_latents)
+                                
+                                if target_len > current_len:
                                     # Sample from target latents to match current batch size
-                                    indices = np.random.choice(len(target_latents), len(current_latents), replace=False)
-                                    resized_target_latents = target_latents[indices]
+                                    indices = np.random.choice(target_len, current_len, replace=False)
+                                    resized_target_latents = target_latents_np[indices]
                                 else:
                                     # Repeat target latents to match current batch size
-                                    repeat_factor = len(current_latents) // len(target_latents)
-                                    remainder = len(current_latents) % len(target_latents)
-                                    resized_target_latents = np.tile(target_latents, (repeat_factor, 1))
+                                    repeat_factor = current_len // target_len
+                                    remainder = current_len % target_len
+                                    resized_target_latents = np.tile(target_latents_np, (repeat_factor, 1))
                                     if remainder > 0:
-                                        additional = target_latents[:remainder]
+                                        additional = target_latents_np[:remainder]
                                         resized_target_latents = np.vstack([resized_target_latents, additional])
                                 
-                                # Convert to numpy arrays for safe logging (avoid JAX format string issues)
-                                target_size = int(np.array(target_latents.shape[0])) if hasattr(target_latents, 'shape') else len(target_latents)
-                                resized_size = int(np.array(resized_target_latents.shape[0])) if hasattr(resized_target_latents, 'shape') else len(resized_target_latents)
+                                # Convert to Python scalars for safe logging (avoid JAX format string issues)
+                                target_size = int(target_latents_np.shape[0])
+                                resized_size = int(resized_target_latents.shape[0])
                                 logging.info(f"         * Resized target latents from {target_size} to {resized_size}")
+
+                                # Safety check: ensure resized tensor has correct shape
+                                if resized_target_latents.shape[0] != current_len:
+                                    logging.error(f"         ❌ Resize failed: expected {current_len}, got {resized_target_latents.shape[0]}")
+                                    continue
 
                                 # Compute L2 distance between current and resized target latents
                                 resized_target_latents = jnp.asarray(resized_target_latents)
@@ -3612,7 +3629,55 @@ class StructuredTrainer:
                                 
                             except Exception as resize_error:
                                 logging.warning(f"         * Failed to resize target latents: {resize_error}")
-                                logging.warning(f"         * Skipping this repulsion term")
+                                logging.warning(f"         * Trying alternative strategy: resize current latents to match target")
+                                
+                                # Alternative strategy: try to resize current latents to match target batch size
+                                try:
+                                    if hasattr(current_latents, 'numpy'):
+                                        current_latents_np = current_latents.numpy()
+                                    else:
+                                        current_latents_np = np.array(current_latents)
+                                    
+                                    if current_len > target_len:
+                                        # Sample from current latents to match target batch size
+                                        indices = np.random.choice(current_len, target_len, replace=False)
+                                        resized_current_latents = current_latents_np[indices]
+                                        resized_target_latents = target_latents_np
+                                    else:
+                                        # Use all current latents, repeat target latents if needed
+                                        resized_current_latents = current_latents_np
+                                        repeat_factor = target_len // current_len
+                                        remainder = target_len % current_len
+                                        resized_target_latents = np.tile(target_latents_np, (repeat_factor, 1))
+                                        if remainder > 0:
+                                            additional = target_latents_np[:remainder]
+                                            resized_target_latents = np.vstack([resized_target_latents, additional])
+                                    
+                                    logging.info(f"         * Alternative strategy: resized current latents to {resized_current_latents.shape[0]}, target to {resized_target_latents.shape[0]}")
+                                    
+                                    # Safety check
+                                    if resized_current_latents.shape[0] != resized_target_latents.shape[0]:
+                                        logging.error(f"         ❌ Alternative strategy failed: size mismatch {resized_current_latents.shape[0]} != {resized_target_latents.shape[0]}")
+                                        continue
+                                    
+                                    # Compute L2 distance between resized current and target latents
+                                    resized_current_latents = jnp.asarray(resized_current_latents)
+                                    resized_target_latents = jnp.asarray(resized_target_latents)
+                                    distances = jnp.linalg.norm(resized_current_latents - resized_target_latents, axis=1)
+                                    
+                                    # Repulsion loss computation
+                                    repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
+                                    soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))
+                                    final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)
+                                    
+                                    jax.debug.print("         * Alternative strategy repulsion term: {rt:.6f}", rt=final_repulsion_term)
+                                    
+                                    repulsion_loss += final_repulsion_term
+                                    num_repulsion_terms += 1
+                                    
+                                except Exception as alt_error:
+                                    logging.warning(f"         * Alternative strategy also failed: {alt_error}")
+                                    logging.warning(f"         * Skipping this repulsion term - both strategies failed")
                     else:
                         logging.warning(f"         * Invalid target_latents: {target_latents}")
             else:
@@ -3623,8 +3688,10 @@ class StructuredTrainer:
             repulsion_loss = repulsion_loss / num_repulsion_terms
             jax.debug.print("   - Final repulsion loss: {loss:.6f} (from {n} terms)",
                             loss=repulsion_loss, n=num_repulsion_terms)
+            logging.info(f"   ✅ REPULSION LOSS COMPUTATION SUCCESSFUL: {float(repulsion_loss):.6f} from {num_repulsion_terms} terms")
         else:
             jax.debug.print("   - No repulsion terms computed, returning 0.0")
+            logging.warning(f"   ⚠️  REPULSION LOSS COMPUTATION FAILED - no valid terms")
         
         return repulsion_loss
     
@@ -5892,29 +5959,81 @@ class StructuredTrainer:
                     poe_alphas = np.ones(len(self.encoders)) / len(self.encoders)
                     
                     # Compute POE mean and variance using the poe_diag_gaussians function
-                    from models.structured_lpn import poe_diag_gaussians
-                    poe_mu, poe_logvar = poe_diag_gaussians(
-                        stacked_mus[None, ...],  # Add batch dimension [1, E, H]
-                        stacked_logvars[None, ...],  # Add batch dimension [1, E, H]
-                        poe_alphas
-                    )
-                    poe_mu = poe_mu.squeeze(0)  # Remove batch dimension [H]
-                    poe_logvar = poe_logvar.squeeze(0)  # Remove batch dimension [H]
-                    
-                    # Convert POE logvar to variance and compute statistics
-                    poe_var = np.exp(poe_logvar)
-                    poe_mean_var = np.mean(poe_var)
-                    poe_std_var = np.std(poe_var)
-                    
-                    # Plot POE Gaussian FIRST (at the back)
-                    poe_gaussian = norm.pdf(x_plot, poe_mean_var, poe_std_var)
-                    # Normalize the POE Gaussian to match the scale of encoder Gaussians
-                    poe_gaussian = poe_gaussian / np.max(poe_gaussian)
-                    ax_gauss.plot(x_plot, poe_gaussian, color='#d62728', linewidth=3, alpha=0.9, 
-                                label='PoE (Product of Experts)', linestyle='-')
-                    
-                    # Add vertical line for POE mean variance
-                    ax_gauss.axvline(poe_mean_var, color='#d62728', linestyle='--', alpha=0.8, linewidth=2)
+                    try:
+                        from models.structured_lpn import poe_diag_gaussians
+                        
+                        # Debug: Log input shapes
+                        logging.debug(f"       🔍 POE input shapes: stacked_mus={stacked_mus[None, ...].shape}, stacked_logvars={stacked_logvars[None, ...].shape}, alphas={poe_alphas.shape}")
+                        
+                        poe_mu, poe_logvar = poe_diag_gaussians(
+                            stacked_mus[None, ...],  # Add batch dimension [1, E, H]
+                            stacked_logvars[None, ...],  # Add batch dimension [1, E, H]
+                            poe_alphas
+                        )
+                        
+                        # Debug: Log output shapes
+                        logging.debug(f"       🔍 POE output shapes: poe_mu={poe_mu.shape}, poe_logvar={poe_logvar.shape}")
+                        
+                        # Handle different possible shapes from poe_diag_gaussians
+                        # Expected: (1, H) or (H,) - handle both cases safely
+                        if poe_mu.ndim > 1 and poe_mu.shape[0] == 1:
+                            # Shape is (1, H) - safe to squeeze
+                            poe_mu = poe_mu.squeeze(0)  # Remove batch dimension [H]
+                            poe_logvar = poe_logvar.squeeze(0)  # Remove batch dimension [H]
+                        elif poe_mu.ndim == 1:
+                            # Shape is already (H,) - no need to squeeze
+                            poe_mu = poe_mu
+                            poe_logvar = poe_logvar
+                        else:
+                            # Unexpected shape - log warning and try to handle
+                            logging.warning(f"       ⚠️  Unexpected POE output shape: mu={poe_mu.shape}, logvar={poe_logvar.shape}")
+                            # Try to flatten to 1D if possible
+                            if poe_mu.size == poe_mu.shape[-1]:  # Last dimension is the latent dimension
+                                poe_mu = poe_mu.flatten()
+                                poe_logvar = poe_logvar.flatten()
+                            else:
+                                # Fallback: use first element if it's a batch
+                                poe_mu = poe_mu[0] if poe_mu.ndim > 1 else poe_mu
+                                poe_logvar = poe_logvar[0] if poe_logvar.ndim > 1 else poe_logvar
+                        
+                        # Convert POE logvar to variance and compute statistics
+                        # Ensure we have valid numpy arrays
+                        if hasattr(poe_logvar, 'numpy'):
+                            poe_logvar_np = poe_logvar.numpy()
+                        else:
+                            poe_logvar_np = np.array(poe_logvar)
+                        
+                        if hasattr(poe_mu, 'numpy'):
+                            poe_mu_np = poe_mu.numpy()
+                        else:
+                            poe_mu_np = np.array(poe_mu)
+                        
+                        # Safety check: ensure we have valid shapes
+                        if poe_logvar_np.size == 0 or poe_mu_np.size == 0:
+                            logging.error(f"       ❌ POE outputs have zero size: mu={poe_mu_np.size}, logvar={poe_logvar_np.size}")
+                            continue
+                        
+                        poe_var = np.exp(poe_logvar_np)
+                        poe_mean_var = np.mean(poe_var)
+                        poe_std_var = np.std(poe_var)
+                        
+                        logging.debug(f"       ✅ POE statistics computed: mean_var={poe_mean_var:.6f}, std_var={poe_std_var:.6f}")
+                        
+                        # Plot POE Gaussian FIRST (at the back)
+                        poe_gaussian = norm.pdf(x_plot, poe_mean_var, poe_std_var)
+                        # Normalize the POE Gaussian to match the scale of encoder Gaussians
+                        poe_gaussian = poe_gaussian / np.max(poe_gaussian)
+                        ax_gauss.plot(x_plot, poe_gaussian, color='#d62728', linewidth=3, alpha=0.9, 
+                                    label='PoE (Product of Experts)', linestyle='-')
+                        
+                        # Add vertical line for POE mean variance
+                        ax_gauss.axvline(poe_mean_var, color='#d62728', linestyle='--', alpha=0.8, linewidth=2)
+                        
+                    except Exception as poe_error:
+                        logging.warning(f"       ⚠️  POE computation failed for pattern {pattern_id}: {poe_error}")
+                        logging.debug(f"       🔍 POE error details: {type(poe_error).__name__}: {str(poe_error)}")
+                        # Continue without POE visualization for this pattern, but still plot encoder Gaussians
+                        logging.info(f"       ℹ️  Continuing with encoder-only visualization for pattern {pattern_id}")
                     
                     # Plot normalized Gaussian for each encoder
                     max_gaussian_height = 0  # Track max height for normalization
@@ -5948,15 +6067,24 @@ class StructuredTrainer:
                     ax_gauss.legend(fontsize=10)
                     ax_gauss.grid(True, alpha=0.3)
                     
-                    # Add POE statistics to the plot
-                    poe_stats_text = f'PoE: μ={poe_mean_var:.4f}, σ={poe_std_var:.4f}'
-                    ax_gauss.text(0.02, 0.98, poe_stats_text, transform=ax_gauss.transAxes, 
-                               verticalalignment='top', fontsize=9, 
-                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    # Add POE statistics to the plot (only if POE was computed successfully)
+                    if 'poe_mean_var' in locals():
+                        poe_stats_text = f'PoE: μ={poe_mean_var:.4f}, σ={poe_std_var:.4f}'
+                        ax_gauss.text(0.02, 0.98, poe_stats_text, transform=ax_gauss.transAxes, 
+                                   verticalalignment='top', fontsize=9, 
+                                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    else:
+                        # Add note that POE is not available
+                        ax_gauss.text(0.02, 0.98, 'PoE: Not available', transform=ax_gauss.transAxes, 
+                                   verticalalignment='top', fontsize=9, 
+                                   bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
                     
                     logging.info(f"       ✅ Pattern {pattern_id} merged histograms and Gaussian functions created with {len(all_encoder_mus)} encoders")
                     logging.info(f"         - Encoder {min_var_idx} highlighted (★) as most confident (smallest variance)")
-                    logging.info(f"         - PoE Gaussian added and normalized")
+                    if 'poe_mean_var' in locals():
+                        logging.info(f"         - PoE Gaussian added and normalized")
+                    else:
+                        logging.info(f"         - PoE visualization skipped (computation failed)")
                 else:
                     ax_hist.text(0.5, 0.5, f'No data for Pattern {pattern_id}', 
                                ha='center', va='center', transform=ax_hist.transAxes)
