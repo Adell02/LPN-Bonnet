@@ -1969,20 +1969,41 @@ class StructuredTrainer:
                 )
                 all_encoder_outputs.append(encoder_outputs)
             
-            # Phase 2: Generate periodic T-SNE visualizations (every 50 steps)
+            # Phase 2: Generate periodic T-SNE visualizations and clustering metrics (every 50 steps)
             if i % 50 == 0 and i > 0:
                 try:
-                    logging.info(f"🔍 Phase 2: Generating periodic T-SNE at step {i}/{num_steps}")
+                    logging.info(f"🔍 Phase 2: Generating periodic T-SNE and clustering metrics at step {i}/{num_steps}")
+                    
+                    # Generate periodic T-SNE
                     periodic_tsne_metrics = self._generate_phase2_tsne_visualizations(
                         state, explicit_pattern_ids, i
                     )
+                    
+                    # Generate periodic clustering metrics
+                    try:
+                        clustering_data = self._create_comprehensive_clustering_data(state, explicit_pattern_ids)
+                        if clustering_data:
+                            periodic_clustering_metrics = self._compute_phase2_clustering_metrics(clustering_data)
+                            periodic_distance_metrics = self._compute_phase2_distance_metrics(clustering_data)
+                            
+                            # Log periodic clustering metrics to WandB
+                            for key, value in periodic_clustering_metrics.items():
+                                wandb.log({f"phase_2_periodic/{key}": value}, step=i)
+                            for key, value in periodic_distance_metrics.items():
+                                wandb.log({f"phase_2_periodic/{key}": value}, step=i)
+                            
+                            logging.info(f"✅ Phase 2: Periodic clustering metrics computed and logged at step {i}")
+                        else:
+                            logging.warning(f"⚠️  Phase 2: Failed to create clustering data for periodic logging")
+                    except Exception as e:
+                        logging.warning(f"⚠️  Phase 2: Periodic clustering metrics computation failed at step {i}: {e}")
                     
                     # Log periodic T-SNE to WandB
                     for key, value in periodic_tsne_metrics.items():
                         if "tsne" in key:
                             wandb.log({f"phase_2_periodic/{key}": value}, step=i)
                     
-                    logging.info(f"✅ Phase 2: Periodic T-SNE generated at step {i}")
+                    logging.info(f"✅ Phase 2: Periodic T-SNE and clustering metrics generated at step {i}")
                 except Exception as e:
                     logging.warning(f"Phase 2 periodic T-SNE generation failed at step {i}: {e}")
         
@@ -2084,7 +2105,24 @@ class StructuredTrainer:
             decoder_metrics = self._compute_decoder_training_metrics(avg_metrics)
             phase2_metrics.update(decoder_metrics)
             
-            # 4. GENERATE PHASE 2 PLOTS
+            # 4. CLUSTERING METRICS (encoder specialization and latent space analysis)
+            try:
+                logging.info(f"🔍 Phase 2: Computing clustering metrics...")
+                clustering_data = self._create_comprehensive_clustering_data(state, pattern_ids)
+                if clustering_data:
+                    clustering_metrics = self._compute_phase2_clustering_metrics(clustering_data)
+                    phase2_metrics.update(clustering_metrics)
+                    
+                    distance_metrics = self._compute_phase2_distance_metrics(clustering_data)
+                    phase2_metrics.update(distance_metrics)
+                    
+                    logging.info(f"✅ Phase 2: Clustering metrics computed and added to phase2_metrics")
+                else:
+                    logging.warning(f"⚠️  Phase 2: Failed to create clustering data")
+            except Exception as e:
+                logging.warning(f"⚠️  Phase 2: Clustering metrics computation failed: {e}")
+            
+            # 5. GENERATE PHASE 2 PLOTS
             phase2_plots = self._generate_phase2_plots(
                 all_encoder_outputs, pattern_ids, num_steps
             )
@@ -2414,6 +2452,17 @@ class StructuredTrainer:
                 clustering_metrics[f"phase_2/clustering/source/ari_k{k}"] = ari_score
             
             logging.info(f"Phase 2: Clustering metrics computed: {clustering_metrics}")
+            
+            # Log summary of clustering metrics for debugging
+            if clustering_metrics:
+                logging.info(f"Phase 2: Clustering metrics summary:")
+                for key, value in clustering_metrics.items():
+                    if "error" not in key:
+                        logging.info(f"  - {key}: {value:.6f}" if isinstance(value, (int, float)) else f"  - {key}: {value}")
+                    else:
+                        logging.warning(f"  - {key}: {value}")
+            else:
+                logging.warning("Phase 2: No clustering metrics computed")
             
         except Exception as e:
             logging.warning(f"Phase 2 clustering metrics computation failed: {e}")
@@ -3139,13 +3188,22 @@ class StructuredTrainer:
                     # Keep plots as is for WandB media logging
                     organized_metrics[key] = value
             
-            # 4. Charts section for better visualization
+            # 4. Clustering metrics (ensure they're properly logged)
+            for key, value in metrics.items():
+                if key.startswith("phase_2/clustering/"):
+                    # Keep clustering metrics as is for proper organization
+                    organized_metrics[key] = value
+                elif key.startswith("phase_2/distance/"):
+                    # Keep distance metrics as is
+                    organized_metrics[key] = value
+            
+            # 5. Charts section for better visualization
             if "contrastive_loss" in metrics:
                 organized_metrics["Charts/contrastive_loss"] = metrics["contrastive_loss"]
             if "contrastive_loss_weighted" in metrics:
                 organized_metrics["Charts/contrastive_loss_weighted"] = metrics["contrastive_loss_weighted"]
             
-            # 5. Phase 2 summary metrics
+            # 6. Phase 2 summary metrics
             organized_metrics["phase_b/summary/training_mode"] = "Joint Decoder Training"
             organized_metrics["phase_b/summary/encoder_status"] = "Frozen (Maintaining Specialization)"
             organized_metrics["phase_b/summary/decoder_status"] = "Trainable (Reconstruction Focus)"
@@ -3444,16 +3502,17 @@ class StructuredTrainer:
                         if target_latents is not None and len(target_latents) > 0:
                             if len(target_latents) == len(current_latents):
                                 sample_dist = jnp.linalg.norm(current_latents - target_latents, axis=1)
-                                sample_distances.append(float(jnp.mean(sample_dist)))
+                                sample_distances.append(jnp.mean(sample_dist))
                                 break  # Just need one sample per encoder
                             if len(sample_distances) >= 2:  # Get samples from 2 encoders
                                 break
                     if len(sample_distances) >= 2:
                         break
-            
+
             if sample_distances:
-                adaptive_margin = max(1.0, min(sample_distances) * 0.8)  # 80% of minimum observed distance
-                logging.info(f"   - Adaptive margin computed: {adaptive_margin:.3f} (from sample distances: {sample_distances})")
+                sample_array = jnp.stack(sample_distances)
+                adaptive_margin = jnp.maximum(1.0, jnp.min(sample_array) * 0.8)
+                jax.debug.print("   - Adaptive margin computed: {m:.3f}", m=adaptive_margin)
                 margin = adaptive_margin
         
         if not target_latents_store or current_encoder_idx == 0:
@@ -3484,7 +3543,9 @@ class StructuredTrainer:
                             
                             # Compute L2 distance between current and target latents
                             distances = jnp.linalg.norm(current_latents - target_latents, axis=1)
-                            logging.info(f"         * Distances shape: {distances.shape}, mean: {float(jnp.mean(distances)):.6f}")
+                            jax.debug.print("         * Distances shape: {shape}, mean: {mean:.6f}",
+                                             shape=distances.shape,
+                                             mean=jnp.mean(distances))
                             
                             # Repulsion loss: penalize when distance < margin
                             # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2^2)
@@ -3497,9 +3558,9 @@ class StructuredTrainer:
                             # Use the maximum of both approaches
                             final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)  # Scale soft term down
                             
-                            logging.info(f"         * Repulsion term: {float(repulsion_term):.6f}")
-                            logging.info(f"         * Soft repulsion term: {float(soft_repulsion_term):.6f}")
-                            logging.info(f"         * Final repulsion term: {float(final_repulsion_term):.6f}")
+                            jax.debug.print("         * Repulsion term: {rt:.6f}", rt=repulsion_term)
+                            jax.debug.print("         * Soft repulsion term: {srt:.6f}", srt=soft_repulsion_term)
+                            jax.debug.print("         * Final repulsion term: {frt:.6f}", frt=final_repulsion_term)
                             
                             repulsion_loss += final_repulsion_term
                             num_repulsion_terms += 1
@@ -3523,10 +3584,13 @@ class StructuredTrainer:
                                         resized_target_latents = np.vstack([resized_target_latents, additional])
                                 
                                 logging.info(f"         * Resized target latents from {len(target_latents)} to {len(resized_target_latents)}")
-                                
+
                                 # Compute L2 distance between current and resized target latents
+                                resized_target_latents = jnp.asarray(resized_target_latents)
                                 distances = jnp.linalg.norm(current_latents - resized_target_latents, axis=1)
-                                logging.info(f"         * Resized distances shape: {distances.shape}, mean: {float(jnp.mean(distances)):.6f}")
+                                jax.debug.print("         * Resized distances shape: {shape}, mean: {mean:.6f}",
+                                                shape=distances.shape,
+                                                mean=jnp.mean(distances))
                                 
                                 # Repulsion loss: penalize when distance < margin
                                 repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
@@ -3537,9 +3601,9 @@ class StructuredTrainer:
                                 # Use the maximum of both approaches
                                 final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)
                                 
-                                logging.info(f"         * Resized repulsion term: {float(repulsion_term):.6f}")
-                                logging.info(f"         * Resized soft repulsion term: {float(soft_repulsion_term):.6f}")
-                                logging.info(f"         * Resized final repulsion term: {float(final_repulsion_term):.6f}")
+                                jax.debug.print("         * Resized repulsion term: {rt:.6f}", rt=repulsion_term)
+                                jax.debug.print("         * Resized soft repulsion term: {srt:.6f}", srt=soft_repulsion_term)
+                                jax.debug.print("         * Resized final repulsion term: {frt:.6f}", frt=final_repulsion_term)
                                 
                                 repulsion_loss += final_repulsion_term
                                 num_repulsion_terms += 1
@@ -3555,9 +3619,10 @@ class StructuredTrainer:
         # Average over all repulsion terms
         if num_repulsion_terms > 0:
             repulsion_loss = repulsion_loss / num_repulsion_terms
-            logging.info(f"   - Final repulsion loss: {float(repulsion_loss):.6f} (from {num_repulsion_terms} terms)")
+            jax.debug.print("   - Final repulsion loss: {loss:.6f} (from {n} terms)",
+                            loss=repulsion_loss, n=num_repulsion_terms)
         else:
-            logging.info(f"   - No repulsion terms computed, returning 0.0")
+            jax.debug.print("   - No repulsion terms computed, returning 0.0")
         
         return repulsion_loss
     
@@ -4809,6 +4874,17 @@ class StructuredTrainer:
                     else:
                         wandb.log(clustering_metrics, step=step)
                     logging.info(f"Clustering metrics computed: {clustering_metrics}")
+                    
+                    # Log summary of clustering metrics for debugging
+                    if clustering_metrics:
+                        logging.info(f"Main evaluation: Clustering metrics summary:")
+                        for key, value in clustering_metrics.items():
+                            if "error" not in key:
+                                logging.info(f"  - {key}: {value:.6f}" if isinstance(value, (int, float)) else f"  - {key}: {value}")
+                            else:
+                                logging.warning(f"  - {key}: {value}")
+                    else:
+                        logging.warning("Main evaluation: No clustering metrics computed")
                 else:
                     # If no step provided, use a step value that's greater than current WandB step
                     current_wandb_step = wandb.run.step if hasattr(wandb.run, 'step') else 0
@@ -4816,6 +4892,17 @@ class StructuredTrainer:
                     wandb.log(clustering_metrics, step=default_step)
                     logging.warning(f"⚠️  Clustering metrics logged with default step={default_step} (step parameter was None)")
                     logging.info(f"Clustering metrics computed (default step): {clustering_metrics}")
+                    
+                    # Log summary of clustering metrics for debugging
+                    if clustering_metrics:
+                        logging.info(f"Main evaluation (default step): Clustering metrics summary:")
+                        for key, value in clustering_metrics.items():
+                            if "error" not in key:
+                                logging.info(f"  - {key}: {value:.6f}" if isinstance(value, (int, float)) else f"  - {key}: {value}")
+                            else:
+                                logging.warning(f"  - {key}: {value}")
+                    else:
+                        logging.warning("Main evaluation (default step): No clustering metrics computed")
                 
             except Exception as e:
                 logging.warning(f"Clustering metrics computation failed: {e}")
@@ -5729,16 +5816,32 @@ class StructuredTrainer:
                     # Use different colors for each encoder
                     colors = ['#FBB998', '#DB74DB', '#5361E5']  # Orange, Pink, Blue
                     
+                    # Find the encoder with smallest mean variance to highlight
+                    mean_variances = [np.mean(variances) for variances in all_encoder_variances]
+                    min_var_idx = np.argmin(mean_variances)
+                    
+                    # Create uniform bins across the entire range of all encoder variances
+                    all_vars = np.concatenate(all_encoder_variances)
+                    x_min, x_max = np.min(all_vars), np.max(all_vars)
+                    x_range = x_max - x_min
+                    # Create 30 uniform bins
+                    bins = np.linspace(x_min, x_max, 31)  # 31 edges = 30 bins
+                    
                     for enc_idx, (variances, label, color) in enumerate(zip(all_encoder_variances, encoder_labels, colors)):
-                        # Create histogram with transparency for overlap
-                        ax_hist.hist(variances, bins=30, alpha=0.7, label=label, color=color, 
-                                   edgecolor='black', linewidth=0.5)
+                        # Highlight the encoder with smallest variance, make others less visible
+                        is_highlighted = enc_idx == min_var_idx
+                        alpha = 0.9 if is_highlighted else 0.4
+                        linewidth = 2.0 if is_highlighted else 0.5
+                        
+                        # Create histogram with uniform bins
+                        ax_hist.hist(variances, bins=bins, alpha=alpha, label=label, color=color, 
+                                   edgecolor='black', linewidth=linewidth, density=True)
                     
                     # Customize the histogram subplot
                     ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances', 
                                    fontsize=14, fontweight='bold')
                     ax_hist.set_xlabel('Variance', fontsize=12)
-                    ax_hist.set_ylabel('Frequency', fontsize=12)
+                    ax_hist.set_ylabel('Density', fontsize=12)
                     ax_hist.legend(fontsize=10)
                     ax_hist.grid(True, alpha=0.3)
                     
@@ -5747,7 +5850,8 @@ class StructuredTrainer:
                     for enc_idx, variances in enumerate(all_encoder_variances):
                         mean_var = np.mean(variances)
                         std_var = np.std(variances)
-                        stats_text.append(f'E{enc_idx}: μ={mean_var:.4f}, σ={std_var:.4f}')
+                        status = "★" if enc_idx == min_var_idx else "○"
+                        stats_text.append(f'{status} E{enc_idx}: μ={mean_var:.4f}, σ={std_var:.4f}')
                     
                     stats_str = '\n'.join(stats_text)
                     ax_hist.text(0.02, 0.98, stats_str, transform=ax_hist.transAxes, 
@@ -5755,7 +5859,7 @@ class StructuredTrainer:
                                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                     
                     # Create Gaussian function plots for this pattern (bottom row)
-                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions', 
+                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions + PoE', 
                                        fontsize=14, fontweight='bold')
                     ax_gauss.set_xlabel('Variance', fontsize=12)
                     ax_gauss.set_ylabel('Density', fontsize=12)
@@ -5766,16 +5870,64 @@ class StructuredTrainer:
                     x_range = x_max - x_min
                     x_plot = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, 1000)
                     
-                    # Plot Gaussian for each encoder
+                    # Compute POE (Product of Experts) Gaussian
+                    # Stack encoder outputs for POE computation
+                    stacked_mus = np.stack([np.mean(mu) for mu in all_encoder_mus], axis=0)  # [E, H]
+                    stacked_logvars = np.stack([np.mean(logvar) for logvar in all_encoder_logvars], axis=0)  # [E, H]
+                    
+                    # Use uniform weights for POE (1/E for each encoder)
+                    poe_alphas = np.ones(len(self.encoders)) / len(self.encoders)
+                    
+                    # Compute POE mean and variance using the poe_diag_gaussians function
+                    from models.structured_lpn import poe_diag_gaussians
+                    poe_mu, poe_logvar = poe_diag_gaussians(
+                        stacked_mus[None, ...],  # Add batch dimension [1, E, H]
+                        stacked_logvars[None, ...],  # Add batch dimension [1, E, H]
+                        poe_alphas
+                    )
+                    poe_mu = poe_mu.squeeze(0)  # Remove batch dimension [H]
+                    poe_logvar = poe_logvar.squeeze(0)  # Remove batch dimension [H]
+                    
+                    # Convert POE logvar to variance and compute statistics
+                    poe_var = np.exp(poe_logvar)
+                    poe_mean_var = np.mean(poe_var)
+                    poe_std_var = np.std(poe_var)
+                    
+                    # Plot POE Gaussian FIRST (at the back)
+                    poe_gaussian = norm.pdf(x_plot, poe_mean_var, poe_std_var)
+                    # Normalize the POE Gaussian to match the scale of encoder Gaussians
+                    poe_gaussian = poe_gaussian / np.max(poe_gaussian)
+                    ax_gauss.plot(x_plot, poe_gaussian, color='#d62728', linewidth=3, alpha=0.9, 
+                                label='PoE (Product of Experts)', linestyle='-')
+                    
+                    # Add vertical line for POE mean variance
+                    ax_gauss.axvline(poe_mean_var, color='#d62728', linestyle='--', alpha=0.8, linewidth=2)
+                    
+                    # Plot normalized Gaussian for each encoder
+                    max_gaussian_height = 0  # Track max height for normalization
+                    encoder_gaussians = []
+                    
                     for enc_idx, (variances, color) in enumerate(zip(all_encoder_variances, colors)):
                         mean_var = np.mean(variances)
                         std_var = np.std(variances)
                         
-                        # For variances, we'll use a log-normal approximation since variances are always positive
-                        # Use the mean variance as the scale parameter
-                        gaussian = norm.pdf(x_plot, mean_var, mean_var * 0.5)  # Approximate log-normal with normal
-                        ax_gauss.plot(x_plot, gaussian, color=color, linewidth=2, alpha=0.8, 
-                                    label=f'Encoder {enc_idx}')
+                        # Create Gaussian function
+                        gaussian = norm.pdf(x_plot, mean_var, std_var)
+                        encoder_gaussians.append((gaussian, mean_var, std_var, color, enc_idx))
+                        max_gaussian_height = max(max_gaussian_height, np.max(gaussian))
+                    
+                    # Plot normalized encoder Gaussians
+                    for gaussian, mean_var, std_var, color, enc_idx in encoder_gaussians:
+                        # Normalize Gaussian to have max height of 1
+                        normalized_gaussian = gaussian / max_gaussian_height
+                        
+                        # Highlight the encoder with smallest variance
+                        is_highlighted = enc_idx == min_var_idx
+                        linewidth = 3.0 if is_highlighted else 1.5
+                        alpha = 0.9 if is_highlighted else 0.6
+                        
+                        ax_gauss.plot(x_plot, normalized_gaussian, color=color, linewidth=linewidth, alpha=alpha, 
+                                    label=f'Encoder {enc_idx}' + (" (★)" if is_highlighted else ""))
                         
                         # Add vertical line at mean variance
                         ax_gauss.axvline(mean_var, color=color, linestyle='--', alpha=0.6, linewidth=1)
@@ -5783,7 +5935,15 @@ class StructuredTrainer:
                     ax_gauss.legend(fontsize=10)
                     ax_gauss.grid(True, alpha=0.3)
                     
+                    # Add POE statistics to the plot
+                    poe_stats_text = f'PoE: μ={poe_mean_var:.4f}, σ={poe_std_var:.4f}'
+                    ax_gauss.text(0.02, 0.98, poe_stats_text, transform=ax_gauss.transAxes, 
+                               verticalalignment='top', fontsize=9, 
+                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    
                     logging.info(f"       ✅ Pattern {pattern_id} merged histograms and Gaussian functions created with {len(all_encoder_mus)} encoders")
+                    logging.info(f"         - Encoder {min_var_idx} highlighted (★) as most confident (smallest variance)")
+                    logging.info(f"         - PoE Gaussian added and normalized")
                 else:
                     ax_hist.text(0.5, 0.5, f'No data for Pattern {pattern_id}', 
                                ha='center', va='center', transform=ax_hist.transAxes)
@@ -5793,7 +5953,7 @@ class StructuredTrainer:
                     ax_gauss.set_title(f'Pattern {pattern_id} - No Data')
             
             # Set overall title
-            fig.suptitle(f'Merged Encoder Variance Analysis - All Patterns (Step {step})', 
+            fig.suptitle(f'Merged Encoder Variance Analysis with PoE - All Patterns (Step {step})', 
                         fontsize=16, fontweight='bold')
             
             plt.tight_layout()

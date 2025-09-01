@@ -167,7 +167,35 @@ def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
             if losses_per_sample.ndim >= 2:
                 # Take the mean across samples to get trajectory values
                 trajectory_losses = np.mean(losses_per_sample, axis=0)
-                print(f"[plot] Using GA losses_per_sample for trajectory: {trajectory_losses.shape}")
+
+                # Align with latent trajectory length if available
+                steps_from_latents = None
+                for latent_key in (
+                    f"{prefix}trajectory_latents",
+                    f"{prefix}latents",
+                ):
+                    if latent_key in npz:
+                        lat_arr = np.array(npz[latent_key])
+                        if lat_arr.ndim >= 2:
+                            steps_from_latents = lat_arr.shape[-2]
+                        else:
+                            steps_from_latents = lat_arr.shape[0]
+                        break
+
+                if (
+                    steps_from_latents is not None
+                    and trajectory_losses.shape[0] == steps_from_latents + 1
+                ):
+                    trajectory_losses = trajectory_losses[1:]
+                    print(
+                        "[plot] GA dropped initial loss to match latent steps:"
+                        f" {trajectory_losses.shape}"
+                    )
+                else:
+                    print(
+                        f"[plot] Using GA losses_per_sample for trajectory: {trajectory_losses.shape}"
+                    )
+
                 return trajectory_losses
     
     # Then check other keys
