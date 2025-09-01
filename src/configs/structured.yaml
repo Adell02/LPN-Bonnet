@@ -60,7 +60,7 @@ training:
   prior_kl_coeff: null
   pairwise_kl_coeff: null
   total_num_steps: 200
-  encoder_expose_steps: 5  # number of initial gradient steps encoders are trainable
+  encoder_expose_steps: 200  # number of initial gradient steps encoders are trainable
   repulsion_kl: 0.5  # Not needed for variance differences
   # This coefficient controls the strength of contrastive loss
   # Lower values = more stable, higher values = more aggressive specialization
@@ -69,7 +69,7 @@ training:
   # Target pattern ratio controls the balance between target and other patterns in each batch
   target_pattern_ratio: 0.7  # 70% target, 30% others
   log_every_n_steps: 5
-  eval_every_n_logs: 1       # null to disable
+  eval_every_n_logs: 5       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable
   resume_from_checkpoint: null
   # Option B: balanced structured tetromino patterns (O, T, L) - now using task generator
