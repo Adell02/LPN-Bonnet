@@ -3604,6 +3604,72 @@ class StructuredTrainer:
         
         return target_latents
     
+    def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 5.0, verbose: bool = False) -> chex.Array:
+        """
+        Compute repulsion loss to push current encoder away from previous encoders' target patterns.
+        
+        Args:
+            current_latents: Current encoder's latent representations
+            target_latents_store: Dictionary mapping encoder_idx to target latents
+            current_encoder_idx: Index of the current encoder being trained
+            margin: Minimum distance margin for repulsion
+            verbose: Whether to show verbose output
+            
+        Returns:
+            Repulsion loss value
+        """
+        if verbose:
+            logging.info(f"       🚫 Computing repulsion loss for Encoder {current_encoder_idx}...")
+        
+        total_repulsion = 0.0
+        num_repulsions = 0
+        
+        try:
+            # Iterate through previous encoders' target latents
+            for prev_enc_idx, prev_target_latents in target_latents_store.items():
+                if prev_enc_idx >= current_encoder_idx:
+                    continue  # Skip current and future encoders
+                
+                # Get target pattern for previous encoder
+                prev_target_pattern = prev_enc_idx + 1
+                
+                if prev_target_pattern in prev_target_latents:
+                    prev_latents = prev_target_latents[prev_target_pattern]
+                    
+                    if verbose:
+                        logging.info(f"         🚫 Repulsing from Encoder {prev_enc_idx} (Pattern {prev_target_pattern})")
+                        logging.info(f"         📊 Current latents shape: {current_latents.shape}")
+                        logging.info(f"         📊 Previous target latents shape: {prev_latents.shape}")
+                    
+                    # Compute pairwise distances between current and previous target latents
+                    # Use mean squared distance as repulsion metric
+                    distances = jnp.mean((current_latents[:, None, :] - prev_latents[None, :, :]) ** 2, axis=-1)
+                    
+                    # Repulsion loss: encourage distances to be larger than margin
+                    # Use hinge loss: max(0, margin - distance)
+                    repulsion_per_pair = jnp.mean(jnp.maximum(0, margin - jnp.sqrt(distances)))
+                    
+                    total_repulsion += repulsion_per_pair
+                    num_repulsions += 1
+                    
+                    if verbose:
+                        mean_dist = float(jnp.mean(jnp.sqrt(distances)))
+                        logging.info(f"         📊 Mean distance: {mean_dist:.6f}, Repulsion: {float(repulsion_per_pair):.6f}")
+            
+            if num_repulsions > 0:
+                avg_repulsion = total_repulsion / num_repulsions
+                if verbose:
+                    logging.info(f"       ✅ Repulsion loss computed: {float(avg_repulsion):.6f} (from {num_repulsions} encoders)")
+                return avg_repulsion
+            else:
+                if verbose:
+                    logging.info(f"       ⚠️  No repulsion targets available for Encoder {current_encoder_idx}")
+                return 0.0
+                
+        except Exception as e:
+            logging.warning(f"       ⚠️  Repulsion loss computation failed: {e}")
+            return 0.0
+    
     def _generate_phase2_plots(self, all_encoder_outputs: list, pattern_ids: chex.Array, num_steps: int) -> dict:
         """
         Generate Phase 2 plots for visualization.
