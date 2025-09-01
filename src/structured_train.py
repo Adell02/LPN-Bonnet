@@ -1208,12 +1208,10 @@ class StructuredTrainer:
                 target_latents_store[enc_idx] = self._extract_target_latents(enc_idx, specialized_encoder, individual_state)
                 logging.info(f"   📦 Stored target latents for Encoder {enc_idx} (will be used for repulsion)")
             
-            # Evaluate the specialized encoder and create visualizations
-            logging.info(f"   Evaluating specialized Encoder {enc_idx}...")
-            # Calculate global step: current phase_a_global_step + steps completed by this encoder
-            current_global_step = self.phase_a_global_step + self.encoder_expose_steps
-            logging.info(f"   📊 Evaluation global step: {current_global_step} (phase_a: {self.phase_a_global_step} + encoder_steps: {self.encoder_expose_steps})")
-            self._evaluate_specialized_encoder(enc_idx, specialized_encoder, individual_state, current_global_step)
+            # ✅ ONLY USE THE RIGHT METHOD: _generate_phase_a_tsne generates the correct plots
+            # ❌ REMOVED: _evaluate_specialized_encoder which was generating wrong plots
+            logging.info(f"   ✅ Using ONLY the correct method for Encoder {enc_idx} evaluation...")
+            logging.info(f"   📊 Evaluation will be done by _generate_phase_a_tsne (generates 1260 samples, correct titles)")
             
             specialized_encoders.append(specialized_encoder)
             logging.info(f"✅ Encoder {enc_idx} specialization completed")
@@ -1498,7 +1496,7 @@ class StructuredTrainer:
         
         return state.params["encoders"][0]  # Return trained encoder params
     
-    def _evaluate_specialized_encoder(self, enc_idx: int, encoder_params: dict, state: TrainState, global_step: int):
+    # ❌ REMOVED: _evaluate_specialized_encoder method entirely
         """
         Evaluate a specialized encoder and create comprehensive visualizations.
         
@@ -6230,39 +6228,51 @@ class StructuredTrainer:
             else:
                 logging.error(f"🔍 CRITICAL ERROR: No Phase A data available!")
                 logging.error(f"   This will cause poor histogram quality (96 vs 1260 samples)")
-                logging.error(f"   Falling back to pre-loaded datasets (inferior quality)")
+                logging.error(f"   CRITICAL FIX: Use EXACT SAME method as Step .../200 plot")
+                
+                # Use the EXACT SAME method as the Step .../200 certainty plot
+                # This ensures consistency and prevents data source switching
+                eval_data = {}
                 for pattern_id in [1, 2, 3]:
-                    # Use ALL samples for each pattern (like training does) - no artificial limits
-                    logging.info(f"   📊 Creating dataset for pattern {pattern_id}")
-                    eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_samples=None)
-                
-                # CRITICAL VALIDATION: Verify the data we just got
-                grids, shapes, pattern_ids = eval_data[pattern_id]
-                logging.info(f"   ✅ Pattern {pattern_id} dataset created:")
-                logging.info(f"      - Grids: {grids.shape}")
-                logging.info(f"      - Shapes: {shapes.shape}")
-                logging.info(f"      - Pattern IDs: {pattern_ids.shape}")
-                logging.info(f"      - Pattern IDs unique: {np.unique(pattern_ids)}")
-                logging.info(f"      - Pattern IDs first 5: {pattern_ids[:5]}")
-                
-                # CRITICAL COMPARISON: Compare with Phase A data if available
-                if hasattr(self, '_last_phase_a_data') and pattern_id in self._last_phase_a_data:
-                    phase_a_grids = self._last_phase_a_data[pattern_id]['grids']
-                    if len(grids) != len(phase_a_grids):
-                        logging.error(f"   ❌ CRITICAL MISMATCH: Pattern {pattern_id} sample count differs!")
-                        logging.error(f"      Phase A: {len(phase_a_grids)} samples")
-                        logging.error(f"      Merged Panel: {len(grids)} samples")
-                        logging.error(f"      This explains why histograms are destroyed!")
+                    logging.info(f"   🔧 Pattern {pattern_id}: Using EXACT SAME method as Step .../200 plot")
+                    
+                    # Generate 1260 samples for each pattern using the single pattern sample generator
+                    # This is the EXACT SAME code as _generate_phase_a_tsne
+                    grids_list = []
+                    shapes_list = []
+                    pattern_ids_list = []
+                    
+                    num_samples = 1260  # Generate the same number as Step .../200 plot
+                    logging.info(f"   🔧 Pattern {pattern_id}: Generating {num_samples} samples (EXACT SAME as Step .../200)")
+                    
+                    for i in range(num_samples):
+                        if i % 200 == 0:  # Progress logging
+                            logging.info(f"   🔧 Pattern {pattern_id}: Generated {i}/{num_samples} samples")
+                        
+                        grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
+                        grids_list.append(grids)
+                        shapes_list.append(shapes)
+                        pattern_ids_list.append(pattern_id)
+                    
+                    # Stack all samples (EXACT SAME as Step .../200 plot)
+                    grids = jnp.stack(grids_list, axis=0)
+                    shapes = jnp.stack(shapes_list, axis=0)
+                    pattern_ids = jnp.array(pattern_ids_list)
+                    
+                    eval_data[pattern_id] = (grids, shapes, pattern_ids)
+                    logging.info(f"   ✅ Pattern {pattern_id}: Generated {len(grids)} samples (EXACT SAME as Step .../200)")
+                    logging.info(f"      - Grids: {grids.shape}")
+                    logging.info(f"      - Shapes: {shapes.shape}")
+                    logging.info(f"      - Pattern IDs: {pattern_ids.shape}")
+                    logging.info(f"      - Pattern IDs unique: {np.unique(pattern_ids)}")
+                    
+                    # CRITICAL CHECK: Ensure pattern IDs are correct
+                    if not np.all(pattern_ids == pattern_id):
+                        logging.error(f"   ❌ CRITICAL ERROR: Pattern {pattern_id} has wrong pattern IDs!")
+                        logging.error(f"      Expected all {pattern_id}, got: {np.unique(pattern_ids)}")
+                        raise ValueError(f"Pattern {pattern_id} has corrupted pattern IDs")
                     else:
-                        logging.info(f"   ✅ Sample count matches Phase A: {len(grids)} samples")
-                
-                # CRITICAL CHECK: Ensure pattern IDs are correct
-                if not np.all(pattern_ids == pattern_id):
-                    logging.error(f"   ❌ CRITICAL ERROR: Pattern {pattern_id} has wrong pattern IDs!")
-                    logging.error(f"      Expected all {pattern_id}, got: {np.unique(pattern_ids)}")
-                    raise ValueError(f"Pattern {pattern_id} has corrupted pattern IDs")
-                else:
-                    logging.info(f"   ✅ Pattern {pattern_id} validation passed")
+                        logging.info(f"   ✅ Pattern {pattern_id} validation passed")
             
             # CRITICAL DEBUG: Log summary of all datasets
             logging.info(f"📊 Evaluation data summary:")
