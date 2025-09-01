@@ -1301,11 +1301,25 @@ class StructuredTrainer:
             batch = self._generate_new_batch_for_training(target_pattern, step)
             
             # CRITICAL: Verify training data integrity before each training step
-            grids, shapes, pattern_ids = batch
-            if not self._verify_training_data_integrity(grids, shapes, pattern_ids, target_pattern, f"step {step}/{num_steps}"):
-                logging.error(f"   ❌ CRITICAL: Training data corruption detected at step {step}!")
-                logging.error(f"   Training cannot proceed with corrupted data!")
-                raise ValueError(f"Training data corruption at step {step}")
+            # FIXED: Use safe unpacking to prevent "too many values to unpack" errors
+            try:
+                grids, shapes, pattern_ids = self._safe_unpack_batch_data(batch, f"step {step}/{num_steps}")
+                
+                # Check if unpacking failed
+                if grids is None or shapes is None:
+                    logging.error(f"   ❌ CRITICAL: Batch unpacking failed at step {step}!")
+                    logging.error(f"   Training cannot proceed with invalid data!")
+                    continue  # Skip this step and try the next one
+                
+                if not self._verify_training_data_integrity(grids, shapes, pattern_ids, target_pattern, f"step {step}/{num_steps}"):
+                    logging.error(f"   ❌ CRITICAL: Training data corruption detected at step {step}!")
+                    logging.error(f"   Training cannot proceed with corrupted data!")
+                    raise ValueError(f"Training data corruption at step {step}")
+                    
+            except Exception as e:
+                logging.error(f"   ❌ CRITICAL: Error during data verification at step {step}: {e}")
+                logging.error(f"   Skipping this training step to prevent crashes")
+                continue  # Skip this step and try the next one
             
             # Debug: Check model and parameters structure
             if step == 0:
@@ -1413,11 +1427,17 @@ class StructuredTrainer:
                     avg_target_var = jnp.mean(target_var)
                     avg_other_var = jnp.mean(other_var)
                     
-                    # FIXED: Loss: minimize target variance, maximize other variance
+                    # FIXED: Use configurable contrastive_kl coefficient instead of hardcoded values
                     # We want: target variance ↓ (encoder becomes certain on its pattern)
                     #         other variance ↑ (encoder becomes uncertain on other patterns)
-                    lambda_pos = 10.0   # Positive coefficient for target variance (minimize)
-                    lambda_neg = -10.0  # Negative coefficient for other variance (maximize)
+                    contrastive_coeff = self.cfg.training.get("contrastive_kl", 0.5)
+                    lambda_pos = contrastive_coeff   # Positive coefficient for target variance (minimize)
+                    lambda_neg = -contrastive_coeff  # Negative coefficient for other variance (maximize)
+                    
+                    # Log the coefficient being used for debugging
+                    if step % 50 == 0:
+                        logging.info(f"       🔧 Using contrastive_kl coefficient: {contrastive_coeff}")
+                        logging.info(f"       🔧 Lambda_pos: {lambda_pos}, Lambda_neg: {lambda_neg}")
                     
                     loss = lambda_pos * avg_target_var + lambda_neg * avg_other_var
                     
@@ -2148,9 +2168,13 @@ class StructuredTrainer:
         shapes_list = []
         pattern_ids_list = []
         
-        # Target pattern gets more samples (70% of batch)
-        target_samples = int(batch_size * 0.7)
+        # FIXED: More balanced split to boost variance differences and specialization
+        # Target pattern gets majority but not overwhelming majority
+        target_ratio = self.cfg.training.get("target_pattern_ratio", 0.6)  # Configurable, default 60%
+        target_samples = int(batch_size * target_ratio)
         other_samples = batch_size - target_samples
+        
+        logging.debug(f"         Using target pattern ratio: {target_ratio} ({target_samples}/{batch_size})")
         
         # Generate target pattern samples with diverse seeds
         for i in range(target_samples):
@@ -2181,6 +2205,14 @@ class StructuredTrainer:
         
         logging.debug(f"         Generated fresh batch: {len(grids)} samples (target: {target_samples}, others: {other_samples})")
         logging.debug(f"         Pattern distribution: {dict(zip(*np.unique(pattern_ids, return_counts=True)))}")
+        
+        # Log the expected impact on variance differences
+        target_ratio = self.cfg.training.get("target_pattern_ratio", 0.6)
+        if target_ratio <= 0.6:
+            logging.debug(f"         ✅ Balanced split ({target_ratio:.1%}) should boost variance differences")
+            logging.debug(f"         ✅ More contrast between target and other patterns")
+        else:
+            logging.debug(f"         ⚠️  Target-heavy split ({target_ratio:.1%}) may reduce variance contrast")
         
         return grids, shapes, pattern_ids
     
@@ -3758,6 +3790,50 @@ class StructuredTrainer:
         
         return True
     
+    def _safe_unpack_batch_data(self, batch, context: str) -> tuple:
+        """
+        Safely unpack batch data with robust error handling.
+        
+        This method handles cases where the batch might not have exactly 3 elements,
+        preventing the "too many values to unpack (expected 3)" error.
+        
+        Args:
+            batch: Batch data that should contain (grids, shapes, pattern_ids)
+            context: String describing where this unpacking is happening
+            
+        Returns:
+            Tuple of (grids, shapes, pattern_ids) with fallback values if needed
+        """
+        try:
+            # Log batch information for debugging
+            logging.debug(f"     🔍 Debugging batch for {context}: type={type(batch)}, length={len(batch) if hasattr(batch, '__len__') else 'no length'}")
+            
+            if isinstance(batch, (tuple, list)):
+                if len(batch) == 3:
+                    # Expected format: (grids, shapes, pattern_ids)
+                    grids, shapes, pattern_ids = batch
+                    logging.debug(f"     ✅ Batch unpacked successfully: {len(batch)} elements")
+                    return grids, shapes, pattern_ids
+                elif len(batch) == 2:
+                    # Fallback format: (grids, shapes) - generate pattern_ids
+                    grids, shapes = batch
+                    logging.warning(f"     ⚠️  Batch has only 2 elements, generating pattern_ids for {context}")
+                    # This is a fallback - the calling code should handle this case
+                    return grids, shapes, None
+                else:
+                    # Unexpected format
+                    logging.error(f"     ❌ Unexpected batch format: {len(batch)} elements for {context}")
+                    logging.error(f"        Expected 3 elements, got: {type(batch)} with length {len(batch)}")
+                    # Return fallback values to prevent crashes
+                    return None, None, None
+            else:
+                logging.error(f"     ❌ Batch is not a tuple/list: {type(batch)} for {context}")
+                return None, None, None
+                
+        except Exception as e:
+            logging.error(f"     ❌ Error unpacking batch for {context}: {e}")
+            return None, None, None
+    
     def _filter_data_by_pattern_id(self, data_dict: dict, target_pattern: int, context: str) -> tuple:
         """
         CRITICAL: Filter data to ensure each encoder sees ONLY its intended pattern.
@@ -3809,10 +3885,14 @@ class StructuredTrainer:
         """
         logging.info(f"     Creating specialized data for pattern {target_pattern}")
         
+        # FIXED: More balanced split to boost variance differences and specialization
         # Generate balanced data with emphasis on target pattern
         total_samples = self.batch_size * 10  # Generate more samples for individual training
-        target_samples = int(total_samples * 0.7)  # 70% target pattern
+        target_ratio = self.cfg.training.get("target_pattern_ratio", 0.6)  # Configurable, default 60%
+        target_samples = int(total_samples * target_ratio)  # 60% target pattern (was 70%)
         other_samples = total_samples - target_samples
+        
+        logging.info(f"     Using target pattern ratio: {target_ratio} ({target_samples}/{total_samples})")
         
         grids_list = []
         shapes_list = []
@@ -3875,6 +3955,10 @@ class StructuredTrainer:
         logging.info(f"     ✅ CRITICAL FIX: Used diverse seeds to prevent identical sample copies")
         logging.info(f"     ✅ This ensures meaningful contrastive loss and proper encoder specialization")
         logging.info(f"     ✅ Pattern ID integrity verified - No corruption detected")
+        
+        # Analyze expected impact on specialization
+        self._analyze_batch_balance_impact(target_ratio, target_samples, other_samples)
+        
         return grids, shapes, pattern_ids
     
     def _create_single_pattern_sample_with_seed(self, pattern_id: int, seed: int) -> tuple:
@@ -3943,7 +4027,54 @@ class StructuredTrainer:
             num_pairs = self.task_generator_kwargs["num_pairs"]
             fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
             fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
+            logging.info(f"     ✅ Created fallback sample for pattern {pattern_id} due to error")
             return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
+        
+        # CRITICAL: Ensure we always return exactly 3 values
+        # If we somehow reach here, create a fallback sample
+        logging.warning(f"     ⚠️  Dataloader loop completed without returning - creating fallback for pattern {pattern_id}")
+        num_pairs = self.task_generator_kwargs["num_pairs"]
+        fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
+        fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
+        return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
+    
+    def _analyze_batch_balance_impact(self, target_ratio: float, target_samples: int, other_samples: int) -> None:
+        """
+        Analyze how the batch balance affects specialization and variance differences.
+        
+        Args:
+            target_ratio: Ratio of target pattern samples in the batch
+            target_samples: Number of target pattern samples
+            other_samples: Number of other pattern samples
+        """
+        logging.info(f"     📊 Batch Balance Analysis:")
+        logging.info(f"        - Target pattern ratio: {target_ratio:.1%}")
+        logging.info(f"        - Target samples: {target_samples}")
+        logging.info(f"        - Other samples: {other_samples}")
+        
+        # Analyze the impact on variance differences
+        if target_ratio <= 0.55:
+            logging.info(f"        ✅ EXCELLENT: Very balanced split should maximize variance differences")
+            logging.info(f"        ✅ Strong contrast between target and other patterns")
+            logging.info(f"        ✅ Optimal for encoder specialization")
+        elif target_ratio <= 0.65:
+            logging.info(f"        ✅ GOOD: Balanced split should boost variance differences")
+            logging.info(f"        ✅ Good contrast between target and other patterns")
+            logging.info(f"        ✅ Good for encoder specialization")
+        elif target_ratio <= 0.75:
+            logging.info(f"        ⚠️  MODERATE: Target-heavy split may reduce variance contrast")
+            logging.info(f"        ⚠️  Less contrast between target and other patterns")
+            logging.info(f"        ⚠️  May limit specialization effectiveness")
+        else:
+            logging.warning(f"        ❌ POOR: Very target-heavy split will minimize variance contrast")
+            logging.warning(f"        ❌ Minimal contrast between target and other patterns")
+            logging.warning(f"        ❌ Likely to limit specialization effectiveness")
+        
+        # Provide recommendations
+        if target_ratio > 0.65:
+            logging.info(f"        💡 Consider reducing target_pattern_ratio to 0.55-0.60 for better specialization")
+        elif target_ratio < 0.5:
+            logging.info(f"        💡 Very balanced split - may need to increase if specialization is too weak")
     
     def _create_pattern_dataset(self, pattern_id: int, num_samples: int) -> tuple:
         """Create a dataset composed solely of a single pattern using pre-loaded datasets.

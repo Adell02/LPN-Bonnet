@@ -61,11 +61,13 @@ training:
   pairwise_kl_coeff: null
   total_num_steps: 200
   encoder_expose_steps: 1000  # number of initial gradient steps encoders are trainable
-  repulsion_kl: 0.1  # Not needed for variance differences
+  repulsion_kl: 0.5  # Not needed for variance differences
   # This coefficient controls the strength of contrastive loss
   # Lower values = more stable, higher values = more aggressive specialization
   # The system will dynamically adjust this coefficient based on specialization progress
-  contrastive_kl: 1E-2  # variance amplification for pre-trained encoders (stronger amplification)
+  contrastive_kl: 0.5  # variance amplification for pre-trained encoders (stronger amplification)
+  # Target pattern ratio controls the balance between target and other patterns in each batch
+  target_pattern_ratio: 0.7  # 70% target, 30% others
   log_every_n_steps: 5
   eval_every_n_logs: 5       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable

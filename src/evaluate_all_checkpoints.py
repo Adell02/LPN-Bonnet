@@ -2042,6 +2042,7 @@ def main():
                     
                     # Save figure
                     out_dir = Path("results")
+                    out_dir.mkdir(parents=True, exist_ok=True)  # Ensure directory exists
                     fig_path = out_dir / f"analysis_budget_vs_loss_checkpoint_{step}.png"
                     fig.savefig(fig_path, dpi=200, bbox_inches='tight')
                     plt.close(fig)
@@ -2049,21 +2050,31 @@ def main():
                     if fig_path.exists():
                         # Upload to wandb under analysis_figure/ panel
                         try:
+                            # Convert Path to string for wandb.Image to avoid any Path object issues
+                            fig_path_str = str(fig_path)
                             wandb.log(
                                 {
-                                    f"analysis_figure/checkpoint_{step}_budget_vs_loss": wandb.Image(fig_path),
+                                    f"analysis_figure/checkpoint_{step}_budget_vs_loss": wandb.Image(fig_path_str),
                                     f"analysis_figure/checkpoint_{step}_training_progress": training_progress,
                                     f"analysis_figure/checkpoint_{step}_total_checkpoints": len(checkpoints),
                                 }
                             )
-                            print(f"📊 Generated and uploaded analysis figure: {fig_path}")
+                            print(f"📊 Generated and uploaded analysis figure: {fig_path_str}")
                         except Exception as e:
                             print(f"⚠️  Failed to upload analysis figure to W&B: {e}")
+                            print(f"   Error type: {type(e).__name__}")
+                            print(f"   Error details: {str(e)}")
+                            import traceback
+                            print(f"   Traceback: {traceback.format_exc()}")
                     else:
                         print("⚠️  Failed to generate analysis figure")
 
                 except Exception as e:
                     print(f"⚠️  Failed to generate or upload analysis figure: {e}")
+                    print(f"   Error type: {type(e).__name__}")
+                    print(f"   Error details: {str(e)}")
+                    import traceback
+                    print(f"   Traceback: {traceback.format_exc()}")
             else:
                 print("📁 File generation disabled (--no_files flag)")
 
@@ -2314,10 +2325,10 @@ def main():
                                                 wandb.log(
                                                     {
                                                         f"checkpoint_{training_progress}/loss_vs_budget": wandb.Image(
-                                                            loss_budget_plot_path
+                                                            str(loss_budget_plot_path)
                                                         ),
                                                         f"checkpoint_{training_progress}/loss_vs_training": wandb.Image(
-                                                            loss_training_plot_path
+                                                            str(loss_training_plot_path)
                                                         ),
                                                     }
                                                 )
@@ -2326,11 +2337,17 @@ def main():
                                                 print(f"   • Loss vs Training: {loss_training_plot_path}")
                                             except Exception as e:
                                                 print(f"⚠️  Failed to upload loss plots to W&B: {e}")
+                                                print(f"   Error type: {type(e).__name__}")
+                                                print(f"   Error details: {str(e)}")
                                         else:
                                             print("⚠️  Failed to generate one or both loss plots")
 
                                     except Exception as e:
                                         print(f"⚠️  Failed to generate loss plots: {e}")
+                                        print(f"   Error type: {type(e).__name__}")
+                                        print(f"   Error details: {str(e)}")
+                                        import traceback
+                                        print(f"   Traceback: {traceback.format_exc()}")
 
                 except Exception as e:
                     print(f"⚠️  Failed to generate comparison plot for training progress {training_progress}: {e}")
@@ -2417,6 +2434,14 @@ def main():
                     steps_sorted = sorted(set(steps_list))
                     actual_budgets = shared_budgets
 
+                    # SAFETY CHECK: Ensure steps_sorted is not empty before proceeding
+                    if not steps_sorted:
+                        print(f"⚠️  WARNING: No valid checkpoint steps found in CSV for final plot!")
+                        print(f"   CSV file: {out_csv}")
+                        print(f"   Steps list: {steps_list}")
+                        print(f"   Skipping final plot generation due to empty data")
+                        continue
+
                     # ENHANCED SAFETY CHECKS: Prevent extremely large arrays that would cause plotting issues
                     if len(steps_sorted) > 1000 or len(actual_budgets) > 1000:
                         print(f"⚠️  WARNING: Extremely large data dimensions detected for final plot!")
@@ -2502,6 +2527,18 @@ def main():
                         print(f"   This would create an extremely wide image. Skipping final plot generation.")
                         continue
 
+                    print(f"📊 Creating final comparison plot...")
+                    print(f"   Steps: {len(steps_sorted)} (range: {min(steps_sorted)} to {max(steps_sorted)})")
+                    print(f"   Budgets: {len(actual_budgets)} (range: {min(actual_budgets)} to {max(actual_budgets)})")
+                    print(f"   Methods: {args.plot_methods}")
+                    print(f"   Data shapes:")
+                    for method in args.plot_methods:
+                        if method in method_arrays:
+                            method_data = method_arrays[method]
+                            valid_count = np.sum(~np.isnan(method_data))
+                            total_count = method_data.size
+                            print(f"     • {method}: {method_data.shape}, {valid_count}/{total_count} valid values")
+
                     # Create plot with selected methods
                     if len(args.plot_methods) == 2:
                         if args.loss:
@@ -2511,35 +2548,77 @@ def main():
                             # where positive values = method_A (GA) better, negative = method_B (ES) better
                             loss_diff = method_arrays[args.plot_methods[1]] - method_arrays[args.plot_methods[0]]
                             
-                            # Use the new specialized loss difference visualization
-                            from visualization import visualize_loss_difference_heatmap
-                            fig = visualize_loss_difference_heatmap(
-                                steps=np.array(steps_sorted),
-                                budgets=np.array(actual_budgets),
-                                loss_diff=loss_diff,
-                                method_A_name=args.plot_methods[0].replace("_", " ").title(),  # First method (typically GA)
-                                method_B_name=args.plot_methods[1].replace("_", " ").title(),  # Second method (typically ES)
-                            )
+                            print(f"📊 Creating loss difference heatmap...")
+                            print(f"   Steps array shape: {np.array(steps_sorted).shape}")
+                            print(f"   Budgets array shape: {np.array(actual_budgets).shape}")
+                            print(f"   Loss diff array shape: {loss_diff.shape}")
+                            print(f"   Method A: {args.plot_methods[0]}")
+                            print(f"   Method B: {args.plot_methods[1]}")
+                            
+                            try:
+                                # Use the new specialized loss difference visualization
+                                from visualization import visualize_loss_difference_heatmap
+                                fig = visualize_loss_difference_heatmap(
+                                    steps=np.array(steps_sorted),
+                                    budgets=np.array(actual_budgets),
+                                    loss_diff=loss_diff,
+                                    method_A_name=args.plot_methods[0].replace("_", " ").title(),  # First method (typically GA)
+                                    method_B_name=args.plot_methods[1].replace("_", " ").title(),  # Second method (typically ES)
+                                )
+                                print(f"✅ Successfully created loss difference heatmap")
+                            except Exception as e:
+                                print(f"❌ Failed to create loss difference heatmap: {e}")
+                                print(f"   Error type: {type(e).__name__}")
+                                import traceback
+                                print(f"   Traceback: {traceback.format_exc()}")
+                                # Fall back to regular comparison plot
+                                print(f"📊 Falling back to regular comparison plot...")
+                                fig = visualize_optimization_comparison(
+                                    steps=np.array(steps_sorted),
+                                    budgets=np.array(actual_budgets),
+                                    acc_A=method_arrays[args.plot_methods[0]],
+                                    acc_B=method_arrays[args.plot_methods[1]],
+                                    method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                                    method_B_name=args.plot_methods[1].replace("_", " ").title(),
+                                )
                         else:
                             # Regular accuracy comparison
+                            print(f"📊 Creating regular accuracy comparison plot...")
+                            try:
+                                fig = visualize_optimization_comparison(
+                                    steps=np.array(steps_sorted),
+                                    budgets=np.array(actual_budgets),
+                                    acc_A=method_arrays[args.plot_methods[0]],
+                                    acc_B=method_arrays[args.plot_methods[1]],
+                                    method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                                    method_B_name=args.plot_methods[1].replace("_", " ").title(),
+                                )
+                                print(f"✅ Successfully created accuracy comparison plot")
+                            except Exception as e:
+                                print(f"❌ Failed to create accuracy comparison plot: {e}")
+                                print(f"   Error type: {type(e).__name__}")
+                                import traceback
+                                print(f"   Traceback: {traceback.format_exc()}")
+                                raise
+                    else:
+                        # Single method or more than 2 methods - create simple heatmap for first method
+                        print(f"📊 Creating single method plot for {args.plot_methods[0]}...")
+                        try:
                             fig = visualize_optimization_comparison(
                                 steps=np.array(steps_sorted),
                                 budgets=np.array(actual_budgets),
                                 acc_A=method_arrays[args.plot_methods[0]],
-                                acc_B=method_arrays[args.plot_methods[1]],
+                                acc_B=np.full_like(method_arrays[args.plot_methods[0]], np.nan),
                                 method_A_name=args.plot_methods[0].replace("_", " ").title(),
-                                method_B_name=args.plot_methods[1].replace("_", " ").title(),
+                                method_B_name="",
                             )
-                    else:
-                        # Single method or more than 2 methods - create simple heatmap for first method
-                        fig = visualize_optimization_comparison(
-                            steps=np.array(steps_sorted),
-                            budgets=np.array(actual_budgets),
-                            acc_A=method_arrays[args.plot_methods[0]],
-                            acc_B=np.full_like(method_arrays[args.plot_methods[0]], np.nan),
-                            method_A_name=args.plot_methods[0].replace("_", " ").title(),
-                            method_B_name="",
-                        )
+                            print(f"✅ Successfully created single method plot")
+                        except Exception as e:
+                            print(f"❌ Failed to create single method plot: {e}")
+                            print(f"   Error type: {type(e).__name__}")
+                            import traceback
+                            print(f"   Traceback: {traceback.format_exc()}")
+                            raise
 
                     # SAFETY CHECK: Ensure steps_sorted is not empty before calling max()
                     if not steps_sorted:
@@ -2630,8 +2709,8 @@ def main():
                                 try:
                                     wandb.log(
                                         {
-                                            "final/loss_vs_budget": wandb.Image(final_loss_budget_plot_path),
-                                            "final/loss_vs_training": wandb.Image(final_loss_training_plot_path),
+                                            "final/loss_vs_budget": wandb.Image(str(final_loss_budget_plot_path)),
+                                            "final/loss_vs_training": wandb.Image(str(final_loss_training_plot_path)),
                                         }
                                     )
 
@@ -2649,14 +2728,25 @@ def main():
                                     print(f"   • Loss vs Training: {final_loss_training_plot_path}")
                                 except Exception as e:
                                     print(f"⚠️  Failed to upload final loss plots to W&B: {e}")
+                                    print(f"   Error type: {type(e).__name__}")
+                                    print(f"   Error details: {str(e)}")
+                                    import traceback
+                                    print(f"   Traceback: {traceback.format_exc()}")
                             else:
                                 print("⚠️  Failed to generate one or both final loss plots")
 
                         except Exception as e:
                             print(f"⚠️  Failed to generate final loss plots: {e}")
+                            print(f"   Error type: {type(e).__name__}")
+                            print(f"   Error details: {str(e)}")
+                            import traceback
+                            print(f"   Traceback: {traceback.format_exc()}")
 
                 except Exception as e:
                     print(f"⚠️  Failed to generate or upload final comparison plot: {e}")
+                    print(f"   Error details: {type(e).__name__}: {str(e)}")
+                    import traceback
+                    print(f"   Traceback: {traceback.format_exc()}")
             else:
                 print("📁 Final plot generation disabled (--no_files flag)")
 
