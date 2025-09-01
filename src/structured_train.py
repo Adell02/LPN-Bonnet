@@ -1969,71 +1969,70 @@ class StructuredTrainer:
                 )
                 all_encoder_outputs.append(encoder_outputs)
             
-            # Phase 2: Generate periodic T-SNE visualizations and clustering metrics (every 50 steps)
-            if i % 50 == 0 and i > 0:
-                try:
-                    logging.info(f"🔍 Phase 2: Generating periodic T-SNE and clustering metrics at step {i}/{num_steps}")
-                    
-                    # Generate periodic T-SNE
-                    periodic_tsne_metrics = self._generate_phase2_tsne_visualizations(
-                        state, explicit_pattern_ids, i
-                    )
-                    
-                    # Generate periodic clustering metrics
-                    try:
-                        clustering_data = self._create_comprehensive_clustering_data(state, explicit_pattern_ids)
-                        if clustering_data:
-                            periodic_clustering_metrics = self._compute_phase2_clustering_metrics(clustering_data)
-                            periodic_distance_metrics = self._compute_phase2_distance_metrics(clustering_data)
-                            
-                            # Log periodic clustering metrics to WandB
-                            for key, value in periodic_clustering_metrics.items():
-                                wandb.log({f"phase_2_periodic/{key}": value}, step=i)
-                            for key, value in periodic_distance_metrics.items():
-                                wandb.log({f"phase_2_periodic/{key}": value}, step=i)
-                            
-                            logging.info(f"✅ Phase 2: Periodic clustering metrics computed and logged at step {i}")
-                        else:
-                            logging.warning(f"⚠️  Phase 2: Failed to create clustering data for periodic logging")
-                    except Exception as e:
-                        logging.warning(f"⚠️  Phase 2: Periodic clustering metrics computation failed at step {i}: {e}")
-                    
-                    # Log periodic T-SNE to WandB
-                    for key, value in periodic_tsne_metrics.items():
-                        if "tsne" in key:
-                            wandb.log({f"phase_2_periodic/{key}": value}, step=i)
-                    
-                    logging.info(f"✅ Phase 2: Periodic T-SNE and clustering metrics generated at step {i}")
-                except Exception as e:
-                    logging.warning(f"Phase 2 periodic T-SNE generation failed at step {i}: {e}")
+            # Phase 2: No periodic T-SNE or clustering metrics - computed once at the beginning
+            # This ensures efficient training without repeated expensive computations
         
         # Average metrics over all steps
         avg_metrics = {}
         for key in all_metrics[0].keys():
             avg_metrics[key] = jnp.mean(jnp.stack([m[key] for m in all_metrics]))
         
-        # Phase 2: Generate comprehensive metrics and plots
-        phase2_metrics = self._generate_phase2_metrics_and_plots(
-            avg_metrics, all_encoder_outputs, explicit_pattern_ids, num_steps
-        )
+        # PHASE 2: COMPUTE ALL COMPREHENSIVE METRICS AND PLOTS ONCE AT THE BEGINNING
+        logging.info(f"🔍 Phase 2: Computing all comprehensive metrics and plots once...")
         
-        # Merge with training metrics
-        avg_metrics.update(phase2_metrics)
-        
-        # Phase 2: Generate T-SNE visualizations (same as Phase 1)
+        # Generate comprehensive Phase 2 metrics and plots ONCE
         try:
+            phase2_metrics = self._generate_phase2_metrics_and_plots(
+                avg_metrics, all_encoder_outputs, explicit_pattern_ids, num_steps
+            )
+            
+            # Generate T-SNE visualizations ONCE
             logging.info(f"🔍 Phase 2: Generating T-SNE visualizations...")
             tsne_metrics = self._generate_phase2_tsne_visualizations(state, explicit_pattern_ids, num_steps)
-            avg_metrics.update(tsne_metrics)
-            logging.info(f"✅ Phase 2: T-SNE visualizations generated and logged")
+            phase2_metrics.update(tsne_metrics)
+            
+            # Generate clustering metrics ONCE
+            logging.info(f"🔍 Phase 2: Generating clustering metrics...")
+            clustering_data = self._create_comprehensive_clustering_data(state, explicit_pattern_ids)
+            if clustering_data:
+                clustering_metrics = self._compute_phase2_clustering_metrics(clustering_data)
+                distance_metrics = self._compute_phase2_distance_metrics(clustering_data)
+                phase2_metrics.update(clustering_metrics)
+                phase2_metrics.update(distance_metrics)
+                logging.info(f"✅ Phase 2: Clustering metrics computed successfully")
+            else:
+                logging.warning(f"⚠️  Phase 2: Failed to create clustering data")
+            
+            # Generate certainty plots ONCE
+            logging.info(f"🔍 Phase 2: Generating certainty plots...")
+            try:
+                import matplotlib.pyplot as plt
+                certainty_panel = self._create_merged_encoder_certainty_panel(state, 0)
+                if certainty_panel is not None:
+                    phase2_metrics["phase_2/certainty_panel"] = wandb.Image(certainty_panel)
+                    plt.close(certainty_panel)
+                    logging.info(f"✅ Phase 2: Certainty panel generated successfully")
+                else:
+                    logging.warning(f"⚠️  Phase 2: Certainty panel generation failed")
+            except Exception as e:
+                logging.warning(f"⚠️  Phase 2: Certainty panel generation failed: {e}")
+            
+            logging.info(f"✅ Phase 2: All comprehensive metrics and plots generated successfully")
+            
         except Exception as e:
-            logging.warning(f"Phase 2 T-SNE generation failed: {e}")
+            logging.warning(f"⚠️  Phase 2: Comprehensive metrics generation failed: {e}")
+            phase2_metrics = {}
+        
+        # Merge comprehensive metrics with training metrics
+        avg_metrics.update(phase2_metrics)
         
         # Phase 2: Log that we're in decoder-only training mode
         logging.info(f"Phase 2: Joint decoder training completed - {num_steps} steps")
         logging.info(f"   - Encoders are FROZEN (keeping specialization)")
         logging.info(f"   - Decoder is TRAINABLE (reconstruction focus)")
         logging.info(f"   - No specialization losses applied")
+        logging.info(f"   - All comprehensive metrics and plots computed once at the beginning")
+        logging.info(f"   - Only reconstruction/decoder metrics logged during training steps")
         
         return state, avg_metrics
     
@@ -3583,7 +3582,10 @@ class StructuredTrainer:
                                         additional = target_latents[:remainder]
                                         resized_target_latents = np.vstack([resized_target_latents, additional])
                                 
-                                logging.info(f"         * Resized target latents from {len(target_latents)} to {len(resized_target_latents)}")
+                                # Convert to numpy arrays for safe logging (avoid JAX format string issues)
+                                target_size = int(np.array(target_latents.shape[0])) if hasattr(target_latents, 'shape') else len(target_latents)
+                                resized_size = int(np.array(resized_target_latents.shape[0])) if hasattr(resized_target_latents, 'shape') else len(resized_target_latents)
+                                logging.info(f"         * Resized target latents from {target_size} to {resized_size}")
 
                                 # Compute L2 distance between current and resized target latents
                                 resized_target_latents = jnp.asarray(resized_target_latents)
@@ -4041,22 +4043,33 @@ class StructuredTrainer:
                 
             # Organize Phase 2 metrics for better WandB visualization
             if self.phase1_completed:
-                # Phase 2: Organize metrics by category
-                organized_metrics = self._organize_phase2_metrics_for_wandb(metrics)
-                wandb.log(organized_metrics, step=step)
+                # Phase 2: Only log reconstruction/decoder-related metrics during training
+                # Comprehensive metrics (T-SNE, clustering, certainty plots) are computed once at the beginning
+                reconstruction_metrics = {}
                 
-                # Phase 2: Generate merged encoder certainty panel periodically
-                if step % (cfg.training.get("eval_every_n_logs", 20) * log_every) == 0:
-                    logging.info(f"🔍 Phase 2: Generating merged encoder certainty panel at step {step}")
-                    merged_certainty_panel = self._create_merged_encoder_certainty_panel(state, step)
-                    if merged_certainty_panel is not None:
-                        wandb.log({
-                            "phase_2/merged_encoder_certainty_panel": wandb.Image(merged_certainty_panel)
-                        }, step=step)
-                        plt.close(merged_certainty_panel)
-                        logging.info(f"       ✅ Phase 2 merged encoder certainty panel logged to WandB")
-                    else:
-                        logging.warning(f"       ❌ Phase 2 merged encoder certainty panel creation failed")
+                # Extract only reconstruction and decoder-related metrics
+                for key, value in metrics.items():
+                    if any(metric_type in key.lower() for metric_type in [
+                        'loss', 'reconstruction', 'prior_kl', 'pairwise_kl', 'decoder', 'poe'
+                    ]):
+                        reconstruction_metrics[key] = value
+                
+                # Add timing metrics
+                if "timing/train_time" in metrics:
+                    reconstruction_metrics["timing/train_time"] = metrics["timing/train_time"]
+                if "timing/train_num_samples_per_second" in metrics:
+                    reconstruction_metrics["timing/train_num_samples_per_second"] = metrics["timing/train_num_samples_per_second"]
+                
+                # Log only reconstruction metrics during training
+                if reconstruction_metrics:
+                    organized_reconstruction_metrics = self._organize_phase2_metrics_for_wandb(reconstruction_metrics)
+                    wandb.log(organized_reconstruction_metrics, step=step)
+                    logging.debug(f"Phase 2: Logged {len(reconstruction_metrics)} reconstruction metrics to WandB")
+                else:
+                    logging.warning(f"Phase 2: No reconstruction metrics found to log")
+                
+                # Note: Comprehensive metrics (T-SNE, clustering, certainty plots) are computed once 
+                # at the beginning of Phase 2 and uploaded through the train_n_steps_phase2 function
             else:
                 # Phase 1: Log metrics as is
                 wandb.log(metrics, step=step)
