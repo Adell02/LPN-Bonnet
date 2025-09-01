@@ -514,7 +514,20 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
             t.pop_pts = pop_pts
             t.gen_idx = gen_idx
             t.pop_vals = pop_vals
-            
+
+            # Ensure trajectory points and loss values start at the same budget
+            if t.pts is not None and t.vals is not None:
+                len_pts = t.pts.shape[0]
+                len_vals = t.vals.shape[0]
+                if len_vals == len_pts + 1:
+                    # Loss array includes an extra initial value (mean) with no matching latent
+                    t.vals = t.vals[1:]
+                    print(f"[plot] {prefix.upper()} dropped initial loss to align with trajectory (budget 0 = mean)")
+                elif len_pts == len_vals + 1:
+                    # Trajectory includes an extra initial latent without corresponding loss
+                    t.pts = t.pts[1:]
+                    print(f"[plot] {prefix.upper()} dropped initial latent to align with losses (budget 0 = mean)")
+
             # Debug: show what was extracted for best_per_gen
             if prefix == "es_":
                 print(f"[plot] ES best_per_gen extracted: {t.best_per_gen.shape if t.best_per_gen is not None else None}")
