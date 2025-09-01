@@ -536,7 +536,6 @@ def visualize_latents_samples(
         num_tasks: Number of tasks to show
         num_samples_per_task: Number of latent samples to show per task
     """
-    import matplotlib.pyplot as plt
     
     num_tasks = min(num_tasks, dataset_grids.shape[0])
     num_samples_per_task = min(num_samples_per_task, latents_samples.shape[1])
@@ -1101,7 +1100,6 @@ def visualize_loss_difference_heatmap(
     # Create a continuous colormap using the custom color palette
     # Use the consistent color palette from the codebase with smooth interpolations
     from matplotlib.colors import LinearSegmentedColormap
-    import matplotlib.pyplot as plt
     
     # Custom color palette: #FBB998 (orange), #DB74DB (pink), #5361E5 (blue), #96DCF8 (light blue)
     # Create a continuous colormap that smoothly interpolates between these colors

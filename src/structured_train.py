@@ -5713,66 +5713,77 @@ class StructuredTrainer:
                         all_encoder_logvars.append(np.array(logvar))
                         encoder_labels.append(f"Encoder {enc_idx}")
                     
-                    # Create merged certainty panel using the SAME visualization function as Phase 1
+                    # Create merged histograms and Gaussian functions using the SAME data as Phase 1
                     pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
                     pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
                     
-                    # Use the SAME visualization function but with all encoders
-                    fig_cert = visualize_struct_confidence_panel(
-                        sample_grids=np.array(sample_grids),
-                        sample_shapes=np.array(sample_shapes),
-                        encoder_mus=all_encoder_mus,  # All encoders' means
-                        encoder_logvars=all_encoder_logvars,  # All encoders' logvars
-                        poe_mu=None,
-                        poe_logvar=None,
-                        title=f"Merged Encoders - {pattern_name} - Step {step}",
-                        encoder_labels=encoder_labels,  # All encoder labels
-                        encoder_indices=list(range(len(self.encoders))),  # All encoder indices
-                        pattern_id=pattern_id,
-                        pattern_name=pattern_name,
-                    )
-                    
-                    # Display the merged certainty panel in the subplot
-                    # We'll show the figure in the top row (histogram position)
-                    ax_hist.imshow(fig_cert.canvas.get_renderer()._renderer)
-                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Certainty Panel', 
-                                   fontsize=14, fontweight='bold')
-                    ax_hist.axis('off')  # Hide axes for the image
-                    
-                    # Create variance comparison plot in the bottom row (Gaussian position)
-                    # This shows the variance distributions for all encoders on this pattern
-                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nEncoder Variance Comparison', 
-                                       fontsize=14, fontweight='bold')
-                    ax_gauss.set_xlabel('Encoder Index', fontsize=12)
-                    ax_gauss.set_ylabel('Mean Variance', fontsize=12)
-                    
-                    # Compute mean variances for each encoder on this pattern
-                    encoder_variances = []
+                    # Convert logvar to variance and flatten for histogram creation
+                    all_encoder_variances = []
                     for enc_idx in range(len(self.encoders)):
                         logvar = all_encoder_logvars[enc_idx]
-                        var = np.exp(np.array(logvar))
-                        mean_var = np.mean(var)
-                        encoder_variances.append(mean_var)
+                        var = np.exp(np.array(logvar))  # Convert to numpy
+                        var_flat = var.flatten()  # Flatten to 1D array
+                        all_encoder_variances.append(var_flat)
                     
-                    # Create bar plot comparing encoder variances
-                    encoder_indices = list(range(len(self.encoders)))
+                    # Create merged histogram for this pattern (top row)
+                    # Use different colors for each encoder
                     colors = ['#FBB998', '#DB74DB', '#5361E5']  # Orange, Pink, Blue
-                    bars = ax_gauss.bar(encoder_indices, encoder_variances, color=colors, alpha=0.7)
                     
-                    # Add value labels on bars
-                    for bar, var in zip(bars, encoder_variances):
-                        height = bar.get_height()
-                        ax_gauss.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                                    f'{var:.4f}', ha='center', va='bottom', fontsize=10)
+                    for enc_idx, (variances, label, color) in enumerate(zip(all_encoder_variances, encoder_labels, colors)):
+                        # Create histogram with transparency for overlap
+                        ax_hist.hist(variances, bins=30, alpha=0.7, label=label, color=color, 
+                                   edgecolor='black', linewidth=0.5)
                     
-                    ax_gauss.set_xticks(encoder_indices)
-                    ax_gauss.set_xticklabels([f'E{enc_idx}' for enc_idx in encoder_indices])
+                    # Customize the histogram subplot
+                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances', 
+                                   fontsize=14, fontweight='bold')
+                    ax_hist.set_xlabel('Variance', fontsize=12)
+                    ax_hist.set_ylabel('Frequency', fontsize=12)
+                    ax_hist.legend(fontsize=10)
+                    ax_hist.grid(True, alpha=0.3)
+                    
+                    # Add statistics text to histogram
+                    stats_text = []
+                    for enc_idx, variances in enumerate(all_encoder_variances):
+                        mean_var = np.mean(variances)
+                        std_var = np.std(variances)
+                        stats_text.append(f'E{enc_idx}: μ={mean_var:.4f}, σ={std_var:.4f}')
+                    
+                    stats_str = '\n'.join(stats_text)
+                    ax_hist.text(0.02, 0.98, stats_str, transform=ax_hist.transAxes, 
+                               verticalalignment='top', fontsize=9, 
+                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    
+                    # Create Gaussian function plots for this pattern (bottom row)
+                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions', 
+                                       fontsize=14, fontweight='bold')
+                    ax_gauss.set_xlabel('Variance', fontsize=12)
+                    ax_gauss.set_ylabel('Density', fontsize=12)
+                    
+                    # Get range for x-axis based on all encoder variances for this pattern
+                    all_vars = np.concatenate(all_encoder_variances)
+                    x_min, x_max = np.min(all_vars), np.max(all_vars)
+                    x_range = x_max - x_min
+                    x_plot = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, 1000)
+                    
+                    # Plot Gaussian for each encoder
+                    for enc_idx, (variances, color) in enumerate(zip(all_encoder_variances, colors)):
+                        mean_var = np.mean(variances)
+                        std_var = np.std(variances)
+                        
+                        # For variances, we'll use a log-normal approximation since variances are always positive
+                        # Use the mean variance as the scale parameter
+                        gaussian = norm.pdf(x_plot, mean_var, mean_var * 0.5)  # Approximate log-normal with normal
+                        ax_gauss.plot(x_plot, gaussian, color=color, linewidth=2, alpha=0.8, 
+                                    label=f'Encoder {enc_idx}')
+                        
+                        # Add vertical line at mean variance
+                        ax_gauss.axvline(mean_var, color=color, linestyle='--', alpha=0.6, linewidth=1)
+                    
+                    ax_gauss.legend(fontsize=10)
                     ax_gauss.grid(True, alpha=0.3)
                     
-                    # Close the individual figure to free memory
-                    plt.close(fig_cert)
-                    
-                    logging.info(f"       ✅ Pattern {pattern_id} merged certainty panel created with {len(all_encoder_mus)} encoders")
+                    logging.info(f"       ✅ Pattern {pattern_id} merged histograms and Gaussian functions created with {len(all_encoder_mus)} encoders")
                 else:
                     ax_hist.text(0.5, 0.5, f'No data for Pattern {pattern_id}', 
                                ha='center', va='center', transform=ax_hist.transAxes)
@@ -5782,11 +5793,11 @@ class StructuredTrainer:
                     ax_gauss.set_title(f'Pattern {pattern_id} - No Data')
             
             # Set overall title
-            fig.suptitle(f'Merged Encoder Certainty Panel - All Patterns (Step {step})', 
+            fig.suptitle(f'Merged Encoder Variance Analysis - All Patterns (Step {step})', 
                         fontsize=16, fontweight='bold')
             
             plt.tight_layout()
-            logging.info(f"       📊 Merged encoder certainty panel created successfully")
+            logging.info(f"       📊 Merged encoder histograms and Gaussian functions created successfully")
             return fig
             
         except Exception as e:
