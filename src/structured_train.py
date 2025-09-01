@@ -1550,33 +1550,39 @@ class StructuredTrainer:
             logging.info(f"🔍 USING Phase A data for evaluation (prevents histogram destruction):")
             for pattern_id in [1, 2, 3]:
                 if pattern_id in self._last_phase_a_data:
-                    eval_data[pattern_id] = self._last_phase_a_data[pattern_id]
-                    grids, shapes, pattern_ids = eval_data[pattern_id]
+                    # CRITICAL FIX: Convert dictionary format back to tuple format for consistency
+                    data_dict = self._last_phase_a_data[pattern_id]
+                    grids = data_dict['grids']
+                    shapes = data_dict['shapes']
+                    pattern_ids = data_dict['pattern_ids']
+                    
+                    # Store as tuple for consistency with other code paths
+                    eval_data[pattern_id] = (grids, shapes, pattern_ids)
+                    
                     logging.info(f"   ✅ Pattern {pattern_id}: Using Phase A data with {len(grids)} samples")
                     
-                # CRITICAL VERIFICATION: Ensure we got the right number of samples
-                if len(grids) == 1260:
-                    logging.info(f"   ✅ Pattern {pattern_id}: CORRECT sample count (1260 samples)")
-                    
-                    # CRITICAL CHECK: Verify data preprocessing consistency
-                    # This ensures no scaling or preprocessing changes between calls
-                    data_info = self._last_phase_a_data[pattern_id]
-                    original_length = data_info.get('original_length', len(grids))
-                    storage_step = data_info.get('storage_step', 'Unknown')
-                    
-                    if len(grids) == original_length:
-                        logging.info(f"   ✅ Pattern {pattern_id}: Data preprocessing consistency verified")
-                        logging.info(f"      - Current samples: {len(grids)}")
-                        logging.info(f"      - Original samples: {original_length}")
-                        logging.info(f"      - Stored at step: {storage_step}")
+                    # CRITICAL VERIFICATION: Ensure we got the right number of samples
+                    if len(grids) == 1260:
+                        logging.info(f"   ✅ Pattern {pattern_id}: CORRECT sample count (1260 samples)")
+                        
+                        # CRITICAL CHECK: Verify data preprocessing consistency
+                        # This ensures no scaling or preprocessing changes between calls
+                        original_length = data_dict.get('original_length', len(grids))
+                        storage_step = data_dict.get('storage_step', 'Unknown')
+                        
+                        if len(grids) == original_length:
+                            logging.info(f"   ✅ Pattern {pattern_id}: Data preprocessing consistency verified")
+                            logging.info(f"      - Current samples: {len(grids)}")
+                            logging.info(f"      - Original samples: {original_length}")
+                            logging.info(f"      - Stored at step: {storage_step}")
+                        else:
+                            logging.error(f"   ❌ Pattern {pattern_id}: Data preprocessing inconsistency detected!")
+                            logging.error(f"      - Current samples: {len(grids)}")
+                            logging.error(f"      - Original samples: {original_length}")
+                            logging.error(f"      - This indicates preprocessing changes between calls")
                     else:
-                        logging.error(f"   ❌ Pattern {pattern_id}: Data preprocessing inconsistency detected!")
-                        logging.error(f"      - Current samples: {len(grids)}")
-                        logging.error(f"      - Original samples: {original_length}")
-                        logging.error(f"      - This indicates preprocessing changes between calls")
-                else:
-                    logging.error(f"   ❌ Pattern {pattern_id}: WRONG sample count! Expected 1260, got {len(grids)}")
-                    logging.error(f"      This indicates Phase A data corruption!")
+                        logging.error(f"   ❌ Pattern {pattern_id}: WRONG sample count! Expected 1260, got {len(grids)}")
+                        logging.error(f"      This indicates Phase A data corruption!")
             
             logging.info(f"   ✅ This ensures evaluation uses the SAME rich data as Phase A")
         else:
@@ -1592,11 +1598,28 @@ class StructuredTrainer:
         # Compute encoder variances per pattern
         pattern_variances = {}
         for pattern_id, data in eval_data.items():
-            # Handle both Phase A data (dict) and pre-loaded data (tuple)
-            if isinstance(data, dict):
-                grids, shapes, pattern_ids = data['grids'], data['shapes'], data['pattern_ids']
-            else:
-                grids, shapes, pattern_ids = data
+            # CRITICAL FIX: Ensure consistent data structure handling
+            try:
+                if isinstance(data, dict):
+                    # Handle dictionary format (from Phase A data)
+                    grids = data['grids']
+                    shapes = data['shapes']
+                    pattern_ids = data['pattern_ids']
+                elif isinstance(data, (tuple, list)) and len(data) == 3:
+                    # Handle tuple format (from pre-loaded datasets)
+                    grids, shapes, pattern_ids = data
+                else:
+                    logging.error(f"         ❌ Pattern {pattern_id}: Invalid data format: {type(data)}")
+                    continue
+                    
+                # Validate data integrity
+                if not isinstance(grids, (np.ndarray, jnp.ndarray)) or not isinstance(shapes, (np.ndarray, jnp.ndarray)):
+                    logging.error(f"         ❌ Pattern {pattern_id}: Invalid data types after unpacking")
+                    continue
+                    
+            except Exception as e:
+                logging.error(f"         ❌ Pattern {pattern_id}: Failed to unpack data: {e}")
+                continue
             
             # CRITICAL FIX: Use FIXED sample selection to prevent batch filtering inconsistencies
             # This ensures the same samples are always selected for evaluation
@@ -6158,8 +6181,15 @@ class StructuredTrainer:
                 logging.info(f"🔍 USING Phase A data for consistency (prevents histogram destruction):")
                 for pattern_id in [1, 2, 3]:
                     if pattern_id in self._last_phase_a_data:
-                        eval_data[pattern_id] = self._last_phase_a_data[pattern_id]
-                        grids, shapes, pattern_ids = eval_data[pattern_id]
+                        # CRITICAL FIX: Convert dictionary format back to tuple format for consistency
+                        data_dict = self._last_phase_a_data[pattern_id]
+                        grids = data_dict['grids']
+                        shapes = data_dict['shapes']
+                        pattern_ids = data_dict['pattern_ids']
+                        
+                        # Store as tuple for consistency with other code paths
+                        eval_data[pattern_id] = (grids, shapes, pattern_ids)
+                        
                         logging.info(f"   ✅ Pattern {pattern_id}: Using Phase A data with {len(grids)} samples")
                 logging.info(f"   ✅ This ensures histograms show the SAME samples as Phase A")
                 logging.info(f"   ✅ NO MORE HISTOGRAM DESTRUCTION - consistent 1260 samples")
@@ -6203,8 +6233,19 @@ class StructuredTrainer:
             # CRITICAL DEBUG: Log summary of all datasets
             logging.info(f"📊 Evaluation data summary:")
             for pattern_id in [1, 2, 3]:
-                grids, shapes, pattern_ids = eval_data[pattern_id]
-                logging.info(f"   Pattern {pattern_id}: {len(grids)} samples, shape: {grids.shape}")
+                if pattern_id in eval_data:
+                    data = eval_data[pattern_id]
+                    logging.info(f"   Pattern {pattern_id}: data type={type(data)}")
+                    if isinstance(data, dict):
+                        grids = data['grids']
+                        logging.info(f"   Pattern {pattern_id}: {len(grids)} samples, shape: {grids.shape} (dict format)")
+                    elif isinstance(data, (tuple, list)) and len(data) == 3:
+                        grids, shapes, pattern_ids = data
+                        logging.info(f"   Pattern {pattern_id}: {len(grids)} samples, shape: {grids.shape} (tuple format)")
+                    else:
+                        logging.error(f"   Pattern {pattern_id}: Invalid data format: {type(data)}")
+                else:
+                    logging.error(f"   Pattern {pattern_id}: NOT FOUND in eval_data")
             
             # Create a figure with subplots for each pattern (histogram + Gaussian function)
             fig, axes = plt.subplots(2, 3, figsize=(20, 12))
