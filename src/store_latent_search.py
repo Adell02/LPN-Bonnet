@@ -1709,6 +1709,197 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
         except Exception as e:
             print(f"[loss] Failed to extract ES accuracy metrics: {e}")
     
+    # Add dashed vertical lines where each method achieves accuracy = 1
+    print(f"[loss] Adding accuracy = 1 markers...")
+    
+    # Function to find first budget where accuracy = 1
+    def find_first_accuracy_one(accuracies, budget_points, method_name):
+        """Find the first budget point where accuracy = 1"""
+        if accuracies is None or len(accuracies) == 0:
+            return None
+        
+        # Find first index where accuracy = 1 (within numerical tolerance)
+        accuracy_one_indices = np.where(np.isclose(accuracies, 1.0, atol=1e-6))[0]
+        if len(accuracy_one_indices) == 0:
+            print(f"[loss] {method_name}: No accuracy = 1 found")
+            return None
+        
+        first_idx = accuracy_one_indices[0]
+        budget_at_one = budget_points[first_idx] if first_idx < len(budget_points) else None
+        
+        if budget_at_one is not None:
+            print(f"[loss] {method_name}: First accuracy = 1 at budget {budget_at_one} (index {first_idx})")
+            return budget_at_one
+        else:
+            print(f"[loss] {method_name}: Accuracy = 1 found but budget index out of range")
+            return None
+    
+    # Check GA for accuracy = 1
+    ga_accuracy_one_budget = None
+    if ga_npz_path and os.path.exists(ga_npz_path):
+        try:
+            with np.load(ga_npz_path, allow_pickle=True) as f:
+                # Try to get per-sample accuracies for dataset_length > 1 case
+                if dataset_length and dataset_length > 1 and 'per_sample_accuracy' in f:
+                    per_sample_acc = np.array(f['per_sample_accuracy']).reshape(-1)
+                    if per_sample_acc.size > 0:
+                        # For multi-sample case: check if overall mean accuracy = 1
+                        if 'ga_losses_per_sample' in f:
+                            ga_losses_per_sample = np.array(f['ga_losses_per_sample'])
+                            if ga_losses_per_sample.size > 0:
+                                # Use the same budget calculation as the plotting
+                                x = ga_budget if ga_budget is not None else np.arange(ga_losses_per_sample.shape[1])
+                                # Check if overall mean accuracy is 1
+                                overall_mean_acc = np.mean(per_sample_acc)
+                                if np.isclose(overall_mean_acc, 1.0, atol=1e-6):
+                                    # If overall mean accuracy is 1, find first step where any sample achieves 1
+                                    # For multi-sample case, we need to check per-step accuracies
+                                    if 'per_sample_accuracy_per_step' in f:
+                                        # If we have per-step per-sample accuracies, find first step where mean = 1
+                                        per_step_acc = np.array(f['per_sample_accuracy_per_step'])  # (S, T) where S=samples, T=steps
+                                        if per_step_acc.size > 0:
+                                            # Calculate mean accuracy at each step
+                                            step_mean_acc = np.mean(per_step_acc, axis=0)  # (T,)
+                                            # Find first step where mean accuracy = 1
+                                            accuracy_one_indices = np.where(np.isclose(step_mean_acc, 1.0, atol=1e-6))[0]
+                                            if len(accuracy_one_indices) > 0:
+                                                first_step_idx = accuracy_one_indices[0]
+                                                ga_accuracy_one_budget = x[first_step_idx] if first_step_idx < len(x) else None
+                                                print(f"[loss] GA: First step with mean accuracy = 1 at step {first_step_idx}, budget {ga_accuracy_one_budget}")
+                                    else:
+                                        # Fallback: use first budget point if overall accuracy is 1
+                                        ga_accuracy_one_budget = x[0] if len(x) > 0 else None
+                                        print(f"[loss] GA: Overall mean accuracy = 1, using first budget point: {ga_accuracy_one_budget}")
+                else:
+                    # Single sample case: check overall accuracy
+                    for key in ['ga_overall_accuracy', 'overall_accuracy', 'ga_accuracy', 'accuracy']:
+                        if key in f:
+                            overall_acc = safe_array_to_scalar(np.array(f[key]))
+                            if overall_acc is not None and np.isclose(overall_acc, 1.0, atol=1e-6):
+                                # For single sample, check if we have per-step accuracies to find first step = 1
+                                if 'ga_accuracies' in f:
+                                    step_accuracies = np.array(f['ga_accuracies']).reshape(-1)
+                                    if step_accuracies.size > 0:
+                                        # Find first step where accuracy = 1
+                                        accuracy_one_indices = np.where(np.isclose(step_accuracies, 1.0, atol=1e-6))[0]
+                                        if len(accuracy_one_indices) > 0:
+                                            first_step_idx = accuracy_one_indices[0]
+                                            if ga_budget is not None and first_step_idx < len(ga_budget):
+                                                ga_accuracy_one_budget = ga_budget[first_step_idx]
+                                                print(f"[loss] GA: First step with accuracy = 1 at step {first_step_idx}, budget {ga_accuracy_one_budget}")
+                                            else:
+                                                # Fallback: use last budget point
+                                                ga_accuracy_one_budget = ga_budget[-1] if ga_budget is not None and len(ga_budget) > 0 else None
+                                                print(f"[loss] GA: Overall accuracy = 1, using final budget: {ga_accuracy_one_budget}")
+                                        else:
+                                            # No step with accuracy = 1, use last budget point
+                                            ga_accuracy_one_budget = ga_budget[-1] if ga_budget is not None and len(ga_budget) > 0 else None
+                                            print(f"[loss] GA: Overall accuracy = 1, using final budget: {ga_accuracy_one_budget}")
+                                    else:
+                                        # No per-step accuracies, use last budget point
+                                        ga_accuracy_one_budget = ga_budget[-1] if ga_budget is not None and len(ga_budget) > 0 else None
+                                        print(f"[loss] GA: Overall accuracy = 1, using final budget: {ga_accuracy_one_budget}")
+                                else:
+                                    # No per-step accuracies, use last budget point
+                                    if ga_budget is not None and len(ga_budget) > 0:
+                                        ga_accuracy_one_budget = ga_budget[-1]
+                                        print(f"[loss] GA: Overall accuracy = 1, using final budget: {ga_accuracy_one_budget}")
+                                break
+        except Exception as e:
+            print(f"[loss] Failed to check GA accuracy = 1: {e}")
+    
+    # Check ES for accuracy = 1
+    es_accuracy_one_budget = None
+    if es_npz_path and os.path.exists(es_npz_path):
+        try:
+            with np.load(es_npz_path, allow_pickle=True) as f:
+                # Try to get per-sample accuracies for dataset_length > 1 case
+                if dataset_length and dataset_length > 1 and 'per_sample_accuracy' in f:
+                    per_sample_acc = np.array(f['per_sample_accuracy']).reshape(-1)
+                    if per_sample_acc.size > 0:
+                        # For multi-sample case: check if overall mean accuracy = 1
+                        if 'es_generation_losses_per_sample' in f:
+                            es_losses_per_sample = np.array(f['es_generation_losses_per_sample'])
+                            if es_losses_per_sample.size > 0:
+                                # Use the same budget calculation as the plotting
+                                x = es_budget if es_budget is not None else np.arange(1, es_losses_per_sample.shape[1]+1)
+                                # Check if overall mean accuracy is 1
+                                overall_mean_acc = np.mean(per_sample_acc)
+                                if np.isclose(overall_mean_acc, 1.0, atol=1e-6):
+                                    # If overall mean accuracy is 1, find first generation where any sample achieves 1
+                                    # For multi-sample case, we need to check per-generation accuracies
+                                    if 'per_sample_accuracy_per_generation' in f:
+                                        # If we have per-generation per-sample accuracies, find first generation where mean = 1
+                                        per_gen_acc = np.array(f['per_sample_accuracy_per_generation'])  # (S, G) where S=samples, G=generations
+                                        if per_gen_acc.size > 0:
+                                            # Calculate mean accuracy at each generation
+                                            gen_mean_acc = np.mean(per_gen_acc, axis=0)  # (G,)
+                                            # Find first generation where mean accuracy = 1
+                                            accuracy_one_indices = np.where(np.isclose(gen_mean_acc, 1.0, atol=1e-6))[0]
+                                            if len(accuracy_one_indices) > 0:
+                                                first_gen_idx = accuracy_one_indices[0]
+                                                es_accuracy_one_budget = x[first_gen_idx] if first_gen_idx < len(x) else None
+                                                print(f"[loss] ES: First generation with mean accuracy = 1 at generation {first_gen_idx}, budget {es_accuracy_one_budget}")
+                                    else:
+                                        # Fallback: use first budget point if overall accuracy is 1
+                                        es_accuracy_one_budget = x[0] if len(x) > 0 else None
+                                        print(f"[loss] ES: Overall mean accuracy = 1, using first budget point: {es_accuracy_one_budget}")
+                else:
+                    # Single sample case: check overall accuracy
+                    for key in ['es_overall_accuracy', 'overall_accuracy', 'es_accuracy', 'accuracy']:
+                        if key in f:
+                            overall_acc = safe_array_to_scalar(np.array(f[key]))
+                            if overall_acc is not None and np.isclose(overall_acc, 1.0, atol=1e-6):
+                                # For single sample, check if we have per-generation accuracies to find first generation = 1
+                                if 'es_generation_accuracies' in f:
+                                    gen_accuracies = np.array(f['es_generation_accuracies']).reshape(-1)
+                                    if gen_accuracies.size > 0:
+                                        # Find first generation where accuracy = 1
+                                        accuracy_one_indices = np.where(np.isclose(gen_accuracies, 1.0, atol=1e-6))[0]
+                                        if len(accuracy_one_indices) > 0:
+                                            first_gen_idx = accuracy_one_indices[0]
+                                            if es_budget is not None and first_gen_idx < len(es_budget):
+                                                es_accuracy_one_budget = es_budget[first_gen_idx]
+                                                print(f"[loss] ES: First generation with accuracy = 1 at generation {first_gen_idx}, budget {es_accuracy_one_budget}")
+                                            else:
+                                                # Fallback: use last budget point
+                                                es_accuracy_one_budget = es_budget[-1] if es_budget is not None and len(es_budget) > 0 else None
+                                                print(f"[loss] ES: Overall accuracy = 1, using final budget: {es_accuracy_one_budget}")
+                                        else:
+                                            # No generation with accuracy = 1, use last budget point
+                                            es_accuracy_one_budget = es_budget[-1] if es_budget is not None and len(es_budget) > 0 else None
+                                            print(f"[loss] ES: Overall accuracy = 1, using final budget: {es_accuracy_one_budget}")
+                                    else:
+                                        # No per-generation accuracies, use last budget point
+                                        es_accuracy_one_budget = es_budget[-1] if es_budget is not None and len(es_budget) > 0 else None
+                                        print(f"[loss] ES: Overall accuracy = 1, using final budget: {es_accuracy_one_budget}")
+                                else:
+                                    # No per-generation accuracies, use last budget point
+                                    if es_budget is not None and len(es_budget) > 0:
+                                        es_accuracy_one_budget = es_budget[-1]
+                                        print(f"[loss] ES: Overall accuracy = 1, using final budget: {es_accuracy_one_budget}")
+                                break
+        except Exception as e:
+            print(f"[loss] Failed to check ES accuracy = 1: {e}")
+    
+    # Draw dashed vertical lines where accuracy = 1
+    # Color scheme: Purple (#DB74DB) for ES, Orange (#FBB998) for GA (matching the plot colors)
+    if ga_accuracy_one_budget is not None:
+        # Purple dashed line for GA (using ES color to match the plot)
+        ax.axvline(x=ga_accuracy_one_budget, color='#DB74DB', linestyle='--', linewidth=2, alpha=0.8, 
+                   label=f'GA accuracy = 1 (budget {ga_accuracy_one_budget})')
+        print(f"[loss] Added GA accuracy = 1 line at budget {ga_accuracy_one_budget}")
+    
+    if es_accuracy_one_budget is not None:
+        # Orange dashed line for ES (using GA color to match the plot)
+        ax.axvline(x=es_accuracy_one_budget, color='#FBB998', linestyle='--', linewidth=2, alpha=0.8, 
+                   label=f'ES accuracy = 1 (budget {es_accuracy_one_budget})')
+        print(f"[loss] Added ES accuracy = 1 line at budget {es_accuracy_one_budget}")
+    
+    # Update legend to include the new lines
+    if ga_accuracy_one_budget is not None or es_accuracy_one_budget is not None:
+        ax.legend(loc="upper right", frameon=True, fontsize=10)
+    
     # Tight layout and save
     plt.tight_layout()
     

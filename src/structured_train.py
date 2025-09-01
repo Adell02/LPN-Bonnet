@@ -1292,6 +1292,13 @@ class StructuredTrainer:
             # This ensures realistic variance computation and prevents overfitting to static data
             batch = self._generate_new_batch_for_training(target_pattern, step)
             
+            # CRITICAL: Verify training data integrity before each training step
+            grids, shapes, pattern_ids = batch
+            if not self._verify_training_data_integrity(grids, shapes, pattern_ids, target_pattern, f"step {step}/{num_steps}"):
+                logging.error(f"   ❌ CRITICAL: Training data corruption detected at step {step}!")
+                logging.error(f"   Training cannot proceed with corrupted data!")
+                raise ValueError(f"Training data corruption at step {step}")
+            
             # Debug: Check model and parameters structure
             if step == 0:
                 logging.info(f"   Model type: {type(model)}")
@@ -1755,6 +1762,13 @@ class StructuredTrainer:
                 logging.info(f"         🔍 Data shapes: grids={grids.shape}, shapes={shapes.shape}, pattern_ids={pattern_ids.shape}")
                 logging.info(f"         🔍 CRITICAL: Each sample uses different seed for realistic variance")
             
+            # CRITICAL: Verify pattern ID integrity immediately after generation
+            logging.info(f"         🔍 CRITICAL: Verifying pattern ID integrity after T-SNE data generation...")
+            if not self._verify_pattern_data_integrity(eval_data, f"T-SNE generation for encoder {enc_idx}"):
+                logging.error(f"         ❌ CRITICAL: Pattern ID corruption detected in T-SNE data!")
+                logging.error(f"         T-SNE visualization may be incorrect!")
+                return
+            
             # Generate T-SNE visualization
             current_global_step = self.phase_a_global_step + step
             try:
@@ -1817,6 +1831,18 @@ class StructuredTrainer:
                         logging.error(f"           - Pattern {pattern_id}: NOT STORED!")
             except Exception as e:
                 logging.error(f"         ❌ Data storage verification failed: {e}")
+            
+            # CRITICAL: Verify pattern ID integrity immediately after storage
+            try:
+                logging.info(f"         🔍 CRITICAL: Verifying pattern ID integrity after storage...")
+                if self._verify_pattern_data_integrity(self._last_phase_a_data, f"Phase A storage step {step}"):
+                    logging.info(f"         ✅ Pattern ID integrity verified - No corruption detected")
+                else:
+                    logging.error(f"         ❌ CRITICAL: Pattern ID corruption detected after storage!")
+                    logging.error(f"         This will cause training/evaluation failures!")
+            except Exception as e:
+                logging.error(f"         ❌ Pattern ID verification failed: {e}")
+                logging.error(f"         Data integrity cannot be guaranteed!")
             
             try:
                 self._generate_phase_a_certainty_plots(enc_idx, encoder_params, eval_data, current_global_step, step, total_steps)
@@ -1986,11 +2012,27 @@ class StructuredTrainer:
             total_steps: Total steps for encoder training
         """
         try:
+            # CRITICAL: Verify pattern ID integrity before generating plots
+            logging.info(f"         🔍 CRITICAL: Verifying pattern ID integrity before certainty plots...")
+            if not self._verify_pattern_data_integrity(eval_data, f"certainty plots for encoder {enc_idx}"):
+                logging.error(f"         ❌ CRITICAL: Pattern ID corruption detected - cannot generate plots!")
+                logging.error(f"         This will cause incorrect encoder evaluation!")
+                return
+            
             # Generate certainty plots for each pattern using PRE-LOADED datasets
             # This ensures consistency with Phase 1 evaluation and prevents dataset mixing
             for pattern_id in [1, 2, 3]:
                 if pattern_id in eval_data:
-                    grids, shapes, pattern_ids = eval_data[pattern_id]
+                    # CRITICAL: Filter data to ensure ONLY the intended pattern is used
+                    try:
+                        filtered_grids, filtered_shapes, filtered_pattern_ids = self._filter_data_by_pattern_id(
+                            eval_data, pattern_id, f"certainty plot generation for pattern {pattern_id}"
+                        )
+                    except ValueError as e:
+                        logging.error(f"         ❌ Failed to filter data for pattern {pattern_id}: {e}")
+                        continue
+                    
+                    grids, shapes, pattern_ids = filtered_grids, filtered_shapes, filtered_pattern_ids
                     
                     # CRITICAL FIX: Use DETERMINISTIC sample selection to prevent randomization inconsistencies
                     # This ensures the same sample is always selected for the same encoder/pattern combination
@@ -3562,6 +3604,188 @@ class StructuredTrainer:
         
         return organized_metrics
     
+    def _verify_pattern_data_integrity(self, data_dict: dict, context: str) -> bool:
+        """
+        CRITICAL: Verify pattern ID integrity in stored data before training/evaluation.
+        
+        This method ensures:
+        1. Each pattern dataset contains ONLY samples with the correct pattern ID
+        2. No cross-contamination between patterns
+        3. Data integrity before T-SNE, certainty plots, or training
+        
+        Args:
+            data_dict: Dictionary mapping pattern_id to (grids, shapes, pattern_ids)
+            context: String describing where this verification is called from
+            
+        Returns:
+            bool: True if all data is valid, False if corruption detected
+        """
+        import numpy as np
+        
+        logging.info(f"🔍 CRITICAL: Pattern ID integrity verification for {context}")
+        logging.info(f"   - Data keys: {list(data_dict.keys())}")
+        
+        all_valid = True
+        
+        for pattern_id in [1, 2, 3]:
+            if pattern_id not in data_dict:
+                logging.error(f"   ❌ Pattern {pattern_id} missing from data!")
+                all_valid = False
+                continue
+                
+            grids, shapes, pattern_ids = data_dict[pattern_id]
+            
+            # CRITICAL CHECK 1: Verify pattern_ids array exists and has correct shape
+            if pattern_ids is None:
+                logging.error(f"   ❌ Pattern {pattern_id}: pattern_ids is None!")
+                all_valid = False
+                continue
+                
+            if not hasattr(pattern_ids, 'shape'):
+                logging.error(f"   ❌ Pattern {pattern_id}: pattern_ids has no shape attribute!")
+                all_valid = False
+                continue
+            
+            # CRITICAL CHECK 2: Verify all pattern IDs match the expected pattern
+            pattern_ids_np = np.array(pattern_ids)
+            expected_pattern = pattern_id
+            
+            if not np.all(pattern_ids_np == expected_pattern):
+                logging.error(f"   ❌ CRITICAL CORRUPTION: Pattern {pattern_id} contains wrong IDs!")
+                logging.error(f"      Expected: all {expected_pattern}")
+                logging.error(f"      Got: {np.unique(pattern_ids_np)}")
+                logging.error(f"      Sample of corrupted IDs: {pattern_ids_np[:10]}")
+                all_valid = False
+            else:
+                logging.info(f"   ✅ Pattern {pattern_id}: All {len(pattern_ids_np)} samples have correct ID {expected_pattern}")
+            
+            # CRITICAL CHECK 3: Verify data shapes are consistent
+            if grids.shape[0] != len(pattern_ids_np):
+                logging.error(f"   ❌ Pattern {pattern_id}: Grids count ({grids.shape[0]}) != Pattern IDs count ({len(pattern_ids_np)})")
+                all_valid = False
+            else:
+                logging.info(f"   ✅ Pattern {pattern_id}: Data shapes consistent - {grids.shape[0]} samples")
+            
+            # CRITICAL CHECK 4: Verify no NaN or invalid values
+            if np.any(np.isnan(pattern_ids_np)):
+                logging.error(f"   ❌ Pattern {pattern_id}: Contains NaN values in pattern IDs!")
+                all_valid = False
+            
+            if np.any(pattern_ids_np < 1) or np.any(pattern_ids_np < 3):
+                logging.error(f"   ❌ Pattern {pattern_id}: Contains invalid pattern ID values!")
+                logging.error(f"      Valid range: [1, 2, 3], Got: [{np.min(pattern_ids_np)}, {np.max(pattern_ids_np)}]")
+                all_valid = False
+        
+        if all_valid:
+            logging.info(f"   ✅ ALL PATTERN DATA VERIFIED - No corruption detected")
+        else:
+            logging.error(f"   ❌ PATTERN DATA CORRUPTION DETECTED - Training/evaluation may fail!")
+            logging.error(f"      Context: {context}")
+            
+        return all_valid
+    
+    def _verify_training_data_integrity(self, grids: chex.Array, shapes: chex.Array, pattern_ids: chex.Array, target_pattern: int, context: str) -> bool:
+        """
+        CRITICAL: Verify training data integrity before each training step.
+        
+        This ensures:
+        1. Pattern IDs match the expected target pattern
+        2. Data shapes are consistent
+        3. No corruption before training
+        
+        Args:
+            grids: Training grids
+            shapes: Training shapes  
+            pattern_ids: Training pattern IDs
+            target_pattern: Expected target pattern for this encoder
+            context: String describing the training context
+            
+        Returns:
+            bool: True if data is valid, False if corruption detected
+        """
+        import numpy as np
+        
+        logging.info(f"     🔍 CRITICAL: Training data integrity verification for {context}")
+        logging.info(f"        - Target pattern: {target_pattern}")
+        logging.info(f"        - Data shapes: grids={grids.shape}, shapes={shapes.shape}, pattern_ids={pattern_ids.shape}")
+        
+        pattern_ids_np = np.array(pattern_ids)
+        
+        # CRITICAL CHECK 1: Verify all pattern IDs are valid
+        if np.any(pattern_ids_np < 1) or np.any(pattern_ids_np > 3):
+            logging.error(f"        ❌ CRITICAL: Invalid pattern ID values detected!")
+            logging.error(f"           Valid range: [1, 2, 3], Got: [{np.min(pattern_ids_np)}, {np.max(pattern_ids_np)}]")
+            return False
+        
+        # CRITICAL CHECK 2: Verify target pattern is present
+        target_mask = (pattern_ids_np == target_pattern)
+        target_count = np.sum(target_mask)
+        if target_count == 0:
+            logging.error(f"        ❌ CRITICAL: No target pattern {target_pattern} samples found!")
+            logging.error(f"           Pattern distribution: {dict(zip(*np.unique(pattern_ids_np, return_counts=True)))}")
+            return False
+        
+        # CRITICAL CHECK 3: Verify other patterns are present (for contrastive learning)
+        other_mask = ~target_mask
+        other_count = np.sum(other_mask)
+        if other_count == 0:
+            logging.error(f"        ❌ CRITICAL: No other pattern samples found for contrastive learning!")
+            logging.error(f"           All samples are target pattern {target_pattern}")
+            return False
+        
+        # CRITICAL CHECK 4: Verify data consistency
+        if len(grids) != len(pattern_ids_np):
+            logging.error(f"        ❌ CRITICAL: Data length mismatch!")
+            logging.error(f"           Grids: {len(grids)}, Pattern IDs: {len(pattern_ids_np)}")
+            return False
+        
+        # CRITICAL CHECK 5: Verify pattern distribution is reasonable
+        unique_patterns, counts = np.unique(pattern_ids_np, return_counts=True)
+        pattern_distribution = dict(zip(unique_patterns, counts))
+        
+        logging.info(f"        ✅ Pattern distribution: {pattern_distribution}")
+        logging.info(f"        ✅ Target pattern {target_pattern}: {target_count} samples")
+        logging.info(f"        ✅ Other patterns: {other_count} samples")
+        logging.info(f"        ✅ Data integrity verified - Ready for training")
+        
+        return True
+    
+    def _filter_data_by_pattern_id(self, data_dict: dict, target_pattern: int, context: str) -> tuple:
+        """
+        CRITICAL: Filter data to ensure each encoder sees ONLY its intended pattern.
+        
+        This prevents cross-contamination and ensures proper specialization.
+        
+        Args:
+            data_dict: Dictionary mapping pattern_id to (grids, shapes, pattern_ids)
+            target_pattern: Pattern this encoder should specialize in (1, 2, or 3)
+            context: String describing where this filtering is called from
+            
+        Returns:
+            tuple: (filtered_grids, filtered_shapes, filtered_pattern_ids) for target_pattern only
+        """
+        logging.info(f"🔒 CRITICAL: Pattern-specific data filtering for {context}")
+        logging.info(f"   - Target pattern: {target_pattern}")
+        logging.info(f"   - Available patterns: {list(data_dict.keys())}")
+        
+        if target_pattern not in data_dict:
+            logging.error(f"   ❌ Target pattern {target_pattern} not found in data!")
+            raise ValueError(f"Target pattern {target_pattern} not available for {context}")
+        
+        grids, shapes, pattern_ids = data_dict[target_pattern]
+        
+        # CRITICAL: Double-check that this data actually contains the target pattern
+        pattern_ids_np = np.array(pattern_ids)
+        if not np.all(pattern_ids_np == target_pattern):
+            logging.error(f"   ❌ CRITICAL: Data for pattern {target_pattern} contains wrong IDs!")
+            logging.error(f"      Expected: all {target_pattern}, Got: {np.unique(pattern_ids_np)}")
+            raise ValueError(f"Pattern {target_pattern} data corruption detected")
+        
+        logging.info(f"   ✅ Filtered data: {len(grids)} samples, all with pattern ID {target_pattern}")
+        logging.info(f"   ✅ Data shapes: grids={grids.shape}, shapes={shapes.shape}")
+        
+        return grids, shapes, pattern_ids
+    
     def _create_specialized_training_data(self, target_pattern: int) -> tuple:
         """
         Create specialized training data for individual encoder training.
@@ -3614,9 +3838,35 @@ class StructuredTrainer:
         shapes = jnp.stack(shapes_list, axis=0)
         pattern_ids = jnp.array(pattern_ids_list)
         
+        # CRITICAL: Verify pattern ID integrity in generated training data
+        logging.info(f"     🔍 CRITICAL: Verifying pattern ID integrity in generated training data...")
+        pattern_ids_np = np.array(pattern_ids)
+        
+        # Verify target pattern samples
+        target_mask = (pattern_ids_np == target_pattern)
+        target_count = np.sum(target_mask)
+        if target_count != target_samples:
+            logging.error(f"     ❌ CRITICAL: Target pattern count mismatch!")
+            logging.error(f"        Expected: {target_samples}, Got: {target_count}")
+            raise ValueError(f"Target pattern count mismatch in training data generation")
+        
+        # Verify other pattern samples
+        other_mask = ~target_mask
+        other_count = np.sum(other_mask)
+        if other_count != other_samples:
+            logging.error(f"     ❌ CRITICAL: Other pattern count mismatch!")
+            logging.error(f"        Expected: {other_samples}, Got: {other_count}")
+            raise ValueError(f"Other pattern count mismatch in training data generation")
+        
+        # Verify pattern ID distribution
+        unique_patterns, counts = np.unique(pattern_ids_np, return_counts=True)
+        pattern_distribution = dict(zip(unique_patterns, counts))
+        logging.info(f"     ✅ Pattern distribution verified: {pattern_distribution}")
+        
         logging.info(f"     Generated {len(grids_list)} samples: {target_samples} target, {other_samples} others")
         logging.info(f"     ✅ CRITICAL FIX: Used diverse seeds to prevent identical sample copies")
         logging.info(f"     ✅ This ensures meaningful contrastive loss and proper encoder specialization")
+        logging.info(f"     ✅ Pattern ID integrity verified - No corruption detected")
         return grids, shapes, pattern_ids
     
     def _create_single_pattern_sample_with_seed(self, pattern_id: int, seed: int) -> tuple:
