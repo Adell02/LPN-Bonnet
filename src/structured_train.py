@@ -1802,8 +1802,8 @@ class StructuredTrainer:
             # Create evaluation data for all patterns to show specialization progress
             eval_data = {}
             for pattern_id in [1, 2, 3]:
-                pattern_data = self._create_specialized_training_data(pattern_id)
-                eval_data[pattern_id] = pattern_data
+                grids, shapes, pattern_ids = self._create_pattern_dataset(pattern_id, num_samples=None)
+                eval_data[pattern_id] = (grids, shapes, pattern_ids)
             
             # Generate T-SNE visualization
             current_global_step = self.phase_a_global_step + step
