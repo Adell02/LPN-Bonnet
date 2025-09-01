@@ -21,7 +21,6 @@ This eliminates the data size mismatch that was causing training to get stuck.
 import logging
 import matplotlib.pyplot as plt
 import time
-import os
 from functools import partial
 from typing import Optional, Sequence
 import matplotlib.pyplot as plt
@@ -306,14 +305,14 @@ class StructuredTrainer:
 
         # Training/eval datasets - Use task generator like train.py for on-the-fly generation
         if cfg.training.get("struct_patterns_balanced", False):
-            # Use task generator for on-the-fly sample generation with FIXED pattern separation
-            logging.info("Using task generator for on-the-fly sample generation with FIXED pattern separation")
+            # Use task generator for on-the-fly sample generation (like train.py)
+            logging.info("Using task generator for on-the-fly sample generation (like train.py)")
             self.task_generator = True
             self.task_generator_kwargs = {
                 "num_workers": cfg.training.get("num_workers", 4),
                 "num_pairs": int(cfg.training.get("struct_num_pairs", 4)),
                 "class": "STRUCT_PATTERN",
-                "pattern": 1,  # FIXED: Use pattern 1 as base (will be overridden per pattern in _create_balanced_pattern_batch)
+                "pattern": 0,  # pattern=0 mixes all 3 patterns uniformly
                 "pattern_per_task": True,
                 "num_rows": 5,
                 "num_cols": 5,
@@ -357,9 +356,6 @@ class StructuredTrainer:
             else:
                 raise ValueError("No training data specified: set training.train_datasets or enable struct_patterns_balanced")
 
-        # Set data directory for fallback pattern loading
-        self.data_dir = cfg.training.get("data_dir", "src/datasets")
-        
         # Simple single eval dataset support (optional)
         self.eval_conf = cfg.eval.get("dataset")
         if self.eval_conf and self.eval_conf.get("folder"):
@@ -435,64 +431,19 @@ class StructuredTrainer:
             # CRITICAL FIX: Create explicit pattern IDs that match the concatenation order
             # This ensures pattern IDs align with the actual data, just like in training
             self.eval_pattern_ids = jnp.concatenate([
-                jnp.full((samples_per_pattern,), 1),  # Pattern 1 (first 32 samples)
-                jnp.full((samples_per_pattern,), 2),  # Pattern 2 (next 32 samples)
-                jnp.full((samples_per_pattern,), 3),  # Pattern 3 (last 32 samples)
+                jnp.full((samples_per_pattern,), 1),  # Pattern 1 (O-tetromino, first 32 samples)
+                jnp.full((samples_per_pattern,), 2),  # Pattern 2 (T-tetromino, next 32 samples)
+                jnp.full((samples_per_pattern,), 3),  # Pattern 3 (L-tetromino, last 32 samples)
             ], axis=0)
             
             # DEBUG: Log evaluation dataset info
             logging.info(f"Generated fallback balanced evaluation dataset:")
             logging.info(f"  - Total samples: {self.eval_grids.shape[0]}")
             logging.info(f"  - Samples per pattern: {samples_per_pattern}")
+            logging.info(f"  - Pattern distribution: O-tetromino (32), T-tetromino (32), L-tetromino (32)")
             logging.info(f"  - Grids shape: {self.eval_grids.shape}")
             logging.info(f"  - Shapes shape: {self.eval_shapes.shape}")
             logging.info(f"  - Pattern IDs: {self.eval_pattern_ids[:10]}... (first 10) - should be [1,1,1,...,2,2,2,...,3,3,3,...]")
-        
-        # CRITICAL: Load pattern datasets ONCE at initialization for consistent certainty plots
-        # This ensures the same data is used every time the certainty plot is generated
-        # FIXES: The issue where certainty plots mixed datasets after step 100
-        logging.info("🔍 Loading pattern datasets for consistent certainty plots...")
-        
-        # Import required modules for dataset loading
-        import os
-        import numpy as np
-        
-        self.pattern_datasets = {}
-        pattern_to_folder = {
-            1: "struct_pattern_1",
-            2: "struct_pattern_2", 
-            3: "struct_pattern_3"
-        }
-        
-        for pattern_id in [1, 2, 3]:
-            try:
-                dataset_folder = pattern_to_folder[pattern_id]
-                dataset_path = os.path.join("src/datasets", dataset_folder)
-                
-                grids = np.load(os.path.join(dataset_path, "grids.npy")).astype(np.uint8)
-                shapes = np.load(os.path.join(dataset_path, "shapes.npy")).astype(np.uint8)
-                
-                # Store the loaded datasets
-                self.pattern_datasets[pattern_id] = {
-                    'grids': jnp.array(grids),
-                    'shapes': jnp.array(shapes),
-                    'pattern_ids': jnp.full(len(grids), pattern_id, dtype=jnp.uint8)
-                }
-                
-                logging.info(f"      ✅ Loaded {dataset_folder}: {grids.shape[0]} samples, {grids.shape}")
-                
-            except Exception as e:
-                logging.error(f"      ❌ Failed to load dataset {dataset_folder}: {e}")
-                logging.warning(f"      Falling back to synthetic data generation for pattern {pattern_id}")
-                # Don't store anything - will use synthetic generation as fallback
-        
-        if self.pattern_datasets:
-            logging.info(f"      📊 Pattern datasets loaded successfully: {list(self.pattern_datasets.keys())}")
-            # Log dataset details for verification
-            for pattern_id, data in self.pattern_datasets.items():
-                logging.info(f"        Pattern {pattern_id}: {data['grids'].shape[0]} samples, shape: {data['grids'].shape}")
-        else:
-            logging.warning("      ⚠️ No pattern datasets loaded - will use synthetic generation")
         
         # Load test datasets for comprehensive evaluation (like train.py)
         self.test_datasets = []
@@ -675,17 +626,12 @@ class StructuredTrainer:
                 logging.debug(f"EXPLICIT pattern distribution: {pattern_distribution}")
                 
                 # CRITICAL: Verify we have the expected balanced distribution
-                expected_distribution = {1: 42, 2: 42, 3: 42}  # 42 samples per pattern
+                expected_distribution = {1: 42, 2: 42, 3: 42}  # 42 samples per pattern (O, T, L tetrominos)
                 if pattern_distribution != expected_distribution:
                     logging.warning(f"⚠️  Pattern distribution mismatch!")
                     logging.warning(f"   Expected: {expected_distribution}")
                     logging.warning(f"   Got: {pattern_distribution}")
                     logging.warning(f"   This will break contrastive loss effectiveness!")
-                
-                # Validate batch pattern distribution for contrastive loss effectiveness
-                batch_valid = self._validate_batch_pattern_distribution((batch_pairs, batch_shapes, pattern_ids))
-                if not batch_valid:
-                    logging.error("❌ Batch validation failed - contrastive loss may not work effectively!")
                 
                 # CRITICAL: Conditionally disable repulsion and contrastive losses after encoder exposure
                 # During encoder exposure: use full coefficients for specialization
@@ -807,92 +753,94 @@ class StructuredTrainer:
         # Log essential training step info
         logging.debug(f"Training step completed: {num_steps} steps, batch size: {self.batch_size}")
         
-        # CRITICAL: Compute clustering metrics every log_every_n_steps for Phase 1 training
-        try:
-            logging.debug(f"🔍 Computing Phase 1 clustering metrics for {num_steps} steps")
-            # Use the first batch for clustering metrics (representative of the log_every_n_steps)
-            first_batch_grids = batches[0][0]  # First step, first batch
-            first_batch_shapes = batches[1][0]  # First step, first batch
-            first_batch_pattern_ids = explicit_pattern_ids  # Same pattern IDs for all steps
-            
-            clustering_metrics = self._compute_clustering_metrics_every_step(
-                state, first_batch_grids, first_batch_shapes, first_batch_pattern_ids, 
-                step=None  # No specific step for Phase 1
-            )
-            
-            # Add clustering metrics to the returned metrics
-            avg_metrics.update(clustering_metrics)
-            logging.debug(f"✅ Phase 1 clustering metrics computed: {list(clustering_metrics.keys())}")
-            
-        except Exception as e:
-            logging.warning(f"Phase 1 clustering metrics computation failed: {e}")
-        
         # Decrement exposure counter by number of gradient steps completed
         self.encoder_expose_steps = max(0, self.encoder_expose_steps - num_steps)
         return state, avg_metrics
 
-    def _create_balanced_pattern_batch(self, target_pattern: int, step: int) -> tuple[chex.Array, chex.Array, chex.Array]:
+    def _create_balanced_pattern_batch(self, batch_size: int, samples_per_pattern: int) -> tuple[chex.Array, chex.Array, chex.Array]:
         """
-        SIMPLEST: Create mixed batch with target pattern (T) + fresh other patterns (O) every batch.
+        Create a balanced batch with equal representation from all 3 patterns.
         
-        This matches the recommended approach: mixed batches with fresh reshuffling to avoid overfitting.
-        Each batch contains K_T samples from target pattern + K_O samples from other patterns.
+        This ensures each batch contains exactly the same number of samples from each pattern,
+        which is crucial for proper contrastive loss computation.
         
         Args:
-            target_pattern: Target pattern for this batch (T)
-            step: Training step for fresh reshuffling of O samples
+            batch_size: Total batch size (must be divisible by 3)
+            samples_per_pattern: Number of samples per pattern per batch
             
         Returns:
-            Tuple of (grids, shapes, pattern_ids) with mixed T + O samples
+            Tuple of (grids_list, shapes_list) with balanced pattern distribution
         """
-        batch_size = self.batch_size
-        target_ratio = self.cfg.training.get("target_pattern_ratio", 0.6)
+        if batch_size % 3 != 0:
+            raise ValueError(f"Batch size {batch_size} must be divisible by 3 for uniform pattern distribution")
         
-        K_T = int(batch_size * target_ratio)  # Target pattern samples
-        K_O = batch_size - K_T                # Other pattern samples
-        
+        # Generate samples for each pattern
         grids_list = []
         shapes_list = []
-        pattern_ids_list = []
         
-        # 1. Sample from target pattern (T) - known pattern
-        for i in range(K_T):
-            # CRITICAL FIX: Use safe conversion to avoid JAX tracer issues
-            logging.debug(f"Converting step {step} (type: {type(step)}) to int for target pattern")
-            step_int = self._safe_convert_to_int(step)
-            logging.debug(f"Converted step {step} to {step_int}")
-            sample_seed = step_int * 1000 + target_pattern * 100 + i * 10
-            grids, shapes, _ = self._create_single_pattern_sample_with_seed(target_pattern, sample_seed)
-            grids_list.append(grids)
-            shapes_list.append(shapes)
-            pattern_ids_list.append(target_pattern)
+        for pattern_id in [1, 2, 3]:  # Pattern 1, Pattern 2, Pattern 3
+            # Generate samples_per_pattern samples for this pattern
+            # Use make_task_gen_dataloader directly since make_dataset doesn't support STRUCT_PATTERN
+            from datasets.task_gen.dataloader import make_task_gen_dataloader
+            
+            # Create dataloader for this specific pattern
+            dataloader = make_task_gen_dataloader(
+                batch_size=1,
+                log_every_n_steps=1,
+                num_workers=0,  # No workers for single batch generation
+                task_generator_class="STRUCT_PATTERN",
+                num_pairs=self.task_generator_kwargs["num_pairs"],
+                online_data_augmentation=self.cfg.training.online_data_augmentation,
+                seed=self.cfg.training.seed + pattern_id + (self._batch_counter if hasattr(self, '_batch_counter') else 0),
+                pattern=pattern_id,  # Specific pattern
+                pattern_per_task=True,
+                num_rows=self.task_generator_kwargs.get("num_rows", 5),
+                num_cols=self.task_generator_kwargs.get("num_cols", 5),
+            )
+            
+            # Generate samples using the dataloader
+            grids_list_pattern = []
+            shapes_list_pattern = []
+            for i, ((grids, shapes), _) in enumerate(zip(dataloader, range(samples_per_pattern))):
+                # The dataloader returns (log_every_n_steps, batch_size, ...) format
+                # Since we set batch_size=1 and log_every_n_steps=1, extract the actual data
+                # grids shape: (1, 1, num_pairs, max_rows, max_cols, 2) -> (num_pairs, max_rows, max_cols, 2)
+                # shapes shape: (1, 1, num_pairs, 2, 2) -> (num_pairs, 2, 2)
+                grids_list_pattern.append(grids[0, 0])  # Extract from batch format
+                shapes_list_pattern.append(shapes[0, 0])  # Extract from batch format
+            
+            # Stack the samples for this pattern
+            g = jnp.stack(grids_list_pattern, axis=0)
+            s = jnp.stack(shapes_list_pattern, axis=0)
+            
+            # DEBUG: Log the actual shapes returned by direct dataloader
+            logging.debug(f"Pattern {pattern_id} - grids shape: {g.shape}, shapes shape: {s.shape}")
+            
+            grids_list.append(g)
+            shapes_list.append(s)
         
-        # 2. Sample from other patterns (O) - fresh reshuffling every batch
-        other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
+        # CRITICAL FIX: Align pattern generation with pattern IDs
+        # Create explicit pattern IDs that match the concatenation order
+        pattern_ids = jnp.concatenate([
+            jnp.full((samples_per_pattern,), 1),  # Pattern 1 (O-tetromino)
+            jnp.full((samples_per_pattern,), 2),  # Pattern 2 (T-tetromino)
+            jnp.full((samples_per_pattern,), 3),  # Pattern 3 (L-tetromino)
+        ], axis=0)
         
-        # Fresh reshuffling: use step to ensure new O samples every batch
-        # CRITICAL FIX: Use safe conversion for np.random.seed
-        logging.debug(f"Converting step {step} (type: {type(step)}) to int for np.random.seed")
-        step_int = self._safe_convert_to_int(step)
-        logging.debug(f"Converted step {step} to {step_int} for np.random.seed")
-        np.random.seed(step_int * 1000 + target_pattern * 100)  # Deterministic but fresh per batch
-        other_patterns_shuffled = np.random.permutation(other_patterns)
+        # Concatenate all patterns to create balanced batch
+        balanced_grids = jnp.concatenate(grids_list, axis=0)
+        balanced_shapes = jnp.concatenate(shapes_list, axis=0)
         
-        for i in range(K_O):
-            pattern_idx = i % len(other_patterns)
-            pattern_id = other_patterns_shuffled[pattern_idx]
-            sample_seed = step_int * 1000 + pattern_id * 100 + i * 10
-            grids, shapes, _ = self._create_single_pattern_sample_with_seed(pattern_id, sample_seed)
-            grids_list.append(grids)
-            shapes_list.append(shapes)
-            pattern_ids_list.append(pattern_id)
+        # DEBUG: Log the final concatenated shapes and pattern alignment
+        logging.debug(f"Final balanced batch - grids shape: {balanced_grids.shape}, shapes shape: {balanced_shapes.shape}")
+        logging.debug(f"Pattern IDs: {pattern_ids[:10]}... (first 10) - should be [1,1,1,...,2,2,2,...,3,3,3,...]")
         
-        # Concatenate T + O samples into single mixed batch
-        grids = jnp.stack(grids_list, axis=0)
-        shapes = jnp.stack(shapes_list, axis=0)
-        pattern_ids = jnp.array(pattern_ids_list)
+        # Increment batch counter for different seeds
+        if not hasattr(self, '_batch_counter'):
+            self._batch_counter = 0
+        self._batch_counter += 1
         
-        return grids, shapes, pattern_ids
+        return balanced_grids, balanced_shapes, pattern_ids
 
     def _create_balanced_dataloader(self, log_every_n_steps: int):
         """
@@ -910,8 +858,8 @@ class StructuredTrainer:
         
         # Generate the first batch to get the pattern IDs (they're the same for all steps)
         first_batch = self._create_balanced_pattern_batch(
-            target_pattern=1,  # Use pattern 1 as base
-            step=0
+            self.batch_size, 
+            self.samples_per_pattern_per_batch
         )
         first_grids, first_shapes, first_pattern_ids = first_batch
         all_grids.append(first_grids)
@@ -921,8 +869,8 @@ class StructuredTrainer:
         for step in range(1, log_every_n_steps):
             # Generate a balanced batch for this step
             balanced_grids, balanced_shapes, _ = self._create_balanced_pattern_batch(
-                target_pattern=1,  # Use pattern 1 as base
-                step=step
+                self.batch_size, 
+                self.samples_per_pattern_per_batch
             )
             all_grids.append(balanced_grids)
             all_shapes.append(balanced_shapes)
@@ -989,17 +937,17 @@ class StructuredTrainer:
                     # Check if middle column has pixel (T-tetromino characteristic)
                     middle_col = min_col + 1
                     if jnp.any(active_coords[1] == middle_col):
-                        pattern_id = 2  # T-tetromino (2x3 box with centered pixel)
+                        pattern_id = 2  # T-tetromino
                     else:
-                        pattern_id = 3  # L-tetromino (2x3 box without centered pixel)
+                        pattern_id = 3  # L-tetromino
                 else:  # 3x2 box
                     # Check if bottom row has 2 pixels (L-tetromino characteristic)
                     bottom_row = max_row
                     bottom_pixels = jnp.sum(active_coords[1] == bottom_row)
                     if bottom_pixels == 2:
-                        pattern_id = 3  # L-tetromino (3x2 box with 2 bottom pixels)
+                        pattern_id = 3  # L-tetromino
                     else:
-                        pattern_id = 2  # T-tetromino (3x2 box without 2 bottom pixels)
+                        pattern_id = 2  # T-tetromino
             else:
                 # Unexpected dimensions, use fallback
                 logging.warning(f"Sample {i} has unexpected bounding box {height}x{width}. Using fallback pattern ID.")
@@ -1119,15 +1067,6 @@ class StructuredTrainer:
         logging.info(f"   - Using original decoders to prevent interference")
         logging.info(f"   - Focus: pattern specialization through contrastive learning")
         
-        # CRITICAL: Validate config is loaded correctly
-        self._validate_phase1_config()
-        
-        # FIXED: Cache training examples for Phase 1 to ensure stable data distribution
-        # This prevents the "shifting data distribution" problem that prevents convergence
-        logging.info(f"   📊 Creating cached training dataset for Phase 1...")
-        cached_training_data = self._create_cached_phase1_dataset()
-        logging.info(f"   ✅ Cached {len(cached_training_data)} training batches")
-        
         # Store original parameters for restoration
         self.original_encoder_params = [jax.tree_util.tree_map(lambda x: x, enc_params) for enc_params in enc_params_list]
         self.original_decoder_params = jax.tree_util.tree_map(lambda x: x, state.params["decoder"])
@@ -1191,17 +1130,13 @@ class StructuredTrainer:
             )
             
             # Train this encoder on complementary data with repulsion from previous encoders
-            # FIXED: Pass cached data for stable training
             specialized_encoder = self._train_encoder_individually(
-                enc_idx, individual_state, self.model, target_latents_store,
-                cached_data=cached_training_data
+                enc_idx, individual_state, self.model, target_latents_store
             )
             
             # Store target latents from this encoder for future repulsion
             if repulsion_kl > 0:
-                # Only show verbose output if repulsion is actually being used
-                verbose = repulsion_kl > 0
-                target_latents_store[enc_idx] = self._extract_target_latents(enc_idx, specialized_encoder, individual_state, verbose=verbose)
+                target_latents_store[enc_idx] = self._extract_target_latents(enc_idx, specialized_encoder, individual_state)
                 logging.info(f"   📦 Stored target latents for Encoder {enc_idx} (will be used for repulsion)")
             
             # Evaluate the specialized encoder and create visualizations
@@ -1222,9 +1157,6 @@ class StructuredTrainer:
         new_params["encoders"] = tuple(specialized_encoders)
         updated_state = state.replace(params=new_params)
         
-        # FIXED: Validate that specialization actually worked and encoders have distinct parameters
-        self._validate_encoder_specialization_results(specialized_encoders, enc_params_list)
-        
         self.phase1_completed = True
         
         # Calculate Phase A evaluation statistics
@@ -1244,7 +1176,7 @@ class StructuredTrainer:
         
         return updated_state
     
-    def _train_encoder_individually(self, enc_idx: int, state: TrainState, model: StructuredLPN, target_latents_store: dict = None, cached_data: list = None) -> dict:
+    def _train_encoder_individually(self, enc_idx: int, state: TrainState, model: StructuredLPN, target_latents_store: dict = None) -> dict:
         """
         Train a single encoder individually on complementary data.
         
@@ -1277,42 +1209,8 @@ class StructuredTrainer:
         logging.info(f"   - Total evaluations per encoder: {self.encoder_expose_steps // eval_every_n_steps}")
         
         for step in range(num_steps):
-            # FIXED: Use cached data for stable training instead of generating new data every batch
-            # This prevents the "shifting data distribution" problem that prevents convergence
-            if cached_data is not None:
-                # Sample from cached data with shuffling
-                batch_idx = (step * 3 + target_pattern - 1) % len(cached_data)
-                cached_batch = cached_data[batch_idx]
-                grids, shapes, pattern_ids = cached_batch[:3]  # Extract first 3 elements
-                batch = (grids, shapes, pattern_ids)
-                
-                if step % 100 == 0:
-                    logging.info(f"     Step {step}: Using cached batch {batch_idx} (target pattern {target_pattern})")
-            else:
-                # Fallback to generating new data (not recommended for Phase 1)
-                logging.warning(f"     Step {step}: No cached data, generating new batch (may cause instability)")
-                batch = self._generate_new_batch_for_training(target_pattern, step)
-            
-            # CRITICAL: Verify training data integrity before each training step
-            # FIXED: Use safe unpacking to prevent "too many values to unpack" errors
-            try:
-                grids, shapes, pattern_ids = self._safe_unpack_batch_data(batch, f"step {step}/{num_steps}")
-                
-                # Check if unpacking failed
-                if grids is None or shapes is None:
-                    logging.error(f"   ❌ CRITICAL: Batch unpacking failed at step {step}!")
-                    logging.error(f"   Training cannot proceed with invalid data!")
-                    continue  # Skip this step and try the next one
-                
-                if not self._verify_training_data_integrity(grids, shapes, pattern_ids, target_pattern, f"step {step}/{num_steps}"):
-                    logging.error(f"   ❌ CRITICAL: Training data corruption detected at step {step}!")
-                    logging.error(f"   Training cannot proceed with corrupted data!")
-                    raise ValueError(f"Training data corruption at step {step}")
-                    
-            except Exception as e:
-                logging.error(f"   ❌ CRITICAL: Error during data verification at step {step}: {e}")
-                logging.error(f"   Skipping this training step to prevent crashes")
-                continue  # Skip this step and try the next one
+            # Sample batch from specialized data
+            batch = self._sample_specialized_batch(specialized_data, target_pattern)
             
             # Debug: Check model and parameters structure
             if step == 0:
@@ -1355,144 +1253,89 @@ class StructuredTrainer:
                 other_var = jnp.exp(logvar[other_mask])
                 avg_other_var = jnp.mean(other_var)
                 
-                # CRITICAL FIX: Contrastive loss that actually works for specialization
+                # FIXED: Contrastive loss: minimize target variance, maximize other variance
                 # We want: target_var << other_var (target pattern gets high confidence, others get low confidence)
                 
-                # Use configurable coefficients
-                alpha_T = self.cfg.training.get("contrastive_kl", 0.1)  # Target pattern coefficient
-                alpha_O = self.cfg.training.get("contrastive_kl", 0.1)  # Other patterns coefficient
-                margin = self.cfg.training.get("contrastive_margin", 5.0)  # Target variance margin for other patterns
+                # Dynamic coefficient adjustment based on specialization progress
+                base_coeff = self.cfg.training.get("contrastive_kl", 1e-3)
+                current_specialization_ratio = avg_target_var / (avg_other_var + 1e-8)
                 
-                # Target subset (T): minimize variance (uncertainty down)
-                L_T = alpha_T * avg_target_var
+                # If specialization is poor, increase coefficient
+                if current_specialization_ratio > 1.0:
+                    # Target variance is HIGHER than other variance (bad!)
+                    dynamic_coeff = base_coeff * 10.0  # Increase coefficient aggressively
+                    logging.debug(f"       Poor specialization detected (ratio: {current_specialization_ratio:.3f}), increasing coefficient to {dynamic_coeff:.6f}")
+                elif current_specialization_ratio > 0.8:
+                    # Target variance is only slightly lower than other variance
+                    dynamic_coeff = base_coeff * 5.0  # Increase coefficient moderately
+                    logging.debug(f"       Weak specialization detected (ratio: {current_specialization_ratio:.3f}), increasing coefficient to {dynamic_coeff:.6f}")
+                else:
+                    # Good specialization, use base coefficient
+                    dynamic_coeff = base_coeff
+                    logging.debug(f"       Good specialization (ratio: {current_specialization_ratio:.3f}), using base coefficient {dynamic_coeff:.6f}")
                 
-                # Other subset (O): push variance above margin (uncertainty up)
-                # Use hinge loss: max(0, margin - other_var) to push other_var above margin
-                L_O = alpha_O * jnp.mean(jnp.maximum(0, margin - avg_other_var))
-                
-                # CRITICAL FIX: Add learning rate multiplier for contrastive loss
-                # This makes the gradients much stronger and more effective at pushing variances apart
-                contrastive_lr_multiplier = 10.0  # 10x stronger gradients for contrastive loss
-                L_T = L_T * contrastive_lr_multiplier
-                L_O = L_O * contrastive_lr_multiplier
-                
-                # Total contrastive loss: minimize target variance + push other variance above margin
-                contrastive_loss = L_T + L_O
-                
-                # Log contrastive loss components for debugging
-                if step % 10 == 0:
-                    logging.info(f"         Contrastive Loss Components:")
-                    logging.info(f"           - Target variance: {float(avg_target_var):.6f} (should decrease)")
-                    logging.info(f"           - Other variance: {float(avg_other_var):.6f} (should increase above {margin})")
-                    logging.info(f"           - L_T (target): {float(L_T):.6f} (minimize target variance)")
-                    logging.info(f"           - L_O (other): {float(L_O):.6f} (push other variance above {margin})")
-                    logging.info(f"           - Total contrastive loss: {float(contrastive_loss):.6f}")
-                    logging.info(f"           - Specialization pressure: {float(contrastive_loss):.6f} (higher = stronger)")
-                    logging.info(f"           - Variance difference: {float(avg_target_var - avg_other_var):.6f} (should become more negative)")
-                    logging.info(f"           - Margin violation: {float(jnp.maximum(0, margin - avg_other_var)):.6f} (should decrease)")
-                    logging.info(f"           - Learning rate multiplier: {contrastive_lr_multiplier}x (stronger gradients)")
-                    logging.info(f"           - Effective L_T: {float(L_T):.6f}, Effective L_O: {float(L_O):.6f}")
+                contrastive_loss = avg_target_var + dynamic_coeff * (1.0 / (avg_other_var + 1e-8))
                 
                 # Add regularization to prevent extreme values
-                # CRITICAL FIX: Only regularize target variance, not other variance
-                # We want other variance to be HIGH, so don't penalize it
-                reg_loss = 0.01 * jnp.mean(target_var ** 2)  # Only regularize target variance
+                reg_loss = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
                 
                 # Add repulsion loss to push away from previous encoders' latent targets
                 repulsion_loss = 0.0
                 if target_latents_store and self.cfg.training.get("repulsion_kl", 0) > 0:
                     # Compute repulsion from previous encoders' targets
-                    # Use a more appropriate margin based on observed distances (~7.4)
-                    repulsion_coeff = self.cfg.training.get("repulsion_kl", 0)
-                    # Only show verbose output if repulsion is actually being used (coefficient > 0)
-                    verbose = repulsion_coeff > 0
-                    
                     repulsion_loss = self._compute_repulsion_loss(
                         current_latents=mu.mean(axis=-2),  # Use mean over pairs
                         target_latents_store=target_latents_store,
                         current_encoder_idx=enc_idx,
-                        margin=5.0,  # Increased from 1.0 to be more effective given observed distances
-                        verbose=verbose
+                        margin=1.0
                     )
                     
                     # Scale repulsion loss by the coefficient
+                    repulsion_coeff = self.cfg.training.get("repulsion_kl", 0)
                     repulsion_loss = repulsion_coeff * repulsion_loss
                     
                     if step % 50 == 0:
                         logging.info(f"       Repulsion Loss: {float(repulsion_loss):.6f} (λ={repulsion_coeff})")
                 
-                # FIXED: Ensure total loss is always positive for stable training
-                # Negative losses cause training instability and prevent proper specialization
-                total_loss = contrastive_loss + reg_loss + repulsion_loss + 0.001
-                
-                # Log the loss breakdown for debugging
-                if step % 50 == 0:
-                    logging.info(f"       📊 Loss Breakdown:")
-                    logging.info(f"         - Contrastive: {float(contrastive_loss):.6f}")
-                    logging.info(f"         - Regularization: {float(reg_loss):.6f}")
-                    logging.info(f"         - Repulsion: {float(repulsion_loss):.6f}")
-                    logging.info(f"         - Offset: 0.001")
-                    logging.info(f"         - Total: {float(total_loss):.6f}")
+                total_loss = contrastive_loss + reg_loss + repulsion_loss
                 
                 # FIXED: Compute gradients properly for contrastive learning
                 def contrastive_loss_fn(params):
-                    # SIMPLEST: Mixed batches with fresh reshuffling every batch
-                    # Target pattern (T) + Other patterns (O) in same batch
-                    
-                    # Forward pass through encoder on mixed batch
+                    # Forward pass through encoder
                     mu, logvar = encoder.apply(
                         {"params": params}, batch[0], batch[1], dropout_eval=False, mutable=False
                     )
                     
-                    # Separate by pattern using masks (T vs O)
+                    # Separate by pattern
                     target_var = jnp.exp(logvar[target_mask])
                     other_var = jnp.exp(logvar[other_mask])
                     
-                    # Simple variance terms as per your recipe
-                    alpha_T = self.cfg.training.get("contrastive_kl", 0.1)  # Target pattern coefficient
-                    alpha_O = self.cfg.training.get("contrastive_kl", 0.1)  # Other patterns coefficient
-                    margin = self.cfg.training.get("contrastive_margin", 1.0)  # Target variance margin
+                    # Compute contrastive loss: minimize target variance, maximize other variance
+                    avg_target_var = jnp.mean(target_var)
+                    avg_other_var = jnp.mean(other_var)
                     
-                    # Target subset (T): minimize variance (uncertainty down)
-                    L_T = alpha_T * jnp.mean(target_var)
+                    # Loss: target_var + coefficient * (1/other_var) 
+                    # This drives target_var DOWN and other_var UP
                     
-                    # Other subset (O): push variance above margin (uncertainty up)
-                    # Use softplus for smooth gradients at threshold
-                    L_O = alpha_O * jnp.mean(jax.nn.softplus(margin - other_var))
+                    # Use the same dynamic coefficient logic
+                    base_coeff = self.cfg.training.get("contrastive_kl", 1e-3)
+                    current_specialization_ratio = avg_target_var / (avg_other_var + 1e-8)
                     
-                    # Total contrastive loss: simple addition
-                    contrastive_loss = L_T + L_O
+                    if current_specialization_ratio > 1.0:
+                        dynamic_coeff = base_coeff * 10.0
+                    elif current_specialization_ratio > 0.8:
+                        dynamic_coeff = base_coeff * 5.0
+                    else:
+                        dynamic_coeff = base_coeff
+                    
+                    loss = avg_target_var + dynamic_coeff * (1.0 / (avg_other_var + 1e-8))
                     
                     # Add regularization
-                    # CRITICAL FIX: Only regularize target variance, not other variance
-                    reg = 0.01 * jnp.mean(target_var ** 2)  # Only regularize target variance
-                    
-                    # Include repulsion loss in gradient computation
-                    if repulsion_loss > 0:
-                        total_loss = contrastive_loss + reg + repulsion_loss
-                    else:
-                        total_loss = contrastive_loss + reg
-                    
-                    return total_loss
+                    reg = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
+                    return loss + reg
                 
                 # Compute gradients
                 grads = jax.grad(contrastive_loss_fn)(encoder_params)
-                
-                # Log contrastive loss details after gradient computation (outside JAX trace)
-                if step % 50 == 0:
-                    alpha_T = self.cfg.training.get("contrastive_kl", 0.1)
-                    alpha_O = self.cfg.training.get("contrastive_kl", 0.1)
-                    margin = self.cfg.training.get("contrastive_margin", 1.0)
-                    
-                    # Compute costs for logging
-                    L_T = alpha_T * float(avg_target_var)
-                    L_O = alpha_O * float(jax.nn.softplus(margin - avg_other_var))
-                    
-                    logging.info(f"       🔧 Using alpha_T: {alpha_T}, alpha_O: {alpha_O}")
-                    logging.info(f"       🔧 Using contrastive_margin: {margin}")
-                    logging.info(f"       🔧 L_T (target): {L_T:.6f}, L_O (other): {L_O:.6f}")
-                    logging.info(f"       🔧 Target variance: {float(avg_target_var):.6f} (should decrease)")
-                    logging.info(f"       🔧 Other variance: {float(avg_other_var):.6f} (should increase above {margin})")
                 
                 # Update encoder parameters
                 new_encoder_params = jax.tree_util.tree_map(
@@ -1550,26 +1393,25 @@ class StructuredTrainer:
                     }, step=current_global_step)
                 
                 if step % 50 == 0:
-                    # Calculate specialization metrics - FIXED: Consistent with wandb logging
-                    # Use same definition: other_var / target_var (higher = better specialization)
-                    specialization_ratio = float(avg_other_var / (avg_target_var + 1e-8))
+                    # Calculate specialization metrics
+                    specialization_ratio = float(avg_target_var / (avg_other_var + 1e-8))
                     specialization_score = float(jnp.log(specialization_ratio + 1e-8))
                     
                     logging.info(f"     Encoder {enc_idx} - Step {step}/{num_steps} - Total Loss: {float(total_loss):.6f}")
                     logging.info(f"       Contrastive: {float(contrastive_loss):.6f}")
                     logging.info(f"       Target Var: {float(avg_target_var):.6f}, Other Var: {float(avg_other_var):.6f}")
-                    logging.info(f"       Specialization Ratio: {specialization_ratio:.3f} (other/target - higher = better)")
+                    logging.info(f"       Specialization Ratio: {specialization_ratio:.3f} (target/other)")
                     logging.info(f"       Specialization Score: {specialization_score:.3f} (log ratio)")
                     
-                    # Assess specialization quality - FIXED: Consistent interpretation
-                    if specialization_ratio > 2.0:
-                        logging.info(f"       ✅ EXCELLENT specialization: other variance is {specialization_ratio:.1f}x HIGHER")
-                    elif specialization_ratio > 1.25:
-                        logging.info(f"       ✅ GOOD specialization: other variance is {specialization_ratio:.1f}x HIGHER")
-                    elif specialization_ratio > 1.0:
-                        logging.info(f"       ⚠️  WEAK specialization: other variance is only {specialization_ratio:.1f}x HIGHER")
+                    # Assess specialization quality
+                    if specialization_ratio < 0.5:
+                        logging.info(f"       ✅ EXCELLENT specialization: target variance is {1/specialization_ratio:.1f}x LOWER")
+                    elif specialization_ratio < 0.8:
+                        logging.info(f"       ✅ GOOD specialization: target variance is {1/specialization_ratio:.1f}x LOWER")
+                    elif specialization_ratio < 1.2:
+                        logging.info(f"       ⚠️  WEAK specialization: target variance is only {1/specialization_ratio:.1f}x LOWER")
                     else:
-                        logging.warning(f"       ❌ POOR specialization: target variance is {1/specialization_ratio:.1f}x HIGHER!")
+                        logging.warning(f"       ❌ POOR specialization: target variance is {specialization_ratio:.1f}x HIGHER!")
                         logging.warning(f"       This indicates the encoder is NOT specializing correctly!")
             else:
                 # Fallback if no target or other patterns in batch
@@ -1584,7 +1426,6 @@ class StructuredTrainer:
                 except Exception as e:
                     logging.warning(f"     Phase A T-SNE generation failed at step {step}: {e}")
         
-        # FIXED: Return the correct encoder's parameters to preserve specialization
         return state.params["encoders"][enc_idx]  # Return trained encoder params
     
     def _evaluate_specialized_encoder(self, enc_idx: int, encoder_params: dict, state: TrainState, global_step: int):
@@ -1604,27 +1445,83 @@ class StructuredTrainer:
             decoder=self.decoder
         )
         
-        # Generate evaluation data for all patterns
-        # REMOVED: Complex data generation logic since no plots are generated here
-        # The correct plots are generated by _generate_phase_a_tsne method
-        # This method now only computes variance metrics for monitoring
-        
-        # Create minimal eval_data for variance computation only
-        # Since no plots are generated here, we only need minimal data for variance metrics
+        # Generate evaluation data for all patterns using balanced pattern-specific datasets
         eval_data = {}
+        num_eval_samples = 100  # same number for each pattern to ensure even coverage
         for pattern_id in [1, 2, 3]:
-            # Create minimal data for variance computation (not for plotting)
-            # This ensures the variance metrics can still be computed
-            eval_data[pattern_id] = (None, None, None)  # Placeholder data
+            eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
 
         
-        # REMOVED: Variance computation since no plots are generated here
-        # The correct plots and variance metrics are generated by _generate_phase_a_tsne method
-        # This eliminates duplicate computation and ensures consistency
+        # Compute encoder variances per pattern
+        pattern_variances = {}
+        for pattern_id, (grids, shapes, pattern_ids) in eval_data.items():
+            # Sample a subset for evaluation
+            if len(grids) > 100:
+                indices = np.random.choice(len(grids), 100, replace=False)
+                eval_grids = grids[indices]
+                eval_shapes = shapes[indices]
+                eval_pattern_ids = pattern_ids[indices]
+            else:
+                eval_grids, eval_shapes, eval_pattern_ids = grids, shapes, pattern_ids
+            
+            # Forward pass through encoder
+            mu, logvar = self.encoders[enc_idx].apply(
+                {"params": encoder_params},
+                eval_grids,
+                eval_shapes,
+                dropout_eval=False,
+                mutable=False,
+            )
+            
+            # Compute variance statistics
+            variances = jnp.exp(logvar)
+            pattern_variances[pattern_id] = {
+                'mean': float(jnp.mean(variances)),
+                'std': float(jnp.std(variances)),
+                'min': float(jnp.min(variances)),
+                'max': float(jnp.max(variances)),
+                'variances': variances
+            }
+
+
         
-        # REMOVED: T-SNE, clustering, and reconstruction evaluation since no data is available
-        # The correct visualizations and metrics are generated by _generate_phase_a_tsne method
-        # This eliminates duplicate computation and ensures consistency
+        # Log essential encoder variance metrics (scaled and minimal)
+        current_global_step = global_step  # Use passed global step parameter
+        
+        # Only log mean variance per pattern (essential for specialization monitoring)
+        for pattern_id, stats in pattern_variances.items():
+            wandb.log({
+                f"encoder_{enc_idx}/pattern_{pattern_id}/mean_variance": stats['mean'],
+            }, step=current_global_step)
+        
+        # Create essential T-SNE visualization only (like train.py)
+        logging.info(f"       Creating T-SNE plot for Encoder {enc_idx}...")
+        self._create_encoder_tsne(enc_idx, encoder_params, eval_data, current_global_step)
+        
+        # Compute and log clustering metrics for Phase 1
+        logging.info(f"       Computing clustering metrics for Encoder {enc_idx}...")
+        try:
+            # Create clustering data for this encoder
+            clustering_data = self._create_encoder_clustering_data(enc_idx, encoder_params, eval_data)
+            if clustering_data:
+                # Compute clustering metrics
+                clustering_metrics = self._compute_phase1_clustering_metrics(clustering_data, enc_idx)
+                # Log clustering metrics to WandB with the correct step
+                for metric_name, metric_value in clustering_metrics.items():
+                    if metric_value is not None:  # Skip None values (e.g., silhouette scores when sklearn unavailable)
+                        wandb.log({f"phase_1/clustering/encoder_{enc_idx}/{metric_name}": metric_value}, step=current_global_step)
+                logging.info(f"       ✅ Clustering metrics computed and logged for Encoder {enc_idx}")
+            else:
+                logging.warning(f"       ❌ Failed to create clustering data for Encoder {enc_idx}")
+        except Exception as e:
+            logging.warning(f"       ❌ Clustering metrics computation failed for Encoder {enc_idx}: {e}")
+        
+        # Evaluate target pattern reconstruction quality
+        logging.info(f"       Evaluating target pattern reconstruction for Encoder {enc_idx}...")
+        target_pattern = enc_idx + 1  # Encoder 0 -> Pattern 1, Encoder 1 -> Pattern 2, Encoder 2 -> Pattern 3
+        reconstruction_metrics = self._evaluate_target_pattern_reconstruction(
+            enc_idx, encoder_params, target_pattern, eval_data[target_pattern], current_global_step, state
+        )
         
         logging.info(f"     ✅ Evaluation completed for Encoder {enc_idx}")
     
@@ -1759,8 +1656,6 @@ class StructuredTrainer:
             metrics['overall_score'] = float(overall_score)
             
             # Log metrics to WandB
-            # CRITICAL FIX: Correct pattern mapping to match ground truth
-            # Ground truth: 1=O, 2=T, 3=L (as defined in task generator)
             pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
             pattern_name = pattern_names.get(target_pattern, f"Pattern {target_pattern}")
             
@@ -1803,55 +1698,14 @@ class StructuredTrainer:
             logging.info(f"       🔍 Phase A Evaluation at step {step}/{total_steps}")
             
             # Create evaluation data for all patterns to show specialization progress
-            # CRITICAL FIX: Generate diverse samples for each pattern (not duplicates)
             eval_data = {}
             for pattern_id in [1, 2, 3]:
-                # Generate diverse samples for each pattern using different seeds
-                # This ensures realistic variance computation and prevents artificial zero variance
-                grids_list = []
-                shapes_list = []
-                pattern_ids_list = []
-                
-                num_samples = 1260  # Generate diverse samples for evaluation
-                logging.info(f"         🔍 Pattern {pattern_id}: Generating {num_samples} DIVERSE samples for realistic evaluation")
-                
-                for i in range(num_samples):
-                    if i % 100 == 0:  # Progress logging
-                        logging.info(f"         🔍 Pattern {pattern_id}: Generated {i}/{num_samples} diverse samples")
-                    
-                    # CRITICAL FIX: Use different seed for each sample to ensure diversity
-                    # This prevents the "1260 copies of one grid" problem
-                    sample_seed = self.cfg.training.seed + pattern_id * 1000 + i
-                    grids, shapes, _ = self._create_single_pattern_sample_with_seed(pattern_id, sample_seed)
-                    grids_list.append(grids)
-                    shapes_list.append(shapes)
-                    pattern_ids_list.append(pattern_id)
-                
-                # Stack all samples
-                grids = jnp.stack(grids_list, axis=0)
-                shapes = jnp.stack(shapes_list, axis=0)
-                pattern_ids = jnp.array(pattern_ids_list)
-                
-                eval_data[pattern_id] = (grids, shapes, pattern_ids)
-                
-                logging.info(f"         🔍 Pattern {pattern_id}: Generated {len(grids)} DIVERSE samples (should be {num_samples})")
-                logging.info(f"         🔍 Data shapes: grids={grids.shape}, shapes={shapes.shape}, pattern_ids={pattern_ids.shape}")
-                logging.info(f"         🔍 CRITICAL: Each sample uses different seed for realistic variance")
-            
-            # CRITICAL: Verify pattern ID integrity immediately after generation
-            logging.info(f"         🔍 CRITICAL: Verifying pattern ID integrity after T-SNE data generation...")
-            if not self._verify_pattern_data_integrity(eval_data, f"T-SNE generation for encoder {enc_idx}"):
-                logging.error(f"         ❌ CRITICAL: Pattern ID corruption detected in T-SNE data!")
-                logging.error(f"         T-SNE visualization may be incorrect!")
-                return
+                pattern_data = self._create_specialized_training_data(pattern_id)
+                eval_data[pattern_id] = pattern_data
             
             # Generate T-SNE visualization
             current_global_step = self.phase_a_global_step + step
-            try:
-                self._create_encoder_tsne(enc_idx, encoder_params, eval_data, current_global_step)
-            except Exception as e:
-                logging.error(f"         ❌ T-SNE creation failed: {e}")
-                # Continue with other evaluations
+            self._create_encoder_tsne(enc_idx, encoder_params, eval_data, current_global_step)
             
             # Generate certainty plots for all patterns
             logging.info(f"       📊 Generating certainty plots for all patterns...")
@@ -1863,68 +1717,7 @@ class StructuredTrainer:
                     # Show a sample of the first grid to verify pattern
                     sample_grid = np.array(grids[0, 0, :, :, 1])  # First sample, first pair, output channel
                     logging.info(f"         Pattern {pattern_id} sample output grid:\n{sample_grid}")
-            
-            # CRITICAL: Store Phase A data for comparison with merged panel
-            # This helps debug why histograms are destroyed in subsequent calls
-            # FIX: Create IMMUTABLE copies to prevent dataset mutation
-            self._last_phase_a_data = {}
-            for pattern_id in [1, 2, 3]:
-                if pattern_id in eval_data:
-                    try:
-                        grids, shapes, pattern_ids = eval_data[pattern_id]
-                        
-                        # CRITICAL FIX: Create immutable copies to prevent dataset mutation
-                        # This ensures the stored data cannot be modified by subsequent operations
-                        grids_copy = jnp.array(grids, copy=True)  # Deep copy
-                        shapes_copy = jnp.array(shapes, copy=True)  # Deep copy
-                        pattern_ids_copy = jnp.array(pattern_ids, copy=True)  # Deep copy
-                        
-                        self._last_phase_a_data[pattern_id] = {
-                            'grids': grids_copy,
-                            'shapes': shapes_copy,
-                            'pattern_ids': pattern_ids_copy,
-                            'original_length': len(grids),  # Store original length for verification
-                            'storage_step': step,  # Track when data was stored
-                            'storage_global_step': current_global_step  # Track global step
-                        }
-                        
-                        logging.info(f"         💾 Stored Phase A data for pattern {pattern_id}: {len(grids)} samples")
-                        logging.info(f"         💾 Data structure: grids={grids.shape}, shapes={shapes.shape}, pattern_ids={pattern_ids.shape}")
-                        logging.info(f"         💾 IMMUTABLE COPY created to prevent dataset mutation")
-                    except Exception as e:
-                        logging.error(f"         ❌ Failed to store Phase A data for pattern {pattern_id}: {e}")
-                        continue
-            
-            # CRITICAL DEBUG: Verify data storage
-            try:
-                logging.info(f"         🔍 Phase A data storage verification:")
-                logging.info(f"           - _last_phase_a_data keys: {list(self._last_phase_a_data.keys())}")
-                for pattern_id in [1, 2, 3]:
-                    if pattern_id in self._last_phase_a_data:
-                        stored_grids = self._last_phase_a_data[pattern_id]['grids']
-                        logging.info(f"           - Pattern {pattern_id}: {len(stored_grids)} samples stored")
-                    else:
-                        logging.error(f"           - Pattern {pattern_id}: NOT STORED!")
-            except Exception as e:
-                logging.error(f"         ❌ Data storage verification failed: {e}")
-            
-            # CRITICAL: Verify pattern ID integrity immediately after storage
-            try:
-                logging.info(f"         🔍 CRITICAL: Verifying pattern ID integrity after storage...")
-                if self._verify_pattern_data_integrity(self._last_phase_a_data, f"Phase A storage step {step}"):
-                    logging.info(f"         ✅ Pattern ID integrity verified - No corruption detected")
-                else:
-                    logging.error(f"         ❌ CRITICAL: Pattern ID corruption detected after storage!")
-                    logging.error(f"         This will cause training/evaluation failures!")
-            except Exception as e:
-                logging.error(f"         ❌ Pattern ID verification failed: {e}")
-                logging.error(f"         Data integrity cannot be guaranteed!")
-            
-            try:
-                self._generate_phase_a_certainty_plots(enc_idx, encoder_params, eval_data, current_global_step, step, total_steps)
-            except Exception as e:
-                logging.error(f"         ❌ Certainty plots generation failed: {e}")
-                # Continue with other evaluations
+            self._generate_phase_a_certainty_plots(enc_idx, encoder_params, eval_data, current_global_step, step, total_steps)
             
             # Evaluate target pattern reconstruction during Phase A training
             logging.info(f"       🔍 Evaluating target pattern reconstruction progress...")
@@ -1947,174 +1740,35 @@ class StructuredTrainer:
                 # No meaningless metrics - only meaningful data
             }, step=current_global_step)
             
-            if eval_data:
-                logging.info(f"       ✅ Phase A evaluation completed successfully with {len(eval_data)} patterns")
-            else:
-                logging.warning(f"       ⚠️ Phase A evaluation completed but no valid data was processed")
+            logging.info(f"       ✅ Phase A T-SNE and certainty plots generated and logged to WandB")
             
         except Exception as e:
             logging.error(f"       ❌ Phase A evaluation generation failed: {e}")
             import traceback
             logging.error(f"       Traceback: {traceback.format_exc()}")
     
-    def _validate_evaluation_data(self, grids, shapes, pattern_ids, pattern_id: int) -> bool:
-        """
-        Validate that evaluation data has the correct structure and types.
-        
-        Args:
-            grids: Grid data array
-            shapes: Shape data array
-            pattern_ids: Pattern ID array
-            pattern_id: Expected pattern ID
-            
-        Returns:
-            bool: True if data is valid, False otherwise
-        """
-        try:
-            # Check data types
-            if not isinstance(grids, (np.ndarray, jnp.ndarray)):
-                logging.error(f"         ❌ Invalid grids type: {type(grids)}")
-                return False
-                
-            if not isinstance(shapes, (np.ndarray, jnp.ndarray)):
-                logging.error(f"         ❌ Invalid shapes type: {type(shapes)}")
-                return False
-                
-            if not isinstance(pattern_ids, (np.ndarray, jnp.ndarray)):
-                logging.error(f"         ❌ Invalid pattern_ids type: {type(pattern_ids)}")
-                return False
-            
-            # Check array shapes
-            if len(grids.shape) != 6:  # (samples, 2, num_pairs, 5, 5, 2)
-                logging.error(f"         ❌ Invalid grids shape: {grids.shape}, expected 6 dimensions")
-                return False
-                
-            if len(shapes.shape) != 4:  # (samples, 2, num_pairs, 2)
-                logging.error(f"         ❌ Invalid shapes shape: {shapes.shape}, expected 4 dimensions")
-                return False
-                
-            if len(pattern_ids.shape) != 1:  # (samples,)
-                logging.error(f"         ❌ Invalid pattern_ids shape: {pattern_ids.shape}, expected 1 dimension")
-                return False
-            
-            # Check sample count
-            if len(grids) < 10:
-                logging.error(f"         ❌ Too few samples: {len(grids)}, need at least 10")
-                return False
-            
-            # Check pattern ID consistency
-            if not np.all(pattern_ids == pattern_id):
-                logging.error(f"         ❌ Pattern ID mismatch: expected all {pattern_id}, got {np.unique(pattern_ids)}")
-                return False
-            
-            logging.info(f"         ✅ Pattern {pattern_id}: Data validation passed")
-            return True
-            
-        except Exception as e:
-            logging.error(f"         ❌ Data validation failed: {e}")
-            return False
-
-    def _load_pre_generated_pattern_data(self, pattern_id: int) -> tuple:
-        """
-        Load pre-generated pattern data as a fallback when dynamic generation fails.
-        
-        Args:
-            pattern_id: Pattern ID (1, 2, or 3)
-            
-        Returns:
-            Tuple of (grids, shapes, pattern_ids) with proper numpy arrays
-        """
-        try:
-            # Try multiple possible data directories
-            possible_dirs = [
-                self.data_dir,
-                "src/datasets",
-                "datasets",
-                os.path.join(os.getcwd(), "src/datasets"),
-                os.path.join(os.getcwd(), "datasets")
-            ]
-            
-            for data_dir in possible_dirs:
-                dataset_name = f"struct_pattern_{pattern_id}"
-                dataset_path = os.path.join(data_dir, dataset_name)
-                
-                if os.path.exists(dataset_path):
-                    grids = np.load(os.path.join(dataset_path, "grids.npy"))
-                    shapes = np.load(os.path.join(dataset_path, "shapes.npy"))
-                    pattern_ids = np.full(len(grids), pattern_id, dtype=np.int32)
-                    
-                    logging.info(f"         📁 Loaded {len(grids)} samples from {dataset_path}")
-                    return grids, shapes, pattern_ids
-            
-            # If no dataset found, create synthetic data with proper structure
-            logging.warning(f"         ⚠️ No dataset found for pattern {pattern_id}, creating synthetic data")
-            num_samples = 200  # Reasonable number for evaluation
-            num_pairs = getattr(self, 'task_generator_kwargs', {}).get('num_pairs', 4)
-            
-            # Create properly structured synthetic data
-            grids = np.random.randint(0, 2, (num_samples, 2, num_pairs, 5, 5, 2), dtype=np.int32)
-            shapes = np.random.randint(0, 5, (num_samples, 2, num_pairs, 2), dtype=np.int32)
-            pattern_ids = np.full(num_samples, pattern_id, dtype=np.int32)
-            
-            logging.info(f"         🔧 Created synthetic data: {num_samples} samples, {num_pairs} pairs")
-            return grids, shapes, pattern_ids
-                
-        except Exception as e:
-            logging.error(f"         ❌ Failed to load pattern {pattern_id} data: {e}")
-            # Ultimate fallback: create minimal valid data with proper structure
-            num_samples = 100
-            num_pairs = getattr(self, 'task_generator_kwargs', {}).get('num_pairs', 4)
-            
-            grids = np.random.randint(0, 2, (num_samples, 2, num_pairs, 5, 5, 2), dtype=np.int32)
-            shapes = np.random.randint(0, 5, (num_samples, 2, num_pairs, 2), dtype=np.int32)
-            pattern_ids = np.full(num_samples, pattern_id, dtype=np.int32)
-            
-            logging.info(f"         🆘 Created emergency fallback data: {num_samples} samples")
-            return grids, shapes, pattern_ids
-
     def _generate_phase_a_certainty_plots(self, enc_idx: int, encoder_params: dict, eval_data: dict, global_step: int, step: int, total_steps: int):
         """
         Generate certainty plots for all patterns during Phase A training to monitor encoder specialization progress.
         
-        CRITICAL: This method uses eval_data that comes from pre-loaded datasets (struct_pattern_1, struct_pattern_2, struct_pattern_3)
-        ensuring the same data is used every time for consistent certainty plots.
-        
         Args:
             enc_idx: Index of the encoder being trained
             encoder_params: Current encoder parameters
-            eval_data: Evaluation data for all patterns (from pre-loaded datasets)
+            eval_data: Evaluation data for all patterns
             global_step: Global training step
             step: Current step within encoder training
             total_steps: Total steps for encoder training
         """
         try:
-            # CRITICAL: Verify pattern ID integrity before generating plots
-            logging.info(f"         🔍 CRITICAL: Verifying pattern ID integrity before certainty plots...")
-            if not self._verify_pattern_data_integrity(eval_data, f"certainty plots for encoder {enc_idx}"):
-                logging.error(f"         ❌ CRITICAL: Pattern ID corruption detected - cannot generate plots!")
-                logging.error(f"         This will cause incorrect encoder evaluation!")
-                return
-            
-            # Generate certainty plots for each pattern using PRE-LOADED datasets
-            # This ensures consistency with Phase 1 evaluation and prevents dataset mixing
+            # Generate certainty plots for each pattern (like the working implementation)
             for pattern_id in [1, 2, 3]:
                 if pattern_id in eval_data:
-                    # CRITICAL: Filter data to ensure ONLY the intended pattern is used
-                    try:
-                        filtered_grids, filtered_shapes, filtered_pattern_ids = self._filter_data_by_pattern_id(
-                            eval_data, pattern_id, f"certainty plot generation for pattern {pattern_id}"
-                        )
-                    except ValueError as e:
-                        logging.error(f"         ❌ Failed to filter data for pattern {pattern_id}: {e}")
-                        continue
+                    grids, shapes, pattern_ids = eval_data[pattern_id]
                     
-                    grids, shapes, pattern_ids = filtered_grids, filtered_shapes, filtered_pattern_ids
-                    
-                    # CRITICAL FIX: Use DETERMINISTIC sample selection to prevent randomization inconsistencies
-                    # This ensures the same sample is always selected for the same encoder/pattern combination
+                    # Select a unique sample for each encoder/pattern combination (like working implementation)
+                    # This ensures different samples are shown for different combinations
                     sample_index = (enc_idx * 3 + pattern_id - 1) % len(grids)
-                    logging.info(f"         🔒 Certainty panel: Encoder {enc_idx}, Pattern {pattern_id}, Sample index {sample_index}/{len(grids)}")
-                    logging.info(f"         🔒 DETERMINISTIC selection ensures consistency across calls")
+                    logging.debug(f"Certainty panel: Encoder {enc_idx}, Pattern {pattern_id}, Sample index {sample_index}/{len(grids)}")
                     
                     # Get encoder outputs for this single sample (exactly like working implementation)
                     sample_grids = grids[sample_index]  # Single sample (not slice)
@@ -2129,8 +1783,6 @@ class StructuredTrainer:
                     )
                     
                     # Create certainty panel
-                    # CRITICAL FIX: Correct pattern mapping to match ground truth
-                    # Ground truth: 1=O, 2=T, 3=L (as defined in task generator)
                     pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
                     pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
                     
@@ -2194,80 +1846,6 @@ class StructuredTrainer:
             batch_pattern_ids = pattern_ids[indices]
         
         return batch_grids, batch_shapes, batch_pattern_ids
-    
-    def _generate_new_batch_for_training(self, target_pattern: int, step: int) -> tuple:
-        """
-        Generate NEW samples for every training batch to ensure realistic variance computation.
-        
-        CRITICAL FIX: This prevents the "1260 copies of one grid" problem by generating
-        fresh, diverse samples for each training step instead of reusing static data.
-        
-        Args:
-            target_pattern: Target pattern for this encoder
-            step: Current training step
-            
-        Returns:
-            Batch tuple (grids, shapes, pattern_ids) with fresh samples
-        """
-        batch_size = self.batch_size
-        
-        # Generate fresh samples for this batch
-        grids_list = []
-        shapes_list = []
-        pattern_ids_list = []
-        
-        # FIXED: More balanced split to boost variance differences and specialization
-        # Target pattern gets majority but not overwhelming majority
-        target_ratio = self.cfg.training.get("target_pattern_ratio", 0.6)  # Configurable, default 60%
-        target_samples = int(batch_size * target_ratio)
-        other_samples = batch_size - target_samples
-        
-        # CRITICAL: Log the actual config value being used
-        logging.info(f"         🔧 CONFIG DEBUG: target_pattern_ratio = {target_ratio}")
-        logging.info(f"         🔧 CONFIG DEBUG: batch_size = {batch_size}")
-        logging.info(f"         🔧 CONFIG DEBUG: target_samples = {target_samples}")
-        logging.info(f"         🔧 CONFIG DEBUG: other_samples = {other_samples}")
-        logging.info(f"         Using target pattern ratio: {target_ratio} ({target_samples}/{batch_size})")
-        
-        # Generate target pattern samples with diverse seeds
-        for i in range(target_samples):
-            # CRITICAL: Use step-dependent seed to ensure diversity across batches
-            sample_seed = self.cfg.training.seed + target_pattern * 10000 + step * 100 + i
-            grids, shapes, _ = self._create_single_pattern_sample_with_seed(target_pattern, sample_seed)
-            grids_list.append(grids)
-            shapes_list.append(shapes)
-            pattern_ids_list.append(target_pattern)
-        
-        # Generate other pattern samples with diverse seeds
-        other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
-        samples_per_other = other_samples // len(other_patterns)
-        
-        for pattern_id in other_patterns:
-            for i in range(samples_per_other):
-                # CRITICAL: Use step-dependent seed to ensure diversity across batches
-                sample_seed = self.cfg.training.seed + pattern_id * 10000 + step * 100 + i
-                grids, shapes, _ = self._create_single_pattern_sample_with_seed(pattern_id, sample_seed)
-                grids_list.append(grids)
-                shapes_list.append(shapes)
-                pattern_ids_list.append(pattern_id)
-        
-        # Stack all samples
-        grids = jnp.stack(grids_list, axis=0)
-        shapes = jnp.stack(shapes_list, axis=0)
-        pattern_ids = jnp.array(pattern_ids_list)
-        
-        logging.debug(f"         Generated fresh batch: {len(grids)} samples (target: {target_samples}, others: {other_samples})")
-        logging.debug(f"         Pattern distribution: {dict(zip(*np.unique(pattern_ids, return_counts=True)))}")
-        
-        # Log the expected impact on variance differences
-        target_ratio = self.cfg.training.get("target_pattern_ratio", 0.6)
-        if target_ratio <= 0.6:
-            logging.debug(f"         ✅ Balanced split ({target_ratio:.1%}) should boost variance differences")
-            logging.debug(f"         ✅ More contrast between target and other patterns")
-        else:
-            logging.debug(f"         ⚠️  Target-heavy split ({target_ratio:.1%}) may reduce variance contrast")
-        
-        return grids, shapes, pattern_ids
     
     def train_n_steps_phase2(self, state: TrainState, batches: tuple[chex.Array, chex.Array, chex.Array], key: chex.PRNGKey) -> tuple[TrainState, dict]:
         """
@@ -2549,8 +2127,6 @@ class StructuredTrainer:
                         all_task_ids = np.array(eval_data[pattern_id]['task_ids'])
                         
                         # Create pattern-specific T-SNE
-                        # CRITICAL FIX: Correct pattern mapping to match ground truth
-                        # Ground truth: 1=O, 2=T, 3=L (as defined in task generator)
                         pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
                         pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
                         
@@ -2671,9 +2247,8 @@ class StructuredTrainer:
             eval_data = {}
             for pattern_id in [1, 2, 3]:
                 try:
-                    # CRITICAL FIX: Use the SAME data generation method as Phase A for consistency
-                    # This ensures Phase B metrics use the same data quality and diversity as Phase A
-                    pattern_data = self._generate_diverse_pattern_data_for_metrics(pattern_id, num_samples=self.batch_size)
+                    # Generate pattern-specific data
+                    pattern_data = self._create_pattern_dataset(pattern_id, num_samples=self.batch_size)  # Use batch_size for consistency
                     grids, shapes, _ = pattern_data
                     
                     # Get encoder outputs for this pattern
@@ -2745,49 +2320,9 @@ class StructuredTrainer:
             logging.warning(f"Comprehensive clustering data creation failed: {e}")
             return None
     
-    def _generate_diverse_pattern_data_for_metrics(self, pattern_id: int, num_samples: int) -> tuple:
-        """
-        Generate diverse pattern data for Phase B metrics computation.
-        
-        CRITICAL FIX: This ensures Phase B metrics use the SAME data generation method
-        as Phase A, maintaining consistency in data quality and diversity.
-        
-        Args:
-            pattern_id: Pattern ID to generate data for
-            num_samples: Number of samples to generate
-            
-        Returns:
-            Tuple of (grids, shapes, pattern_ids) with diverse samples
-        """
-        # Generate diverse samples using the SAME method as Phase A evaluation
-        grids_list = []
-        shapes_list = []
-        pattern_ids_list = []
-        
-        for i in range(num_samples):
-            # CRITICAL: Use different seed for each sample to ensure diversity
-            # This prevents the "copies of one grid" problem
-            sample_seed = self.cfg.training.seed + pattern_id * 1000 + i
-            grids, shapes, _ = self._create_single_pattern_sample_with_seed(pattern_id, sample_seed)
-            grids_list.append(grids)
-            shapes_list.append(shapes)
-            pattern_ids_list.append(pattern_id)
-        
-        # Stack all samples
-        grids = jnp.stack(grids_list, axis=0)
-        shapes = jnp.stack(shapes_list, axis=0)
-        pattern_ids = jnp.array(pattern_ids_list)
-        
-        logging.debug(f"         Generated diverse data for pattern {pattern_id}: {len(grids)} samples")
-        
-        return grids, shapes, pattern_ids
-    
     def _compute_phase2_clustering_metrics(self, clustering_data: dict) -> dict:
         """
-        Compute clustering metrics for Phase 2 with pattern-independent computation.
-        
-        CRITICAL FIX: This ensures metrics are computed per pattern independently
-        instead of mixing patterns together, which provides more meaningful analysis.
+        Compute clustering metrics for Phase 2 (same as commit).
         
         Args:
             clustering_data: Comprehensive clustering data
@@ -2798,66 +2333,46 @@ class StructuredTrainer:
         clustering_metrics = {}
         
         try:
-            if 'pattern_data' not in clustering_data or clustering_data['pattern_data'] is None:
+            if 'combined_data' not in clustering_data or clustering_data['combined_data'] is None:
                 return clustering_metrics
             
-            pattern_data = clustering_data['pattern_data']
+            combined_data = clustering_data['combined_data']
+            latents_concat = combined_data['latents']
+            source_ids_np = combined_data['source_ids']
+            pattern_ids_concat = combined_data['pattern_ids']
+            
+            # Compute metrics for different k values to check sensitivity (same as commit)
             k_values = [3, 5, 10]
             
-            # CRITICAL FIX: Compute metrics PER PATTERN independently
-            # This prevents pattern mixing and provides meaningful per-pattern analysis
-            for pattern_id in [1, 2, 3]:
-                if pattern_id not in pattern_data:
-                    continue
+            # OPTION 1: Encoder samples clustering (like train.py fig_latents_samples) - for direct comparison
+            encoder_mask = (source_ids_np < len(self.encoders))
+            if np.any(encoder_mask):
+                enc_emb = latents_concat[encoder_mask]
+                enc_prog = pattern_ids_concat[encoder_mask]
+                logging.info(f"Phase 2: Encoder samples clustering: {enc_emb.shape[0]} points, patterns: {np.unique(enc_prog)}")
                 
-                pattern_info = pattern_data[pattern_id]
-                pattern_latents = pattern_info['latents']  # List of encoder outputs
-                pattern_source_ids = pattern_info['source_ids']  # List of encoder indices
-                
-                if not pattern_latents:
-                    continue
-                
-                # Concatenate latents from all encoders for this specific pattern
-                pattern_latents_concat = np.concatenate(pattern_latents, axis=0)
-                pattern_source_ids_np = np.array(pattern_source_ids)
-                
-                logging.info(f"Phase 2: Pattern {pattern_id} clustering: {pattern_latents_concat.shape[0]} points, encoders: {np.unique(pattern_source_ids_np)}")
-                
-                # Compute clustering metrics for this pattern independently
                 for k in k_values:
-                    # Modularity Q on pattern-specific encoder samples
-                    modularity_q = compute_modularity_q(pattern_latents_concat, pattern_source_ids_np, k=k)
-                    clustering_metrics[f"phase_2/clustering/pattern_{pattern_id}/modularity_q_k{k}"] = modularity_q
+                    # Modularity Q on encoder samples (comparable to train.py)
+                    modularity_q = compute_modularity_q(enc_emb, enc_prog, k=k)
+                    clustering_metrics[f"phase_2/clustering/encoder_samples/modularity_q_k{k}"] = modularity_q
                     
-                    # Adjusted Rand Index on pattern-specific encoder samples
-                    ari_score = compute_adjusted_rand_index(pattern_latents_concat, pattern_source_ids_np, k=k)
-                    clustering_metrics[f"phase_2/clustering/pattern_{pattern_id}/ari_k{k}"] = ari_score
-                    
-                    # Silhouette score for pattern-specific encoder separation
-                    try:
-                        from sklearn.metrics import silhouette_score
-                        silhouette = silhouette_score(pattern_latents_concat, pattern_source_ids_np)
-                        clustering_metrics[f"phase_2/clustering/pattern_{pattern_id}/silhouette_k{k}"] = silhouette
-                    except ImportError:
-                        clustering_metrics[f"phase_2/clustering/pattern_{pattern_id}/silhouette_k{k}"] = None
+                    # Adjusted Rand Index on encoder samples (comparable to train.py)
+                    ari_score = compute_adjusted_rand_index(enc_emb, enc_prog, k=k)
+                    clustering_metrics[f"phase_2/clustering/encoder_samples/ari_k{k}"] = ari_score
+            else:
+                logging.warning("Phase 2: No encoder samples found for encoder samples clustering; skipping")
             
-            # OPTION 2: Cross-pattern analysis (only when explicitly needed)
-            if 'combined_data' in clustering_data and clustering_data['combined_data'] is not None:
-                combined_data = clustering_data['combined_data']
-                latents_concat = combined_data['latents']
-                source_ids_np = combined_data['source_ids']
+            # OPTION 2: Full latent space clustering (current implementation) - for source analysis
+            for k in k_values:
+                # Modularity Q on all embeddings (sources: encoders vs context)
+                modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
+                clustering_metrics[f"phase_2/clustering/source/modularity_q_k{k}"] = modularity_q
                 
-                # Only compute cross-pattern metrics when explicitly needed
-                for k in k_values:
-                    # Modularity Q on all embeddings (sources: encoders vs context)
-                    modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
-                    clustering_metrics[f"phase_2/clustering/cross_pattern/modularity_q_k{k}"] = modularity_q
-                    
-                    # Adjusted Rand Index on all embeddings (sources: encoders vs context)
-                    ari_score = compute_adjusted_rand_index(latents_concat, source_ids_np, k=k)
-                    clustering_metrics[f"phase_2/clustering/cross_pattern/ari_k{k}"] = ari_score
+                # Adjusted Rand Index on all embeddings (sources: encoders vs context)
+                ari_score = compute_adjusted_rand_index(latents_concat, source_ids_np, k=k)
+                clustering_metrics[f"phase_2/clustering/source/ari_k{k}"] = ari_score
             
-            logging.info(f"Phase 2: Pattern-independent clustering metrics computed: {len(clustering_metrics)} metrics")
+            logging.info(f"Phase 2: Clustering metrics computed: {clustering_metrics}")
             
         except Exception as e:
             logging.warning(f"Phase 2 clustering metrics computation failed: {e}")
@@ -3010,20 +2525,18 @@ class StructuredTrainer:
                         
                         if other_pattern_variances:
                             avg_other_variance = np.mean(other_pattern_variances)
-                            # FIXED: Consistent specialization ratio definition
-                            # Use other_var / target_var (higher = better specialization)
-                            specialization_ratio = avg_other_variance / (target_variance + 1e-8)
+                            specialization_ratio = target_variance / (avg_other_variance + 1e-8)
                             specialization_score = np.log(specialization_ratio + 1e-8)
                             
                             enc_metrics["specialization_ratio"] = float(specialization_ratio)
                             enc_metrics["specialization_score"] = float(specialization_score)
                             
-                            # Compute specialization quality indicator - FIXED: Consistent interpretation
-                            if specialization_ratio > 2.0:
+                            # Compute specialization quality indicator
+                            if specialization_ratio < 0.5:
                                 quality = "EXCELLENT"
-                            elif specialization_ratio > 1.25:
+                            elif specialization_ratio < 0.8:
                                 quality = "GOOD"
-                            elif specialization_ratio > 1.0:
+                            elif specialization_ratio < 1.0:
                                 quality = "WEAK"
                             else:
                                 quality = "POOR"
@@ -3207,102 +2720,6 @@ class StructuredTrainer:
         
         return clustering_metrics
     
-    def _compute_clustering_metrics_every_step(self, state: TrainState, grids: chex.Array, shapes: chex.Array, pattern_ids: chex.Array, step: int) -> dict:
-        """
-        Compute clustering metrics every log_every_n_steps to monitor encoder specialization progress.
-        
-        This method provides real-time monitoring of how well encoders are separating patterns
-        in the latent space during training.
-        
-        Args:
-            state: Current training state
-            grids: Input grids for the batch
-            shapes: Input shapes for the batch
-            pattern_ids: Pattern IDs for the batch
-            step: Current training step
-            
-        Returns:
-            Dictionary containing clustering metrics for monitoring
-        """
-        clustering_metrics = {}
-        
-        try:
-            # Get encoder outputs for the current batch
-            encoder_outputs = self._get_encoder_outputs_for_analysis(
-                state.params["encoders"], grids, shapes
-            )
-            
-            if not encoder_outputs or 'combined_data' not in encoder_outputs:
-                logging.debug(f"       ⚠️  No encoder outputs available for clustering metrics at step {step}")
-                return clustering_metrics
-            
-            combined_data = encoder_outputs['combined_data']
-            latents_concat = combined_data['latents']
-            pattern_ids_concat = combined_data['pattern_ids']
-            
-            # Basic clustering metrics for monitoring
-            k_values = [2, 3]  # Keep it simple for every-step computation
-            
-            for k in k_values:
-                if k <= len(np.unique(pattern_ids_concat)):
-                    # Modularity Q - measures pattern separation quality
-                    try:
-                        modularity_q = compute_modularity_q(latents_concat, pattern_ids_concat, k=k)
-                        clustering_metrics[f"clustering/modularity_q_k{k}"] = float(modularity_q)
-                    except Exception as e:
-                        logging.debug(f"       Modularity Q computation failed for k={k}: {e}")
-                    
-                    # Adjusted Rand Index - measures clustering accuracy
-                    try:
-                        ari_score = compute_adjusted_rand_index(latents_concat, pattern_ids_concat, k=k)
-                        clustering_metrics[f"clustering/ari_k{k}"] = float(ari_score)
-                    except Exception as e:
-                        logging.debug(f"       ARI computation failed for k={k}: {e}")
-            
-            # Pattern separation metrics
-            unique_patterns = np.unique(pattern_ids_concat)
-            if len(unique_patterns) >= 2:
-                # Compute pattern centroids
-                pattern_centroids = {}
-                for pattern_id in unique_patterns:
-                    pattern_mask = (pattern_ids_concat == pattern_id)
-                    if np.any(pattern_mask):
-                        pattern_latents = latents_concat[pattern_mask]
-                        pattern_centroids[pattern_id] = np.mean(pattern_latents, axis=0)
-                
-                # Inter-pattern distances (should increase during specialization)
-                pattern_pairs = []
-                for i, pid1 in enumerate(unique_patterns):
-                    for j, pid2 in enumerate(unique_patterns[i+1:], i+1):
-                        if pid1 in pattern_centroids and pid2 in pattern_centroids:
-                            centroid_dist = np.linalg.norm(pattern_centroids[pid1] - pattern_centroids[pid2])
-                            clustering_metrics[f"clustering/centroid_distance_pattern_{pid1}_vs_{pid2}"] = float(centroid_dist)
-                
-                # Intra-pattern compactness (should decrease during specialization)
-                for pattern_id in unique_patterns:
-                    pattern_mask = (pattern_ids_concat == pattern_id)
-                    if np.any(pattern_mask):
-                        pattern_latents = latents_concat[pattern_mask]
-                        if len(pattern_latents) > 1:
-                            centroid = pattern_centroids[pattern_id]
-                            distances_to_centroid = np.linalg.norm(pattern_latents - centroid, axis=1)
-                            mean_distance = float(np.mean(distances_to_centroid))
-                            
-                            clustering_metrics[f"clustering/intra_pattern_{pattern_id}_compactness"] = mean_distance
-            
-            # Add step information for tracking
-            clustering_metrics["clustering/step"] = step if step is not None else -1  # -1 for Phase 1
-            clustering_metrics["clustering/num_samples"] = len(latents_concat)
-            clustering_metrics["clustering/num_patterns"] = len(unique_patterns)
-            
-            logging.debug(f"       ✅ Clustering metrics computed at step {step}: {len(clustering_metrics)} metrics")
-            
-        except Exception as e:
-            logging.warning(f"       ❌ Clustering metrics computation failed at step {step}: {e}")
-            clustering_metrics["clustering/error"] = str(e)
-        
-        return clustering_metrics
-    
     def _compute_encoder_specialization_metrics(self, all_encoder_outputs: list, pattern_ids: chex.Array) -> dict:
         """
         Compute metrics showing how well frozen encoders maintain specialization.
@@ -3370,9 +2787,7 @@ class StructuredTrainer:
                                 
                                 if other_vars:
                                     avg_other_var = np.mean(other_vars)
-                                    # FIXED: Consistent specialization ratio definition
-                                    # Use other_var / target_var (higher = better specialization)
-                                    specialization_ratio = avg_other_var / (target_var + 1e-8)
+                                    specialization_ratio = target_var / (avg_other_var + 1e-8)
                                     enc_metrics["specialization_ratio"] = float(specialization_ratio)
                                     enc_metrics["specialization_score"] = float(np.log(specialization_ratio + 1e-8))
                 
@@ -3447,210 +2862,6 @@ class StructuredTrainer:
             metrics["phase_b/decoder/error"] = str(e)
         
         return metrics
-    
-    def _create_cached_phase1_dataset(self) -> list:
-        """
-        Create a cached dataset for Phase 1 training to ensure stable data distribution.
-        
-        This fixes the fundamental issue where generating new data every batch prevents
-        encoders from settling into stable, specialized representations.
-        
-        Returns:
-            List of cached training batches
-        """
-        logging.info("     🔧 Creating cached Phase 1 dataset...")
-        
-        # Calculate how many batches we need
-        num_steps = self.cfg.training.encoder_expose_steps
-        batch_size = self.batch_size
-        
-        # Create enough batches to cover all training steps
-        # We'll create 2x the needed batches to allow for shuffling
-        num_batches = num_steps * 2
-        
-        cached_batches = []
-        
-        for batch_idx in range(num_batches):
-            # Create a balanced batch for each pattern
-            for target_pattern in [1, 2, 3]:
-                # CRITICAL FIX: Use safe conversion to avoid JAX tracer issues
-                logging.debug(f"Converting batch_idx {batch_idx} (type: {type(batch_idx)}) to int")
-                batch_idx_int = self._safe_convert_to_int(batch_idx)
-                logging.debug(f"Converted batch_idx {batch_idx} to {batch_idx_int}")
-                
-                # Generate balanced batch
-                grids, shapes, pattern_ids = self._create_balanced_pattern_batch(
-                    target_pattern, batch_idx_int
-                )
-                
-                cached_batches.append((grids, shapes, pattern_ids, target_pattern))
-            
-            if batch_idx % 100 == 0:
-                logging.info(f"       Created {batch_idx + 1}/{num_batches} cached batches")
-        
-        logging.info(f"     ✅ Created {len(cached_batches)} cached training batches")
-        logging.info(f"     📊 Each batch contains {batch_size} samples")
-        logging.info(f"     🔄 Batches will be reused throughout Phase 1 for stable training")
-        
-        return cached_batches
-    
-
-    
-    def _extract_target_latents(self, enc_idx: int, encoder_params: dict, state: TrainState, verbose: bool = False) -> dict:
-        """
-        Extract target pattern latents from a trained encoder for repulsion loss computation.
-        
-        Args:
-            enc_idx: Index of the encoder
-            encoder_params: Trained encoder parameters
-            state: Training state with all parameters
-            verbose: Whether to show verbose output
-            
-        Returns:
-            Dictionary mapping pattern_id to target latents
-        """
-        if verbose:
-            logging.info(f"       🔍 Extracting target latents from Encoder {enc_idx}...")
-        
-        target_latents = {}
-        target_pattern = enc_idx + 1  # Encoder 0 -> Pattern 1, etc.
-        
-        try:
-            # Create a temporary model for evaluation
-            temp_model = StructuredLPN(
-                encoders=(self.encoders[enc_idx],),
-                decoder=self.decoder
-            )
-            
-            # Generate evaluation data for the target pattern
-            eval_data = self._create_specialized_training_data(target_pattern)
-            grids, shapes, pattern_ids = eval_data
-            
-            # Get encoder outputs for target pattern samples
-            mu, logvar = self.encoders[enc_idx].apply(
-                {"params": encoder_params},
-                grids,
-                shapes,
-                dropout_eval=False,
-                mutable=False,
-            )
-            
-            # Use mean of latents over pairs
-            latents = mu.mean(axis=-2)  # (batch_size, latent_dim)
-            
-            # Store target latents
-            target_latents[target_pattern] = np.array(latents)
-            
-            if verbose:
-                logging.info(f"       ✅ Extracted {len(latents)} target latents for Pattern {target_pattern}")
-                logging.info(f"       📊 Latent shape: {latents.shape}")
-                logging.info(f"       📊 Mean variance: {float(jnp.mean(jnp.exp(logvar))):.6f}")
-            
-        except Exception as e:
-            logging.warning(f"       ⚠️  Failed to extract target latents for Encoder {enc_idx}: {e}")
-            # Return empty dict as fallback
-            target_latents = {}
-        
-        return target_latents
-    
-    def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 1.0, verbose: bool = False) -> chex.Array:
-        """
-        SIMPLE REPULSION LOSS: Push current encoder's target latents away from previous encoders'.
-        
-        Minimal implementation: compute mean of previous target latents, then hinge loss on distances.
-        This matches the recommended approach: simple margin-based repulsion with mean aggregation.
-        
-        Args:
-            current_latents: Current encoder's target latents [batch_size, latent_dim]
-            target_latents_store: Dictionary mapping encoder_idx to target latents
-            current_encoder_idx: Index of the current encoder being trained
-            margin: Minimum distance margin for repulsion (default: 1.0)
-            verbose: Whether to show verbose output
-            
-        Returns:
-            Repulsion loss value
-        """
-        if verbose:
-            logging.info(f"       🚫 Computing repulsion loss for Encoder {current_encoder_idx}...")
-        
-        try:
-            # Collect all previous encoders' target latents
-            prev_latents_list = []
-            
-            for prev_enc_idx, prev_target_latents in target_latents_store.items():
-                if prev_enc_idx >= current_encoder_idx:
-                    continue  # Skip current and future encoders
-                
-                # Get target pattern for previous encoder
-                prev_target_pattern = prev_enc_idx + 1
-                
-                if prev_target_pattern in prev_target_latents:
-                    prev_latents = prev_target_latents[prev_target_pattern]
-                    
-                    # CRITICAL FIX: Validate latent shape before adding to list
-                    if len(prev_latents.shape) != 2 or prev_latents.shape[1] != current_latents.shape[1]:
-                        logging.warning(f"         ⚠️  Skipping Encoder {prev_enc_idx}: incompatible latent shape {prev_latents.shape}")
-                        continue
-                    
-                    prev_latents_list.append(prev_latents)
-                    
-                    if verbose:
-                        logging.info(f"         🚫 Repulsing from Encoder {prev_enc_idx} (Pattern {prev_target_pattern})")
-                        logging.info(f"         📊 Previous target latents shape: {prev_latents.shape}")
-            
-            if not prev_latents_list:
-                if verbose:
-                    logging.info(f"       ⚠️  No repulsion targets available for Encoder {current_encoder_idx}")
-                return 0.0
-            
-            # SIMPLE: Compute mean of all previous target latents
-            # This is the minimal, effective approach you recommended
-            # Stack: [num_encoders, num_samples, latent_dim] -> mean over all samples and encoders -> [latent_dim]
-            stacked_latents = jnp.stack(prev_latents_list, axis=0)
-            logging.debug(f"         📊 Stacked latents shape: {stacked_latents.shape}")
-            
-            # CRITICAL FIX: Handle variable batch sizes by flattening all samples
-            # Reshape: [num_encoders, num_samples, latent_dim] -> [total_samples, latent_dim]
-            total_samples = stacked_latents.shape[0] * stacked_latents.shape[1]
-            flattened_latents = stacked_latents.reshape(total_samples, stacked_latents.shape[-1])
-            
-            # Compute mean over all samples: [total_samples, latent_dim] -> [latent_dim]
-            prev_latents_mean = jnp.mean(flattened_latents, axis=0)  # [latent_dim]
-            
-            if verbose:
-                logging.info(f"         📊 Current latents shape: {current_latents.shape}")
-                logging.info(f"         📊 Previous mean latents shape: {prev_latents_mean.shape}")
-                logging.info(f"         📊 Stacked latents shape: {jnp.stack(prev_latents_list, axis=0).shape}")
-                logging.info(f"         📊 Expected final shape: (32,)")
-            
-            # SIMPLE: Compute distances from current latents to previous mean
-            # current_latents: [batch_size, latent_dim]
-            # prev_latents_mean: [latent_dim]
-            # distances: [batch_size]
-            
-            # CRITICAL FIX: Validate shapes before computation
-            if prev_latents_mean.shape != (current_latents.shape[1],):
-                logging.error(f"       🚨 SHAPE MISMATCH: prev_latents_mean {prev_latents_mean.shape} != expected {(current_latents.shape[1],)}")
-                logging.error(f"       🚨 This will cause broadcasting error. Returning 0.0 loss.")
-                return 0.0
-            
-            distances = jnp.sqrt(jnp.sum((current_latents - prev_latents_mean[None, :]) ** 2, axis=1))
-            
-            # SIMPLE: Hinge loss - no penalty when distance > margin, otherwise push away
-            # L_repel = γ × Σ max(0, margin - distance)
-            repulsion_loss = jnp.mean(jnp.maximum(0, margin - distances))
-            
-            if verbose:
-                mean_dist = float(jnp.mean(distances))
-                logging.info(f"         📊 Mean distance: {mean_dist:.6f}, Repulsion: {float(repulsion_loss):.6f}")
-                logging.info(f"       ✅ Repulsion loss computed: {float(repulsion_loss):.6f} (from {len(prev_latents_list)} encoders)")
-            
-            return repulsion_loss
-                
-        except Exception as e:
-            logging.warning(f"       ⚠️  Error computing repulsion loss: {e}")
-            logging.warning(f"       ⚠️  Stack trace: {traceback.format_exc()}")
-            return 0.0
     
     def _generate_phase2_plots(self, all_encoder_outputs: list, pattern_ids: chex.Array, num_steps: int) -> dict:
         """
@@ -3738,7 +2949,7 @@ class StructuredTrainer:
                     ax.set_ylabel('Mean Variance')
                     ax.grid(True, alpha=0.3)
                     ax.legend()
-            else:
+                else:
                     ax.text(0.5, 0.5, f'No data for Encoder {enc_idx}', 
                            ha='center', va='center', transform=ax.transAxes)
                     ax.set_title(f'Encoder {enc_idx} - No Data')
@@ -3749,7 +2960,7 @@ class StructuredTrainer:
         except Exception as e:
             logging.warning(f"Encoder specialization plot creation failed: {e}")
             return None
-
+    
     def _create_poe_aggregation_plot(self, all_encoder_outputs: list, pattern_ids: chex.Array) -> Optional[plt.Figure]:
         """
         Create plot showing PoE aggregation effectiveness.
@@ -3905,270 +3116,9 @@ class StructuredTrainer:
         
         return organized_metrics
     
-    def _verify_pattern_data_integrity(self, data_dict: dict, context: str) -> bool:
-        """
-        CRITICAL: Verify pattern ID integrity in stored data before training/evaluation.
-        
-        This method ensures:
-        1. Each pattern dataset contains ONLY samples with the correct pattern ID
-        2. No cross-contamination between patterns
-        3. Data integrity before T-SNE, certainty plots, or training
-        
-        Args:
-            data_dict: Dictionary mapping pattern_id to (grids, shapes, pattern_ids)
-            context: String describing where this verification is called from
-            
-        Returns:
-            bool: True if all data is valid, False if corruption detected
-        """
-        import numpy as np
-        
-        logging.info(f"🔍 CRITICAL: Pattern ID integrity verification for {context}")
-        logging.info(f"   - Data keys: {list(data_dict.keys())}")
-        logging.info(f"   - Data types: {[(k, type(data_dict[k])) for k in data_dict.keys()]}")
-        
-        all_valid = True
-        
-        for pattern_id in [1, 2, 3]:
-            if pattern_id not in data_dict:
-                logging.error(f"   ❌ Pattern {pattern_id} missing from data!")
-                all_valid = False
-                continue
-                
-            # Handle both tuple and dictionary formats
-            pattern_data = data_dict[pattern_id]
-            if isinstance(pattern_data, dict):
-                # New format: dictionary with keys 'grids', 'shapes', 'pattern_ids'
-                grids = pattern_data.get('grids')
-                shapes = pattern_data.get('shapes')
-                pattern_ids = pattern_data.get('pattern_ids')
-                
-                # Validate that all required keys are present
-                if grids is None or shapes is None or pattern_ids is None:
-                    logging.error(f"   ❌ Pattern {pattern_id}: Missing required keys in dictionary format")
-                    logging.error(f"      Available keys: {list(pattern_data.keys())}")
-                    all_valid = False
-                    continue
-                    
-            elif isinstance(pattern_data, (tuple, list)) and len(pattern_data) == 3:
-                # Old format: tuple of (grids, shapes, pattern_ids)
-                grids, shapes, pattern_ids = pattern_data
-            else:
-                logging.error(f"   ❌ Pattern {pattern_id}: Invalid data format: {type(pattern_data)}")
-                logging.error(f"      Expected: dict with 'grids', 'shapes', 'pattern_ids' keys OR tuple of 3 elements")
-                logging.error(f"      Got: {type(pattern_data)} with {len(pattern_data) if hasattr(pattern_data, '__len__') else 'no length'} elements")
-                all_valid = False
-                continue
-            
-            # CRITICAL CHECK 1: Verify pattern_ids array exists and has correct shape
-            if pattern_ids is None:
-                logging.error(f"   ❌ Pattern {pattern_id}: pattern_ids is None!")
-                all_valid = False
-                continue
-                
-            if not hasattr(pattern_ids, 'shape'):
-                logging.error(f"   ❌ Pattern {pattern_id}: pattern_ids has no shape attribute!")
-                all_valid = False
-                continue
-            
-            # CRITICAL CHECK 2: Verify all pattern IDs match the expected pattern
-            pattern_ids_np = np.array(pattern_ids)
-            expected_pattern = pattern_id
-            
-            if not np.all(pattern_ids_np == expected_pattern):
-                logging.error(f"   ❌ CRITICAL CORRUPTION: Pattern {pattern_id} contains wrong IDs!")
-                logging.error(f"      Expected: all {expected_pattern}")
-                logging.error(f"      Got: {np.unique(pattern_ids_np)}")
-                logging.error(f"      Sample of corrupted IDs: {pattern_ids_np[:10]}")
-                all_valid = False
-            else:
-                logging.info(f"   ✅ Pattern {pattern_id}: All {len(pattern_ids_np)} samples have correct ID {expected_pattern}")
-            
-            # CRITICAL CHECK 3: Verify data shapes are consistent
-            if grids.shape[0] != len(pattern_ids_np):
-                logging.error(f"   ❌ Pattern {pattern_id}: Grids count ({grids.shape[0]}) != Pattern IDs count ({len(pattern_ids_np)})")
-                all_valid = False
-            else:
-                logging.info(f"   ✅ Pattern {pattern_id}: Data shapes consistent - {grids.shape[0]} samples")
-            
-            # CRITICAL CHECK 4: Verify no NaN or invalid values
-            if np.any(np.isnan(pattern_ids_np)):
-                logging.error(f"   ❌ Pattern {pattern_id}: Contains NaN values in pattern IDs!")
-                all_valid = False
-            
-            if np.any(pattern_ids_np < 1) or np.any(pattern_ids_np > 3):
-                logging.error(f"   ❌ Pattern {pattern_id}: Contains invalid pattern ID values!")
-                logging.error(f"      Valid range: [1, 2, 3], Got: [{np.min(pattern_ids_np)}, {np.max(pattern_ids_np)}]")
-                all_valid = False
-        
-        if all_valid:
-            logging.info(f"   ✅ ALL PATTERN DATA VERIFIED - No corruption detected")
-        else:
-            logging.error(f"   ❌ PATTERN DATA CORRUPTION DETECTED - Training/evaluation may fail!")
-            logging.error(f"      Context: {context}")
-            
-        return all_valid
-    
-    def _verify_training_data_integrity(self, grids: chex.Array, shapes: chex.Array, pattern_ids: chex.Array, target_pattern: int, context: str) -> bool:
-        """
-        CRITICAL: Verify training data integrity before each training step.
-        
-        This ensures:
-        1. Pattern IDs match the expected target pattern
-        2. Data shapes are consistent
-        3. No corruption before training
-        
-        Args:
-            grids: Training grids
-            shapes: Training shapes  
-            pattern_ids: Training pattern IDs
-            target_pattern: Expected target pattern for this encoder
-            context: String describing the training context
-            
-        Returns:
-            bool: True if data is valid, False if corruption detected
-        """
-        import numpy as np
-        
-        logging.info(f"     🔍 CRITICAL: Training data integrity verification for {context}")
-        logging.info(f"        - Target pattern: {target_pattern}")
-        
-        # FIXED: Add robust error handling for data verification
-        try:
-            logging.info(f"        - Data shapes: grids={grids.shape}, shapes={shapes.shape}, pattern_ids={pattern_ids.shape}")
-            pattern_ids_np = np.array(pattern_ids)
-        except Exception as e:
-            logging.error(f"        ❌ CRITICAL: Data verification failed due to shape/type issues: {e}")
-            logging.error(f"        - Grids type: {type(grids)}, shape: {getattr(grids, 'shape', 'no shape')}")
-            logging.error(f"        - Shapes type: {type(shapes)}, shape: {getattr(shapes, 'shape', 'no shape')}")
-            logging.error(f"        - Pattern IDs type: {type(pattern_ids)}, shape: {getattr(pattern_ids, 'shape', 'no shape')}")
-            return False
-        
-        # CRITICAL CHECK 1: Verify all pattern IDs are valid
-        if np.any(pattern_ids_np < 1) or np.any(pattern_ids_np > 3):
-            logging.error(f"        ❌ CRITICAL: Invalid pattern ID values detected!")
-            logging.error(f"           Valid range: [1, 2, 3], Got: [{np.min(pattern_ids_np)}, {np.max(pattern_ids_np)}]")
-            return False
-            
-        # CRITICAL CHECK 2: Verify target pattern is present
-        target_mask = (pattern_ids_np == target_pattern)
-        target_count = np.sum(target_mask)
-        if target_count == 0:
-            logging.error(f"        ❌ CRITICAL: No target pattern {target_pattern} samples found!")
-            logging.error(f"           Pattern distribution: {dict(zip(*np.unique(pattern_ids_np, return_counts=True)))}")
-            return False
-        
-        # CRITICAL CHECK 3: Verify other patterns are present (for contrastive learning)
-        other_mask = ~target_mask
-        other_count = np.sum(other_mask)
-        if other_count == 0:
-            logging.error(f"        ❌ CRITICAL: No other pattern samples found for contrastive learning!")
-            logging.error(f"           All samples are target pattern {target_pattern}")
-            return False
-            
-        # CRITICAL CHECK 4: Verify data consistency
-        if len(grids) != len(pattern_ids_np):
-            logging.error(f"        ❌ CRITICAL: Data length mismatch!")
-            logging.error(f"           Grids: {len(grids)}, Pattern IDs: {len(pattern_ids_np)}")
-            return False
-        
-        # CRITICAL CHECK 5: Verify pattern distribution is reasonable
-        unique_patterns, counts = np.unique(pattern_ids_np, return_counts=True)
-        pattern_distribution = dict(zip(unique_patterns, counts))
-        
-        logging.info(f"        ✅ Pattern distribution: {pattern_distribution}")
-        logging.info(f"        ✅ Target pattern {target_pattern}: {target_count} samples")
-        logging.info(f"        ✅ Other patterns: {other_count} samples")
-        logging.info(f"        ✅ Data integrity verified - Ready for training")
-        
-        return True
-    
-    def _safe_unpack_batch_data(self, batch, context: str) -> tuple:
-        """
-        Safely unpack batch data with robust error handling.
-        
-        This method handles cases where the batch might not have exactly 3 elements,
-        preventing the "too many values to unpack (expected 3)" error.
-        
-        Args:
-            batch: Batch data that should contain (grids, shapes, pattern_ids)
-            context: String describing where this unpacking is happening
-            
-        Returns:
-            Tuple of (grids, shapes, pattern_ids) with fallback values if needed
-        """
-        try:
-            # Log batch information for debugging
-            logging.debug(f"     🔍 Debugging batch for {context}: type={type(batch)}, length={len(batch) if hasattr(batch, '__len__') else 'no length'}")
-            
-            if isinstance(batch, (tuple, list)):
-                if len(batch) == 3:
-                    # Expected format: (grids, shapes, pattern_ids)
-                    grids, shapes, pattern_ids = batch
-                    logging.debug(f"     ✅ Batch unpacked successfully: {len(batch)} elements")
-                    return grids, shapes, pattern_ids
-                elif len(batch) == 2:
-                    # Fallback format: (grids, shapes) - generate pattern_ids
-                    grids, shapes = batch
-                    logging.warning(f"     ⚠️  Batch has only 2 elements, generating pattern_ids for {context}")
-                    # This is a fallback - the calling code should handle this case
-                    return grids, shapes, None
-                else:
-                    # Unexpected format
-                    logging.error(f"     ❌ Unexpected batch format: {len(batch)} elements for {context}")
-                    logging.error(f"        Expected 3 elements, got: {type(batch)} with length {len(batch)}")
-                    # Return fallback values to prevent crashes
-                    return None, None, None
-            else:
-                logging.error(f"     ❌ Batch is not a tuple/list: {type(batch)} for {context}")
-                return None, None, None
-                
-        except Exception as e:
-            logging.error(f"     ❌ Error unpacking batch for {context}: {e}")
-            return None, None, None
-    
-    def _filter_data_by_pattern_id(self, data_dict: dict, target_pattern: int, context: str) -> tuple:
-        """
-        CRITICAL: Filter data to ensure each encoder sees ONLY its intended pattern.
-        
-        This prevents cross-contamination and ensures proper specialization.
-        
-        Args:
-            data_dict: Dictionary mapping pattern_id to (grids, shapes, pattern_ids)
-            target_pattern: Pattern this encoder should specialize in (1, 2, or 3)
-            context: String describing where this filtering is called from
-            
-        Returns:
-            tuple: (filtered_grids, filtered_shapes, filtered_pattern_ids) for target_pattern only
-        """
-        logging.info(f"🔒 CRITICAL: Pattern-specific data filtering for {context}")
-        logging.info(f"   - Target pattern: {target_pattern}")
-        logging.info(f"   - Available patterns: {list(data_dict.keys())}")
-        
-        if target_pattern not in data_dict:
-            logging.error(f"   ❌ Target pattern {target_pattern} not found in data!")
-            raise ValueError(f"Target pattern {target_pattern} not available for {context}")
-        
-        grids, shapes, pattern_ids = data_dict[target_pattern]
-        
-        # CRITICAL: Double-check that this data actually contains the target pattern
-        pattern_ids_np = np.array(pattern_ids)
-        if not np.all(pattern_ids_np == target_pattern):
-            logging.error(f"   ❌ CRITICAL: Data for pattern {target_pattern} contains wrong IDs!")
-            logging.error(f"      Expected: all {target_pattern}, Got: {np.unique(pattern_ids_np)}")
-            raise ValueError(f"Pattern {target_pattern} data corruption detected")
-        
-        logging.info(f"   ✅ Filtered data: {len(grids)} samples, all with pattern ID {target_pattern}")
-        logging.info(f"   ✅ Data shapes: grids={grids.shape}, shapes={shapes.shape}")
-        
-        return grids, shapes, pattern_ids
-    
     def _create_specialized_training_data(self, target_pattern: int) -> tuple:
         """
         Create specialized training data for individual encoder training.
-        
-        CRITICAL FIX: Now uses diverse seeds to prevent "1260 copies of one grid" problem
-        This ensures meaningful contrastive loss and proper encoder specialization.
         
         Args:
             target_pattern: Pattern this encoder should specialize in (1, 2, or 3)
@@ -4178,38 +3128,30 @@ class StructuredTrainer:
         """
         logging.info(f"     Creating specialized data for pattern {target_pattern}")
         
-        # FIXED: More balanced split to boost variance differences and specialization
         # Generate balanced data with emphasis on target pattern
         total_samples = self.batch_size * 10  # Generate more samples for individual training
-        target_ratio = self.cfg.training.get("target_pattern_ratio", 0.6)  # Configurable, default 60%
-        target_samples = int(total_samples * target_ratio)  # 60% target pattern (was 70%)
+        target_samples = int(total_samples * 0.7)  # 70% target pattern
         other_samples = total_samples - target_samples
-        
-        logging.info(f"     Using target pattern ratio: {target_ratio} ({target_samples}/{total_samples})")
         
         grids_list = []
         shapes_list = []
         pattern_ids_list = []
         
-        # CRITICAL FIX: Use diverse seeds for target pattern samples to prevent identical copies
-        # This ensures the contrastive loss has meaningful variance to exploit
-        for i in range(target_samples):
-            # Use different seed for each sample to ensure diversity
-            diverse_seed = self.cfg.training.seed + target_pattern * 1000 + i
-            grids, shapes, _ = self._create_single_pattern_sample_with_seed(target_pattern, diverse_seed)
+        # Generate target pattern samples (reinforced)
+        # Pattern 1=O-tetromino, Pattern 2=T-tetromino, Pattern 3=L-tetromino
+        for _ in range(target_samples):
+            grids, shapes, _ = self._create_single_pattern_sample(target_pattern)
             grids_list.append(grids)
             shapes_list.append(shapes)
             pattern_ids_list.append(target_pattern)
         
-        # Generate other pattern samples (reduced certainty) with diverse seeds
+        # Generate other pattern samples (reduced certainty)
         other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
         samples_per_other = other_samples // len(other_patterns)
         
         for pattern_id in other_patterns:
-            for i in range(samples_per_other):
-                # Use different seed for each sample to ensure diversity
-                diverse_seed = self.cfg.training.seed + pattern_id * 1000 + i + 5000  # Offset to avoid conflicts
-                grids, shapes, _ = self._create_single_pattern_sample_with_seed(pattern_id, diverse_seed)
+            for _ in range(samples_per_other):
+                grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
                 grids_list.append(grids)
                 shapes_list.append(shapes)
                 pattern_ids_list.append(pattern_id)
@@ -4219,127 +3161,164 @@ class StructuredTrainer:
         shapes = jnp.stack(shapes_list, axis=0)
         pattern_ids = jnp.array(pattern_ids_list)
         
-        # CRITICAL DEBUG: Check if we're getting real data or just fallback data
-        grids_sum = jnp.sum(grids)
-        shapes_sum = jnp.sum(shapes)
-        logging.info(f"     🔍 CRITICAL: Data validation check:")
-        logging.info(f"        - Grids sum: {grids_sum} (should be > 0 for real data)")
-        logging.info(f"        - Shapes sum: {shapes_sum} (should be > 0 for real data)")
-        if grids_sum == 0:
-            logging.error(f"     🚨 CRITICAL BUG: All grids are zero! Task generator is failing!")
-            logging.error(f"        This means all samples are identical and contrastive loss cannot work!")
-        if shapes_sum == 0:
-            logging.error(f"     🚨 CRITICAL BUG: All shapes are zero! Task generator is failing!")
-            logging.error(f"        This means all samples are identical and contrastive loss cannot work!")
-        
-        # CRITICAL: Verify pattern ID integrity in generated training data
-        logging.info(f"     🔍 CRITICAL: Verifying pattern ID integrity in generated training data...")
-        pattern_ids_np = np.array(pattern_ids)
-        
-        # Verify target pattern samples
-        target_mask = (pattern_ids_np == target_pattern)
-        target_count = np.sum(target_mask)
-        if target_count != target_samples:
-            logging.error(f"     ❌ CRITICAL: Target pattern count mismatch!")
-            logging.error(f"        Expected: {target_samples}, Got: {target_count}")
-            raise ValueError(f"Target pattern count mismatch in training data generation")
-        
-        # Verify other pattern samples
-        other_mask = ~target_mask
-        other_count = np.sum(other_mask)
-        if other_count != other_samples:
-            logging.error(f"     ❌ CRITICAL: Other pattern count mismatch!")
-            logging.error(f"        Expected: {other_samples}, Got: {other_count}")
-            raise ValueError(f"Other pattern count mismatch in training data generation")
-        
-        # Verify pattern ID distribution
-        unique_patterns, counts = np.unique(pattern_ids_np, return_counts=True)
-        pattern_distribution = dict(zip(unique_patterns, counts))
-        logging.info(f"     ✅ Pattern distribution verified: {pattern_distribution}")
-        
-        # CRITICAL DEBUG: Check if we have the right pattern diversity
-        if len(unique_patterns) < 2:
-            logging.error(f"     🚨 CRITICAL BUG: Only {len(unique_patterns)} unique patterns found!")
-            logging.error(f"        Need at least 2 patterns for contrastive loss to work!")
-            logging.error(f"        This explains why specialization_score = 0!")
-        else:
-            logging.info(f"     ✅ Pattern diversity: {len(unique_patterns)} unique patterns found")
-        
         logging.info(f"     Generated {len(grids_list)} samples: {target_samples} target, {other_samples} others")
-        logging.info(f"     ✅ CRITICAL FIX: Used diverse seeds to prevent identical sample copies")
-        logging.info(f"     ✅ This ensures meaningful contrastive loss and proper encoder specialization")
-        logging.info(f"     ✅ Pattern ID integrity verified - No corruption detected")
-        
-        # Analyze expected impact on specialization
-        self._analyze_batch_balance_impact(target_ratio, target_samples, other_samples)
-        
         return grids, shapes, pattern_ids
     
-    def _safe_convert_to_int(self, value) -> int:
-        """
-        Safely convert a value to a Python integer, handling JAX tracers and arrays.
-        
-        This prevents the "The only supported seed types are: None, int, float, str, bytes, and bytearray" error
-        that occurs when JAX tracers are passed to functions expecting regular Python types.
-        
+    def _create_pattern_dataset(self, pattern_id: int, num_samples: int) -> tuple:
+        """Create a dataset composed solely of a single pattern by loading from pre-existing datasets.
+
+        This loads the actual struct_pattern_1, struct_pattern_2, struct_pattern_3 datasets
+        instead of generating synthetic data, ensuring consistent evaluation data.
+
         Args:
-            value: Value to convert (can be JAX tracer, array, or regular Python type)
-            
+            pattern_id: Pattern to generate (1, 2, or 3).
+            num_samples: Number of samples to generate for this pattern.
+
         Returns:
-            Python integer
+            Tuple of (grids, shapes, pattern_ids) each with ``num_samples``
+            entries corresponding to ``pattern_id``.
         """
-        try:
-            # Handle JAX arrays and tracers
-            if hasattr(value, 'item'):
-                result = int(value.item())
-                logging.debug(f"Converted JAX array {type(value)} to int: {result}")
-                return result
-            elif hasattr(value, '__int__'):
-                result = int(value)
-                logging.debug(f"Converted {type(value)} to int: {result}")
-                return result
-            elif hasattr(value, '__index__'):
-                result = int(value.__index__())
-                logging.debug(f"Converted {type(value)} to int: {result}")
-                return result
-            else:
-                result = int(value)
-                logging.debug(f"Converted {type(value)} to int: {result}")
-                return result
-        except (ValueError, TypeError, AttributeError) as e:
-            logging.warning(f"Failed to convert {type(value)} to int: {e}, using fallback value 0")
-            return 0
-    
-    def _create_single_pattern_sample_with_seed(self, pattern_id: int, seed: int) -> tuple:
-        """
-        Create a single sample for a specific pattern with a given seed.
+        import numpy as np
+        import os
         
-        CRITICAL FIX: This method ensures diversity by using different seeds
-        This prevents the "1260 copies of one grid" problem that causes artificial zero variance.
+        # Map pattern_id to dataset folder names
+        pattern_to_folder = {
+            1: "struct_pattern_1",
+            2: "struct_pattern_2", 
+            3: "struct_pattern_3"
+        }
+        
+        if pattern_id not in pattern_to_folder:
+            logging.warning(f"Unknown pattern_id {pattern_id}, using pattern 1")
+            pattern_id = 1
+            
+        dataset_folder = pattern_to_folder[pattern_id]
+        pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+        
+        logging.info(f"      Loading {num_samples} samples from {dataset_folder} ({pattern_names[pattern_id]})")
+        
+        # Load the pre-existing dataset
+        try:
+            dataset_path = os.path.join("src/datasets", dataset_folder)
+            grids = np.load(os.path.join(dataset_path, "grids.npy")).astype(np.uint8)
+            shapes = np.load(os.path.join(dataset_path, "shapes.npy")).astype(np.uint8)
+            
+            # Ensure we have enough samples
+            available_samples = len(grids)
+            if available_samples < num_samples:
+                logging.warning(f"      Dataset {dataset_folder} only has {available_samples} samples, using all available")
+                num_samples = available_samples
+            
+            # Take the first num_samples from the dataset
+            grids = grids[:num_samples]
+            shapes = shapes[:num_samples]
+            pattern_ids = np.full(num_samples, pattern_id, dtype=np.uint8)
+            
+            logging.info(f"      Loaded {num_samples} samples from {dataset_folder}: {grids.shape}, {shapes.shape}")
+            return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
+            
+        except Exception as e:
+            logging.error(f"      Failed to load dataset {dataset_folder}: {e}")
+            logging.info(f"      Falling back to synthetic data generation for pattern {pattern_id}")
+            
+            # Fallback to the original synthetic generation method
+            return self._create_pattern_dataset_synthetic(pattern_id, num_samples)
+    
+    def _create_pattern_dataset_synthetic(self, pattern_id: int, num_samples: int) -> tuple:
+        """Create a dataset composed solely of a single pattern with clean tetromino shapes.
+
+        This is the original synthetic data generation method, kept as a fallback.
+
+        Args:
+            pattern_id: Pattern to generate (1, 2, or 3).
+            num_samples: Number of samples to generate for this pattern.
+
+        Returns:
+            Tuple of (grids, shapes, pattern_ids) each with ``num_samples``
+            entries corresponding to ``pattern_id``.
+        """
+        import numpy as np
+        import random
+        
+        # Set random seed for reproducibility
+        random.seed(self.cfg.training.seed + pattern_id)
+        
+        # Get number of pairs from config
+        num_pairs = self.task_generator_kwargs["num_pairs"]
+        
+        # Define clean tetromino patterns (1-based indexing to match our system)
+        pattern_definitions = {
+            1: {  # O-tetromino (2x2 square) - matches our pattern 1
+                'offsets': [(0, 0), (0, 1), (1, 0), (1, 1)],
+                'box_h': 2, 'box_w': 2,
+                'name': 'O-tetromino'
+            },
+            2: {  # T-tetromino (2x3 with middle column) - matches our pattern 2  
+                'offsets': [(0, 0), (0, 1), (0, 2), (1, 1)],
+                'box_h': 2, 'box_w': 3,
+                'name': 'T-tetromino'
+            },
+            3: {  # L-tetromino (3x2 with corner) - matches our pattern 3
+                'offsets': [(0, 0), (1, 0), (2, 0), (2, 1)],
+                'box_h': 3, 'box_w': 2,
+                'name': 'L-tetromino'
+            }
+        }
+        
+        if pattern_id not in pattern_definitions:
+            logging.warning(f"Unknown pattern_id {pattern_id}, using pattern 1")
+            pattern_id = 1
+        
+        pattern_info = pattern_definitions[pattern_id]
+        logging.info(f"      Creating {num_samples} synthetic samples of {pattern_info['name']} (Pattern {pattern_id})")
+        
+        # Initialize arrays
+        grids = np.zeros((num_samples, num_pairs, 5, 5, 2), dtype=np.uint8)
+        shapes = np.zeros((num_samples, num_pairs, 2, 2), dtype=np.uint8)
+        pattern_ids = np.full(num_samples, pattern_id, dtype=np.uint8)
+        
+        for sample_idx in range(num_samples):
+            # Sample colors for this sample (consistent across all pairs)
+            colors = [random.randint(1, 9) for _ in range(4)]
+            
+            for pair_idx in range(num_pairs):
+                # Generate input grid with single anchor point
+                input_grid = np.zeros((5, 5), dtype=np.uint8)
+                output_grid = np.zeros((5, 5), dtype=np.uint8)
+                
+                # Choose random position for pattern (ensuring it fits)
+                max_row = 5 - pattern_info['box_h']
+                max_col = 5 - pattern_info['box_w']
+                top = random.randint(0, max_row)
+                left = random.randint(0, max_col)
+                
+                # Mark anchor in input
+                input_grid[top, left] = 0  # Use 0 for input (anchor point)
+                
+                # Draw pattern in output
+                for k, (dr, dc) in enumerate(pattern_info['offsets']):
+                    output_grid[top + dr, left + dc] = colors[k % len(colors)]
+                
+                # Store in arrays
+                grids[sample_idx, pair_idx, :, :, 0] = input_grid
+                grids[sample_idx, pair_idx, :, :, 1] = output_grid
+                shapes[sample_idx, pair_idx, 0] = [5, 5] # [input_rows, input_cols]
+                shapes[sample_idx, pair_idx, 1] = [5, 5] # [output_rows, output_cols]
+        
+        logging.info(f"      Generated {num_samples} synthetic samples: {grids.shape}, {shapes.shape}")
+        return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
+    
+    def _create_single_pattern_sample(self, pattern_id: int) -> tuple:
+        """
+        Create a single sample for a specific pattern.
         
         Args:
             pattern_id: Pattern to generate (1, 2, or 3)
-            seed: Seed for reproducible but diverse generation
             
         Returns:
             Tuple of (grids, shapes, pattern_ids)
         """
-        # CRITICAL FIX: Safely convert seed to Python int to avoid JAX tracer issues
-        logging.debug(f"Converting seed {seed} (type: {type(seed)}) to int")
-        seed = self._safe_convert_to_int(seed)
-        logging.debug(f"Converted seed {seed} to {seed}")
-        
-        # CRITICAL DEBUG: Catch invalid pattern IDs at the source
-        if pattern_id not in [1, 2, 3]:
-            import traceback
-            logging.error(f"🚨 CRITICAL BUG: Invalid pattern_id {pattern_id} passed to _create_single_pattern_sample_with_seed")
-            logging.error(f"   Valid pattern IDs are only 1, 2, 3")
-            logging.error(f"   Call stack:")
-            for line in traceback.format_stack():
-                logging.error(f"     {line.strip()}")
-            # Force crash to stop execution
-            raise ValueError(f"Invalid pattern_id {pattern_id} - only 1, 2, 3 are allowed")
-        # Use the existing pattern generation logic with variable seed
+        # Use the existing pattern generation logic
         from datasets.task_gen.dataloader import make_task_gen_dataloader
         
         dataloader = make_task_gen_dataloader(
@@ -4349,7 +3328,7 @@ class StructuredTrainer:
             task_generator_class="STRUCT_PATTERN",
             num_pairs=self.task_generator_kwargs["num_pairs"],
             online_data_augmentation=self.cfg.training.online_data_augmentation,
-            seed=seed,  # CRITICAL: Use variable seed for diversity
+            seed=self.cfg.training.seed + pattern_id,
             pattern=pattern_id,
             pattern_per_task=True,
             num_rows=self.task_generator_kwargs.get("num_rows", 5),
@@ -4358,28 +3337,17 @@ class StructuredTrainer:
         
         # Extract single sample - handle different dataloader output formats
         try:
-            # CRITICAL DEBUG: Log what we're trying to generate
-            logging.debug(f"     🔍 Generating pattern {pattern_id} with seed {seed}")
-            
             # Try the expected format first
             for batch in dataloader:
-                logging.debug(f"     📊 Batch format: {len(batch)} elements, types: {[type(x) for x in batch]}")
-                
                 if len(batch) == 2:
                     # Format: (grids, shapes)
                     grids, shapes = batch
-                    logging.debug(f"     📊 Grids shape: {grids.shape}, Shapes shape: {shapes.shape}")
                     # Extract from batch format: (log_every_n_steps, batch_size, ...)
-                    result = grids[0, 0], shapes[0, 0], pattern_id
-                    logging.debug(f"     ✅ Successfully generated pattern {pattern_id}")
-                    return result
+                    return grids[0, 0], shapes[0, 0], pattern_id
                 elif len(batch) == 3:
                     # Format: (grids, shapes, pattern_ids)
                     grids, shapes, _ = batch
-                    logging.debug(f"     📊 Grids shape: {grids.shape}, Shapes shape: {shapes.shape}")
-                    result = grids[0, 0], shapes[0, 0], pattern_id
-                    logging.debug(f"     ✅ Successfully generated pattern {pattern_id}")
-                    return result
+                    return grids[0, 0], shapes[0, 0], pattern_id
                 else:
                     # Unexpected format, try to handle gracefully
                     logging.warning(f"Unexpected dataloader output format: {len(batch)} elements")
@@ -4387,199 +3355,221 @@ class StructuredTrainer:
                         grids = batch[0] if len(batch) > 0 else None
                         shapes = batch[1] if len(batch) > 1 else None
                         if grids is not None and shapes is not None:
-                            result = grids[0, 0], shapes[0, 0], pattern_id
-                            logging.debug(f"     ✅ Successfully generated pattern {pattern_id} (graceful fallback)")
-                            return result
+                            return grids[0, 0], shapes[0, 0], pattern_id
                     
                     # Fallback: create minimal sample
                     logging.warning(f"Creating fallback sample for pattern {pattern_id}")
                     num_pairs = self.task_generator_kwargs["num_pairs"]
                     fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
                     fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
-                    logging.warning(f"     🚨 FALLBACK: Using all-zero grids for pattern {pattern_id}!")
                     return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
                     
         except Exception as e:
             logging.error(f"Error creating single pattern sample for pattern {pattern_id}: {e}")
-            logging.error(f"     🚨 Exception details: {type(e).__name__}: {str(e)}")
             # Create minimal fallback sample
             num_pairs = self.task_generator_kwargs["num_pairs"]
             fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
             fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
-            logging.warning(f"     🚨 FALLBACK: Using all-zero grids for pattern {pattern_id} due to error!")
             return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
-        
-        # CRITICAL: Ensure we always return exactly 3 values
-        # If we somehow reach here, create a fallback sample
-        logging.warning(f"     ⚠️  Dataloader loop completed without returning - creating fallback for pattern {pattern_id}")
-        num_pairs = self.task_generator_kwargs["num_pairs"]
-        fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
-        fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
-        return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
-    
-    def _validate_phase1_config(self) -> None:
+
+    def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 5.0) -> float:
         """
-        Validate that Phase 1 configuration is loaded correctly.
-        This helps debug config loading issues.
-        """
-        logging.info("🔧 PHASE 1 CONFIG VALIDATION:")
-        
-        # Check critical training parameters
-        contrastive_kl = self.cfg.training.get("contrastive_kl", "NOT_FOUND")
-        contrastive_margin = self.cfg.training.get("contrastive_margin", "NOT_FOUND")
-        target_ratio = self.cfg.training.get("target_pattern_ratio", "NOT_FOUND")
-        batch_size = self.cfg.training.get("batch_size", "NOT_FOUND")
-        learning_rate = self.cfg.training.get("learning_rate", "NOT_FOUND")
-        
-        logging.info(f"   - contrastive_kl: {contrastive_kl}")
-        logging.info(f"   - contrastive_margin: {contrastive_margin}")
-        logging.info(f"   - target_pattern_ratio: {target_ratio}")
-        logging.info(f"   - batch_size: {batch_size}")
-        logging.info(f"   - learning_rate: {learning_rate}")
-        
-        # Validate critical values
-        if contrastive_kl == "NOT_FOUND":
-            logging.error("   ❌ CRITICAL: contrastive_kl not found in config!")
-        elif not isinstance(contrastive_kl, (int, float)) or contrastive_kl <= 0:
-            logging.error(f"   ❌ CRITICAL: Invalid contrastive_kl value: {contrastive_kl}")
-        else:
-            logging.info(f"   ✅ contrastive_kl: {contrastive_kl} (valid)")
-            
-        if contrastive_margin == "NOT_FOUND":
-            logging.error("   ❌ CRITICAL: contrastive_margin not found in config!")
-        elif not isinstance(contrastive_margin, (int, float)) or contrastive_margin <= 0:
-            logging.error(f"   ❌ CRITICAL: Invalid contrastive_margin value: {contrastive_margin}")
-        else:
-            logging.info(f"   ✅ contrastive_margin: {contrastive_margin} (valid)")
-            
-        if target_ratio == "NOT_FOUND":
-            logging.error("   ❌ CRITICAL: target_pattern_ratio not found in config!")
-        elif not isinstance(target_ratio, (int, float)) or target_ratio <= 0 or target_ratio >= 1:
-            logging.error(f"   ❌ CRITICAL: Invalid target_pattern_ratio value: {target_ratio}")
-        else:
-            logging.info(f"   ✅ target_pattern_ratio: {target_ratio} (valid)")
-            
-        if batch_size == "NOT_FOUND":
-            logging.error("   ❌ CRITICAL: batch_size not found in config!")
-        elif not isinstance(batch_size, int) or batch_size <= 0:
-            logging.error(f"   ❌ CRITICAL: Invalid batch_size value: {batch_size}")
-        else:
-            logging.info(f"   ✅ batch_size: {batch_size} (valid)")
-    
-    def _analyze_batch_balance_impact(self, target_ratio: float, target_samples: int, other_samples: int) -> None:
-        """
-        Analyze how the batch balance affects specialization and variance differences.
+        Compute repulsion loss to push current encoder away from previous encoders' latent targets.
         
         Args:
-            target_ratio: Ratio of target pattern samples in the batch
-            target_samples: Number of target pattern samples
-            other_samples: Number of other pattern samples
-        """
-        logging.info(f"     📊 Batch Balance Analysis:")
-        logging.info(f"        - Target pattern ratio: {target_ratio:.1%}")
-        logging.info(f"        - Target samples: {target_samples}")
-        logging.info(f"        - Other samples: {other_samples}")
-        
-        # Analyze the impact on variance differences
-        if target_ratio <= 0.55:
-            logging.info(f"        ✅ EXCELLENT: Very balanced split should maximize variance differences")
-            logging.info(f"        ✅ Strong contrast between target and other patterns")
-            logging.info(f"        ✅ Optimal for encoder specialization")
-        elif target_ratio <= 0.65:
-            logging.info(f"        ✅ GOOD: Balanced split should boost variance differences")
-            logging.info(f"        ✅ Good contrast between target and other patterns")
-            logging.info(f"        ✅ Good for encoder specialization")
-        elif target_ratio <= 0.75:
-            logging.info(f"        ⚠️  MODERATE: Target-heavy split may reduce variance contrast")
-            logging.info(f"        ⚠️  Less contrast between target and other patterns")
-            logging.info(f"        ⚠️  May limit specialization effectiveness")
-        else:
-            logging.warning(f"        ❌ POOR: Very target-heavy split will minimize variance contrast")
-            logging.warning(f"        ❌ Minimal contrast between target and other patterns")
-            logging.warning(f"        ❌ Likely to limit specialization effectiveness")
-        
-        # Provide recommendations
-        if target_ratio > 0.65:
-            logging.info(f"        💡 Consider reducing target_pattern_ratio to 0.55-0.60 for better specialization")
-        elif target_ratio < 0.5:
-            logging.info(f"        💡 Very balanced split - may need to increase if specialization is too weak")
-    
-    def _create_pattern_dataset(self, pattern_id: int, num_samples: int) -> tuple:
-        """Create a dataset composed solely of a single pattern using pre-loaded datasets.
-
-        This method now uses the datasets loaded ONCE at initialization,
-        ensuring the same data is used every time for consistent certainty plots.
-        
-        CRITICAL: Uses the SAME APPROACH as training - takes ALL samples that belong to the targeted pattern.
-
-        Args:
-            pattern_id: Pattern to generate (1, 2, or 3).
-            num_samples: Number of samples to generate for this pattern. 
-                       If None, uses ALL available samples (recommended for certainty plots).
-
+            current_latents: Current encoder's latent representations [batch_size, latent_dim]
+            target_latents_store: Dictionary of {encoder_idx: {pattern_id: target_latents}} from previous encoders
+            current_encoder_idx: Index of the current encoder being trained
+            margin: Distance margin for repulsion (default: 1.0)
+            
         Returns:
-            Tuple of (grids, shapes, pattern_ids) each with the requested number of samples
-            corresponding to ``pattern_id``.
+            Repulsion loss value
         """
-        import numpy as np
+        # DEBUG: Log repulsion loss computation
+        logging.info(f"🔍 REPULSION LOSS COMPUTATION DEBUG:")
+        logging.info(f"   - current_encoder_idx: {current_encoder_idx}")
+        logging.info(f"   - target_latents_store keys: {list(target_latents_store.keys()) if target_latents_store else 'None'}")
+        logging.info(f"   - current_latents shape: {current_latents.shape}")
+        logging.info(f"   - margin: {margin}")
         
-        # CRITICAL FIX: Correct pattern mapping to match ground truth
-        # Ground truth: 1=O, 2=T, 3=L (as defined in task generator)
-        pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+        # Adaptive margin: if margin is too small, compute a reasonable one based on data
+        if margin < 1.0:
+            # Sample some distances to estimate a reasonable margin
+            sample_distances = []
+            for prev_enc_idx in range(current_encoder_idx):
+                if prev_enc_idx in target_latents_store:
+                    prev_targets = target_latents_store[prev_enc_idx]
+                    for pattern_id, target_latents in prev_targets.items():
+                        if target_latents is not None and len(target_latents) > 0:
+                            if len(target_latents) == len(current_latents):
+                                sample_dist = jnp.linalg.norm(current_latents - target_latents, axis=1)
+                                sample_distances.append(float(jnp.mean(sample_dist)))
+                                break  # Just need one sample per encoder
+                            if len(sample_distances) >= 2:  # Get samples from 2 encoders
+                                break
+                    if len(sample_distances) >= 2:
+                        break
+            
+            if sample_distances:
+                adaptive_margin = max(1.0, min(sample_distances) * 0.8)  # 80% of minimum observed distance
+                logging.info(f"   - Adaptive margin computed: {adaptive_margin:.3f} (from sample distances: {sample_distances})")
+                margin = adaptive_margin
         
-        # CRITICAL DEBUG: Log the call parameters and call stack
-        import traceback
-        call_stack = traceback.format_stack()[-3:-1]  # Get last few stack frames
-        logging.info(f"      🔍 _create_pattern_dataset called with pattern_id={pattern_id}, num_samples={num_samples}")
-        logging.info(f"      🔍 Call stack: {' -> '.join([frame.split('/')[-1].split(':')[0] for frame in call_stack])}")
+        if not target_latents_store or current_encoder_idx == 0:
+            # No previous encoders to repulse from
+            logging.info(f"   - REPULSION SKIPPED: No previous encoders to repulse from")
+            logging.info(f"     * target_latents_store: {target_latents_store}")
+            logging.info(f"     * current_encoder_idx: {current_encoder_idx}")
+            return 0.0
         
-        # Use pre-loaded datasets from initialization - SAME APPROACH AS TRAINING
-        if hasattr(self, 'pattern_datasets') and pattern_id in self.pattern_datasets:
-            dataset_data = self.pattern_datasets[pattern_id]
-            grids = dataset_data['grids']
-            shapes = dataset_data['shapes']
-            pattern_ids = dataset_data['pattern_ids']
-            
-            # CRITICAL: Take ALL samples that belong to the targeted pattern (like training does)
-            # Don't limit by num_samples - use all available samples for this pattern
-            available_samples = len(grids)
-            
-            # CRITICAL DEBUG: Log dataset details and validation
-            logging.info(f"      📊 Dataset validation for pattern {pattern_id}:")
-            logging.info(f"        - Available samples: {available_samples}")
-            logging.info(f"        - Grids shape: {grids.shape}")
-            logging.info(f"        - Shapes shape: {shapes.shape}")
-            logging.info(f"        - Pattern IDs shape: {pattern_ids.shape}")
-            logging.info(f"        - Pattern IDs unique values: {np.unique(pattern_ids)}")
-            logging.info(f"        - Pattern IDs first 10: {pattern_ids[:10]}")
-            
-            # CRITICAL VALIDATION: Ensure pattern IDs are correct
-            if not np.all(pattern_ids == pattern_id):
-                logging.error(f"        ❌ CRITICAL ERROR: Pattern IDs mismatch!")
-                logging.error(f"           Expected all {pattern_id}, got: {np.unique(pattern_ids)}")
-                logging.error(f"           This indicates data corruption!")
-                raise ValueError(f"Pattern IDs mismatch for pattern {pattern_id}")
+        repulsion_loss = 0.0
+        num_repulsion_terms = 0
+        
+        # Iterate through all previous encoders
+        for prev_enc_idx in range(current_encoder_idx):
+            logging.info(f"   - Checking previous encoder {prev_enc_idx}")
+            if prev_enc_idx in target_latents_store:
+                prev_targets = target_latents_store[prev_enc_idx]
+                logging.info(f"     * Found targets for encoder {prev_enc_idx}, keys: {list(prev_targets.keys()) if prev_targets else 'None'}")
+                
+                # For each pattern, compute repulsion from previous encoder's targets
+                for pattern_id, target_latents in prev_targets.items():
+                    logging.info(f"       - Pattern {pattern_id}: target_latents type={type(target_latents)}, shape={target_latents.shape if hasattr(target_latents, 'shape') else 'No shape'}")
+                    
+                    if target_latents is not None and len(target_latents) > 0:
+                        # Ensure target latents have the same batch size
+                        if len(target_latents) == len(current_latents):
+                            logging.info(f"         * Batch sizes match: {len(target_latents)} == {len(current_latents)}")
+                            
+                            # Compute L2 distance between current and target latents
+                            distances = jnp.linalg.norm(current_latents - target_latents, axis=1)
+                            logging.info(f"         * Distances shape: {distances.shape}, mean: {float(jnp.mean(distances)):.6f}")
+                            
+                            # Repulsion loss: penalize when distance < margin
+                            # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2^2)
+                            repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
+                            
+                            # Alternative: soft repulsion using inverse distance (always non-zero)
+                            # This ensures we always have some repulsion effect
+                            soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))  # Add small epsilon to avoid division by zero
+                            
+                            # Use the maximum of both approaches
+                            final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)  # Scale soft term down
+                            
+                            logging.info(f"         * Repulsion term: {float(repulsion_term):.6f}")
+                            logging.info(f"         * Soft repulsion term: {float(soft_repulsion_term):.6f}")
+                            logging.info(f"         * Final repulsion term: {float(final_repulsion_term):.6f}")
+                            
+                            repulsion_loss += final_repulsion_term
+                            num_repulsion_terms += 1
+                        else:
+                            logging.warning(f"         * Batch size mismatch: {len(target_latents)} != {len(current_latents)}")
+                            logging.warning(f"         * Attempting to resize target latents to match current batch size")
+                            
+                            # Try to resize target latents to match current batch size
+                            try:
+                                if len(target_latents) > len(current_latents):
+                                    # Sample from target latents to match current batch size
+                                    indices = np.random.choice(len(target_latents), len(current_latents), replace=False)
+                                    resized_target_latents = target_latents[indices]
+                                else:
+                                    # Repeat target latents to match current batch size
+                                    repeat_factor = len(current_latents) // len(target_latents)
+                                    remainder = len(current_latents) % len(target_latents)
+                                    resized_target_latents = np.tile(target_latents, (repeat_factor, 1))
+                                    if remainder > 0:
+                                        additional = target_latents[:remainder]
+                                        resized_target_latents = np.vstack([resized_target_latents, additional])
+                                
+                                logging.info(f"         * Resized target latents from {len(target_latents)} to {len(resized_target_latents)}")
+                                
+                                # Compute L2 distance between current and resized target latents
+                                distances = jnp.linalg.norm(current_latents - resized_target_latents, axis=1)
+                                logging.info(f"         * Resized distances shape: {distances.shape}, mean: {float(jnp.mean(distances)):.6f}")
+                                
+                                # Repulsion loss: penalize when distance < margin
+                                repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
+                                
+                                # Alternative: soft repulsion using inverse distance (always non-zero)
+                                soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))
+                                
+                                # Use the maximum of both approaches
+                                final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)
+                                
+                                logging.info(f"         * Resized repulsion term: {float(repulsion_term):.6f}")
+                                logging.info(f"         * Resized soft repulsion term: {float(soft_repulsion_term):.6f}")
+                                logging.info(f"         * Resized final repulsion term: {float(final_repulsion_term):.6f}")
+                                
+                                repulsion_loss += final_repulsion_term
+                                num_repulsion_terms += 1
+                                
+                            except Exception as resize_error:
+                                logging.warning(f"         * Failed to resize target latents: {resize_error}")
+                                logging.warning(f"         * Skipping this repulsion term")
+                    else:
+                        logging.warning(f"         * Invalid target_latents: {target_latents}")
             else:
-                logging.info(f"        ✅ Pattern IDs validation passed")
-            
-                            # CRITICAL: Return ALL samples for this pattern (not limited by num_samples)
-                logging.info(f"      ✅ Using ALL {available_samples} pre-loaded samples from pattern {pattern_id} ({pattern_names[pattern_id]})")
-                logging.info(f"      ✅ This ensures 100% pattern isolation - no mixing with other patterns")
-                
-                # CRITICAL WARNING: Check if sample count is suspiciously low
-                if available_samples < 100:
-                    logging.warning(f"      ⚠️  WARNING: Pattern {pattern_id} has only {available_samples} samples!")
-                    logging.warning(f"         This is much lower than Phase A data (1260 samples)")
-                    logging.warning(f"         This explains why histograms show fewer samples!")
-                    logging.warning(f"         Expected: 1260 samples, Got: {available_samples} samples")
-                
-                # CRITICAL: Return the EXACT same data every time
-                return grids, shapes, pattern_ids
+                logging.info(f"     * No targets found for encoder {prev_enc_idx}")
         
+        # Average over all repulsion terms
+        if num_repulsion_terms > 0:
+            repulsion_loss = repulsion_loss / num_repulsion_terms
+            logging.info(f"   - Final repulsion loss: {float(repulsion_loss):.6f} (from {num_repulsion_terms} terms)")
         else:
-            logging.error(f"      ❌ CRITICAL ERROR: No pre-loaded dataset for pattern {pattern_id}")
-            logging.error(f"      This should NEVER happen if pattern datasets were loaded correctly")
-            raise ValueError(f"No pre-loaded dataset for pattern {pattern_id}")
+            logging.info(f"   - No repulsion terms computed, returning 0.0")
+        
+        return repulsion_loss
+    
+    def _extract_target_latents(self, encoder_idx: int, encoder_params: dict, state: TrainState) -> dict:
+        """
+        Extract target latent representations from a trained encoder for repulsion loss.
+        
+        Args:
+            encoder_idx: Index of the encoder
+            encoder_params: Encoder parameters
+            state: Training state
+            
+        Returns:
+            Dictionary mapping pattern_id to target latent representations
+        """
+        logging.info(f"🔍 EXTRACTING TARGET LATENTS for Encoder {encoder_idx}")
+        target_latents = {}
+        
+        # Use the same batch size as training to avoid mismatch
+        num_samples = self.batch_size  # Use batch_size instead of fixed 32
+        logging.info(f"   - Using batch_size={num_samples} for target latents (matching training)")
+        
+        # Create evaluation data for each pattern
+        for pattern_id in [1, 2, 3]:
+            try:
+                # Generate pattern-specific data
+                pattern_data = self._create_pattern_dataset(pattern_id, num_samples=num_samples)
+                grids, shapes, _ = pattern_data
+                logging.info(f"   - Pattern {pattern_id}: grids shape={grids.shape}, shapes shape={shapes.shape}")
+                
+                # Get encoder outputs
+                mu, logvar = self.encoders[encoder_idx].apply(
+                    {"params": encoder_params}, 
+                    grids, 
+                    shapes, 
+                    True, 
+                    mutable=False
+                )
+                
+                logging.info(f"   - Pattern {pattern_id}: mu shape={mu.shape}, logvar shape={logvar.shape}")
+                
+                # Use mean of latents as target (or could use multiple samples)
+                target_lat = mu.mean(axis=-2)  # Mean over pairs
+                target_latents[pattern_id] = jnp.array(target_lat)
+                
+                logging.info(f"   - Pattern {pattern_id}: target_lat shape={target_lat.shape}, mean={float(jnp.mean(target_lat)):.6f}")
+                
+            except Exception as e:
+                logging.warning(f"Failed to extract target latents for Encoder {encoder_idx}, Pattern {pattern_id}: {e}")
+                target_latents[pattern_id] = None
+        
+        logging.info(f"   - Final target_latents keys: {list(target_latents.keys())}")
+        return target_latents
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
@@ -4653,8 +3643,8 @@ class StructuredTrainer:
             # Generate a balanced test batch with uniform pattern distribution
             if hasattr(self, 'task_generator') and self.task_generator:
                 test_grids, test_shapes, test_pattern_ids = self._create_balanced_pattern_batch(
-                    target_pattern=1,  # Use pattern 1 as base for testing
-                    step=0
+                    self.batch_size, 
+                    self.samples_per_pattern_per_batch
                 )
                 test_batch = test_grids, test_shapes
                 logging.info(f"✅ Test forward pass: Using EXPLICIT pattern IDs from balanced generation")
@@ -4872,8 +3862,6 @@ class StructuredTrainer:
                 start = time.time()
                 
                 # CRITICAL: Extract explicit pattern IDs from balanced dataloader
-                # FIXED: Each batch now generates NEW data while maintaining strict pattern separation
-                # Encoder 0 gets pattern 1, Encoder 1 gets pattern 2, Encoder 2 gets pattern 3
                 if hasattr(self, 'task_generator') and self.task_generator:
                     # Balanced dataloader provides (grids, shapes, pattern_ids)
                     if len(batches) == 3:
@@ -4944,18 +3932,6 @@ class StructuredTrainer:
                 metrics["Charts/contrastive_loss"] = metrics["contrastive_loss"]
                 if "contrastive_loss_weighted" in metrics:
                     metrics["Charts/contrastive_loss_weighted"] = metrics["contrastive_loss_weighted"]
-            
-            # CRITICAL: Compute clustering metrics every log_every_n_steps to monitor encoder specialization
-            # This provides real-time monitoring of encoder specialization progress
-            try:
-                logging.debug(f"🔍 Computing clustering metrics at step {step}")
-                clustering_metrics = self._compute_clustering_metrics_every_step(
-                    state, grids, shapes, explicit_pattern_ids, step
-                )
-                metrics.update(clustering_metrics)
-                logging.debug(f"✅ Clustering metrics computed: {list(clustering_metrics.keys())}")
-            except Exception as e:
-                logging.warning(f"Clustering metrics computation failed at step {step}: {e}")
                 
             # Organize Phase 2 metrics for better WandB visualization
             if self.phase1_completed:
@@ -6631,10 +5607,6 @@ class StructuredTrainer:
         This function creates a comprehensive view showing how all encoders (0, 1, 2) represent each pattern
         by merging their variance distributions into single histograms per pattern.
         
-        CRITICAL FIX: Now replicates the EXACT SAME functionality as individual encoder certainty plots
-        This ensures the merged panel shows the SAME data quality (1260 samples) and consistency
-        as the individual plots, preventing the dataset mixing issue.
-        
         Args:
             state: Current training state with all encoder parameters
             step: Current training step
@@ -6649,117 +5621,17 @@ class StructuredTrainer:
             
             logging.info(f"🔍 Creating merged encoder certainty panel after Phase 1 (step {step})")
             
-            # Create evaluation data for all patterns using PRE-LOADED datasets from initialization
-            # This ensures the EXACT SAME data is used every time, preventing dataset mixing
-            # CRITICAL: Uses SAME APPROACH as training - takes ALL samples for each pattern
+            # Create evaluation data for all patterns using the SAME approach as Phase 1
             eval_data = {}
-            
-            # CRITICAL DEBUG: Track data creation for consistency
-            logging.info(f"🔍 Creating evaluation data for certainty plots at step {step}")
-            logging.info(f"🔍 This is the MERGED ENCODER CERTAINTY PANEL - replicates individual plot functionality")
-            
-            # CRITICAL COMPARISON: Check if we have Phase A data to compare against
-            if hasattr(self, '_last_phase_a_data') and self._last_phase_a_data:
-                logging.info(f"🔍 COMPARING with Phase A data from previous step:")
-                for pattern_id in [1, 2, 3]:
-                    if pattern_id in self._last_phase_a_data:
-                        phase_a_grids = self._last_phase_a_data[pattern_id]['grids']
-                        logging.info(f"   Phase A Pattern {pattern_id}: {len(phase_a_grids)} samples, shape: {phase_a_grids.shape}")
-            
-            # CRITICAL DECISION: ALWAYS use Phase A data if available to ensure consistency
-            # This prevents the histogram destruction issue caused by smaller pre-loaded datasets
-            if hasattr(self, '_last_phase_a_data') and self._last_phase_a_data:
-                logging.info(f"🔍 USING Phase A data for consistency (prevents histogram destruction):")
-                for pattern_id in [1, 2, 3]:
-                    if pattern_id in self._last_phase_a_data:
-                        # CRITICAL FIX: Convert dictionary format back to tuple format for consistency
-                        data_dict = self._last_phase_a_data[pattern_id]
-                        grids = data_dict['grids']
-                        shapes = data_dict['shapes']
-                        pattern_ids = data_dict['pattern_ids']
-                        
-                        # Store as tuple for consistency with other code paths
-                        eval_data[pattern_id] = (grids, shapes, pattern_ids)
-                        
-                        logging.info(f"   ✅ Pattern {pattern_id}: Using Phase A data with {len(grids)} samples")
-                logging.info(f"   ✅ This ensures histograms show the SAME samples as Phase A")
-                logging.info(f"   ✅ NO MORE HISTOGRAM DESTRUCTION - consistent 1260 samples")
-            else:
-                logging.error(f"🔍 CRITICAL ERROR: No Phase A data available!")
-                logging.error(f"   This will cause poor histogram quality (96 vs 1260 samples)")
-                logging.error(f"   CRITICAL FIX: Use EXACT SAME method as individual encoder plots")
-                
-                # Use the EXACT SAME method as the individual encoder certainty plots
-                # This ensures the merged panel shows the SAME data quality and consistency
-                eval_data = {}
-                for pattern_id in [1, 2, 3]:
-                    logging.info(f"   🔧 Pattern {pattern_id}: Using EXACT SAME method as individual plots")
-                    
-                    # Generate 1260 samples for each pattern using the single pattern sample generator
-                    # This is the EXACT SAME code as _generate_phase_a_tsne
-                    grids_list = []
-                    shapes_list = []
-                    pattern_ids_list = []
-                    
-                    num_samples = 1260  # Generate the same number as individual plots
-                    logging.info(f"   🔧 Pattern {pattern_id}: Generating {num_samples} samples (EXACT SAME as individual plots)")
-                    
-                    for i in range(num_samples):
-                        if i % 200 == 0:  # Progress logging
-                            logging.info(f"   🔧 Pattern {pattern_id}: Generated {i}/{num_samples} diverse samples")
-                        
-                        # CRITICAL FIX: Use different seed for each sample to ensure diversity
-                        # This prevents the "1260 copies of one grid" problem
-                        sample_seed = self.cfg.training.seed + pattern_id * 1000 + i
-                        grids, shapes, _ = self._create_single_pattern_sample_with_seed(pattern_id, sample_seed)
-                        grids_list.append(grids)
-                        shapes_list.append(shapes)
-                        pattern_ids_list.append(pattern_id)
-                    
-                    # Stack all samples (EXACT SAME as individual plots)
-                    grids = jnp.stack(grids_list, axis=0)
-                    shapes = jnp.stack(shapes_list, axis=0)
-                    pattern_ids = jnp.array(pattern_ids_list)
-                    
-                    eval_data[pattern_id] = (grids, shapes, pattern_ids)
-                    logging.info(f"   ✅ Pattern {pattern_id}: Generated {len(grids)} samples (EXACT SAME as individual plots)")
-                    logging.info(f"      - Grids: {grids.shape}")
-                    logging.info(f"      - Shapes: {shapes.shape}")
-                    logging.info(f"      - Pattern IDs: {pattern_ids.shape}")
-                    logging.info(f"      - Pattern IDs unique: {np.unique(pattern_ids)}")
-                    
-                    # CRITICAL CHECK: Ensure pattern IDs are correct
-                    if not np.all(pattern_ids == pattern_id):
-                        logging.error(f"   ❌ CRITICAL ERROR: Pattern {pattern_id} has wrong pattern IDs!")
-                        logging.error(f"      Expected all {pattern_id}, got: {np.unique(pattern_ids)}")
-                        raise ValueError(f"Pattern {pattern_id} has corrupted pattern IDs")
-                    else:
-                        logging.info(f"   ✅ Pattern {pattern_id} validation passed")
-            
-            # CRITICAL DEBUG: Log summary of all datasets
-            logging.info(f"📊 Evaluation data summary:")
+            num_eval_samples = 100  # Same number for each pattern to ensure even coverage
             for pattern_id in [1, 2, 3]:
-                if pattern_id in eval_data:
-                    data = eval_data[pattern_id]
-                    logging.info(f"   Pattern {pattern_id}: data type={type(data)}")
-                    if isinstance(data, dict):
-                        grids = data['grids']
-                        logging.info(f"   Pattern {pattern_id}: {len(grids)} samples, shape: {grids.shape} (dict format)")
-                    elif isinstance(data, (tuple, list)) and len(data) == 3:
-                        grids, shapes, pattern_ids = data
-                        logging.info(f"   Pattern {pattern_id}: {len(grids)} samples, shape: {grids.shape} (tuple format)")
-                    else:
-                        logging.error(f"   Pattern {pattern_id}: Invalid data format: {type(data)}")
-                else:
-                    logging.error(f"   Pattern {pattern_id}: NOT FOUND in eval_data")
+                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
             
             # Create a figure with subplots for each pattern (histogram + Gaussian function)
             fig, axes = plt.subplots(2, 3, figsize=(20, 12))
             if len(axes.shape) == 1:
                 axes = axes.reshape(1, -1)
             
-            # CRITICAL FIX: Correct pattern mapping to match ground truth
-            # Ground truth: 1=O, 2=T, 3=L (as defined in task generator)
             pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
             
             for pattern_idx, pattern_id in enumerate([1, 2, 3]):
@@ -6771,71 +5643,33 @@ class StructuredTrainer:
                 if pattern_id in eval_data:
                     grids, shapes, pattern_ids = eval_data[pattern_id]
                     
-                    # CRITICAL VALIDATION: Verify data integrity before processing
-                    logging.info(f"       🔍 Processing pattern {pattern_id} for histograms:")
-                    logging.info(f"          - Grids shape: {grids.shape}")
-                    logging.info(f"          - Shapes shape: {shapes.shape}")
-                    logging.info(f"          - Pattern IDs shape: {pattern_ids.shape}")
-                    logging.info(f"          - Pattern IDs unique: {np.unique(pattern_ids)}")
+                    # Select a consistent sample for this pattern (same as Phase 1 approach)
+                    sample_index = (pattern_id - 1) % len(grids)
+                    sample_grids = grids[sample_index]
+                    sample_shapes = shapes[sample_index]
                     
-                    # CRITICAL CHECK: Ensure we still have the right pattern IDs
-                    if not np.all(pattern_ids == pattern_id):
-                        logging.error(f"          ❌ CRITICAL ERROR: Pattern {pattern_id} data corrupted!")
-                        logging.error(f"             Expected all {pattern_id}, got: {np.unique(pattern_ids)}")
-                        raise ValueError(f"Pattern {pattern_id} data corrupted during processing")
-                    
-                    # Use multiple samples from the pattern dataset for better statistics
-                    # Take up to 20 samples or all available if less (since we now have ALL samples)
-                    num_samples_to_use = min(20, len(grids))
-                    sample_indices = list(range(num_samples_to_use))
-                    logging.info(f"       📊 Pattern {pattern_id}: Using {num_samples_to_use} samples from {len(grids)} available")
-                    logging.info(f"          - Sample indices: {sample_indices}")
-                    
-                    # CRITICAL DEBUG: Log sample details
-                    for i, sample_idx in enumerate(sample_indices[:5]):  # Log first 5 samples
-                        sample_pattern_id = pattern_ids[sample_idx]
-                        logging.info(f"          - Sample {i}: index={sample_idx}, pattern_id={sample_pattern_id}")
-                    
-                    # Collect encoder outputs for ALL encoders on multiple samples
+                    # Collect encoder outputs for ALL encoders on this sample
                     all_encoder_variances = []
                     encoder_labels = []
                     
                     for enc_idx in range(len(self.encoders)):
                         encoder_params = state.params["encoders"][enc_idx]
                         
-                        # Collect variances from multiple samples
-                        pattern_variances = []
+                        # Forward pass through this encoder
+                        mu, logvar = self.encoders[enc_idx].apply(
+                            {"params": encoder_params},
+                            sample_grids[None, ...],  # Add batch dimension back
+                            sample_shapes[None, ...],  # Add batch dimension back
+                            dropout_eval=False,
+                            mutable=False,
+                        )
                         
-                        for sample_idx in sample_indices:
-                            sample_grids = grids[sample_idx]
-                            sample_shapes = shapes[sample_idx]
-                            
-                            # CRITICAL CHECK: Verify sample pattern ID before processing
-                            sample_pattern_id = pattern_ids[sample_idx]
-                            if sample_pattern_id != pattern_id:
-                                logging.error(f"          ❌ CRITICAL ERROR: Sample {sample_idx} has wrong pattern ID!")
-                                logging.error(f"             Expected {pattern_id}, got {sample_pattern_id}")
-                                raise ValueError(f"Sample {sample_idx} has wrong pattern ID")
-                            
-                            # Forward pass through this encoder
-                            mu, logvar = self.encoders[enc_idx].apply(
-                                {"params": encoder_params},
-                                sample_grids[None, ...],  # Add batch dimension back
-                                sample_shapes[None, ...],  # Add batch dimension back
-                                dropout_eval=False,
-                                mutable=False,
-                            )
-                            
-                            # Convert logvar to variance and flatten
-                            var = np.exp(np.array(logvar))  # Convert to numpy
-                            var_flat = var.flatten()  # Flatten to 1D array
-                            pattern_variances.extend(var_flat)
+                        # Convert logvar to variance and flatten
+                        var = np.exp(np.array(logvar))  # Convert to numpy
+                        var_flat = var.flatten()  # Flatten to 1D array
                         
-                        # Store all variances for this encoder across all samples
-                        all_encoder_variances.append(np.array(pattern_variances))
+                        all_encoder_variances.append(var_flat)
                         encoder_labels.append(f"Encoder {enc_idx}")
-                        
-                        logging.info(f"          ✅ Encoder {enc_idx}: collected {len(pattern_variances)} variance values")
                     
                     # Create merged histogram for this pattern
                     # Use different colors for each encoder
@@ -6847,7 +5681,7 @@ class StructuredTrainer:
                                    edgecolor='black', linewidth=0.5)
                     
                     # Customize the histogram subplot
-                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances ({num_samples_to_use} samples)', 
+                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances', 
                                    fontsize=14, fontweight='bold')
                     ax_hist.set_xlabel('Variance', fontsize=12)
                     ax_hist.set_ylabel('Frequency', fontsize=12)
@@ -6867,8 +5701,8 @@ class StructuredTrainer:
                                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                     
                     # Create Gaussian function plots for this pattern
-                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions ({num_samples_to_use} samples)', 
-                                       fontsize=14, fontweight='bold')
+                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions', 
+                                     fontsize=14, fontweight='bold')
                     ax_gauss.set_xlabel('Variance', fontsize=12)
                     ax_gauss.set_ylabel('Density', fontsize=12)
                     
@@ -6909,23 +5743,7 @@ class StructuredTrainer:
                         fontsize=16, fontweight='bold')
             
             plt.tight_layout()
-            
-            # CRITICAL FINAL VALIDATION: Ensure data consistency across all patterns
-            logging.info(f"       🔍 Final data consistency validation:")
-            for pattern_id in [1, 2, 3]:
-                if pattern_id in eval_data:
-                    grids, shapes, pattern_ids = eval_data[pattern_id]
-                    logging.info(f"          Pattern {pattern_id}: {len(grids)} samples, pattern IDs: {np.unique(pattern_ids)}")
-                    
-                    # Final check: ensure pattern IDs are still correct
-                    if not np.all(pattern_ids == pattern_id):
-                        logging.error(f"          ❌ FINAL VALIDATION FAILED: Pattern {pattern_id} corrupted!")
-                        raise ValueError(f"Final validation failed for pattern {pattern_id}")
-                    else:
-                        logging.info(f"          ✅ Pattern {pattern_id} final validation passed")
-            
             logging.info(f"       📊 Merged encoder certainty panel created successfully")
-            logging.info(f"       ✅ ALL data consistency checks passed - no mixing detected")
             return fig
             
         except Exception as e:
@@ -6933,82 +5751,6 @@ class StructuredTrainer:
             import traceback
             logging.error(f"       Traceback: {traceback.format_exc()}")
             return None
-    
-    def _validate_encoder_specialization_results(self, specialized_encoders: list, original_enc_params: list) -> None:
-        """
-        Validate that encoder specialization actually worked and encoders have distinct parameters.
-        
-        Args:
-            specialized_encoders: List of specialized encoder parameters
-            original_enc_params: List of original encoder parameters
-        """
-        logging.info("🔍 Validating encoder specialization results...")
-        
-        try:
-            # Check 1: Verify all encoders have parameters
-            if len(specialized_encoders) != len(original_enc_params):
-                logging.error(f"❌ CRITICAL: Encoder count mismatch! Expected {len(original_enc_params)}, got {len(specialized_encoders)}")
-                return
-            
-            # Check 2: Verify each encoder has distinct parameters (not copies of encoder 0)
-            encoder_0_params = specialized_encoders[0]
-            
-            for enc_idx in range(1, len(specialized_encoders)):
-                current_params = specialized_encoders[enc_idx]
-                
-                # Check if this encoder has the same parameters as encoder 0
-                if self._are_parameters_identical(encoder_0_params, current_params):
-                    logging.error(f"❌ CRITICAL: Encoder {enc_idx} has IDENTICAL parameters to Encoder 0!")
-                    logging.error(f"   This indicates the specialization bug was NOT fixed!")
-                    logging.error(f"   Encoder {enc_idx} will NOT be specialized!")
-                else:
-                    logging.info(f"✅ Encoder {enc_idx} has DISTINCT parameters from Encoder 0")
-            
-            # Check 3: Verify parameters changed from original (specialization actually happened)
-            for enc_idx, (specialized, original) in enumerate(zip(specialized_encoders, original_enc_params)):
-                if self._are_parameters_identical(specialized, original):
-                    logging.warning(f"⚠️  Encoder {enc_idx} parameters are IDENTICAL to original!")
-                    logging.warning(f"   This suggests specialization may not have worked for this encoder")
-                else:
-                    logging.info(f"✅ Encoder {enc_idx} parameters CHANGED during specialization")
-            
-            logging.info("🔍 Encoder specialization validation completed")
-            
-        except Exception as e:
-            logging.error(f"❌ Encoder specialization validation failed: {e}")
-    
-    def _are_parameters_identical(self, params1: dict, params2: dict) -> bool:
-        """
-        Check if two parameter dictionaries are identical.
-        
-        Args:
-            params1: First parameter dictionary
-            params2: Second parameter dictionary
-            
-        Returns:
-            True if parameters are identical, False otherwise
-        """
-        try:
-            # Quick check: if they're the same object, they're identical
-            if params1 is params2:
-                return True
-            
-            # Deep comparison of parameter values
-            def compare_params(p1, p2):
-                if isinstance(p1, dict) and isinstance(p2, dict):
-                    if set(p1.keys()) != set(p2.keys()):
-                        return False
-                    return all(compare_params(p1[k], p2[k]) for k in p1.keys())
-                elif isinstance(p1, (jnp.ndarray, np.ndarray)) and isinstance(p2, (jnp.ndarray, np.ndarray)):
-                    return jnp.array_equal(p1, p2)
-                else:
-                    return p1 == p2
-            
-            return compare_params(params1, params2)
-            
-        except Exception as e:
-            logging.warning(f"Parameter comparison failed: {e}")
-            return False
 
 
 
