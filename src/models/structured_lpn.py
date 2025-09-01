@@ -500,13 +500,13 @@ class StructuredLPN(nn.Module):
         - Other patterns: variance → ∞ (low certainty)
         
         The loss function is:
-        L_variance = λ_pos * avg_var_target - λ_neg * avg_var_other
+        L_variance = λ_pos * avg_var_target + λ_neg * avg_var_other
         
         Where:
         - avg_var_target: average variance of target pattern samples for each encoder
         - avg_var_other: average variance of non-target pattern samples for each encoder
-        - λ_pos: coefficient for target pattern variance (should be positive)
-        - λ_neg: coefficient for other pattern variance (should be negative)
+        - λ_pos: coefficient for target pattern variance (should be negative to minimize)
+        - λ_neg: coefficient for other pattern variance (should be positive to maximize)
         
         This encourages:
         - Encoder e to have LOW variance (high certainty) on pattern p_e
@@ -566,13 +566,13 @@ class StructuredLPN(nn.Module):
         avg_var_other = jnp.clip(avg_var_other, 0.0, clip_threshold)
         
         # Compute variance control loss
-        # L = λ_pos * avg_var_target - λ_neg * avg_var_other
-        # Where λ_pos > 0 (encourage low target variance) and λ_neg < 0 (encourage high other variance)
-        # For simplicity, we use λ_pos = 1.0 and λ_neg = -1.0
+        # L = λ_pos * avg_var_target + λ_neg * avg_var_other
+        # Where λ_pos < 0 (encourage low target variance) and λ_neg > 0 (encourage high other variance)
+        # For simplicity, we use λ_pos = -1.0 and λ_neg = 1.0
         # This can be made configurable through the contrastive_kl_coeff parameter
         
-        lambda_pos = 1.0   # Positive coefficient for target variance (minimize)
-        lambda_neg = -1.0  # Negative coefficient for other variance (maximize)
+        lambda_pos = -1.0  # Negative coefficient for target variance (minimize)
+        lambda_neg = 1.0   # Positive coefficient for other variance (maximize)
         
         variance_loss = lambda_pos * jnp.mean(avg_var_target) + lambda_neg * jnp.mean(avg_var_other)
         

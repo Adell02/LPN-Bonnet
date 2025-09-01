@@ -1188,13 +1188,10 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             # Plot the full trajectory including generation 0
             _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
             
-            # Add special marker for generation 0 (starting point - mean latent)
+            # Starting point info (no star marker)
             if es_sel_flat.shape[0] > 0:
                 start_point = es_sel_flat[0]  # Generation 0 = mean latent
-                ax.scatter([start_point[0]], [start_point[1]], s=300, marker="*", 
-                          color="#FFD700", edgecolors="black", linewidths=2.0,
-                          zorder=7, alpha=1.0, label="ES start (mean latent)")
-                print(f"[plot] ES starting point (generation 0) highlighted at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
+                print(f"[plot] ES starting point (generation 0) at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
                 
         elif es_sel.ndim == 2 and es_sel.shape[0] > 1:
             # Already flattened: (G, 2)
@@ -1204,13 +1201,10 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             # CRITICAL FIX: Highlight generation 0 as the starting point
             _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
             
-            # Add special marker for generation 0 (starting point - mean latent)
+            # Starting point info (no star marker)
             if es_sel_flat.shape[0] > 0:
                 start_point = es_sel_flat[0]  # Generation 0 = mean latent
-                ax.scatter([start_point[0]], [start_point[1]], s=300, marker="*", 
-                          color="#FFD700", edgecolors="black", linewidths=2.0,
-                          zorder=7, alpha=1.0, label="ES start (mean latent)")
-                print(f"[plot] ES starting point (generation 0) highlighted at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
+                print(f"[plot] ES starting point (generation 0) at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
                 
         else:
             print(f"[plot] ES trajectory plotting skipped: es_sel shape={es_sel.shape}, not enough generations")
@@ -1223,12 +1217,10 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                     print(f"[plot] ES fallback plotting: {es_fallback.shape}")
                     _plot_traj(ax, es_fallback, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
                     
-                    # Highlight starting point even in fallback
+                    # Starting point info (no star marker)
                     if es_fallback.shape[0] > 0:
                         start_point = es_fallback[0]
-                        ax.scatter([start_point[0]], [start_point[1]], s=300, marker="*", 
-                                  color="#FFD700", edgecolors="black", linewidths=2.0,
-                                  zorder=7, alpha=1.0, label="ES start (mean latent)")
+                        print(f"[plot] ES fallback starting point at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
                 else:
                     print(f"[plot] ES fallback failed: not enough points ({es_fallback.shape[0]})")
             else:
@@ -1245,13 +1237,10 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         # CRITICAL FIX: Highlight that GA starts from mean latent
         _plot_traj(ax, ga_pts_flat, color="#FBB998", label="GA trajectory (starts from mean latent)", alpha=1.0)
         
-        # Add special marker for GA starting point (mean latent)
+        # Starting point info (no star marker)
         if ga_pts_flat.shape[0] > 0:
             start_point = ga_pts_flat[0]  # First step = mean latent
-            ax.scatter([start_point[0]], [start_point[1]], s=300, marker="*", 
-                      color="#FFD700", edgecolors="black", linewidths=2.0,
-                      zorder=7, alpha=1.0, label="GA start (mean latent)")
-            print(f"[plot] GA starting point (mean latent) highlighted at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
+            print(f"[plot] GA starting point (mean latent) at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
     else:
         print(f"[plot] GA plotting skipped: pts={ga.pts is not None}, len={len(ga.pts) if ga.pts is not None else 0}")
 
@@ -1272,9 +1261,8 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     legend_elements.append(plt.Line2D([0], [0], color='#DB74DB', linewidth=5, label='ES trajectory (starts from mean latent)'))
     legend_elements.append(plt.Line2D([0], [0], color='#FBB998', linewidth=5, label='GA trajectory (starts from mean latent)'))
     
-    # Starting points (mean latent) - both methods start here
-    legend_elements.append(plt.Line2D([0], [0], marker='*', color='#FFD700', markerfacecolor='#FFD700', 
-                                     markersize=20, markeredgewidth=2, label='Starting point (mean latent)'))
+    # Starting points info (no star markers)
+    # Both methods start from the same mean latent point
     
     # Start/End markers for trajectory progression
     legend_elements.append(plt.Line2D([0], [0], marker='o', color='k', markerfacecolor='w', 

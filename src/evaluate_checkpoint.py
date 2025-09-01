@@ -297,6 +297,14 @@ def build_generate_output_batch_to_be_pmapped(
             **eval_inference_mode_kwargs,
             method=model.generate_output,
         )
+        
+        # DEBUG: Log what's being passed to evolutionary search
+        if eval_inference_mode == "evolutionary_search":
+            print(f"[DEBUG] ES kwargs: {eval_inference_mode_kwargs}")
+            print(f"[DEBUG] track_progress flag: {eval_inference_mode_kwargs.get('track_progress', 'NOT_SET')}")
+            print(f"[DEBUG] info type: {type(info)}")
+            if info is not None:
+                print(f"[DEBUG] info keys: {list(info.keys()) if hasattr(info, 'keys') else 'no keys'}")
 
         correct_shapes = jnp.all(generated_shapes_outputs == labels_shapes_outputs, axis=-1)
         batch_ndims = len(grids_inputs.shape[:-2])

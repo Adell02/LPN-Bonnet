@@ -172,8 +172,13 @@ class LPN(nn.Module):
             loss, metrics = self._loss_from_pair_and_context(context, pairs, grid_shapes, dropout_eval)
         
         elif mode == "evolutionary_search":
+            assert key is not None, "'key' argument required for 'evolutionary_search' inference mode."
             for arg in ["population_size", "num_generations", "mutation_std"]:
-                assert arg in mode_kwargs, f"'{arg}' argument required for 'evolutionary_search' mode."
+                assert arg in mode_kwargs, f"'{arg}' argument required for 'evolutionary_search' inference mode."
+            
+            # DEBUG: Log what's being received
+            print(f"         🔍 ES DEBUG: mode_kwargs keys: {list(mode_kwargs.keys())}")
+            print(f"         🔍 ES DEBUG: track_progress flag: {mode_kwargs.get('track_progress', 'NOT_SET')}")
             
             key = self.make_rng("evolutionary_search")
             leave_one_out_pairs = make_leave_one_out(pairs, axis=-4)
@@ -186,12 +191,15 @@ class LPN(nn.Module):
             trust_radius = mode_kwargs.get("trust_region_radius", None)
             
             if mode_kwargs.get("track_progress", False):
+                print(f"         🔍 ES DEBUG: track_progress is True, will return trajectory")
                 context, _, _ = self._get_evolutionary_search_context(
                     leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes,
                     key, 
                     **mode_kwargs
                 )
+                print(f"         🔍 ES DEBUG: trajectory created successfully")
             else:
+                print(f"         🔍 ES DEBUG: track_progress is False, no trajectory")
                 context, _ = self._get_evolutionary_search_context(
                     leave_one_out_latents, leave_one_out_pairs, leave_one_out_grid_shapes,
                     key, 
