@@ -119,6 +119,11 @@ def try_extract_2d_points(npz: np.lib.npyio.NpzFile, prefix: str) -> Optional[np
             f"{prefix}all_latents",
             f"{prefix}best_latents_per_generation",
         ]
+        
+        # If we have log_probs but no latents, we can't create a trajectory
+        # This is just for debugging
+        if f"{prefix}log_probs" in npz and not any(f"{prefix}{k}" in npz for k in ["latents", "all_latents", "path", "trajectory_latents"]):
+            print(f"[plot] WARNING: GA has log_probs but no latents - cannot create trajectory")
     
     for key in preferred:
         if key in npz:
@@ -184,6 +189,26 @@ def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
             if gen_losses.ndim == 1 and gen_losses.size > 0:
                 print(f"[plot] Using ES generation_losses for trajectory: {gen_losses.shape}")
                 return gen_losses
+    
+    # Special handling for GA: if we have ga_log_probs but no ga_losses,
+    # create simple losses from the log_probs
+    if prefix == "ga_" and f"{prefix}log_probs" in npz:
+        print(f"[plot] GA trajectory found but no values - creating fallback losses from log_probs")
+        print(f"[plot] Available keys: {list(npz.keys())}")
+        
+        try:
+            log_probs = np.array(npz[f"{prefix}log_probs"])
+            # Take the mean over candidates and context dimensions to get per-step scores
+            if log_probs.ndim >= 3:
+                # Average over candidates and context: (B, C, T) -> (T,)
+                simple_scores = log_probs.mean(axis=tuple(range(log_probs.ndim - 1)))
+                simple_losses = -simple_scores  # Convert scores to losses
+                print(f"[plot] Created fallback GA losses from log_probs: {simple_losses.shape}")
+                return simple_losses
+            else:
+                print(f"[plot] Could not create fallback losses from log_probs shape: {log_probs.shape}")
+        except Exception as e:
+            print(f"[plot] Fallback GA loss creation failed: {e}")
     
     return None
 

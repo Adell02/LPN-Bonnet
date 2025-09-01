@@ -2122,43 +2122,6 @@ def main():
                                 print(f"   Skipping plot generation due to unreasonable step values")
                                 continue
 
-                            # NEW: Check for extremely large step values that would cause plotting issues
-                            # Even with few steps, if step values are huge, the plot will be too large
-                            if max(all_steps) > 1000000:  # 1 million steps
-                                print(f"⚠️  WARNING: Extremely large step values detected!")
-                                print(f"   Max step: {max(all_steps)}")
-                                print(f"   This would create a plot with width of {max(all_steps)} pixels")
-                                print(f"   Skipping plot generation due to unreasonable step values")
-                                continue
-
-                            # NEW: Check total array size to prevent memory issues
-                            total_elements = len(all_budgets) * len(all_steps)
-                            if total_elements > 1000000:  # 1 million elements
-                                print(f"⚠️  WARNING: Total array size too large for plotting!")
-                                print(f"   Budgets: {len(all_budgets)} x Steps: {len(all_steps)} = {total_elements} elements")
-                                print(f"   Skipping plot generation to prevent memory/plotting issues")
-                                continue
-
-                            # NEW: Filter steps to reasonable range if they're too spread out
-                            if len(all_steps) > 1 and (max(all_steps) - min(all_steps)) > 10000:
-                                print(f"⚠️  WARNING: Step range too large, filtering to reasonable subset")
-                                print(f"   Original step range: {min(all_steps)} to {max(all_steps)}")
-                                
-                                # Take every nth step to reduce the range
-                                step_range = max(all_steps) - min(all_steps)
-                                if step_range > 100000:
-                                    step_skip = max(1, step_range // 1000)  # Aim for ~1000 steps max
-                                else:
-                                    step_skip = max(1, step_range // 100)   # Aim for ~100 steps max
-                                
-                                filtered_steps = all_steps[::step_skip]
-                                if len(filtered_steps) < 2:
-                                    filtered_steps = [all_steps[0], all_steps[-1]]  # At least 2 points
-                                
-                                print(f"   Filtered to {len(filtered_steps)} steps with skip={step_skip}")
-                                print(f"   New step range: {min(filtered_steps)} to {max(filtered_steps)}")
-                                all_steps = filtered_steps
-
                             if all_steps and all_budgets:
                                 # Create data arrays for selected methods
                                 method_arrays = {}
@@ -2400,6 +2363,59 @@ def main():
 
                     steps_sorted = sorted(set(steps_list))
                     actual_budgets = shared_budgets
+
+                    # ENHANCED SAFETY CHECKS: Prevent extremely large arrays that would cause plotting issues
+                    if len(steps_sorted) > 1000 or len(actual_budgets) > 1000:
+                        print(f"⚠️  WARNING: Extremely large data dimensions detected for final plot!")
+                        print(f"   Steps: {len(steps_sorted)} (range: {min(steps_sorted)} to {max(steps_sorted)})")
+                        print(f"   Budgets: {len(actual_budgets)} (range: {min(actual_budgets)} to {max(actual_budgets)})")
+                        print(f"   This would create a {len(actual_budgets)}x{len(steps_sorted)} array = {len(actual_budgets) * len(steps_sorted)} elements")
+                        print(f"   Skipping final plot generation to prevent memory/plotting issues")
+                        continue
+
+                    # Additional safety check for reasonable step values
+                    if max(steps_sorted) > 10000:
+                        print(f"⚠️  WARNING: Extremely large step numbers detected for final plot!")
+                        print(f"   Max step: {max(steps_sorted)}")
+                        print(f"   All steps: {steps_sorted[:10]}...")  # Show first 10
+                        print(f"   Skipping final plot generation due to unreasonable step values")
+                        continue
+
+                    # NEW: Check for extremely large step values that would cause plotting issues
+                    if max(steps_sorted) > 1000000:  # 1 million steps
+                        print(f"⚠️  WARNING: Extremely large step values detected for final plot!")
+                        print(f"   Max step: {max(steps_sorted)}")
+                        print(f"   This would create a plot with width of {max(steps_sorted)} pixels")
+                        print(f"   Skipping final plot generation due to unreasonable step values")
+                        continue
+
+                    # NEW: Check total array size to prevent memory issues
+                    total_elements = len(actual_budgets) * len(steps_sorted)
+                    if total_elements > 1000000:  # 1 million elements
+                        print(f"⚠️  WARNING: Total array size too large for final plot!")
+                        print(f"   Budgets: {len(actual_budgets)} x Steps: {len(steps_sorted)} = {total_elements} elements")
+                        print(f"   Skipping final plot generation to prevent memory/plotting issues")
+                        continue
+
+                    # NEW: Filter steps to reasonable range if they're too spread out
+                    if len(steps_sorted) > 1 and (max(steps_sorted) - min(steps_sorted)) > 10000:
+                        print(f"⚠️  WARNING: Step range too large for final plot, filtering to reasonable subset")
+                        print(f"   Original step range: {min(steps_sorted)} to {max(steps_sorted)}")
+                        
+                        # Take every nth step to reduce the range
+                        step_range = max(steps_sorted) - min(steps_sorted)
+                        if step_range > 100000:
+                            step_skip = max(1, step_range // 1000)  # Aim for ~1000 steps max
+                        else:
+                            step_skip = max(1, step_range // 100)   # Aim for ~100 steps max
+                        
+                        filtered_steps = steps_sorted[::step_skip]
+                        if len(filtered_steps) < 2:
+                            filtered_steps = [steps_sorted[0], steps_sorted[-1]]  # At least 2 points
+                        
+                        print(f"   Filtered to {len(filtered_steps)} steps with skip={step_skip}")
+                        print(f"   New step range: {min(filtered_steps)} to {max(filtered_steps)}")
+                        steps_sorted = filtered_steps
 
                     # Create data arrays for selected methods
                     method_arrays = {}

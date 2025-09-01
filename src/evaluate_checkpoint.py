@@ -788,6 +788,13 @@ def evaluate_custom_dataset(
                         print(f"[store_latents] optimization_trajectory exists but is falsy: {info0['optimization_trajectory']}")
                         print(f"[store_latents] optimization_trajectory type: {type(info0['optimization_trajectory'])}")
 
+            # Debug: show what we have so far
+            print(f"[store_latents] After GA processing, payload keys: {list(payload.keys())}")
+            if "ga_losses" in payload:
+                print(f"[store_latents] ga_losses shape: {payload['ga_losses'].shape}")
+            if "ga_latents" in payload:
+                print(f"[store_latents] ga_latents shape: {payload['ga_latents'].shape}")
+                
             # ES trajectory -> save best_latents_per_generation, per-generation losses, and populations
             if isinstance(info0, dict) and "evolutionary_trajectory" in info0 and info0["evolutionary_trajectory"]:
                 traj = info0["evolutionary_trajectory"]
@@ -1047,6 +1054,13 @@ def evaluate_custom_dataset(
                     es_pop_size = 1
                 payload["es_budget"] = (np.arange(0, es_gen_len) * int(es_pop_size)).astype(np.int32)
             os.makedirs(os.path.dirname(store_path) or ".", exist_ok=True)
+            print(f"[store_latents] Final payload before saving:")
+            print(f"[store_latents]   Keys: {list(payload.keys())}")
+            for k, v in payload.items():
+                if hasattr(v, 'shape'):
+                    print(f"[store_latents]   {k}: {type(v).__name__} with shape {v.shape}")
+                else:
+                    print(f"[store_latents]   {k}: {type(v).__name__} = {v}")
             print(f"[store_latents] Saving to {store_path} with keys: {list(payload.keys())}")
             np.savez_compressed(store_path, **payload)
             print(f"Saved latent search data to {store_path}")
