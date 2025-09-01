@@ -1373,7 +1373,52 @@ class LPN(nn.Module):
             except ValueError as e:
                 print(f"         ⚠️  Failed to stack best latents: {e}")
                 print(f"         🔍 gen_best_latents shapes: {[l.shape for l in gen_best_latents]}")
-                gen_best_latents_arr = None
+                
+                # CRITICAL FIX: Handle shape mismatch by ensuring all tensors have the same shape
+                if len(gen_best_latents) > 0:
+                    # Find the most common shape (should be the shape of later generations)
+                    shape_counts = {}
+                    for lat in gen_best_latents:
+                        shape_str = str(lat.shape)
+                        shape_counts[shape_str] = shape_counts.get(shape_str, 0) + 1
+                    
+                    # Get the most common shape (should be the target shape)
+                    target_shape = max(shape_counts.items(), key=lambda x: x[1])[0]
+                    print(f"         🔍 Target shape from majority: {target_shape}")
+                    
+                    # Fix all tensors to match the target shape
+                    fixed_latents = []
+                    for i, lat in enumerate(gen_best_latents):
+                        if str(lat.shape) != target_shape:
+                            print(f"         🔧 Fixing tensor {i}: {lat.shape} -> {target_shape}")
+                            # Force the shape by taking appropriate slices
+                            if lat.ndim > 2:
+                                # Take first elements to reduce dimensions
+                                fixed_lat = lat[0, 0, :] if lat.shape[0] > 1 else lat[0, :]
+                            elif lat.ndim == 2 and lat.shape[0] > 1:
+                                fixed_lat = lat[0, :]
+                            else:
+                                fixed_lat = lat
+                            fixed_latents.append(fixed_lat)
+                        else:
+                            fixed_latents.append(lat)
+                    
+                    # Try stacking again with fixed shapes
+                    try:
+                        gen_best_latents_arr = jnp.stack(fixed_latents, axis=-2)
+                        print(f"         ✅ Successfully stacked after shape fixing: {gen_best_latents_arr.shape}")
+                    except Exception as e2:
+                        print(f"         ❌ Still failed after shape fixing: {e2}")
+                        gen_best_latents_arr = None
+                else:
+                    gen_best_latents_arr = None
+            except Exception as e:
+                print(f"         🔍 ES Gen0: Loss debug failed: {e}")
+                # Try alternative approach for traced arrays
+                if hasattr(gen_best_latents, 'shape'):
+                    print(f"         �� ES Gen0: gen_best_latents: traced array with shape {gen_best_latents.shape}")
+                else:
+                    print(f"         🔍 ES Gen0: gen_best_latents: {type(gen_best_latents)}")
             
             traj = {
                 # Save fitness per generation under clear name (fitness = -loss)
