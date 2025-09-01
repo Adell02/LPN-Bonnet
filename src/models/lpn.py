@@ -900,13 +900,22 @@ class LPN(nn.Module):
                 # Fix: reshape all_latents to match original_latents dimensions
                 # all_latents has shape (1, 4, 1, 1000, 8) -> need (1, 4, 1000, 8)
                 # Move the steps dimension to the correct position
-                reshaped_all_latents = all_latents.reshape(*all_latents.shape[:-2], -1, all_latents.shape[-1])
-                reshaped_all_log_probs = all_log_probs.reshape(*all_log_probs.shape[:-2], -1, all_log_probs.shape[-1])
+                print(f"         🔧 DEBUG: original_latents shape: {original_latents.shape}")
+                print(f"         🔧 DEBUG: all_latents shape: {all_latents.shape}")
+                print(f"         🔧 DEBUG: all_log_probs shape: {all_log_probs.shape}")
+                
+                # Remove the extra dimension: (1, 4, 1, 1000, 8) -> (1, 4, 1000, 8)
+                reshaped_all_latents = all_latents.squeeze(-3)  # Remove the size-1 dimension at position -3
+                reshaped_all_log_probs = all_log_probs.squeeze(-3)  # Remove the size-1 dimension at position -3
+                
+                print(f"         🔧 DEBUG: reshaped_all_latents shape: {reshaped_all_latents.shape}")
+                print(f"         🔧 DEBUG: reshaped_all_log_probs shape: {reshaped_all_log_probs.shape}")
+                
                 trajectory_latents = jnp.concatenate([original_latents, reshaped_all_latents], axis=-2)
                 trajectory_log_probs = jnp.concatenate([initial_log_probs, reshaped_all_log_probs], axis=-2)
                 
                 # Debug logging to show the fix is working
-                print(f"         🔧 GA trajectory fix: original_latents shape={original_latents.shape}, all_latents shape={all_latents.shape}")
+                print(f"         🔧 GA trajectory fix: original_latents shape={original_latents.shape}, reshaped_all_latents shape={reshaped_all_latents.shape}")
                 print(f"         🔧 GA trajectory fix: final trajectory shape={trajectory_latents.shape}")
                 
                 traj = {
