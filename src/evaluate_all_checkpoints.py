@@ -173,6 +173,13 @@ def generate_loss_vs_budget_plot(method_arrays: Dict[str, np.ndarray],
                 if method in method_arrays:
                     method_arrays[method] = method_arrays[method][budget_indices, :]
         
+        # ADDITIONAL SAFETY CHECK: Ensure budget values are reasonable to prevent extremely large images
+        if max(budgets) > 10000:
+            print(f"⚠️  WARNING: Budget values too large for loss vs budget plot!")
+            print(f"   Max budget: {max(budgets)}")
+            print(f"   This would create an extremely tall image. Skipping plot generation.")
+            return None
+        
         fig, ax = plt.subplots(figsize=(12, 8))
         
         # Use custom color palette
@@ -1794,21 +1801,13 @@ def main():
                             results["method_results"]["gradient_ascent"]["success"] += 1
                             results["successful_evals"] += 1
                             
-                            # Log to W&B immediately
+                            # Simplified W&B logging: training_step_{i}/ with budget vs best loss
                             try:
                                 log_data = {
-                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/overall_accuracy": acc or 0.0,
-                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
-                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
-                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
-                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
-                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
-                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
-                                    f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/execution_time": execution_time,
+                                    f"training_step_{step}/ga/budget_{compute_budget}/best_loss": metrics.get("total_final_loss", 0.0) or 0.0,
+                                    f"training_step_{step}/ga/budget_{compute_budget}/accuracy": acc or 0.0,
+                                    f"training_step_{step}/ga/budget_{compute_budget}/execution_time": execution_time,
                                 }
-                                # Add loss metric if available
-                                if metrics.get("total_final_loss") is not None:
-                                    log_data[f"checkpoint_{step}/gradient_ascent/num_steps_{num_steps}/total_final_loss"] = metrics.get("total_final_loss")
                                 wandb.log(log_data)
                             except Exception as e:
                                 print(f"⚠️  Failed to log to W&B: {e}")
@@ -1941,43 +1940,26 @@ def main():
                             results["method_results"]["evolutionary_search"]["success"] += 1
                             results["successful_evals"] += 1
 
-                            # Log to W&B immediately
+                            # Simplified W&B logging: training_step_{i}/ with budget vs best loss
                             try:
-                                # Prepare subspace parameters for logging
-                                subspace_log = {}
-                                if args.es_use_subspace_mutation:
-                                    subspace_log = {
-                                        f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/subspace_enabled": True,
-                                        f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/subspace_dim": args.es_subspace_dim,
-                                        f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/ga_step_length": args.es_ga_step_length,
-                                    }
-                                    if args.es_trust_region_radius is not None:
-                                        subspace_log[
-                                            f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/trust_region_radius"
-                                        ] = args.es_trust_region_radius
-                                else:
-                                    subspace_log = {
-                                        f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/subspace_enabled": False,
-                                    }
-
                                 log_data = {
-                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/overall_accuracy": acc or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_1_shape_accuracy": metrics.get("top_1_shape_accuracy", 0.0) or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_1_accuracy": metrics.get("top_1_accuracy", 0.0) or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_1_pixel_correctness": metrics.get("top_1_pixel_correctness", 0.0) or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_2_shape_accuracy": metrics.get("top_2_shape_accuracy", 0.0) or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_2_accuracy": metrics.get("top_2_accuracy", 0.0) or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/top_2_pixel_correctness": metrics.get("top_2_pixel_correctness", 0.0) or 0.0,
-                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/execution_time": execution_time,
-                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/population_size": es_cfg["population_size"],
-                                    f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/num_generations": es_cfg["num_generations"],
-                                    **subspace_log,
+                                    f"training_step_{step}/es/budget_{es_cfg['budget']}/best_loss": metrics.get("total_final_loss", 0.0) or 0.0,
+                                    f"training_step_{step}/es/budget_{es_cfg['budget']}/accuracy": acc or 0.0,
+                                    f"training_step_{step}/es/budget_{es_cfg['budget']}/execution_time": execution_time,
+                                    f"training_step_{step}/es/budget_{es_cfg['budget']}/population_size": es_cfg["population_size"],
+                                    f"training_step_{step}/es/budget_{es_cfg['budget']}/num_generations": es_cfg["num_generations"],
                                 }
-                                # Add loss metric if available
-                                if metrics.get("total_final_loss") is not None:
-                                    log_data[
-                                        f"checkpoint_{step}/evolutionary_search/budget_{es_cfg['budget']}/total_final_loss"
-                                    ] = metrics.get("total_final_loss")
+                                
+                                # Add subspace parameters if enabled
+                                if args.es_use_subspace_mutation:
+                                    log_data[f"training_step_{step}/es/budget_{es_cfg['budget']}/subspace_enabled"] = True
+                                    log_data[f"training_step_{step}/es/budget_{es_cfg['budget']}/subspace_dim"] = args.es_subspace_dim
+                                    log_data[f"training_step_{step}/es/budget_{es_cfg['budget']}/ga_step_length"] = args.es_ga_step_length
+                                    if args.es_trust_region_radius is not None:
+                                        log_data[f"training_step_{step}/es/budget_{es_cfg['budget']}/trust_region_radius"] = args.es_trust_region_radius
+                                else:
+                                    log_data[f"training_step_{step}/es/budget_{es_cfg['budget']}/subspace_enabled"] = False
+                                
                                 wandb.log(log_data)
                             except Exception as e:
                                 print(f"⚠️  Failed to log to W&B: {e}")
@@ -2525,6 +2507,13 @@ def main():
                         print(f"   Skipping final plot generation")
                         continue
 
+                    # ADDITIONAL SAFETY CHECK: Ensure step values are reasonable to prevent extremely large images
+                    if max(steps_sorted) > 10000:
+                        print(f"⚠️  WARNING: Step values too large for final plot!")
+                        print(f"   Max step: {max(steps_sorted)}")
+                        print(f"   This would create an extremely wide image. Skipping final plot generation.")
+                        continue
+
                     # Create plot with selected methods
                     if len(args.plot_methods) == 2:
                         if args.loss:
@@ -2569,7 +2558,8 @@ def main():
                         progress_percentage = 0
                     else:
                         max_progress = max(steps_sorted)
-                        denom_final = max(len(checkpoints) - 1, 1)
+                        # Use the length of steps_sorted instead of checkpoints since checkpoints is not in scope here
+                        denom_final = max(len(steps_sorted) - 1, 1)
                         progress_percentage = int((max_progress / denom_final) * 100)
 
                     if args.loss and len(args.plot_methods) == 2:
@@ -2642,7 +2632,7 @@ def main():
                                 method_names=args.plot_methods,
                                 checkpoint_name="final_summary",
                                 checkpoint_step=max_progress,
-                                total_checkpoints=len(checkpoints),
+                                total_checkpoints=len(steps_sorted),  # Use steps_sorted length instead of checkpoints
                             )
 
                             # Upload both plots to W&B

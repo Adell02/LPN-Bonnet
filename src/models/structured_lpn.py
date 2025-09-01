@@ -560,12 +560,19 @@ class StructuredLPN(nn.Module):
         # Loss: encourage target variance to become even lower relative to other variance
         # This amplifies the existing specialization rather than forcing new specialization
         
-        # Simple amplification loss: make target variance even smaller
-        # We want target_var << other_var, so loss = target_var (minimize target variance)
-        # This will naturally make the difference bigger
+        # RESTORE WORKING IMPLEMENTATION: Both target and other variance terms
+        # This is what was working in commit ca8477f3611fcbaae6c2106ccea90de61cb2942f
         
-        # Per-encoder loss: each encoder reduces variance on its target pattern
-        per_encoder_loss = avg_var_target  # (E,) - minimize target variance
+        # Compute variance control loss
+        # L = λ_pos * avg_var_target + λ_neg * avg_var_other
+        # Where λ_pos > 0 (encourage low target variance) and λ_neg < 0 (encourage high other variance)
+        # For simplicity, we use λ_pos = 1.0 and λ_neg = -1.0
+        
+        lambda_pos = 1.0   # Positive coefficient for target variance (minimize)
+        lambda_neg = -1.0  # Negative coefficient for other variance (maximize)
+        
+        # Per-encoder loss: each encoder gets both terms
+        per_encoder_loss = lambda_pos * avg_var_target + lambda_neg * avg_var_other  # (E,)
         
         # Total loss: sum across encoders
         variance_loss = jnp.sum(per_encoder_loss)
