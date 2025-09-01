@@ -798,6 +798,26 @@ class StructuredTrainer:
         # Log essential training step info
         logging.debug(f"Training step completed: {num_steps} steps, batch size: {self.batch_size}")
         
+        # CRITICAL: Compute clustering metrics every log_every_n_steps for Phase 1 training
+        try:
+            logging.debug(f"🔍 Computing Phase 1 clustering metrics for {num_steps} steps")
+            # Use the first batch for clustering metrics (representative of the log_every_n_steps)
+            first_batch_grids = batches[0][0]  # First step, first batch
+            first_batch_shapes = batches[1][0]  # First step, first batch
+            first_batch_pattern_ids = explicit_pattern_ids  # Same pattern IDs for all steps
+            
+            clustering_metrics = self._compute_clustering_metrics_every_step(
+                state, first_batch_grids, first_batch_shapes, first_batch_pattern_ids, 
+                step=None  # No specific step for Phase 1
+            )
+            
+            # Add clustering metrics to the returned metrics
+            avg_metrics.update(clustering_metrics)
+            logging.debug(f"✅ Phase 1 clustering metrics computed: {list(clustering_metrics.keys())}")
+            
+        except Exception as e:
+            logging.warning(f"Phase 1 clustering metrics computation failed: {e}")
+        
         # Decrement exposure counter by number of gradient steps completed
         self.encoder_expose_steps = max(0, self.encoder_expose_steps - num_steps)
         return state, avg_metrics
@@ -2805,6 +2825,102 @@ class StructuredTrainer:
         
         return clustering_metrics
     
+    def _compute_clustering_metrics_every_step(self, state: TrainState, grids: chex.Array, shapes: chex.Array, pattern_ids: chex.Array, step: int) -> dict:
+        """
+        Compute clustering metrics every log_every_n_steps to monitor encoder specialization progress.
+        
+        This method provides real-time monitoring of how well encoders are separating patterns
+        in the latent space during training.
+        
+        Args:
+            state: Current training state
+            grids: Input grids for the batch
+            shapes: Input shapes for the batch
+            pattern_ids: Pattern IDs for the batch
+            step: Current training step
+            
+        Returns:
+            Dictionary containing clustering metrics for monitoring
+        """
+        clustering_metrics = {}
+        
+        try:
+            # Get encoder outputs for the current batch
+            encoder_outputs = self._get_encoder_outputs_for_analysis(
+                state.params["encoders"], grids, shapes
+            )
+            
+            if not encoder_outputs or 'combined_data' not in encoder_outputs:
+                logging.debug(f"       ⚠️  No encoder outputs available for clustering metrics at step {step}")
+                return clustering_metrics
+            
+            combined_data = encoder_outputs['combined_data']
+            latents_concat = combined_data['latents']
+            pattern_ids_concat = combined_data['pattern_ids']
+            
+            # Basic clustering metrics for monitoring
+            k_values = [2, 3]  # Keep it simple for every-step computation
+            
+            for k in k_values:
+                if k <= len(np.unique(pattern_ids_concat)):
+                    # Modularity Q - measures pattern separation quality
+                    try:
+                        modularity_q = compute_modularity_q(latents_concat, pattern_ids_concat, k=k)
+                        clustering_metrics[f"clustering/modularity_q_k{k}"] = float(modularity_q)
+                    except Exception as e:
+                        logging.debug(f"       Modularity Q computation failed for k={k}: {e}")
+                    
+                    # Adjusted Rand Index - measures clustering accuracy
+                    try:
+                        ari_score = compute_adjusted_rand_index(latents_concat, pattern_ids_concat, k=k)
+                        clustering_metrics[f"clustering/ari_k{k}"] = float(ari_score)
+                    except Exception as e:
+                        logging.debug(f"       ARI computation failed for k={k}: {e}")
+            
+            # Pattern separation metrics
+            unique_patterns = np.unique(pattern_ids_concat)
+            if len(unique_patterns) >= 2:
+                # Compute pattern centroids
+                pattern_centroids = {}
+                for pattern_id in unique_patterns:
+                    pattern_mask = (pattern_ids_concat == pattern_id)
+                    if np.any(pattern_mask):
+                        pattern_latents = latents_concat[pattern_mask]
+                        pattern_centroids[pattern_id] = np.mean(pattern_latents, axis=0)
+                
+                # Inter-pattern distances (should increase during specialization)
+                pattern_pairs = []
+                for i, pid1 in enumerate(unique_patterns):
+                    for j, pid2 in enumerate(unique_patterns[i+1:], i+1):
+                        if pid1 in pattern_centroids and pid2 in pattern_centroids:
+                            centroid_dist = np.linalg.norm(pattern_centroids[pid1] - pattern_centroids[pid2])
+                            clustering_metrics[f"clustering/centroid_distance_pattern_{pid1}_vs_{pid2}"] = float(centroid_dist)
+                
+                # Intra-pattern compactness (should decrease during specialization)
+                for pattern_id in unique_patterns:
+                    pattern_mask = (pattern_ids_concat == pattern_id)
+                    if np.any(pattern_mask):
+                        pattern_latents = latents_concat[pattern_mask]
+                        if len(pattern_latents) > 1:
+                            centroid = pattern_centroids[pattern_id]
+                            distances_to_centroid = np.linalg.norm(pattern_latents - centroid, axis=1)
+                            mean_distance = float(np.mean(distances_to_centroid))
+                            
+                            clustering_metrics[f"clustering/intra_pattern_{pattern_id}_compactness"] = mean_distance
+            
+            # Add step information for tracking
+            clustering_metrics["clustering/step"] = step if step is not None else -1  # -1 for Phase 1
+            clustering_metrics["clustering/num_samples"] = len(latents_concat)
+            clustering_metrics["clustering/num_patterns"] = len(unique_patterns)
+            
+            logging.debug(f"       ✅ Clustering metrics computed at step {step}: {len(clustering_metrics)} metrics")
+            
+        except Exception as e:
+            logging.warning(f"       ❌ Clustering metrics computation failed at step {step}: {e}")
+            clustering_metrics["clustering/error"] = str(e)
+        
+        return clustering_metrics
+    
     def _compute_encoder_specialization_metrics(self, all_encoder_outputs: list, pattern_ids: chex.Array) -> dict:
         """
         Compute metrics showing how well frozen encoders maintain specialization.
@@ -3269,6 +3385,9 @@ class StructuredTrainer:
         
         pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
         
+        # CRITICAL DEBUG: Log the call parameters
+        logging.info(f"      🔍 _create_pattern_dataset called with pattern_id={pattern_id}, num_samples={num_samples}")
+        
         # Use pre-loaded datasets from initialization - SAME APPROACH AS TRAINING
         if hasattr(self, 'pattern_datasets') and pattern_id in self.pattern_datasets:
             dataset_data = self.pattern_datasets[pattern_id]
@@ -3280,15 +3399,35 @@ class StructuredTrainer:
             # Don't limit by num_samples - use all available samples for this pattern
             available_samples = len(grids)
             
-            logging.info(f"      Using ALL {available_samples} pre-loaded samples from pattern {pattern_id} ({pattern_names[pattern_id]}): {grids.shape}")
-            logging.info(f"      This ensures 100% pattern isolation - no mixing with other patterns")
+            # CRITICAL DEBUG: Log dataset details and validation
+            logging.info(f"      📊 Dataset validation for pattern {pattern_id}:")
+            logging.info(f"        - Available samples: {available_samples}")
+            logging.info(f"        - Grids shape: {grids.shape}")
+            logging.info(f"        - Shapes shape: {shapes.shape}")
+            logging.info(f"        - Pattern IDs shape: {pattern_ids.shape}")
+            logging.info(f"        - Pattern IDs unique values: {np.unique(pattern_ids)}")
+            logging.info(f"        - Pattern IDs first 10: {pattern_ids[:10]}")
             
-            # Return ALL samples for this pattern (not limited by num_samples)
+            # CRITICAL VALIDATION: Ensure pattern IDs are correct
+            if not np.all(pattern_ids == pattern_id):
+                logging.error(f"        ❌ CRITICAL ERROR: Pattern IDs mismatch!")
+                logging.error(f"           Expected all {pattern_id}, got: {np.unique(pattern_ids)}")
+                logging.error(f"           This indicates data corruption!")
+                raise ValueError(f"Pattern IDs mismatch for pattern {pattern_id}")
+            else:
+                logging.info(f"        ✅ Pattern IDs validation passed")
+            
+            # CRITICAL: Return ALL samples for this pattern (not limited by num_samples)
+            logging.info(f"      ✅ Using ALL {available_samples} pre-loaded samples from pattern {pattern_id} ({pattern_names[pattern_id]})")
+            logging.info(f"      ✅ This ensures 100% pattern isolation - no mixing with other patterns")
+            
+            # CRITICAL: Return the EXACT same data every time
             return grids, shapes, pattern_ids
         
         else:
-            logging.warning(f"      No pre-loaded dataset for pattern {pattern_id}, falling back to synthetic generation")
-            return self._create_pattern_dataset_synthetic(pattern_id, num_samples)
+            logging.error(f"      ❌ CRITICAL ERROR: No pre-loaded dataset for pattern {pattern_id}")
+            logging.error(f"      This should NEVER happen if pattern datasets were loaded correctly")
+            raise ValueError(f"No pre-loaded dataset for pattern {pattern_id}")
     
     def _verify_pattern_datasets_consistency(self) -> None:
         """
@@ -4034,6 +4173,18 @@ class StructuredTrainer:
                 metrics["Charts/contrastive_loss"] = metrics["contrastive_loss"]
                 if "contrastive_loss_weighted" in metrics:
                     metrics["Charts/contrastive_loss_weighted"] = metrics["contrastive_loss_weighted"]
+            
+            # CRITICAL: Compute clustering metrics every log_every_n_steps to monitor encoder specialization
+            # This provides real-time monitoring of encoder specialization progress
+            try:
+                logging.debug(f"🔍 Computing clustering metrics at step {step}")
+                clustering_metrics = self._compute_clustering_metrics_every_step(
+                    state, grids, shapes, explicit_pattern_ids, step
+                )
+                metrics.update(clustering_metrics)
+                logging.debug(f"✅ Clustering metrics computed: {list(clustering_metrics.keys())}")
+            except Exception as e:
+                logging.warning(f"Clustering metrics computation failed at step {step}: {e}")
                 
             # Organize Phase 2 metrics for better WandB visualization
             if self.phase1_completed:
@@ -5731,9 +5882,37 @@ class StructuredTrainer:
             # This ensures the EXACT SAME data is used every time, preventing dataset mixing
             # CRITICAL: Uses SAME APPROACH as training - takes ALL samples for each pattern
             eval_data = {}
+            
+            # CRITICAL DEBUG: Track data creation for consistency
+            logging.info(f"🔍 Creating evaluation data for certainty plots at step {step}")
+            
             for pattern_id in [1, 2, 3]:
                 # Use ALL samples for each pattern (like training does) - no artificial limits
+                logging.info(f"   📊 Creating dataset for pattern {pattern_id}")
                 eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_samples=None)
+                
+                # CRITICAL VALIDATION: Verify the data we just got
+                grids, shapes, pattern_ids = eval_data[pattern_id]
+                logging.info(f"   ✅ Pattern {pattern_id} dataset created:")
+                logging.info(f"      - Grids: {grids.shape}")
+                logging.info(f"      - Shapes: {shapes.shape}")
+                logging.info(f"      - Pattern IDs: {pattern_ids.shape}")
+                logging.info(f"      - Pattern IDs unique: {np.unique(pattern_ids)}")
+                logging.info(f"      - Pattern IDs first 5: {pattern_ids[:5]}")
+                
+                # CRITICAL CHECK: Ensure pattern IDs are correct
+                if not np.all(pattern_ids == pattern_id):
+                    logging.error(f"   ❌ CRITICAL ERROR: Pattern {pattern_id} has wrong pattern IDs!")
+                    logging.error(f"      Expected all {pattern_id}, got: {np.unique(pattern_ids)}")
+                    raise ValueError(f"Pattern {pattern_id} has corrupted pattern IDs")
+                else:
+                    logging.info(f"   ✅ Pattern {pattern_id} validation passed")
+            
+            # CRITICAL DEBUG: Log summary of all datasets
+            logging.info(f"📊 Evaluation data summary:")
+            for pattern_id in [1, 2, 3]:
+                grids, shapes, pattern_ids = eval_data[pattern_id]
+                logging.info(f"   Pattern {pattern_id}: {len(grids)} samples, shape: {grids.shape}")
             
             # Create a figure with subplots for each pattern (histogram + Gaussian function)
             fig, axes = plt.subplots(2, 3, figsize=(20, 12))
@@ -5751,11 +5930,30 @@ class StructuredTrainer:
                 if pattern_id in eval_data:
                     grids, shapes, pattern_ids = eval_data[pattern_id]
                     
+                    # CRITICAL VALIDATION: Verify data integrity before processing
+                    logging.info(f"       🔍 Processing pattern {pattern_id} for histograms:")
+                    logging.info(f"          - Grids shape: {grids.shape}")
+                    logging.info(f"          - Shapes shape: {shapes.shape}")
+                    logging.info(f"          - Pattern IDs shape: {pattern_ids.shape}")
+                    logging.info(f"          - Pattern IDs unique: {np.unique(pattern_ids)}")
+                    
+                    # CRITICAL CHECK: Ensure we still have the right pattern IDs
+                    if not np.all(pattern_ids == pattern_id):
+                        logging.error(f"          ❌ CRITICAL ERROR: Pattern {pattern_id} data corrupted!")
+                        logging.error(f"             Expected all {pattern_id}, got: {np.unique(pattern_ids)}")
+                        raise ValueError(f"Pattern {pattern_id} data corrupted during processing")
+                    
                     # Use multiple samples from the pattern dataset for better statistics
                     # Take up to 20 samples or all available if less (since we now have ALL samples)
                     num_samples_to_use = min(20, len(grids))
                     sample_indices = list(range(num_samples_to_use))
                     logging.info(f"       📊 Pattern {pattern_id}: Using {num_samples_to_use} samples from {len(grids)} available")
+                    logging.info(f"          - Sample indices: {sample_indices}")
+                    
+                    # CRITICAL DEBUG: Log sample details
+                    for i, sample_idx in enumerate(sample_indices[:5]):  # Log first 5 samples
+                        sample_pattern_id = pattern_ids[sample_idx]
+                        logging.info(f"          - Sample {i}: index={sample_idx}, pattern_id={sample_pattern_id}")
                     
                     # Collect encoder outputs for ALL encoders on multiple samples
                     all_encoder_variances = []
@@ -5770,6 +5968,13 @@ class StructuredTrainer:
                         for sample_idx in sample_indices:
                             sample_grids = grids[sample_idx]
                             sample_shapes = shapes[sample_idx]
+                            
+                            # CRITICAL CHECK: Verify sample pattern ID before processing
+                            sample_pattern_id = pattern_ids[sample_idx]
+                            if sample_pattern_id != pattern_id:
+                                logging.error(f"          ❌ CRITICAL ERROR: Sample {sample_idx} has wrong pattern ID!")
+                                logging.error(f"             Expected {pattern_id}, got {sample_pattern_id}")
+                                raise ValueError(f"Sample {sample_idx} has wrong pattern ID")
                             
                             # Forward pass through this encoder
                             mu, logvar = self.encoders[enc_idx].apply(
@@ -5788,6 +5993,8 @@ class StructuredTrainer:
                         # Store all variances for this encoder across all samples
                         all_encoder_variances.append(np.array(pattern_variances))
                         encoder_labels.append(f"Encoder {enc_idx}")
+                        
+                        logging.info(f"          ✅ Encoder {enc_idx}: collected {len(pattern_variances)} variance values")
                     
                     # Create merged histogram for this pattern
                     # Use different colors for each encoder
@@ -5861,7 +6068,23 @@ class StructuredTrainer:
                         fontsize=16, fontweight='bold')
             
             plt.tight_layout()
+            
+            # CRITICAL FINAL VALIDATION: Ensure data consistency across all patterns
+            logging.info(f"       🔍 Final data consistency validation:")
+            for pattern_id in [1, 2, 3]:
+                if pattern_id in eval_data:
+                    grids, shapes, pattern_ids = eval_data[pattern_id]
+                    logging.info(f"          Pattern {pattern_id}: {len(grids)} samples, pattern IDs: {np.unique(pattern_ids)}")
+                    
+                    # Final check: ensure pattern IDs are still correct
+                    if not np.all(pattern_ids == pattern_id):
+                        logging.error(f"          ❌ FINAL VALIDATION FAILED: Pattern {pattern_id} corrupted!")
+                        raise ValueError(f"Final validation failed for pattern {pattern_id}")
+                    else:
+                        logging.info(f"          ✅ Pattern {pattern_id} final validation passed")
+            
             logging.info(f"       📊 Merged encoder certainty panel created successfully")
+            logging.info(f"       ✅ ALL data consistency checks passed - no mixing detected")
             return fig
             
         except Exception as e:
@@ -5920,6 +6143,28 @@ def run(cfg: omegaconf.DictConfig):
             state = from_bytes(state, data)
         except Exception as e:
             logging.warning(f"Resume failed: {e}")
+    # Handle step counter for resumed runs
+    if cfg.training.get("resume_from_checkpoint"):
+        if hasattr(wandb.run, 'resumed') and wandb.run.resumed:
+            logging.info(f"🔄 Resumed WandB run detected")
+            # For resumed runs, we'll start from step 0 and let WandB handle conflicts
+            trainer.resume_step_offset = 0
+        else:
+            logging.info(f"⚠️  Checkpoint resume requested but WandB run not resumed")
+            trainer.resume_step_offset = 0
+    else:
+        trainer.resume_step_offset = 0
+        
+    state = trainer.train(state, enc_params_list)
+    # Final evaluation with the final step value
+    final_step = cfg.training.total_num_steps
+    trainer.evaluate(state, enc_params_list, final_step)
+
+
+if __name__ == "__main__":
+    run()
+
+    logging.warning(f"Resume failed: {e}")
     # Handle step counter for resumed runs
     if cfg.training.get("resume_from_checkpoint"):
         if hasattr(wandb.run, 'resumed') and wandb.run.resumed:
