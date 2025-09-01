@@ -66,7 +66,10 @@ training:
   # Lower values = more stable, higher values = more aggressive specialization
   # The system will dynamically adjust this coefficient based on specialization progress
   contrastive_kl: 1.0  # variance amplification for pre-trained encoders (increased for stronger effect)
-  # Target pattern ratio controls the balance between target and other patterns in each batch
+  # This margin controls the target variance for "other" patterns
+  # Higher values = stronger push to make encoders uncertain on non-target patterns
+  # The loss will penalize when other variance is below this margin
+  contrastive_margin: 0.8  # target variance for other patterns (should be higher than target variance)
   target_pattern_ratio: 0.7  # 70% target, 30% others
   log_every_n_steps: 5
   eval_every_n_logs: 5       # null to disable

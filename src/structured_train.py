@@ -1449,37 +1449,54 @@ class StructuredTrainer:
                 
                 # FIXED: Compute gradients properly for contrastive learning
                 def contrastive_loss_fn(params):
-                    # Forward pass through encoder
-                    mu, logvar = encoder.apply(
+                    # CRITICAL FIX: Use DISTINCT batches for target vs other patterns
+                    # This prevents the contradictory goal of maximizing variance on seen samples
+                    
+                    # Forward pass through encoder on target pattern batch
+                    target_mu, target_logvar = encoder.apply(
                         {"params": params}, batch[0], batch[1], dropout_eval=False, mutable=False
                     )
                     
-                    # Separate by pattern
-                    target_var = jnp.exp(logvar[target_mask])
-                    other_var = jnp.exp(logvar[other_mask])
+                    # CRITICAL: Generate FRESH other pattern batch for contrastive learning
+                    # This ensures we're truly pushing uncertainty on unseen other patterns
+                    other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
+                    other_batch_seed = seed + 1000 + step  # Different seed for other batch
                     
-                    # Compute contrastive loss: minimize target variance, maximize other variance
+                    # Create other pattern batch with same size as target batch
+                    other_grids, other_shapes, other_pattern_ids = self._create_balanced_pattern_batch(
+                        other_patterns[0], other_batch_seed  # Use first other pattern
+                    )
+                    
+                    # Forward pass through encoder on other pattern batch
+                    other_mu, other_logvar = encoder.apply(
+                        {"params": params}, other_grids, other_shapes, dropout_eval=False, mutable=False
+                    )
+                    
+                    # Compute variances from DISTINCT batches
+                    target_var = jnp.exp(target_logvar)
+                    other_var = jnp.exp(other_logvar)
+                    
                     avg_target_var = jnp.mean(target_var)
                     avg_other_var = jnp.mean(other_var)
                     
-                    # FIXED: Use configurable contrastive_kl coefficient instead of hardcoded values
-                    # We want: target variance ↓ (encoder becomes certain on its pattern)
-                    #         other variance ↑ (encoder becomes uncertain on other patterns)
+                    # CRITICAL FIX: Proper contrastive loss with correct signs
                     contrastive_coeff = self.cfg.training.get("contrastive_kl", 0.5)
                     
-                    # FIXED: Restructure loss to always be positive for stable training
-                    # Instead of: pos*target + neg*other (can go negative)
-                    # Use: pos*target + pos*other (always positive, other term pushes up)
-                    target_cost = contrastive_coeff * avg_target_var  # Minimize target variance
-                    other_cost = contrastive_coeff * avg_other_var   # Push other variance up (competition)
+                    # Target variance: minimize (positive term)
+                    target_cost = contrastive_coeff * avg_target_var
                     
-                    contrastive_loss = target_cost + other_cost  # Always positive, both terms push in right direction
+                    # Other variance: maximize by minimizing negative term (push up)
+                    # Use margin-based approach to explicitly drive variances apart
+                    margin = self.cfg.training.get("contrastive_margin", 0.5)
+                    other_cost = contrastive_coeff * jnp.maximum(0, margin - avg_other_var)
+                    
+                    # Total contrastive loss: always positive, drives specialization
+                    contrastive_loss = target_cost + other_cost
                     
                     # Add regularization
                     reg = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
                     
-                    # FIXED: Include repulsion loss in gradient computation
-                    # This ensures repulsion actually affects training, not just logging
+                    # Include repulsion loss in gradient computation
                     if repulsion_loss > 0:
                         total_loss = contrastive_loss + reg + repulsion_loss
                     else:
@@ -1493,10 +1510,14 @@ class StructuredTrainer:
                 # FIXED: Log contrastive loss details after gradient computation (outside JAX trace)
                 if step % 50 == 0:
                     contrastive_coeff = self.cfg.training.get("contrastive_kl", 0.5)
+                    margin = self.cfg.training.get("contrastive_margin", 0.5)
                     target_cost = contrastive_coeff * float(avg_target_var)
-                    other_cost = contrastive_coeff * float(avg_other_var)
+                    other_cost = contrastive_coeff * max(0, margin - float(avg_other_var))
                     logging.info(f"       🔧 Using contrastive_kl coefficient: {contrastive_coeff}")
+                    logging.info(f"       🔧 Using contrastive_margin: {margin}")
                     logging.info(f"       🔧 Target cost: {target_cost:.6f}, Other cost: {other_cost:.6f}")
+                    logging.info(f"       🔧 Target variance: {float(avg_target_var):.6f} (should decrease)")
+                    logging.info(f"       🔧 Other variance: {float(avg_other_var):.6f} (should increase above {margin})")
                 
                 # Update encoder parameters
                 new_encoder_params = jax.tree_util.tree_map(
@@ -4344,11 +4365,13 @@ class StructuredTrainer:
         
         # Check critical training parameters
         contrastive_kl = self.cfg.training.get("contrastive_kl", "NOT_FOUND")
+        contrastive_margin = self.cfg.training.get("contrastive_margin", "NOT_FOUND")
         target_ratio = self.cfg.training.get("target_pattern_ratio", "NOT_FOUND")
         batch_size = self.cfg.training.get("batch_size", "NOT_FOUND")
         learning_rate = self.cfg.training.get("learning_rate", "NOT_FOUND")
         
         logging.info(f"   - contrastive_kl: {contrastive_kl}")
+        logging.info(f"   - contrastive_margin: {contrastive_margin}")
         logging.info(f"   - target_pattern_ratio: {target_ratio}")
         logging.info(f"   - batch_size: {batch_size}")
         logging.info(f"   - learning_rate: {learning_rate}")
@@ -4360,6 +4383,13 @@ class StructuredTrainer:
             logging.error(f"   ❌ CRITICAL: Invalid contrastive_kl value: {contrastive_kl}")
         else:
             logging.info(f"   ✅ contrastive_kl: {contrastive_kl} (valid)")
+            
+        if contrastive_margin == "NOT_FOUND":
+            logging.error("   ❌ CRITICAL: contrastive_margin not found in config!")
+        elif not isinstance(contrastive_margin, (int, float)) or contrastive_margin <= 0:
+            logging.error(f"   ❌ CRITICAL: Invalid contrastive_margin value: {contrastive_margin}")
+        else:
+            logging.info(f"   ✅ contrastive_margin: {contrastive_margin} (valid)")
             
         if target_ratio == "NOT_FOUND":
             logging.error("   ❌ CRITICAL: target_pattern_ratio not found in config!")
