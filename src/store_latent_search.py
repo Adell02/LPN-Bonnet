@@ -180,7 +180,7 @@ def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
     # Special handling for ES: if we have best_latents_per_generation but no values,
     # we need to extract the trajectory from the saved data
     if prefix == "es_" and f"{prefix}best_latents_per_generation" in npz:
-        print(f"[plot] ES trajectory found but no values - this indicates a data saving issue")
+        print(f"[plot] ES trajectory found but no values - attempting to extract from available data")
         print(f"[plot] Available keys: {list(npz.keys())}")
         
         # Try to use generation_losses for ES trajectory
@@ -189,6 +189,28 @@ def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
             if gen_losses.ndim == 1 and gen_losses.size > 0:
                 print(f"[plot] Using ES generation_losses for trajectory: {gen_losses.shape}")
                 return gen_losses
+        
+        # Try to use best_losses_per_generation for ES trajectory
+        if f"{prefix}best_losses_per_generation" in npz:
+            best_losses = np.array(npz[f"{prefix}best_losses_per_generation"]).reshape(-1)
+            if best_losses.ndim == 1 and best_losses.size > 0:
+                print(f"[plot] Using ES best_losses_per_generation for trajectory: {best_losses.shape}")
+                return best_losses
+        
+        # Try to use all_losses and reshape to match trajectory
+        if f"{prefix}all_losses" in npz:
+            all_losses = np.array(npz[f"{prefix}all_losses"]).reshape(-1)
+            if all_losses.ndim == 1 and all_losses.size > 0:
+                # If we have best_latents_per_generation, we can extract the best losses
+                best_latents = np.array(npz[f"{prefix}best_latents_per_generation"])
+                if best_latents.ndim >= 2:
+                    # Reshape to match the trajectory structure
+                    trajectory_size = best_latents.shape[0] * best_latents.shape[1]  # B * G
+                    if all_losses.size >= trajectory_size:
+                        # Take the first trajectory_size elements
+                        trajectory_losses = all_losses[:trajectory_size]
+                        print(f"[plot] Using ES all_losses reshaped for trajectory: {trajectory_losses.shape}")
+                        return trajectory_losses
     
     # Special handling for GA: if we have ga_log_probs but no ga_losses,
     # create simple losses from the log_probs
@@ -1201,14 +1223,39 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
 
     # ES selected path (best per generation if present, otherwise es.pts)
     print(f"[plot] ES trajectory debug: best_per_gen={es.best_per_gen.shape if es.best_per_gen is not None else None}, es.pts={es.pts.shape if es.pts is not None else None}")
-    es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
+    
+    # CRITICAL FIX: Ensure ES trajectory matches the loss values
+    # If we have loss values, use them to determine the trajectory structure
+    if es.vals is not None and es.vals.size > 0:
+        print(f"[plot] ES has {es.vals.size} loss values, ensuring trajectory matches")
+        # Use the trajectory that matches the number of loss values
+        if es.best_per_gen is not None:
+            # Calculate expected trajectory size from best_per_gen
+            expected_size = es.best_per_gen.shape[0] * es.best_per_gen.shape[1]  # B * G
+            if expected_size == es.vals.size:
+                es_sel = es.best_per_gen
+                print(f"[plot] Using es.best_per_gen: {es_sel.shape} matches {es.vals.size} loss values")
+            else:
+                print(f"[plot] Size mismatch: best_per_gen={es.best_per_gen.shape} -> {expected_size}, vals={es.vals.size}")
+                # Try to reshape to match
+                if es.best_per_gen.size == es.vals.size:
+                    es_sel = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])
+                    print(f"[plot] Reshaped best_per_gen to match loss values: {es_sel.shape}")
+                else:
+                    es_sel = es.pts if es.pts is not None else es.best_per_gen
+                    print(f"[plot] Using fallback trajectory: {es_sel.shape if es_sel is not None else None}")
+        else:
+            es_sel = es.pts
+    else:
+        es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
+    
     print(f"[plot] ES selected for plotting: {es_sel.shape if es_sel is not None else None}")
     
     if es_sel is not None and es_sel.size > 0:
         # Check if we have enough trajectory points (more than 1 generation)
-        # es_sel shape is typically (1, G, 2) where G is number of generations
+        # es_sel shape is typically (B, G, 2) where B=batches, G=generations
         if es_sel.ndim == 3 and es_sel.shape[1] > 1:
-            # Flatten ES selected path for plotting: (1, G, 2) -> (G, 2)
+            # Flatten ES selected path for plotting: (B, G, 2) -> (B*G, 2)
             es_sel_flat = es_sel.reshape(-1, 2)
             print(f"[plot] Plotting ES trajectory: {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
             

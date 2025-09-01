@@ -3676,7 +3676,7 @@ class StructuredTrainer:
                 logging.error(f"   ❌ Pattern {pattern_id}: Contains NaN values in pattern IDs!")
                 all_valid = False
             
-            if np.any(pattern_ids_np < 1) or np.any(pattern_ids_np < 3):
+            if np.any(pattern_ids_np < 1) or np.any(pattern_ids_np > 3):
                 logging.error(f"   ❌ Pattern {pattern_id}: Contains invalid pattern ID values!")
                 logging.error(f"      Valid range: [1, 2, 3], Got: [{np.min(pattern_ids_np)}, {np.max(pattern_ids_np)}]")
                 all_valid = False
