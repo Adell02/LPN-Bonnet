@@ -638,6 +638,24 @@ def visualize_optimization_comparison(
     acc_A   = np.asarray(acc_A, dtype=float)
     acc_B   = np.asarray(acc_B, dtype=float)
 
+    # SAFETY CHECK: Prevent extremely large arrays that could cause memory/image size issues
+    if steps.size > 1000 or budgets.size > 1000:
+        print(f"⚠️  WARNING: Large array dimensions detected: steps={steps.size}, budgets={budgets.size}")
+        print(f"   This could cause extremely large images. Limiting dimensions for safety.")
+        
+        # Limit to reasonable dimensions
+        if steps.size > 1000:
+            step_indices = np.linspace(0, steps.size-1, 1000, dtype=int)
+            steps = steps[step_indices]
+            acc_A = acc_A[:, step_indices] if acc_A.ndim > 1 else acc_A[step_indices]
+            acc_B = acc_B[:, step_indices] if acc_B.ndim > 1 else acc_B[step_indices]
+            
+        if budgets.size > 1000:
+            budget_indices = np.linspace(0, budgets.size-1, 1000, dtype=int)
+            budgets = budgets[budget_indices]
+            acc_A = acc_A[budget_indices, :] if acc_A.ndim > 1 else acc_A[budget_indices]
+            acc_B = acc_B[budget_indices, :] if acc_B.ndim > 1 else acc_B[budget_indices]
+
     # diff heatmap data [B,S]
     diff = acc_A - acc_B
     diff_masked = np.ma.masked_invalid(diff)
@@ -646,7 +664,20 @@ def visualize_optimization_comparison(
     else:
         vmax = 1.0
 
-    fig, ax = plt.subplots(figsize=(12, 8))
+    # SAFETY CHECK: Calculate expected image dimensions and adjust if too large
+    expected_width_px = steps.size * 8  # Rough estimate: 8 pixels per step
+    expected_height_px = budgets.size * 8  # Rough estimate: 8 pixels per budget
+    
+    if expected_width_px > 65000 or expected_height_px > 65000:
+        print(f"⚠️  WARNING: Expected image dimensions too large: {expected_width_px}x{expected_height_px} pixels")
+        print(f"   Reducing figure size to prevent issues")
+        fig_width = min(8, 12)  # Reduce from 12 to 8 inches
+        fig_height = min(6, 8)   # Reduce from 8 to 6 inches
+    else:
+        fig_width = 12
+        fig_height = 8
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
     # heatmap
     # Handle single-point axes for sane extents

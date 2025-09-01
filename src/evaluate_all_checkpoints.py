@@ -163,6 +163,16 @@ def generate_loss_vs_budget_plot(method_arrays: Dict[str, np.ndarray],
                                 checkpoint_step: int) -> str:
     """Generate a plot showing Loss vs Budget for both methods."""
     try:
+        # SAFETY CHECK: Ensure reasonable data dimensions
+        if len(budgets) > 1000:
+            print(f"⚠️  WARNING: Too many budgets ({len(budgets)}), limiting to 1000 for plotting")
+            budget_indices = np.linspace(0, len(budgets)-1, 1000, dtype=int)
+            budgets = [budgets[i] for i in budget_indices]
+            # Also limit method arrays
+            for method in method_names:
+                if method in method_arrays:
+                    method_arrays[method] = method_arrays[method][budget_indices, :]
+        
         fig, ax = plt.subplots(figsize=(12, 8))
         
         # Use custom color palette
@@ -210,6 +220,16 @@ def generate_loss_vs_training_plot(method_arrays: Dict[str, np.ndarray],
                                   total_checkpoints: int) -> str:
     """Generate a plot showing Loss vs Training Progress for both methods."""
     try:
+        # SAFETY CHECK: Ensure reasonable data dimensions
+        if len(steps) > 1000:
+            print(f"⚠️  WARNING: Too many steps ({len(steps)}), limiting to 1000 for plotting")
+            step_indices = np.linspace(0, len(steps)-1, 1000, dtype=int)
+            steps = [steps[i] for i in step_indices]
+            # Also limit method arrays
+            for method in method_names:
+                if method in method_arrays:
+                    method_arrays[method] = method_arrays[method][:, step_indices]
+        
         fig, ax = plt.subplots(figsize=(12, 8))
         
         # Use custom color palette
@@ -509,6 +529,14 @@ def generate_checkpoint_figure(checkpoint_name: str, checkpoint_step: int, train
             print(f"   This could cause plotting issues. Skipping checkpoint figure generation.")
             return None
             
+        # ADDITIONAL SAFETY CHECK: Ensure step value is reasonable for filename
+        if checkpoint_step > 999999:  # Limit to 6 digits for filename safety
+            print(f"⚠️  Step value {checkpoint_step} is too large for safe filename generation")
+            print(f"   Using truncated value for filename")
+            safe_step = checkpoint_step % 1000000  # Use modulo to get reasonable value
+        else:
+            safe_step = checkpoint_step
+            
         # Limit the number of methods to prevent extremely wide images
         max_methods = min(4, len(plot_methods)) if plot_methods else 2
         
@@ -552,12 +580,23 @@ def generate_checkpoint_figure(checkpoint_name: str, checkpoint_step: int, train
         if len(methods) > 3:
             ax2.tick_params(axis='x', labelrotation=45, ha='right')
         
-        # Overall title
-        fig.suptitle(f'Checkpoint {checkpoint_name} - Step {checkpoint_step}', fontsize=16, y=0.95)
+        # Overall title - use safe step value for display
+        fig.suptitle(f'Checkpoint {checkpoint_name} - Step {safe_step}', fontsize=16, y=0.95)
         
-        # Save figure
+        # Save figure - use safe step value for filename
         out_dir = Path("results")
-        fig_path = out_dir / f"checkpoint_{checkpoint_step}_progress_{training_progress}.png"
+        fig_path = out_dir / f"checkpoint_{safe_step}_progress_{training_progress}.png"
+        
+        # ADDITIONAL SAFETY CHECK: Verify figure dimensions before saving
+        fig_width_px = int(fig_width * 200)  # 200 DPI
+        fig_height_px = int(fig_height * 200)  # 200 DPI
+        
+        if fig_width_px > 65000 or fig_height_px > 65000:
+            print(f"⚠️  Figure dimensions too large: {fig_width_px}x{fig_height_px} pixels")
+            print(f"   Reducing figure size to prevent issues")
+            # Reduce figure size if too large
+            fig.set_size_inches(min(16, fig_width), min(8, fig_height))
+        
         fig.savefig(fig_path, dpi=200, bbox_inches='tight')
         plt.close(fig)
         
@@ -2521,9 +2560,15 @@ def main():
                             method_B_name="",
                         )
 
-                    max_progress = max(steps_sorted) if steps_sorted else 0
-                    denom_final = max(len(checkpoints) - 1, 1)
-                    progress_percentage = int((max_progress / denom_final) * 100) if steps_sorted else 0
+                    # SAFETY CHECK: Ensure steps_sorted is not empty before calling max()
+                    if not steps_sorted:
+                        print(f"⚠️  WARNING: steps_sorted is empty, cannot calculate progress percentage")
+                        max_progress = 0
+                        progress_percentage = 0
+                    else:
+                        max_progress = max(steps_sorted)
+                        denom_final = max(len(checkpoints) - 1, 1)
+                        progress_percentage = int((max_progress / denom_final) * 100)
 
                     if args.loss and len(args.plot_methods) == 2:
                         plot_type = "Loss Difference"
