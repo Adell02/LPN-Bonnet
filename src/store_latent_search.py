@@ -102,28 +102,28 @@ def build_dataset_args(args: argparse.Namespace) -> list[str]:
 
 
 def try_extract_2d_points(npz: np.lib.npyio.NpzFile, prefix: str) -> Optional[np.ndarray]:
-    # prefer path first so GA uses the actual trajectory, then best-of-gen, then raw sets
-    preferred = [
-        f"{prefix}path",
-        f"{prefix}best_latents_per_generation",
-        f"{prefix}latents",
-        f"{prefix}all_latents",
-    ]
-    
-    # For GA, also check for the stored trajectory data
+    # For GA, prioritize the full trajectory data over the single-point trajectory_latents
     if prefix == "ga_":
+        # CRITICAL FIX: Use ga_latents (full trajectory) instead of ga_trajectory_latents (single point)
         preferred = [
-            f"{prefix}trajectory_latents",  # New: direct trajectory latents
+            f"{prefix}latents",  # Full trajectory with shape (1, 4, 1, 2000, 256)
             f"{prefix}path",
-            f"{prefix}latents",  # This should contain the full trajectory
             f"{prefix}all_latents",
             f"{prefix}best_latents_per_generation",
+            f"{prefix}trajectory_latents",  # Fallback: single point (not ideal)
         ]
         
         # If we have log_probs but no latents, we can't create a trajectory
-        # This is just for debugging
-        if f"{prefix}log_probs" in npz and not any(f"{prefix}{k}" in npz for k in ["latents", "all_latents", "path", "trajectory_latents"]):
+        if f"{prefix}log_probs" in npz and not any(f"{prefix}{k}" in npz for k in ["latents", "all_latents", "path"]):
             print(f"[plot] WARNING: GA has log_probs but no latents - cannot create trajectory")
+    else:
+        # For ES, use the original preference order
+        preferred = [
+            f"{prefix}path",
+            f"{prefix}best_latents_per_generation",
+            f"{prefix}latents",
+            f"{prefix}all_latents",
+        ]
     
     for key in preferred:
         if key in npz:
@@ -177,6 +177,44 @@ def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
                 print(f"[plot] Using values key '{k}', length={arr.size}")
                 return arr
     
+    # CRITICAL FIX: Special handling for GA with full trajectory data
+    if prefix == "ga_":
+        print(f"[plot] GA trajectory found but no values - attempting to extract from available data")
+        print(f"[plot] Available keys: {list(npz.keys())}")
+        
+        # Try to use ga_losses_per_sample for the full trajectory
+        if f"{prefix}losses_per_sample" in npz:
+            losses_per_sample = np.array(npz[f"{prefix}losses_per_sample"])
+            if losses_per_sample.ndim >= 2:
+                # Take the mean across samples to get trajectory values
+                trajectory_losses = np.mean(losses_per_sample, axis=0)
+                print(f"[plot] Using GA losses_per_sample for trajectory: {trajectory_losses.shape}")
+                return trajectory_losses
+        
+        # Try to use ga_log_probs to create trajectory values
+        if f"{prefix}log_probs" in npz:
+            try:
+                log_probs = np.array(npz[f"{prefix}log_probs"])
+                print(f"[plot] GA log_probs shape: {log_probs.shape}")
+                
+                # Handle the complex shape (1, 4, 2, 1000) -> extract trajectory
+                if log_probs.ndim == 4:  # (B, C, T, S) where T=time, S=steps
+                    # Take mean over batch and context dimensions to get per-step scores
+                    simple_scores = log_probs.mean(axis=(0, 1))  # Average over B and C
+                    simple_losses = -simple_scores  # Convert scores to losses
+                    print(f"[plot] Created GA trajectory losses from log_probs: {simple_losses.shape}")
+                    return simple_losses
+                elif log_probs.ndim >= 3:
+                    # Average over all but the last dimension (steps)
+                    simple_scores = log_probs.mean(axis=tuple(range(log_probs.ndim - 1)))
+                    simple_losses = -simple_scores  # Convert scores to losses
+                    print(f"[plot] Created fallback GA losses from log_probs: {simple_losses.shape}")
+                    return simple_losses
+                else:
+                    print(f"[plot] Could not create fallback losses from log_probs shape: {log_probs.shape}")
+            except Exception as e:
+                print(f"[plot] Fallback GA loss creation failed: {e}")
+    
     # Special handling for ES: if we have best_latents_per_generation but no values,
     # we need to extract the trajectory from the saved data
     if prefix == "es_" and f"{prefix}best_latents_per_generation" in npz:
@@ -211,26 +249,6 @@ def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
                         trajectory_losses = all_losses[:trajectory_size]
                         print(f"[plot] Using ES all_losses reshaped for trajectory: {trajectory_losses.shape}")
                         return trajectory_losses
-    
-    # Special handling for GA: if we have ga_log_probs but no ga_losses,
-    # create simple losses from the log_probs
-    if prefix == "ga_" and f"{prefix}log_probs" in npz:
-        print(f"[plot] GA trajectory found but no values - creating fallback losses from log_probs")
-        print(f"[plot] Available keys: {list(npz.keys())}")
-        
-        try:
-            log_probs = np.array(npz[f"{prefix}log_probs"])
-            # Take the mean over candidates and context dimensions to get per-step scores
-            if log_probs.ndim >= 3:
-                # Average over candidates and context: (B, C, T) -> (T,)
-                simple_scores = log_probs.mean(axis=tuple(range(log_probs.ndim - 1)))
-                simple_losses = -simple_scores  # Convert scores to losses
-                print(f"[plot] Created fallback GA losses from log_probs: {simple_losses.shape}")
-                return simple_losses
-            else:
-                print(f"[plot] Could not create fallback losses from log_probs shape: {log_probs.shape}")
-        except Exception as e:
-            print(f"[plot] Fallback GA loss creation failed: {e}")
     
     return None
 
@@ -369,12 +387,39 @@ def _collapse_to_steps(arr: np.ndarray, steps_len: int) -> np.ndarray:
     """
     Collapse GA latents to one point per step by averaging over non-step axes.
     This ensures T matches loss length for proper pairing.
-    CRITICAL FIX: Preserve the initial mean latent by not averaging over context dimension.
+    CRITICAL FIX: Handle complex GA trajectory shapes like (1, 4, 1, 2000, 256).
     """
     arr = np.asarray(arr)
     if arr.ndim < 2:
         return arr
     
+    D = arr.shape[-1]  # latent dimension
+    print(f"[_collapse_to_steps] Input shape: {arr.shape}, steps_len: {steps_len}")
+    
+    # CRITICAL FIX: Handle complex GA trajectory shapes
+    if arr.ndim == 5 and arr.shape[0] == 1 and arr.shape[2] == 1:
+        # Shape (1, 4, 1, 2000, 256) -> extract the trajectory axis (2000 steps)
+        # This is the full GA trajectory with 2000 steps
+        print(f"[_collapse_to_steps] Detected complex GA trajectory shape: {arr.shape}")
+        
+        # Extract the trajectory: (1, 4, 1, 2000, 256) -> (2000, 256)
+        # Take mean over batch (1), candidates (4), and context (1) dimensions
+        trajectory = arr.mean(axis=(0, 1, 2))  # Average over B, C, context
+        print(f"[_collapse_to_steps] Extracted trajectory: {trajectory.shape}")
+        
+        # Ensure the trajectory length matches the expected steps
+        if trajectory.shape[0] != steps_len:
+            print(f"[_collapse_to_steps] ⚠️  Trajectory length mismatch: {trajectory.shape[0]} != {steps_len}")
+            if trajectory.shape[0] > steps_len:
+                # Truncate to match steps_len
+                trajectory = trajectory[:steps_len, :]
+                print(f"[_collapse_to_steps] Truncated trajectory to: {trajectory.shape}")
+            else:
+                print(f"[_collapse_to_steps] Warning: Trajectory length {trajectory.shape[0]} < steps_len {steps_len}")
+        
+        return trajectory
+    
+    # Original logic for simpler shapes
     D = arr.shape[-1]  # latent dimension
     
     # Find axis with size == steps_len among all but last
@@ -385,7 +430,7 @@ def _collapse_to_steps(arr: np.ndarray, steps_len: int) -> np.ndarray:
     else:
         t_axis = axes[-1]
     
-    print(f"[_collapse_to_steps] Input shape: {arr.shape}, steps_len: {steps_len}, t_axis: {t_axis}")
+    print(f"[_collapse_to_steps] Using original logic, t_axis: {t_axis}")
     
     # Move T to position -2 so final shape is (..., T, D)
     order = [i for i in range(arr.ndim) if i != t_axis and i != arr.ndim - 1] + [t_axis, arr.ndim - 1]
@@ -2061,16 +2106,16 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
             print(f"[loss] Failed to check ES accuracy = 1: {e}")
     
     # Draw dashed vertical lines where accuracy = 1
-    # Color scheme: Purple (#DB74DB) for ES, Orange (#FBB998) for GA (matching the plot colors)
+    # Color scheme: Orange (#FBB998) for GA, Purple (#DB74DB) for ES (matching the plot colors)
     if ga_accuracy_one_budget is not None:
-        # Purple dashed line for GA (using ES color to match the plot)
-        ax.axvline(x=ga_accuracy_one_budget, color='#DB74DB', linestyle='--', linewidth=2, alpha=0.8, 
+        # Orange dashed line for GA (using GA color to match the plot)
+        ax.axvline(x=ga_accuracy_one_budget, color='#FBB998', linestyle='--', linewidth=2, alpha=0.8, 
                    label=f'GA accuracy = 1 (budget {ga_accuracy_one_budget})')
         print(f"[loss] Added GA accuracy = 1 line at budget {ga_accuracy_one_budget}")
     
     if es_accuracy_one_budget is not None:
-        # Orange dashed line for ES (using GA color to match the plot)
-        ax.axvline(x=es_accuracy_one_budget, color='#FBB998', linestyle='--', linewidth=2, alpha=0.8, 
+        # Purple dashed line for ES (using ES color to match the plot)
+        ax.axvline(x=es_accuracy_one_budget, color='#DB74DB', linestyle='--', linewidth=2, alpha=0.8, 
                    label=f'ES accuracy = 1 (budget {es_accuracy_one_budget})')
         print(f"[loss] Added ES accuracy = 1 line at budget {es_accuracy_one_budget}")
     

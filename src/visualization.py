@@ -1098,21 +1098,22 @@ def visualize_loss_difference_heatmap(
     x0, x1 = (steps[0] - 0.5, steps[0] + 0.5) if steps.size == 1 else (steps[0], steps[-1])
     y0, y1 = (budgets[0] - 0.5, budgets[0] + 0.5) if budgets.size == 1 else (budgets[0], budgets[-1])
     
-    # Create a continuous colormap for better visualization
-    # Use a diverging colormap that goes from blue (negative) to white to red (positive)
+    # Create a continuous colormap using the custom color palette
+    # Use the consistent color palette from the codebase with smooth interpolations
     from matplotlib.colors import LinearSegmentedColormap
     import matplotlib.pyplot as plt
     
-    # Create a custom diverging colormap: blue -> white -> red
-    colors = ['#1f77b4', '#ffffff', '#d62728']  # Blue, White, Red
-    n_bins = 256
-    custom_cmap = LinearSegmentedColormap.from_list('custom_diverging', colors, N=n_bins)
+    # Custom color palette: #FBB998 (orange), #DB74DB (pink), #5361E5 (blue), #96DCF8 (light blue)
+    # Create a continuous colormap that smoothly interpolates between these colors
+    colors = ['#FBB998', '#DB74DB', '#5361E5', '#96DCF8']  # Orange, Pink, Blue, Light Blue
+    n_bins = 256  # High resolution for smooth color transitions
+    custom_cmap = LinearSegmentedColormap.from_list('custom_continuous', colors, N=n_bins)
     
     im = ax.imshow(
         log_diff_masked,
         extent=[x0, x1, y0, y1],
         origin='lower', aspect='auto',
-        cmap=custom_cmap,  # Use continuous diverging colormap
+        cmap=custom_cmap,  # Use continuous custom color palette
         vmin=vmin, vmax=vmax
     )
 
