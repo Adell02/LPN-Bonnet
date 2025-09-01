@@ -640,12 +640,54 @@ class StructuredTrainer:
                     # Encoders are still trainable - use full coefficients
                     repulsion_coeff = self.cfg.training.get("repulsion_kl")
                     contrastive_coeff = self.cfg.training.get("contrastive_kl")
-                    logging.debug(f"🔓 Encoders TRAINABLE - Using repulsion: {repulsion_coeff}, contrastive: {contrastive_coeff}")
+                    logging.info(f"🔓 Encoders TRAINABLE - Using repulsion: {repulsion_coeff}, contrastive: {contrastive_coeff}")
+                    
+                    # DEBUG: Check encoder parameters
+                    logging.info(f"🔍 ENCODER PARAMETERS DEBUG:")
+                    logging.info(f"   - full_params['encoders'] type: {type(full_params['encoders'])}")
+                    logging.info(f"   - full_params['encoders'] length: {len(full_params['encoders'])}")
+                    if len(full_params['encoders']) > 0:
+                        for i, enc_params in enumerate(full_params['encoders']):
+                            if 'encoder' in enc_params and 'Dense_0' in enc_params['encoder']:
+                                kernel_shape = enc_params['encoder']['Dense_0']['kernel'].shape
+                                kernel_mean = float(jnp.mean(enc_params['encoder']['Dense_0']['kernel']))
+                                kernel_std = float(jnp.std(enc_params['encoder']['Dense_0']['kernel']))
+                                logging.info(f"   - Encoder {i} Dense_0 kernel: shape={kernel_shape}, mean={kernel_mean:.6f}, std={kernel_std:.6f}")
+                            else:
+                                logging.info(f"   - Encoder {i} params structure: {list(enc_params.keys()) if isinstance(enc_params, dict) else type(enc_params)}")
+                        
+                        # Check if encoders are identical
+                        if len(full_params['encoders']) >= 2:
+                            enc0_params = full_params['encoders'][0]
+                            enc1_params = full_params['encoders'][1]
+                            if 'encoder' in enc0_params and 'Dense_0' in enc0_params['encoder'] and 'encoder' in enc1_params and 'Dense_0' in enc1_params['encoder']:
+                                kernel0 = enc0_params['encoder']['Dense_0']['kernel']
+                                kernel1 = enc1_params['encoder']['Dense_0']['kernel']
+                                kernel_diff = float(jnp.mean(jnp.abs(kernel0 - kernel1)))
+                                logging.info(f"   - Kernel difference between encoder 0 and 1: {kernel_diff:.6f}")
+                                if kernel_diff < 1e-8:
+                                    logging.warning(f"   ⚠️  WARNING: Encoder 0 and 1 kernels are IDENTICAL!")
+                                
+                                # Also check bias if it exists
+                                if 'bias' in enc0_params['encoder']['Dense_0'] and 'bias' in enc1_params['encoder']['Dense_0']:
+                                    bias0 = enc0_params['encoder']['Dense_0']['bias']
+                                    bias1 = enc1_params['encoder']['Dense_0']['bias']
+                                    bias_diff = float(jnp.mean(jnp.abs(bias0 - bias1)))
+                                    logging.info(f"   - Bias difference between encoder 0 and 1: {bias_diff:.6f}")
+                                    if bias_diff < 1e-8:
+                                        logging.warning(f"   ⚠️  WARNING: Encoder 0 and 1 biases are IDENTICAL!")
                 else:
                     # Encoders are frozen - disable specialization losses
                     repulsion_coeff = 0.0
                     contrastive_coeff = 0.0
-                    logging.debug(f"🔒 Encoders FROZEN - Disabled repulsion and contrastive losses")
+                    logging.info(f"🔒 Encoders FROZEN - Disabled repulsion and contrastive losses")
+                
+                # DEBUG: Log model call parameters
+                logging.info(f"🔍 MODEL CALL DEBUG:")
+                logging.info(f"   - encoder_params_list length: {len(full_params['encoders'])}")
+                logging.info(f"   - repulsion_kl_coeff: {repulsion_coeff}")
+                logging.info(f"   - contrastive_kl_coeff: {contrastive_coeff}")
+                logging.info(f"   - pattern_ids shape: {pattern_ids.shape if pattern_ids is not None else 'None'}")
                 
                 loss, metrics = self.model.apply(
                     {"params": full_params["decoder"]},
@@ -1466,7 +1508,7 @@ class StructuredTrainer:
                     {
                         f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/certainty_panel": wandb.Image(fig_cert)
                     },
-                    step=current_global_step,
+                    step=global_step,
                 )
                 plt.close(fig_cert)
             except Exception as e:
@@ -1898,6 +1940,23 @@ class StructuredTrainer:
                     state.params["encoders"], batch_pairs, batch_shapes
                 )
                 all_encoder_outputs.append(encoder_outputs)
+            
+            # Phase 2: Generate periodic T-SNE visualizations (every 50 steps)
+            if i % 50 == 0 and i > 0:
+                try:
+                    logging.info(f"🔍 Phase 2: Generating periodic T-SNE at step {i}/{num_steps}")
+                    periodic_tsne_metrics = self._generate_phase2_tsne_visualizations(
+                        state, explicit_pattern_ids, i
+                    )
+                    
+                    # Log periodic T-SNE to WandB
+                    for key, value in periodic_tsne_metrics.items():
+                        if "tsne" in key:
+                            wandb.log({f"phase_2_periodic/{key}": value}, step=i)
+                    
+                    logging.info(f"✅ Phase 2: Periodic T-SNE generated at step {i}")
+                except Exception as e:
+                    logging.warning(f"Phase 2 periodic T-SNE generation failed at step {i}: {e}")
         
         # Average metrics over all steps
         avg_metrics = {}
@@ -1911,6 +1970,15 @@ class StructuredTrainer:
         
         # Merge with training metrics
         avg_metrics.update(phase2_metrics)
+        
+        # Phase 2: Generate T-SNE visualizations (same as Phase 1)
+        try:
+            logging.info(f"🔍 Phase 2: Generating T-SNE visualizations...")
+            tsne_metrics = self._generate_phase2_tsne_visualizations(state, explicit_pattern_ids, num_steps)
+            avg_metrics.update(tsne_metrics)
+            logging.info(f"✅ Phase 2: T-SNE visualizations generated and logged")
+        except Exception as e:
+            logging.warning(f"Phase 2 T-SNE generation failed: {e}")
         
         # Phase 2: Log that we're in decoder-only training mode
         logging.info(f"Phase 2: Joint decoder training completed - {num_steps} steps")
@@ -2002,6 +2070,503 @@ class StructuredTrainer:
             }
         
         return phase2_metrics
+    
+    def _generate_phase2_tsne_visualizations(self, state: TrainState, pattern_ids: chex.Array, num_steps: int) -> dict:
+        """
+        Generate T-SNE visualizations for Phase 2 (same style as Phase 1).
+        
+        Args:
+            state: Current training state
+            pattern_ids: Pattern IDs for the batch
+            num_steps: Number of training steps
+            
+        Returns:
+            Dictionary containing T-SNE visualization metrics
+        """
+        tsne_metrics = {}
+        
+        try:
+            logging.info(f"🔍 Phase 2: Creating T-SNE visualizations...")
+            
+            # Create evaluation data for each pattern (same as Phase 1)
+            eval_data = {}
+            for pattern_id in [1, 2, 3]:
+                try:
+                    # Generate pattern-specific data
+                    pattern_data = self._create_pattern_dataset(pattern_id, num_samples=32)
+                    grids, shapes, _ = pattern_data
+                    
+                    # Get encoder outputs for this pattern
+                    pattern_latents = []
+                    pattern_source_ids = []
+                    pattern_task_ids = []
+                    
+                    for enc_idx in range(len(self.encoders)):
+                        # Get encoder outputs
+                        mu, logvar = self.encoders[enc_idx].apply(
+                            {"params": state.params["encoders"][enc_idx]}, 
+                            grids, 
+                            shapes, 
+                            True, 
+                            mutable=False
+                        )
+                        
+                        # Use mean of latents over pairs
+                        latents = mu.mean(axis=-2)  # (batch_size, latent_dim)
+                        
+                        # Add to pattern data
+                        pattern_latents.append(latents)
+                        pattern_source_ids.extend([enc_idx] * len(latents))
+                        pattern_task_ids.extend(range(len(latents)))
+                    
+                    # Store pattern data
+                    eval_data[pattern_id] = {
+                        'latents': pattern_latents,
+                        'source_ids': pattern_source_ids,
+                        'task_ids': pattern_task_ids
+                    }
+                    
+                except Exception as e:
+                    logging.warning(f"Failed to create evaluation data for pattern {pattern_id}: {e}")
+                    continue
+            
+            # Generate T-SNE visualizations for each pattern
+            for pattern_id in [1, 2, 3]:
+                if pattern_id in eval_data:
+                    try:
+                        # Concatenate latents from all encoders for this pattern
+                        all_latents = np.concatenate(eval_data[pattern_id]['latents'], axis=0)
+                        all_source_ids = np.array(eval_data[pattern_id]['source_ids'])
+                        all_task_ids = np.array(eval_data[pattern_id]['task_ids'])
+                        
+                        # Create pattern-specific T-SNE
+                        pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
+                        pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
+                        
+                        fig_tsne = self._create_pattern_specific_tsne(
+                            latents=all_latents,
+                            source_ids=all_source_ids,
+                            task_ids=all_task_ids,
+                            title=f"Phase 2: {pattern_name} - Encoder Latents (Step {num_steps})",
+                            max_points=300,
+                            random_state=42
+                        )
+                        
+                        if fig_tsne is not None:
+                            # Log to WandB
+                            tsne_metrics[f"phase_2/tsne_pattern_{pattern_id}"] = wandb.Image(fig_tsne)
+                            logging.info(f"✅ Phase 2 T-SNE generated for pattern {pattern_id} ({pattern_name})")
+                            
+                            # Close figure to free memory
+                            plt.close(fig_tsne)
+                        else:
+                            logging.warning(f"❌ Phase 2 T-SNE generation failed for pattern {pattern_id}")
+                            
+                    except Exception as e:
+                        logging.warning(f"Phase 2 T-SNE generation failed for pattern {pattern_id}: {e}")
+                        continue
+            
+            # Generate combined T-SNE with all patterns and encoders
+            try:
+                # Concatenate all pattern data
+                all_latents_list = []
+                all_source_ids_list = []
+                all_pattern_ids_list = []
+                all_task_ids_list = []
+                
+                for pattern_id in [1, 2, 3]:
+                    if pattern_id in eval_data:
+                        all_latents_list.extend(eval_data[pattern_id]['latents'])
+                        all_source_ids_list.extend(eval_data[pattern_id]['source_ids'])
+                        all_pattern_ids_list.extend([pattern_id] * len(eval_data[pattern_id]['source_ids']))
+                        all_task_ids_list.extend(eval_data[pattern_id]['task_ids'])
+                
+                if all_latents_list:
+                    # Concatenate all data
+                    combined_latents = np.concatenate(all_latents_list, axis=0)
+                    combined_source_ids = np.array(all_source_ids_list)
+                    combined_pattern_ids = np.array(all_pattern_ids_list)
+                    combined_task_ids = np.array(all_task_ids_list)
+                    
+                    # Create combined T-SNE
+                    fig_combined = self._create_pattern_specific_tsne(
+                        latents=combined_latents,
+                        source_ids=combined_source_ids,
+                        task_ids=combined_task_ids,
+                        title=f"Phase 2: All Patterns - Encoder Latents (Step {num_steps})",
+                        max_points=500,
+                        random_state=42
+                    )
+                    
+                    if fig_combined is not None:
+                        tsne_metrics["phase_2/tsne_all_patterns"] = wandb.Image(fig_combined)
+                        logging.info(f"✅ Phase 2 combined T-SNE generated")
+                        plt.close(fig_combined)
+                    else:
+                        logging.warning(f"❌ Phase 2 combined T-SNE generation failed")
+                        
+            except Exception as e:
+                logging.warning(f"Phase 2 combined T-SNE generation failed: {e}")
+            
+            # Phase 2: COMPUTE COMPREHENSIVE CLUSTERING METRICS AND DISTANCE ANALYSIS
+            try:
+                logging.info(f"🔍 Phase 2: Computing clustering metrics and distance analysis...")
+                
+                # Create comprehensive evaluation data for clustering analysis
+                clustering_data = self._create_comprehensive_clustering_data(state, pattern_ids)
+                
+                if clustering_data is not None:
+                    # Compute clustering metrics (same as commit)
+                    clustering_metrics = self._compute_phase2_clustering_metrics(clustering_data)
+                    tsne_metrics.update(clustering_metrics)
+                    
+                    # Compute distance metrics between encoders
+                    distance_metrics = self._compute_phase2_distance_metrics(clustering_data)
+                    tsne_metrics.update(distance_metrics)
+                    
+                    # Compute encoder specialization quality metrics
+                    specialization_metrics = self._compute_phase2_specialization_quality(clustering_data)
+                    tsne_metrics.update(specialization_metrics)
+                    
+                    logging.info(f"✅ Phase 2: Comprehensive metrics computed and logged")
+                else:
+                    logging.warning(f"❌ Phase 2: Clustering data creation failed")
+                    
+            except Exception as e:
+                logging.warning(f"Phase 2 comprehensive metrics computation failed: {e}")
+                tsne_metrics["phase_2/comprehensive_metrics_error"] = str(e)
+            
+            logging.info(f"✅ Phase 2: T-SNE visualizations completed")
+            
+        except Exception as e:
+            logging.warning(f"Phase 2 T-SNE generation failed: {e}")
+            tsne_metrics["phase_2/tsne_error"] = str(e)
+        
+        return tsne_metrics
+    
+    def _create_comprehensive_clustering_data(self, state: TrainState, pattern_ids: chex.Array) -> Optional[dict]:
+        """
+        Create comprehensive data for clustering analysis in Phase 2.
+        
+        Args:
+            state: Current training state
+            pattern_ids: Pattern IDs for the batch
+            
+        Returns:
+            Dictionary containing comprehensive clustering data
+        """
+        try:
+            # Create evaluation data for each pattern (same as T-SNE generation)
+            eval_data = {}
+            for pattern_id in [1, 2, 3]:
+                try:
+                    # Generate pattern-specific data
+                    pattern_data = self._create_pattern_dataset(pattern_id, num_samples=self.batch_size)  # Use batch_size for consistency
+                    grids, shapes, _ = pattern_data
+                    
+                    # Get encoder outputs for this pattern
+                    pattern_latents = []
+                    pattern_source_ids = []
+                    pattern_task_ids = []
+                    
+                    for enc_idx in range(len(self.encoders)):
+                        # Get encoder outputs
+                        mu, logvar = self.encoders[enc_idx].apply(
+                            {"params": state.params["encoders"][enc_idx]}, 
+                            grids, 
+                            shapes, 
+                            True, 
+                            mutable=False
+                        )
+                        
+                        # Use mean of latents over pairs
+                        latents = mu.mean(axis=-2)  # (batch_size, latent_dim)
+                        
+                        # Add to pattern data
+                        pattern_latents.append(latents)
+                        pattern_source_ids.extend([enc_idx] * len(latents))
+                        pattern_task_ids.extend(range(len(latents)))
+                    
+                    # Store pattern data
+                    eval_data[pattern_id] = {
+                        'latents': pattern_latents,
+                        'source_ids': pattern_source_ids,
+                        'task_ids': pattern_task_ids,
+                        'grids': grids,
+                        'shapes': shapes
+                    }
+                    
+                except Exception as e:
+                    logging.warning(f"Failed to create clustering data for pattern {pattern_id}: {e}")
+                    continue
+            
+            # Create combined data for cross-pattern analysis
+            combined_data = {}
+            if eval_data:
+                # Concatenate all pattern data
+                all_latents_list = []
+                all_source_ids_list = []
+                all_pattern_ids_list = []
+                all_task_ids_list = []
+                
+                for pattern_id in [1, 2, 3]:
+                    if pattern_id in eval_data:
+                        all_latents_list.extend(eval_data[pattern_id]['latents'])
+                        all_source_ids_list.extend(eval_data[pattern_id]['source_ids'])
+                        all_pattern_ids_list.extend([pattern_id] * len(eval_data[pattern_id]['source_ids']))
+                        all_task_ids_list.extend(eval_data[pattern_id]['task_ids'])
+                
+                if all_latents_list:
+                    combined_data = {
+                        'latents': np.concatenate(all_latents_list, axis=0),
+                        'source_ids': np.array(all_source_ids_list),
+                        'pattern_ids': np.array(all_pattern_ids_list),
+                        'task_ids': np.array(all_task_ids_list)
+                    }
+            
+            return {
+                'pattern_data': eval_data,
+                'combined_data': combined_data
+            }
+            
+        except Exception as e:
+            logging.warning(f"Comprehensive clustering data creation failed: {e}")
+            return None
+    
+    def _compute_phase2_clustering_metrics(self, clustering_data: dict) -> dict:
+        """
+        Compute clustering metrics for Phase 2 (same as commit).
+        
+        Args:
+            clustering_data: Comprehensive clustering data
+            
+        Returns:
+            Dictionary containing clustering metrics
+        """
+        clustering_metrics = {}
+        
+        try:
+            if 'combined_data' not in clustering_data or clustering_data['combined_data'] is None:
+                return clustering_metrics
+            
+            combined_data = clustering_data['combined_data']
+            latents_concat = combined_data['latents']
+            source_ids_np = combined_data['source_ids']
+            pattern_ids_concat = combined_data['pattern_ids']
+            
+            # Compute metrics for different k values to check sensitivity (same as commit)
+            k_values = [3, 5, 10]
+            
+            # OPTION 1: Encoder samples clustering (like train.py fig_latents_samples) - for direct comparison
+            encoder_mask = (source_ids_np < len(self.encoders))
+            if np.any(encoder_mask):
+                enc_emb = latents_concat[encoder_mask]
+                enc_prog = pattern_ids_concat[encoder_mask]
+                logging.info(f"Phase 2: Encoder samples clustering: {enc_emb.shape[0]} points, patterns: {np.unique(enc_prog)}")
+                
+                for k in k_values:
+                    # Modularity Q on encoder samples (comparable to train.py)
+                    modularity_q = compute_modularity_q(enc_emb, enc_prog, k=k)
+                    clustering_metrics[f"phase_2/clustering/encoder_samples/modularity_q_k{k}"] = modularity_q
+                    
+                    # Adjusted Rand Index on encoder samples (comparable to train.py)
+                    ari_score = compute_adjusted_rand_index(enc_emb, enc_prog, k=k)
+                    clustering_metrics[f"phase_2/clustering/encoder_samples/ari_k{k}"] = ari_score
+            else:
+                logging.warning("Phase 2: No encoder samples found for encoder samples clustering; skipping")
+            
+            # OPTION 2: Full latent space clustering (current implementation) - for source analysis
+            for k in k_values:
+                # Modularity Q on all embeddings (sources: encoders vs context)
+                modularity_q = compute_modularity_q(latents_concat, source_ids_np, k=k)
+                clustering_metrics[f"phase_2/clustering/source/modularity_q_k{k}"] = modularity_q
+                
+                # Adjusted Rand Index on all embeddings (sources: encoders vs context)
+                ari_score = compute_adjusted_rand_index(latents_concat, source_ids_np, k=k)
+                clustering_metrics[f"phase_2/clustering/source/ari_k{k}"] = ari_score
+            
+            logging.info(f"Phase 2: Clustering metrics computed: {clustering_metrics}")
+            
+        except Exception as e:
+            logging.warning(f"Phase 2 clustering metrics computation failed: {e}")
+            clustering_metrics["phase_2/clustering/error"] = str(e)
+        
+        return clustering_metrics
+    
+    def _compute_phase2_distance_metrics(self, clustering_data: dict) -> dict:
+        """
+        Compute distance metrics between encoders in Phase 2.
+        
+        Args:
+            clustering_data: Comprehensive clustering data
+            
+        Returns:
+            Dictionary containing distance metrics
+        """
+        distance_metrics = {}
+        
+        try:
+            if 'pattern_data' not in clustering_data:
+                return distance_metrics
+            
+            pattern_data = clustering_data['pattern_data']
+            
+            # Compute pairwise distances between encoders for each pattern
+            for pattern_id in [1, 2, 3]:
+                if pattern_id in pattern_data:
+                    pattern_latents = pattern_data[pattern_id]['latents']
+                    
+                    if len(pattern_latents) >= 2:  # Need at least 2 encoders
+                        # Compute pairwise distances between encoder representations
+                        for i in range(len(pattern_latents)):
+                            for j in range(i + 1, len(pattern_latents)):
+                                enc_i_latents = pattern_latents[i]
+                                enc_j_latents = pattern_latents[j]
+                                
+                                # Compute L2 distance between encoder representations
+                                distances = np.linalg.norm(enc_i_latents - enc_j_latents, axis=1)
+                                mean_distance = float(np.mean(distances))
+                                std_distance = float(np.std(distances))
+                                
+                                # Store metrics
+                                distance_metrics[f"phase_2/distance/pattern_{pattern_id}/encoder_{i}_vs_{j}/mean_l2"] = mean_distance
+                                distance_metrics[f"phase_2/distance/pattern_{pattern_id}/encoder_{i}_vs_{j}/std_l2"] = std_distance
+                                
+                                # Compute cosine distance
+                                cos_similarities = []
+                                for k in range(len(enc_i_latents)):
+                                    cos_sim = np.dot(enc_i_latents[k], enc_j_latents[k]) / (
+                                        np.linalg.norm(enc_i_latents[k]) * np.linalg.norm(enc_j_latents[k]) + 1e-8
+                                    )
+                                    cos_similarities.append(cos_sim)
+                                
+                                mean_cos_sim = float(np.mean(cos_similarities))
+                                std_cos_sim = float(np.std(cos_similarities))
+                                
+                                distance_metrics[f"phase_2/distance/pattern_{pattern_id}/encoder_{i}_vs_{j}/mean_cosine_sim"] = mean_cos_sim
+                                distance_metrics[f"phase_2/distance/pattern_{pattern_id}/encoder_{i}_vs_{j}/std_cosine_sim"] = std_cos_sim
+            
+            # Compute cross-pattern encoder consistency
+            if len(pattern_data) >= 2:
+                for enc_idx in range(len(self.encoders)):
+                    enc_pattern_latents = []
+                    for pattern_id in [1, 2, 3]:
+                        if pattern_id in pattern_data and len(pattern_data[pattern_id]['latents']) > enc_idx:
+                            enc_pattern_latents.append(pattern_data[pattern_id]['latents'][enc_idx])
+                    
+                    if len(enc_pattern_latents) >= 2:
+                        # Compute consistency across patterns for this encoder
+                        pattern_distances = []
+                        for i in range(len(enc_pattern_latents)):
+                            for j in range(i + 1, len(enc_pattern_latents)):
+                                dist = np.mean(np.linalg.norm(enc_pattern_latents[i] - enc_pattern_latents[j], axis=1))
+                                pattern_distances.append(dist)
+                        
+                        if pattern_distances:
+                            mean_pattern_dist = float(np.mean(pattern_distances))
+                            std_pattern_dist = float(np.std(pattern_distances))
+                            distance_metrics[f"phase_2/distance/encoder_{enc_idx}/cross_pattern_consistency/mean"] = mean_pattern_dist
+                            distance_metrics[f"phase_2/distance/encoder_{enc_idx}/cross_pattern_consistency/std"] = std_pattern_dist
+            
+            logging.info(f"Phase 2: Distance metrics computed: {len(distance_metrics)} metrics")
+            
+        except Exception as e:
+            logging.warning(f"Phase 2 distance metrics computation failed: {e}")
+            distance_metrics["phase_2/distance/error"] = str(e)
+        
+        return distance_metrics
+    
+    def _compute_phase2_specialization_quality(self, clustering_data: dict) -> dict:
+        """
+        Compute encoder specialization quality metrics in Phase 2.
+        
+        Args:
+            clustering_data: Comprehensive clustering data
+            
+        Returns:
+            Dictionary containing specialization quality metrics
+        """
+        specialization_metrics = {}
+        
+        try:
+            if 'pattern_data' not in clustering_data:
+                return specialization_metrics
+            
+            pattern_data = clustering_data['pattern_data']
+            
+            # Compute specialization quality for each encoder
+            for enc_idx in range(len(self.encoders)):
+                enc_metrics = {}
+                
+                # Collect latents for this encoder across all patterns
+                enc_pattern_latents = {}
+                for pattern_id in [1, 2, 3]:
+                    if pattern_id in pattern_data and len(pattern_data[pattern_id]['latents']) > enc_idx:
+                        enc_pattern_latents[pattern_id] = pattern_data[pattern_id]['latents'][enc_idx]
+                
+                if len(enc_pattern_latents) >= 2:
+                    # Compute target pattern specialization
+                    target_pattern = enc_idx + 1
+                    if target_pattern in enc_pattern_latents:
+                        target_latents = enc_pattern_latents[target_pattern]
+                        
+                        # Compute variance of target pattern latents
+                        target_variance = float(np.var(target_latents))
+                        enc_metrics[f"target_pattern_{target_pattern}_variance"] = target_variance
+                        
+                        # Compute average distance between target pattern samples
+                        target_distances = []
+                        for i in range(len(target_latents)):
+                            for j in range(i + 1, len(target_latents)):
+                                dist = np.linalg.norm(target_latents[i] - target_latents[j])
+                                target_distances.append(dist)
+                        
+                        if target_distances:
+                            mean_target_dist = float(np.mean(target_distances))
+                            std_target_dist = float(np.std(target_distances))
+                            enc_metrics[f"target_pattern_{target_pattern}_mean_distance"] = mean_target_dist
+                            enc_metrics[f"target_pattern_{target_pattern}_std_distance"] = std_target_dist
+                        
+                        # Compute specialization ratio (target vs other patterns)
+                        other_pattern_variances = []
+                        for pid in [1, 2, 3]:
+                            if pid != target_pattern and pid in enc_pattern_latents:
+                                other_latents = enc_pattern_latents[pid]
+                                other_var = float(np.var(other_latents))
+                                other_pattern_variances.append(other_var)
+                                enc_metrics[f"other_pattern_{pid}_variance"] = other_var
+                        
+                        if other_pattern_variances:
+                            avg_other_variance = np.mean(other_pattern_variances)
+                            specialization_ratio = target_variance / (avg_other_variance + 1e-8)
+                            specialization_score = np.log(specialization_ratio + 1e-8)
+                            
+                            enc_metrics["specialization_ratio"] = float(specialization_ratio)
+                            enc_metrics["specialization_score"] = float(specialization_score)
+                            
+                            # Compute specialization quality indicator
+                            if specialization_ratio < 0.5:
+                                quality = "EXCELLENT"
+                            elif specialization_ratio < 0.8:
+                                quality = "GOOD"
+                            elif specialization_ratio < 1.0:
+                                quality = "WEAK"
+                            else:
+                                quality = "POOR"
+                            
+                            enc_metrics["specialization_quality"] = quality
+                
+                # Add encoder metrics to main metrics dict
+                for key, value in enc_metrics.items():
+                    specialization_metrics[f"phase_2/specialization/encoder_{enc_idx}/{key}"] = value
+            
+            logging.info(f"Phase 2: Specialization quality metrics computed: {len(specialization_metrics)} metrics")
+            
+        except Exception as e:
+            logging.warning(f"Phase 2 specialization quality computation failed: {e}")
+            specialization_metrics["phase_2/specialization/error"] = str(e)
+        
+        return specialization_metrics
     
     def _compute_encoder_specialization_metrics(self, all_encoder_outputs: list, pattern_ids: chex.Array) -> dict:
         """
@@ -2609,8 +3174,18 @@ class StructuredTrainer:
         Returns:
             Repulsion loss value
         """
+        # DEBUG: Log repulsion loss computation
+        logging.info(f"🔍 REPULSION LOSS COMPUTATION DEBUG:")
+        logging.info(f"   - current_encoder_idx: {current_encoder_idx}")
+        logging.info(f"   - target_latents_store keys: {list(target_latents_store.keys()) if target_latents_store else 'None'}")
+        logging.info(f"   - current_latents shape: {current_latents.shape}")
+        logging.info(f"   - margin: {margin}")
+        
         if not target_latents_store or current_encoder_idx == 0:
             # No previous encoders to repulse from
+            logging.info(f"   - REPULSION SKIPPED: No previous encoders to repulse from")
+            logging.info(f"     * target_latents_store: {target_latents_store}")
+            logging.info(f"     * current_encoder_idx: {current_encoder_idx}")
             return 0.0
         
         repulsion_loss = 0.0
@@ -2618,26 +3193,77 @@ class StructuredTrainer:
         
         # Iterate through all previous encoders
         for prev_enc_idx in range(current_encoder_idx):
+            logging.info(f"   - Checking previous encoder {prev_enc_idx}")
             if prev_enc_idx in target_latents_store:
                 prev_targets = target_latents_store[prev_enc_idx]
+                logging.info(f"     * Found targets for encoder {prev_enc_idx}, keys: {list(prev_targets.keys()) if prev_targets else 'None'}")
                 
                 # For each pattern, compute repulsion from previous encoder's targets
                 for pattern_id, target_latents in prev_targets.items():
+                    logging.info(f"       - Pattern {pattern_id}: target_latents type={type(target_latents)}, shape={target_latents.shape if hasattr(target_latents, 'shape') else 'No shape'}")
+                    
                     if target_latents is not None and len(target_latents) > 0:
                         # Ensure target latents have the same batch size
                         if len(target_latents) == len(current_latents):
+                            logging.info(f"         * Batch sizes match: {len(target_latents)} == {len(current_latents)}")
+                            
                             # Compute L2 distance between current and target latents
                             distances = jnp.linalg.norm(current_latents - target_latents, axis=1)
+                            logging.info(f"         * Distances shape: {distances.shape}, mean: {float(jnp.mean(distances)):.6f}")
                             
                             # Repulsion loss: penalize when distance < margin
                             # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2^2)
                             repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
+                            logging.info(f"         * Repulsion term: {float(repulsion_term):.6f}")
+                            
                             repulsion_loss += repulsion_term
                             num_repulsion_terms += 1
+                        else:
+                            logging.warning(f"         * Batch size mismatch: {len(target_latents)} != {len(current_latents)}")
+                            logging.warning(f"         * Attempting to resize target latents to match current batch size")
+                            
+                            # Try to resize target latents to match current batch size
+                            try:
+                                if len(target_latents) > len(current_latents):
+                                    # Sample from target latents to match current batch size
+                                    indices = np.random.choice(len(target_latents), len(current_latents), replace=False)
+                                    resized_target_latents = target_latents[indices]
+                                else:
+                                    # Repeat target latents to match current batch size
+                                    repeat_factor = len(current_latents) // len(target_latents)
+                                    remainder = len(current_latents) % len(target_latents)
+                                    resized_target_latents = np.tile(target_latents, (repeat_factor, 1))
+                                    if remainder > 0:
+                                        additional = target_latents[:remainder]
+                                        resized_target_latents = np.vstack([resized_target_latents, additional])
+                                
+                                logging.info(f"         * Resized target latents from {len(target_latents)} to {len(resized_target_latents)}")
+                                
+                                # Compute L2 distance between current and resized target latents
+                                distances = jnp.linalg.norm(current_latents - resized_target_latents, axis=1)
+                                logging.info(f"         * Resized distances shape: {distances.shape}, mean: {float(jnp.mean(distances)):.6f}")
+                                
+                                # Repulsion loss: penalize when distance < margin
+                                repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
+                                logging.info(f"         * Resized repulsion term: {float(repulsion_term):.6f}")
+                                
+                                repulsion_loss += repulsion_term
+                                num_repulsion_terms += 1
+                                
+                            except Exception as resize_error:
+                                logging.warning(f"         * Failed to resize target latents: {resize_error}")
+                                logging.warning(f"         * Skipping this repulsion term")
+                    else:
+                        logging.warning(f"         * Invalid target_latents: {target_latents}")
+            else:
+                logging.info(f"     * No targets found for encoder {prev_enc_idx}")
         
         # Average over all repulsion terms
         if num_repulsion_terms > 0:
             repulsion_loss = repulsion_loss / num_repulsion_terms
+            logging.info(f"   - Final repulsion loss: {float(repulsion_loss):.6f} (from {num_repulsion_terms} terms)")
+        else:
+            logging.info(f"   - No repulsion terms computed, returning 0.0")
         
         return repulsion_loss
     
@@ -2653,14 +3279,20 @@ class StructuredTrainer:
         Returns:
             Dictionary mapping pattern_id to target latent representations
         """
+        logging.info(f"🔍 EXTRACTING TARGET LATENTS for Encoder {encoder_idx}")
         target_latents = {}
+        
+        # Use the same batch size as training to avoid mismatch
+        num_samples = self.batch_size  # Use batch_size instead of fixed 32
+        logging.info(f"   - Using batch_size={num_samples} for target latents (matching training)")
         
         # Create evaluation data for each pattern
         for pattern_id in [1, 2, 3]:
             try:
                 # Generate pattern-specific data
-                pattern_data = self._create_pattern_dataset(pattern_id, num_samples=32)  # Use 32 samples for efficiency
+                pattern_data = self._create_pattern_dataset(pattern_id, num_samples=num_samples)
                 grids, shapes, _ = pattern_data
+                logging.info(f"   - Pattern {pattern_id}: grids shape={grids.shape}, shapes shape={shapes.shape}")
                 
                 # Get encoder outputs
                 mu, logvar = self.encoders[encoder_idx].apply(
@@ -2671,14 +3303,19 @@ class StructuredTrainer:
                     mutable=False
                 )
                 
+                logging.info(f"   - Pattern {pattern_id}: mu shape={mu.shape}, logvar shape={logvar.shape}")
+                
                 # Use mean of latents as target (or could use multiple samples)
                 target_lat = mu.mean(axis=-2)  # Mean over pairs
                 target_latents[pattern_id] = jnp.array(target_lat)
+                
+                logging.info(f"   - Pattern {pattern_id}: target_lat shape={target_lat.shape}, mean={float(jnp.mean(target_lat)):.6f}")
                 
             except Exception as e:
                 logging.warning(f"Failed to extract target latents for Encoder {encoder_idx}, Pattern {pattern_id}: {e}")
                 target_latents[pattern_id] = None
         
+        logging.info(f"   - Final target_latents keys: {list(target_latents.keys())}")
         return target_latents
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
@@ -2917,9 +3554,10 @@ class StructuredTrainer:
                                     logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                             
                             # Ensure step is greater than or equal to current WandB step to avoid monotonicity issues
-                            if step < 600:  # If step is too small, use a larger value
-                                adjusted_step = max(600, step + 600)
-                                logging.info(f"⚠️  Test metrics step {step} is too small for WandB (current: 600), using adjusted step {adjusted_step}")
+                            current_wandb_step = wandb.run.step if hasattr(wandb.run, 'step') else 0
+                            if step <= current_wandb_step:
+                                adjusted_step = current_wandb_step + 1
+                                logging.info(f"⚠️  Test metrics step {step} is <= current WANDB step ({current_wandb_step}), using adjusted step {adjusted_step}")
                                 wandb.log(test_metrics, step=adjusted_step)
                             else:
                                 wandb.log(test_metrics, step=step)
@@ -3114,12 +3752,14 @@ class StructuredTrainer:
                                             logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                                     
                                     # Ensure step is greater than or equal to current WandB step to avoid monotonicity issues
-                                    if step < 600:  # If step is too small, use a larger value
-                                        adjusted_step = max(600, step + 600)
-                                        logging.info(f"⚠️  Test metrics step {step} is too small for WandB (current: 600), using adjusted step {adjusted_step}")
+                                    current_wandb_step = wandb.run.step if hasattr(wandb.run, 'step') else 0
+                                    if step <= current_wandb_step:
+                                        adjusted_step = current_wandb_step + 1
+                                        logging.info(f"⚠️  Test metrics step {step} is <= current WANDB step ({current_wandb_step}), using adjusted step {adjusted_step}")
                                         wandb.log(test_metrics, step=adjusted_step)
                                     else:
                                         wandb.log(test_metrics, step=step)
+                                    
                                     plt.close('all')  # Close all figures to prevent memory leaks
                                     # Explicitly close additional T-SNE figures
                                     if fig_tsne_samples is not None:
@@ -3864,19 +4504,23 @@ class StructuredTrainer:
                 
                 # Log clustering metrics to WandB with proper step tracking
                 if step is not None:
+                    # Get current WANDB step to ensure monotonicity
+                    current_wandb_step = wandb.run.step if hasattr(wandb.run, 'step') else 0
+                    
                     # Ensure step is greater than or equal to current WandB step to avoid monotonicity issues
-                    if step < 600:  # If step is too small, use a larger value
-                        adjusted_step = max(600, step + 600)
-                        logging.info(f"⚠️  Step {step} is too small for WandB (current: 600), using adjusted step {adjusted_step}")
+                    if step <= current_wandb_step:
+                        adjusted_step = current_wandb_step + 1
+                        logging.info(f"⚠️  Step {step} is <= current WANDB step ({current_wandb_step}), using adjusted step {adjusted_step}")
                         wandb.log(clustering_metrics, step=adjusted_step)
                     else:
                         wandb.log(clustering_metrics, step=step)
                     logging.info(f"Clustering metrics computed: {clustering_metrics}")
                 else:
                     # If no step provided, use a step value that's greater than current WandB step
-                    default_step = 600  # Use 600 as default to maintain consistency with current WandB step
+                    current_wandb_step = wandb.run.step if hasattr(wandb.run, 'step') else 0
+                    default_step = current_wandb_step + 1
                     wandb.log(clustering_metrics, step=default_step)
-                    logging.warning(f"⚠️  Clustering metrics logged with default step=600 (step parameter was None)")
+                    logging.warning(f"⚠️  Clustering metrics logged with default step={default_step} (step parameter was None)")
                     logging.info(f"Clustering metrics computed (default step): {clustering_metrics}")
                 
             except Exception as e:
@@ -3906,7 +4550,14 @@ class StructuredTrainer:
         if fig_tsne_encoders is not None:
             wandb_log_data[f"test/{test_name}/latents_encoders_pattern1"] = wandb.Image(fig_tsne_encoders)
         
-        wandb.log(wandb_log_data, step=step)
+        # Ensure step is greater than or equal to current WandB step to avoid monotonicity issues
+        current_wandb_step = wandb.run.step if hasattr(wandb.run, 'step') else 0
+        if step is None or step <= current_wandb_step:
+            adjusted_step = current_wandb_step + 1
+            logging.info(f"⚠️  Test metrics step {step} is <= current WANDB step ({current_wandb_step}), using adjusted step {adjusted_step}")
+            wandb.log(wandb_log_data, step=adjusted_step)
+        else:
+            wandb.log(wandb_log_data, step=step)
 
         # NEW: Confidence panel per pattern (one task per pattern)
         try:
@@ -3981,7 +4632,14 @@ class StructuredTrainer:
                     pattern_id=pid,  # Pattern ID for filtering
                     pattern_name=pattern_names.get(pid, f"Pattern {pid}"),  # Pattern name
                 )
-                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)}, step=step)
+                # Ensure step is greater than or equal to current WandB step to avoid monotonicity issues
+                current_wandb_step = wandb.run.step if hasattr(wandb.run, 'step') else 0
+                if step is None or step <= current_wandb_step:
+                    adjusted_step = current_wandb_step + 1
+                    logging.info(f"⚠️  Confidence panel step {step} is <= current WANDB step ({current_wandb_step}), using adjusted step {adjusted_step}")
+                    wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)}, step=adjusted_step)
+                else:
+                    wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)}, step=step)
                 plt.close(fig_panel)
                 
                 logging.info(f"Generated confidence panel for pattern {pid} with {len(enc_mus[0])} pairs")
@@ -4706,6 +5364,7 @@ class StructuredTrainer:
         try:
             import matplotlib.pyplot as plt
             import numpy as np
+            from scipy.stats import norm
             
             logging.info(f"🔍 Creating merged encoder certainty panel after Phase 1 (step {step})")
             
@@ -4715,15 +5374,18 @@ class StructuredTrainer:
             for pattern_id in [1, 2, 3]:
                 eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
             
-            # Create a figure with subplots for each pattern
-            fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-            if len(axes) == 1:
-                axes = [axes]
+            # Create a figure with subplots for each pattern (histogram + Gaussian function)
+            fig, axes = plt.subplots(2, 3, figsize=(20, 12))
+            if len(axes.shape) == 1:
+                axes = axes.reshape(1, -1)
             
             pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
             
             for pattern_idx, pattern_id in enumerate([1, 2, 3]):
-                ax = axes[pattern_idx]
+                # Top row: histograms
+                ax_hist = axes[0, pattern_idx]
+                # Bottom row: Gaussian functions
+                ax_gauss = axes[1, pattern_idx]
                 
                 if pattern_id in eval_data:
                     grids, shapes, pattern_ids = eval_data[pattern_id]
@@ -4762,18 +5424,18 @@ class StructuredTrainer:
                     
                     for enc_idx, (variances, label, color) in enumerate(zip(all_encoder_variances, encoder_labels, colors)):
                         # Create histogram with transparency for overlap
-                        ax.hist(variances, bins=30, alpha=0.7, label=label, color=color, 
-                               edgecolor='black', linewidth=0.5)
+                        ax_hist.hist(variances, bins=30, alpha=0.7, label=label, color=color, 
+                                   edgecolor='black', linewidth=0.5)
                     
-                    # Customize the subplot
-                    ax.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances', 
-                               fontsize=14, fontweight='bold')
-                    ax.set_xlabel('Variance', fontsize=12)
-                    ax.set_ylabel('Frequency', fontsize=12)
-                    ax.legend(fontsize=10)
-                    ax.grid(True, alpha=0.3)
+                    # Customize the histogram subplot
+                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances', 
+                                   fontsize=14, fontweight='bold')
+                    ax_hist.set_xlabel('Variance', fontsize=12)
+                    ax_hist.set_ylabel('Frequency', fontsize=12)
+                    ax_hist.legend(fontsize=10)
+                    ax_hist.grid(True, alpha=0.3)
                     
-                    # Add statistics text
+                    # Add statistics text to histogram
                     stats_text = []
                     for enc_idx, variances in enumerate(all_encoder_variances):
                         mean_var = np.mean(variances)
@@ -4781,15 +5443,47 @@ class StructuredTrainer:
                         stats_text.append(f'E{enc_idx}: μ={mean_var:.4f}, σ={std_var:.4f}')
                     
                     stats_str = '\n'.join(stats_text)
-                    ax.text(0.02, 0.98, stats_str, transform=ax.transAxes, 
-                           verticalalignment='top', fontsize=9, 
-                           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    ax_hist.text(0.02, 0.98, stats_str, transform=ax_hist.transAxes, 
+                               verticalalignment='top', fontsize=9, 
+                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                     
-                    logging.info(f"       ✅ Pattern {pattern_id} merged histogram created with {len(all_encoder_variances)} encoders")
+                    # Create Gaussian function plots for this pattern
+                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions', 
+                                     fontsize=14, fontweight='bold')
+                    ax_gauss.set_xlabel('Variance', fontsize=12)
+                    ax_gauss.set_ylabel('Density', fontsize=12)
+                    
+                    # Get range for x-axis based on all encoder variances for this pattern
+                    all_vars = np.concatenate(all_encoder_variances)
+                    x_min, x_max = np.min(all_vars), np.max(all_vars)
+                    x_range = x_max - x_min
+                    x_plot = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, 1000)
+                    
+                    # Plot Gaussian for each encoder
+                    for enc_idx, (variances, color) in enumerate(zip(all_encoder_variances, colors)):
+                        mean_var = np.mean(variances)
+                        std_var = np.std(variances)
+                        
+                        # For variances, we'll use a log-normal approximation since variances are always positive
+                        # Use the mean variance as the scale parameter
+                        gaussian = norm.pdf(x_plot, mean_var, mean_var * 0.5)  # Approximate log-normal with normal
+                        ax_gauss.plot(x_plot, gaussian, color=color, linewidth=2, alpha=0.8, 
+                                    label=f'Encoder {enc_idx}')
+                        
+                        # Add vertical line at mean variance
+                        ax_gauss.axvline(mean_var, color=color, linestyle='--', alpha=0.6, linewidth=1)
+                    
+                    ax_gauss.legend(fontsize=10)
+                    ax_gauss.grid(True, alpha=0.3)
+                    
+                    logging.info(f"       ✅ Pattern {pattern_id} merged histogram and Gaussian plots created with {len(all_encoder_variances)} encoders")
                 else:
-                    ax.text(0.5, 0.5, f'No data for Pattern {pattern_id}', 
-                           ha='center', va='center', transform=ax.transAxes)
-                    ax.set_title(f'Pattern {pattern_id} - No Data')
+                    ax_hist.text(0.5, 0.5, f'No data for Pattern {pattern_id}', 
+                               ha='center', va='center', transform=ax_hist.transAxes)
+                    ax_hist.set_title(f'Pattern {pattern_id} - No Data')
+                    ax_gauss.text(0.5, 0.5, f'No data for Pattern {pattern_id}', 
+                                ha='center', va='center', transform=ax_gauss.transAxes)
+                    ax_gauss.set_title(f'Pattern {pattern_id} - No Data')
             
             # Set overall title
             fig.suptitle(f'Merged Encoder Certainty Panel - All Patterns (Step {step})', 
@@ -4829,6 +5523,16 @@ def run(cfg: omegaconf.DictConfig):
         config=omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
         save_code=True,
     )
+    
+    # Define custom metrics to handle step axis properly and avoid monotonicity warnings
+    wandb.define_metric("step", summary="none")
+    wandb.define_metric("phase_a/*", step_metric="step")
+    wandb.define_metric("phase_b/*", step_metric="step")
+    wandb.define_metric("phase_2/*", step_metric="step")
+    wandb.define_metric("test/*", step_metric="step")
+    wandb.define_metric("timing/*", step_metric="step")
+    wandb.define_metric("encoder_*", step_metric="step")
+    wandb.define_metric("clustering/*", step_metric="step")
     model, encoders, decoder = build_model_from_cfg(cfg)
     enc_params_list, avg_decoder_params = build_params_from_artifacts(cfg, decoder)
     trainer = StructuredTrainer(cfg, model, encoders, decoder)
