@@ -1241,6 +1241,9 @@ class StructuredTrainer:
         new_params["encoders"] = tuple(specialized_encoders)
         updated_state = state.replace(params=new_params)
         
+        # FIXED: Validate that specialization actually worked and encoders have distinct parameters
+        self._validate_encoder_specialization_results(specialized_encoders, enc_params_list)
+        
         self.phase1_completed = True
         
         # Calculate Phase A evaluation statistics
@@ -6371,6 +6374,82 @@ class StructuredTrainer:
             import traceback
             logging.error(f"       Traceback: {traceback.format_exc()}")
             return None
+    
+    def _validate_encoder_specialization_results(self, specialized_encoders: list, original_enc_params: list) -> None:
+        """
+        Validate that encoder specialization actually worked and encoders have distinct parameters.
+        
+        Args:
+            specialized_encoders: List of specialized encoder parameters
+            original_enc_params: List of original encoder parameters
+        """
+        logging.info("🔍 Validating encoder specialization results...")
+        
+        try:
+            # Check 1: Verify all encoders have parameters
+            if len(specialized_encoders) != len(original_enc_params):
+                logging.error(f"❌ CRITICAL: Encoder count mismatch! Expected {len(original_enc_params)}, got {len(specialized_encoders)}")
+                return
+            
+            # Check 2: Verify each encoder has distinct parameters (not copies of encoder 0)
+            encoder_0_params = specialized_encoders[0]
+            
+            for enc_idx in range(1, len(specialized_encoders)):
+                current_params = specialized_encoders[enc_idx]
+                
+                # Check if this encoder has the same parameters as encoder 0
+                if self._are_parameters_identical(encoder_0_params, current_params):
+                    logging.error(f"❌ CRITICAL: Encoder {enc_idx} has IDENTICAL parameters to Encoder 0!")
+                    logging.error(f"   This indicates the specialization bug was NOT fixed!")
+                    logging.error(f"   Encoder {enc_idx} will NOT be specialized!")
+                else:
+                    logging.info(f"✅ Encoder {enc_idx} has DISTINCT parameters from Encoder 0")
+            
+            # Check 3: Verify parameters changed from original (specialization actually happened)
+            for enc_idx, (specialized, original) in enumerate(zip(specialized_encoders, original_enc_params)):
+                if self._are_parameters_identical(specialized, original):
+                    logging.warning(f"⚠️  Encoder {enc_idx} parameters are IDENTICAL to original!")
+                    logging.warning(f"   This suggests specialization may not have worked for this encoder")
+                else:
+                    logging.info(f"✅ Encoder {enc_idx} parameters CHANGED during specialization")
+            
+            logging.info("🔍 Encoder specialization validation completed")
+            
+        except Exception as e:
+            logging.error(f"❌ Encoder specialization validation failed: {e}")
+    
+    def _are_parameters_identical(self, params1: dict, params2: dict) -> bool:
+        """
+        Check if two parameter dictionaries are identical.
+        
+        Args:
+            params1: First parameter dictionary
+            params2: Second parameter dictionary
+            
+        Returns:
+            True if parameters are identical, False otherwise
+        """
+        try:
+            # Quick check: if they're the same object, they're identical
+            if params1 is params2:
+                return True
+            
+            # Deep comparison of parameter values
+            def compare_params(p1, p2):
+                if isinstance(p1, dict) and isinstance(p2, dict):
+                    if set(p1.keys()) != set(p2.keys()):
+                        return False
+                    return all(compare_params(p1[k], p2[k]) for k in p1.keys())
+                elif isinstance(p1, (jnp.ndarray, np.ndarray)) and isinstance(p2, (jnp.ndarray, np.ndarray)):
+                    return jnp.array_equal(p1, p2)
+                else:
+                    return p1 == p2
+            
+            return compare_params(params1, params2)
+            
+        except Exception as e:
+            logging.warning(f"Parameter comparison failed: {e}")
+            return False
 
 
 

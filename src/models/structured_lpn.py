@@ -230,9 +230,10 @@ class StructuredLPN(nn.Module):
                 # Variance control metrics for monitoring
                 contrastive_avg_var_target=avg_var_target if 'avg_var_target' in locals() else 0.0,
                 contrastive_avg_var_other=avg_var_other if 'avg_var_other' in locals() else 0.0,
-                # Specialization quality metrics
-                contrastive_specialization_ratio=avg_var_target / (avg_var_other + 1e-8) if 'avg_var_target' in locals() and 'avg_var_other' in locals() else 1.0,
-                contrastive_specialization_score=jnp.log(avg_var_target / (avg_var_other + 1e-8) + 1e-8) if 'avg_var_target' in locals() and 'avg_var_other' in locals() else 0.0,
+                # FIXED: Specialization quality metrics - higher ratio = better specialization
+                # Ratio = other_variance / target_variance (should increase during training)
+                contrastive_specialization_ratio=avg_var_other / (avg_var_target + 1e-8) if 'avg_var_target' in locals() and 'avg_var_other' in locals() else 1.0,
+                contrastive_specialization_score=jnp.log(avg_var_other / (avg_var_target + 1e-8) + 1e-8) if 'avg_var_target' in locals() and 'avg_var_other' in locals() else 0.0,
             )
 
         return loss, metrics
