@@ -440,10 +440,50 @@ class StructuredTrainer:
             logging.info(f"Generated fallback balanced evaluation dataset:")
             logging.info(f"  - Total samples: {self.eval_grids.shape[0]}")
             logging.info(f"  - Samples per pattern: {samples_per_pattern}")
-            logging.info(f"  - Samples per pattern: {samples_per_pattern}")
             logging.info(f"  - Grids shape: {self.eval_grids.shape}")
             logging.info(f"  - Shapes shape: {self.eval_shapes.shape}")
             logging.info(f"  - Pattern IDs: {self.eval_pattern_ids[:10]}... (first 10) - should be [1,1,1,...,2,2,2,...,3,3,3,...]")
+        
+        # CRITICAL: Load pattern datasets ONCE at initialization for consistent certainty plots
+        # This ensures the same data is used every time the certainty plot is generated
+        # FIXES: The issue where certainty plots mixed datasets after step 100
+        logging.info("🔍 Loading pattern datasets for consistent certainty plots...")
+        self.pattern_datasets = {}
+        pattern_to_folder = {
+            1: "struct_pattern_1",
+            2: "struct_pattern_2", 
+            3: "struct_pattern_3"
+        }
+        
+        for pattern_id in [1, 2, 3]:
+            try:
+                dataset_folder = pattern_to_folder[pattern_id]
+                dataset_path = os.path.join("src/datasets", dataset_folder)
+                
+                grids = np.load(os.path.join(dataset_path, "grids.npy")).astype(np.uint8)
+                shapes = np.load(os.path.join(dataset_path, "shapes.npy")).astype(np.uint8)
+                
+                # Store the loaded datasets
+                self.pattern_datasets[pattern_id] = {
+                    'grids': jnp.array(grids),
+                    'shapes': jnp.array(shapes),
+                    'pattern_ids': jnp.full(len(grids), pattern_id, dtype=jnp.uint8)
+                }
+                
+                logging.info(f"      ✅ Loaded {dataset_folder}: {grids.shape[0]} samples, {grids.shape}")
+                
+            except Exception as e:
+                logging.error(f"      ❌ Failed to load dataset {dataset_folder}: {e}")
+                logging.warning(f"      Falling back to synthetic data generation for pattern {pattern_id}")
+                # Don't store anything - will use synthetic generation as fallback
+        
+        if self.pattern_datasets:
+            logging.info(f"      📊 Pattern datasets loaded successfully: {list(self.pattern_datasets.keys())}")
+            # Log dataset details for verification
+            for pattern_id, data in self.pattern_datasets.items():
+                logging.info(f"        Pattern {pattern_id}: {data['grids'].shape[0]} samples, shape: {data['grids'].shape}")
+        else:
+            logging.warning("      ⚠️ No pattern datasets loaded - will use synthetic generation")
         
         # Load test datasets for comprehensive evaluation (like train.py)
         self.test_datasets = []
@@ -1445,7 +1485,8 @@ class StructuredTrainer:
             decoder=self.decoder
         )
         
-        # Generate evaluation data for all patterns using balanced pattern-specific datasets
+        # Generate evaluation data for all patterns using PRE-LOADED datasets from initialization
+        # This ensures the EXACT SAME data is used every time, preventing dataset mixing
         eval_data = {}
         num_eval_samples = 100  # same number for each pattern to ensure even coverage
         for pattern_id in [1, 2, 3]:
@@ -3196,10 +3237,10 @@ class StructuredTrainer:
         return grids, shapes, pattern_ids
     
     def _create_pattern_dataset(self, pattern_id: int, num_samples: int) -> tuple:
-        """Create a dataset composed solely of a single pattern by loading from pre-existing datasets.
+        """Create a dataset composed solely of a single pattern using pre-loaded datasets.
 
-        This loads the actual struct_pattern_1, struct_pattern_2, struct_pattern_3 datasets
-        instead of generating synthetic data, ensuring consistent evaluation data.
+        This method now uses the datasets loaded ONCE at initialization,
+        ensuring the same data is used every time for consistent certainty plots.
 
         Args:
             pattern_id: Pattern to generate (1, 2, or 3).
@@ -3210,50 +3251,69 @@ class StructuredTrainer:
             entries corresponding to ``pattern_id``.
         """
         import numpy as np
-        import os
         
-        # Map pattern_id to dataset folder names
-        pattern_to_folder = {
-            1: "struct_pattern_1",
-            2: "struct_pattern_2", 
-            3: "struct_pattern_3"
-        }
-        
-        if pattern_id not in pattern_to_folder:
-            logging.warning(f"Unknown pattern_id {pattern_id}, using pattern 1")
-            pattern_id = 1
-            
-        dataset_folder = pattern_to_folder[pattern_id]
         pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
         
-        logging.info(f"      Loading {num_samples} samples from {dataset_folder} ({pattern_names[pattern_id]})")
-        
-        # Load the pre-existing dataset
-        try:
-            dataset_path = os.path.join("src/datasets", dataset_folder)
-            grids = np.load(os.path.join(dataset_path, "grids.npy")).astype(np.uint8)
-            shapes = np.load(os.path.join(dataset_path, "shapes.npy")).astype(np.uint8)
+        # Use pre-loaded datasets from initialization
+        if hasattr(self, 'pattern_datasets') and pattern_id in self.pattern_datasets:
+            dataset_data = self.pattern_datasets[pattern_id]
+            grids = dataset_data['grids']
+            shapes = dataset_data['shapes']
+            pattern_ids = dataset_data['pattern_ids']
             
             # Ensure we have enough samples
             available_samples = len(grids)
             if available_samples < num_samples:
-                logging.warning(f"      Dataset {dataset_folder} only has {available_samples} samples, using all available")
+                logging.warning(f"      Dataset pattern {pattern_id} only has {available_samples} samples, using all available")
                 num_samples = available_samples
             
-            # Take the first num_samples from the dataset
+            # Take the first num_samples from the pre-loaded dataset
             grids = grids[:num_samples]
             shapes = shapes[:num_samples]
-            pattern_ids = np.full(num_samples, pattern_id, dtype=np.uint8)
+            pattern_ids = pattern_ids[:num_samples]
             
-            logging.info(f"      Loaded {num_samples} samples from {dataset_folder}: {grids.shape}, {shapes.shape}")
-            return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
-            
-        except Exception as e:
-            logging.error(f"      Failed to load dataset {dataset_folder}: {e}")
-            logging.info(f"      Falling back to synthetic data generation for pattern {pattern_id}")
-            
-            # Fallback to the original synthetic generation method
+            logging.info(f"      Using {num_samples} pre-loaded samples from pattern {pattern_id} ({pattern_names[pattern_id]}): {grids.shape}")
+            return grids, shapes, pattern_ids
+        
+        else:
+            logging.warning(f"      No pre-loaded dataset for pattern {pattern_id}, falling back to synthetic generation")
             return self._create_pattern_dataset_synthetic(pattern_id, num_samples)
+    
+    def _verify_pattern_datasets_consistency(self) -> None:
+        """
+        Verify that pattern datasets are loaded and consistent.
+        This method helps debug dataset loading issues.
+        """
+        if not hasattr(self, 'pattern_datasets'):
+            logging.warning("      ⚠️ No pattern_datasets attribute found")
+            return
+        
+        if not self.pattern_datasets:
+            logging.warning("      ⚠️ pattern_datasets is empty")
+            return
+        
+        logging.info("      🔍 Verifying pattern datasets consistency...")
+        for pattern_id in [1, 2, 3]:
+            if pattern_id in self.pattern_datasets:
+                data = self.pattern_datasets[pattern_id]
+                grids = data['grids']
+                shapes = data['shapes']
+                pattern_ids = data['pattern_ids']
+                
+                logging.info(f"        Pattern {pattern_id}:")
+                logging.info(f"          - Grids: {grids.shape}, dtype: {grids.dtype}")
+                logging.info(f"          - Shapes: {shapes.shape}, dtype: {shapes.dtype}")
+                logging.info(f"          - Pattern IDs: {pattern_ids.shape}, unique: {jnp.unique(pattern_ids)}")
+                
+                # Verify pattern IDs are correct
+                if not jnp.all(pattern_ids == pattern_id):
+                    logging.error(f"          ❌ Pattern IDs mismatch! Expected all {pattern_id}, got: {jnp.unique(pattern_ids)}")
+                else:
+                    logging.info(f"          ✅ Pattern IDs consistent")
+            else:
+                logging.warning(f"        Pattern {pattern_id}: Not loaded")
+        
+        logging.info("      ✅ Pattern datasets verification complete")
     
     def _create_pattern_dataset_synthetic(self, pattern_id: int, num_samples: int) -> tuple:
         """Create a dataset composed solely of a single pattern with clean tetromino shapes.
@@ -5638,6 +5698,10 @@ class StructuredTrainer:
         This function creates a comprehensive view showing how all encoders (0, 1, 2) represent each pattern
         by merging their variance distributions into single histograms per pattern.
         
+        CRITICAL FIX: Now uses datasets loaded ONCE at initialization (struct_pattern_1, struct_pattern_2, struct_pattern_3)
+        This ensures the EXACT SAME data is used every time the certainty plot is generated,
+        preventing the dataset mixing issue that occurred after step 100.
+        
         Args:
             state: Current training state with all encoder parameters
             step: Current training step
@@ -5652,7 +5716,8 @@ class StructuredTrainer:
             
             logging.info(f"🔍 Creating merged encoder certainty panel after Phase 1 (step {step})")
             
-            # Create evaluation data for all patterns using the SAME approach as Phase 1
+            # Create evaluation data for all patterns using PRE-LOADED datasets from initialization
+            # This ensures the EXACT SAME data is used every time, preventing dataset mixing
             eval_data = {}
             num_eval_samples = 100  # Same number for each pattern to ensure even coverage
             for pattern_id in [1, 2, 3]:
