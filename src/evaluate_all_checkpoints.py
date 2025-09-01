@@ -502,6 +502,13 @@ def generate_checkpoint_figure(checkpoint_name: str, checkpoint_step: int, train
             print("⚠️  No results data available for checkpoint figure generation")
             return None
             
+        # SAFETY CHECK: Prevent issues with extremely large step values
+        if checkpoint_step > 1000000:  # 1 million steps
+            print(f"⚠️  WARNING: Extremely large step value detected for checkpoint figure!")
+            print(f"   Step: {checkpoint_step}")
+            print(f"   This could cause plotting issues. Skipping checkpoint figure generation.")
+            return None
+            
         # Limit the number of methods to prevent extremely wide images
         max_methods = min(4, len(plot_methods)) if plot_methods else 2
         
@@ -2122,6 +2129,43 @@ def main():
                                 print(f"   Skipping plot generation due to unreasonable step values")
                                 continue
 
+                            # NEW: Check for extremely large step values that would cause plotting issues
+                            # Even with few steps, if step values are huge, the plot will be too large
+                            if max(all_steps) > 1000000:  # 1 million steps
+                                print(f"⚠️  WARNING: Extremely large step values detected!")
+                                print(f"   Max step: {max(all_steps)}")
+                                print(f"   This would create a plot with width of {max(all_steps)} pixels")
+                                print(f"   Skipping plot generation due to unreasonable step values")
+                                continue
+
+                            # NEW: Check total array size to prevent memory issues
+                            total_elements = len(all_budgets) * len(all_steps)
+                            if total_elements > 1000000:  # 1 million elements
+                                print(f"⚠️  WARNING: Total array size too large for plotting!")
+                                print(f"   Budgets: {len(all_budgets)} x Steps: {len(all_steps)} = {total_elements} elements")
+                                print(f"   Skipping plot generation to prevent memory/plotting issues")
+                                continue
+
+                            # NEW: Filter steps to reasonable range if they're too spread out
+                            if len(all_steps) > 1 and (max(all_steps) - min(all_steps)) > 10000:
+                                print(f"⚠️  WARNING: Step range too large, filtering to reasonable subset")
+                                print(f"   Original step range: {min(all_steps)} to {max(all_steps)}")
+                                
+                                # Take every nth step to reduce the range
+                                step_range = max(all_steps) - min(all_steps)
+                                if step_range > 100000:
+                                    step_skip = max(1, step_range // 1000)  # Aim for ~1000 steps max
+                                else:
+                                    step_skip = max(1, step_range // 100)   # Aim for ~100 steps max
+                                
+                                filtered_steps = all_steps[::step_skip]
+                                if len(filtered_steps) < 2:
+                                    filtered_steps = [all_steps[0], all_steps[-1]]  # At least 2 points
+                                
+                                print(f"   Filtered to {len(filtered_steps)} steps with skip={step_skip}")
+                                print(f"   New step range: {min(filtered_steps)} to {max(filtered_steps)}")
+                                all_steps = filtered_steps
+
                             if all_steps and all_budgets:
                                 # Create data arrays for selected methods
                                 method_arrays = {}
@@ -2426,6 +2470,21 @@ def main():
                         for k, b in enumerate(actual_budgets):
                             for method in args.plot_methods:
                                 method_arrays[method][k, j] = method_maps[method].get(s, {}).get(b, np.nan)
+
+                    # NEW: Check if we have any valid data (non-NaN values) before plotting
+                    has_valid_data = False
+                    for method in args.plot_methods:
+                        if method in method_arrays:
+                            method_data = method_arrays[method]
+                            if not np.all(np.isnan(method_data)):
+                                has_valid_data = True
+                                break
+                    
+                    if not has_valid_data:
+                        print(f"⚠️  WARNING: No valid data found for final comparison plot!")
+                        print(f"   All method arrays contain only NaN values")
+                        print(f"   Skipping final plot generation")
+                        continue
 
                     # Create plot with selected methods
                     if len(args.plot_methods) == 2:

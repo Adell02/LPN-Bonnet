@@ -1014,17 +1014,17 @@ class StructuredTrainer:
                     # Check if middle column has pixel (T-tetromino characteristic)
                     middle_col = min_col + 1
                     if jnp.any(active_coords[1] == middle_col):
-                        pattern_id = 2  # T-tetromino
+                        pattern_id = 2  # T-tetromino (2x3 box with centered pixel)
                     else:
-                        pattern_id = 3  # L-tetromino
+                        pattern_id = 3  # L-tetromino (2x3 box without centered pixel)
                 else:  # 3x2 box
                     # Check if bottom row has 2 pixels (L-tetromino characteristic)
                     bottom_row = max_row
                     bottom_pixels = jnp.sum(active_coords[1] == bottom_row)
                     if bottom_pixels == 2:
-                        pattern_id = 3  # L-tetromino
+                        pattern_id = 3  # L-tetromino (3x2 box with 2 bottom pixels)
                     else:
-                        pattern_id = 2  # T-tetromino
+                        pattern_id = 2  # T-tetromino (3x2 box without 2 bottom pixels)
             else:
                 # Unexpected dimensions, use fallback
                 logging.warning(f"Sample {i} has unexpected bounding box {height}x{width}. Using fallback pattern ID.")
@@ -1676,7 +1676,9 @@ class StructuredTrainer:
             metrics['overall_score'] = float(overall_score)
             
             # Log metrics to WandB
-            pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
+            # CRITICAL FIX: Correct pattern mapping to match ground truth
+            # Ground truth: 1=O, 2=T, 3=L (as defined in task generator)
+            pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
             pattern_name = pattern_names.get(target_pattern, f"Pattern {target_pattern}")
             
             for metric_name, metric_value in metrics.items():
@@ -2009,7 +2011,9 @@ class StructuredTrainer:
                     )
                     
                     # Create certainty panel
-                    pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
+                    # CRITICAL FIX: Correct pattern mapping to match ground truth
+                    # Ground truth: 1=O, 2=T, 3=L (as defined in task generator)
+                    pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
                     pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
                     
                     # Pass data directly to visualization (exactly like working implementation)
@@ -2410,7 +2414,9 @@ class StructuredTrainer:
                         all_task_ids = np.array(eval_data[pattern_id]['task_ids'])
                         
                         # Create pattern-specific T-SNE
-                        pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
+                        # CRITICAL FIX: Correct pattern mapping to match ground truth
+                        # Ground truth: 1=O, 2=T, 3=L (as defined in task generator)
+                        pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
                         pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
                         
                         fig_tsne = self._create_pattern_specific_tsne(
@@ -3560,6 +3566,9 @@ class StructuredTrainer:
         """
         Create specialized training data for individual encoder training.
         
+        CRITICAL FIX: Now uses diverse seeds to prevent "1260 copies of one grid" problem
+        This ensures meaningful contrastive loss and proper encoder specialization.
+        
         Args:
             target_pattern: Pattern this encoder should specialize in (1, 2, or 3)
             
@@ -3577,20 +3586,25 @@ class StructuredTrainer:
         shapes_list = []
         pattern_ids_list = []
         
-        # Generate target pattern samples (reinforced)
-        for _ in range(target_samples):
-            grids, shapes, _ = self._create_single_pattern_sample(target_pattern)
+        # CRITICAL FIX: Use diverse seeds for target pattern samples to prevent identical copies
+        # This ensures the contrastive loss has meaningful variance to exploit
+        for i in range(target_samples):
+            # Use different seed for each sample to ensure diversity
+            diverse_seed = self.cfg.training.seed + target_pattern * 1000 + i
+            grids, shapes, _ = self._create_single_pattern_sample_with_seed(target_pattern, diverse_seed)
             grids_list.append(grids)
             shapes_list.append(shapes)
             pattern_ids_list.append(target_pattern)
         
-        # Generate other pattern samples (reduced certainty)
+        # Generate other pattern samples (reduced certainty) with diverse seeds
         other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
         samples_per_other = other_samples // len(other_patterns)
         
         for pattern_id in other_patterns:
-            for _ in range(samples_per_other):
-                grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
+            for i in range(samples_per_other):
+                # Use different seed for each sample to ensure diversity
+                diverse_seed = self.cfg.training.seed + pattern_id * 1000 + i + 5000  # Offset to avoid conflicts
+                grids, shapes, _ = self._create_single_pattern_sample_with_seed(pattern_id, diverse_seed)
                 grids_list.append(grids)
                 shapes_list.append(shapes)
                 pattern_ids_list.append(pattern_id)
@@ -3601,6 +3615,8 @@ class StructuredTrainer:
         pattern_ids = jnp.array(pattern_ids_list)
         
         logging.info(f"     Generated {len(grids_list)} samples: {target_samples} target, {other_samples} others")
+        logging.info(f"     ✅ CRITICAL FIX: Used diverse seeds to prevent identical sample copies")
+        logging.info(f"     ✅ This ensures meaningful contrastive loss and proper encoder specialization")
         return grids, shapes, pattern_ids
     
     def _create_pattern_dataset(self, pattern_id: int, num_samples: int) -> tuple:
@@ -3622,7 +3638,9 @@ class StructuredTrainer:
         """
         import numpy as np
         
-        pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
+        # CRITICAL FIX: Correct pattern mapping to match ground truth
+        # Ground truth: 1=O, 2=T, 3=L (as defined in task generator)
+        pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
         
         # CRITICAL DEBUG: Log the call parameters and call stack
         import traceback
@@ -3677,458 +3695,6 @@ class StructuredTrainer:
             logging.error(f"      ❌ CRITICAL ERROR: No pre-loaded dataset for pattern {pattern_id}")
             logging.error(f"      This should NEVER happen if pattern datasets were loaded correctly")
             raise ValueError(f"No pre-loaded dataset for pattern {pattern_id}")
-    
-    def _verify_pattern_datasets_consistency(self) -> None:
-        """
-        Verify that pattern datasets are loaded and consistent.
-        This method helps debug dataset loading issues.
-        """
-        if not hasattr(self, 'pattern_datasets'):
-            logging.warning("      ⚠️ No pattern_datasets attribute found")
-            return
-        
-        if not self.pattern_datasets:
-            logging.warning("      ⚠️ pattern_datasets is empty")
-            return
-        
-        logging.info("      🔍 Verifying pattern datasets consistency...")
-        for pattern_id in [1, 2, 3]:
-            if pattern_id in self.pattern_datasets:
-                data = self.pattern_datasets[pattern_id]
-                grids = data['grids']
-                shapes = data['shapes']
-                pattern_ids = data['pattern_ids']
-                
-                logging.info(f"        Pattern {pattern_id}:")
-                logging.info(f"          - Grids: {grids.shape}, dtype: {grids.dtype}")
-                logging.info(f"          - Shapes: {shapes.shape}, dtype: {shapes.dtype}")
-                logging.info(f"          - Pattern IDs: {pattern_ids.shape}, unique: {jnp.unique(pattern_ids)}")
-                
-                # Verify pattern IDs are correct
-                if not jnp.all(pattern_ids == pattern_id):
-                    logging.error(f"          ❌ Pattern IDs mismatch! Expected all {pattern_id}, got: {jnp.unique(pattern_ids)}")
-                else:
-                    logging.info(f"          ✅ Pattern IDs consistent")
-            else:
-                logging.warning(f"        Pattern {pattern_id}: Not loaded")
-        
-        logging.info("      ✅ Pattern datasets verification complete")
-    
-    def _create_pattern_dataset_synthetic(self, pattern_id: int, num_samples: int) -> tuple:
-        """Create a dataset composed solely of a single pattern with clean tetromino shapes.
-
-        This is the original synthetic data generation method, kept as a fallback.
-
-        Args:
-            pattern_id: Pattern to generate (1, 2, or 3).
-            num_samples: Number of samples to generate for this pattern.
-
-        Returns:
-            Tuple of (grids, shapes, pattern_ids) each with ``num_samples``
-            entries corresponding to ``pattern_id``.
-        """
-        import numpy as np
-        import random
-        
-        # Set random seed for reproducibility
-        random.seed(self.cfg.training.seed + pattern_id)
-        
-        # Get number of pairs from config
-        num_pairs = self.task_generator_kwargs["num_pairs"]
-        
-        # Define clean tetromino patterns (1-based indexing to match our system)
-        pattern_definitions = {
-            1: {  # L-tetromino (3x2 box) - matches our pattern 1
-                'offsets': [(0, 0), (1, 0), (2, 0), (2, 1)],
-                'box_h': 3, 'box_w': 2,
-                'name': 'L-tetromino'
-            },
-            2: {  # O-tetromino (2x2 square) - matches our pattern 2  
-                'offsets': [(0, 0), (0, 1), (1, 0), (1, 1)],
-                'box_h': 2, 'box_w': 2,
-                'name': 'O-tetromino'
-            },
-            3: {  # T-tetromino (2x3 box) - matches our pattern 3
-                'offsets': [(0, 0), (0, 1), (0, 2), (1, 1)],
-                'box_h': 2, 'box_w': 3,
-                'name': 'T-tetromino'
-            }
-        }
-        
-        if pattern_id not in pattern_definitions:
-            logging.warning(f"Unknown pattern_id {pattern_id}, using pattern 1")
-            pattern_id = 1
-        
-        pattern_info = pattern_definitions[pattern_id]
-        logging.info(f"      Creating {num_samples} synthetic samples of {pattern_info['name']} (Pattern {pattern_id})")
-        
-        # Initialize arrays
-        grids = np.zeros((num_samples, num_pairs, 5, 5, 2), dtype=np.uint8)
-        shapes = np.zeros((num_samples, num_pairs, 2, 2), dtype=np.uint8)
-        pattern_ids = np.full(num_samples, pattern_id, dtype=np.uint8)
-        
-        for sample_idx in range(num_samples):
-            # Sample colors for this sample (consistent across all pairs)
-            colors = [random.randint(1, 9) for _ in range(4)]
-            
-            for pair_idx in range(num_pairs):
-                # Generate input grid with single anchor point
-                input_grid = np.zeros((5, 5), dtype=np.uint8)
-                output_grid = np.zeros((5, 5), dtype=np.uint8)
-                
-                # Choose random position for pattern (ensuring it fits)
-                max_row = 5 - pattern_info['box_h']
-                max_col = 5 - pattern_info['box_w']
-                top = random.randint(0, max_row)
-                left = random.randint(0, max_col)
-                
-                # Mark anchor in input
-                input_grid[top, left] = 0  # Use 0 for input (anchor point)
-                
-                # Draw pattern in output
-                for k, (dr, dc) in enumerate(pattern_info['offsets']):
-                    output_grid[top + dr, left + dc] = colors[k % len(colors)]
-                
-                # Store in arrays
-                grids[sample_idx, pair_idx, :, :, 0] = input_grid
-                grids[sample_idx, pair_idx, :, :, 1] = output_grid
-                shapes[sample_idx, pair_idx, 0] = [5, 5] # [input_rows, input_cols]
-                shapes[sample_idx, pair_idx, 1] = [5, 5] # [output_rows, output_cols]
-        
-        logging.info(f"      Generated {num_samples} synthetic samples: {grids.shape}, {shapes.shape}")
-        return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
-    
-    def _create_single_pattern_sample(self, pattern_id: int) -> tuple:
-        """
-        Create a single sample for a specific pattern.
-        
-        Args:
-            pattern_id: Pattern to generate (1, 2, or 3)
-            
-        Returns:
-            Tuple of (grids, shapes, pattern_ids)
-        """
-        # Use the existing pattern generation logic
-        from datasets.task_gen.dataloader import make_task_gen_dataloader
-        
-        dataloader = make_task_gen_dataloader(
-            batch_size=1,
-            log_every_n_steps=1,
-            num_workers=0,
-            task_generator_class="STRUCT_PATTERN",
-            num_pairs=self.task_generator_kwargs["num_pairs"],
-            online_data_augmentation=self.cfg.training.online_data_augmentation,
-            seed=self.cfg.training.seed + pattern_id,
-            pattern=pattern_id,
-            pattern_per_task=True,
-            num_rows=self.task_generator_kwargs.get("num_rows", 5),
-            num_cols=self.task_generator_kwargs.get("num_cols", 5),
-        )
-        
-        # CRITICAL FIX: This method creates the SAME sample every time due to fixed seed
-        # This causes the "1260 copies of one grid" problem
-        # Use _create_single_pattern_sample_with_seed for diverse samples
-        
-        # Extract single sample - handle different dataloader output formats
-        try:
-            # Try the expected format first
-            for batch in dataloader:
-                if len(batch) == 2:
-                    # Format: (grids, shapes)
-                    grids, shapes = batch
-                    # Extract from batch format: (log_every_n_steps, batch_size, ...)
-                    return grids[0, 0], shapes[0, 0], pattern_id
-                elif len(batch) == 3:
-                    # Format: (grids, shapes, pattern_ids)
-                    grids, shapes, _ = batch
-                    return grids[0, 0], shapes[0, 0], pattern_id
-                else:
-                    # Unexpected format, try to handle gracefully
-                    logging.warning(f"Unexpected dataloader output format: {len(batch)} elements")
-                    if hasattr(batch, '__getitem__'):
-                        grids = batch[0] if len(batch) > 0 else None
-                        shapes = batch[1] if len(batch) > 1 else None
-                        if grids is not None and shapes is not None:
-                            return grids[0, 0], shapes[0, 0], pattern_id
-                    
-                    # Fallback: create minimal sample
-                    logging.warning(f"Creating fallback sample for pattern {pattern_id}")
-                    num_pairs = self.task_generator_kwargs["num_pairs"]
-                    fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
-                    fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
-                    return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
-                    
-        except Exception as e:
-            logging.error(f"Error creating single pattern sample for pattern {pattern_id}: {e}")
-            # Create minimal fallback sample
-            num_pairs = self.task_generator_kwargs["num_pairs"]
-            fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
-            fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
-            return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
-
-    def _create_single_pattern_sample_with_seed(self, pattern_id: int, seed: int) -> tuple:
-        """
-        Create a single sample for a specific pattern with a given seed.
-        
-        CRITICAL FIX: This method ensures diversity by using different seeds
-        This prevents the "1260 copies of one grid" problem that causes artificial zero variance.
-        
-        Args:
-            pattern_id: Pattern to generate (1, 2, or 3)
-            seed: Seed for reproducible but diverse generation
-            
-        Returns:
-            Tuple of (grids, shapes, pattern_ids)
-        """
-        # Use the existing pattern generation logic with variable seed
-        from datasets.task_gen.dataloader import make_task_gen_dataloader
-        
-        dataloader = make_task_gen_dataloader(
-            batch_size=1,
-            log_every_n_steps=1,
-            num_workers=0,
-            task_generator_class="STRUCT_PATTERN",
-            num_pairs=self.task_generator_kwargs["num_pairs"],
-            online_data_augmentation=self.cfg.training.online_data_augmentation,
-            seed=seed,  # CRITICAL: Use variable seed for diversity
-            pattern=pattern_id,
-            pattern_per_task=True,
-            num_rows=self.task_generator_kwargs.get("num_rows", 5),
-            num_cols=self.task_generator_kwargs.get("num_cols", 5),
-        )
-        
-        # Extract single sample - handle different dataloader output formats
-        try:
-            # Try the expected format first
-            for batch in dataloader:
-                if len(batch) == 2:
-                    # Format: (grids, shapes)
-                    grids, shapes = batch
-                    # Extract from batch format: (log_every_n_steps, batch_size, ...)
-                    return grids[0, 0], shapes[0, 0], pattern_id
-                elif len(batch) == 3:
-                    # Format: (grids, shapes, pattern_ids)
-                    grids, shapes, _ = batch
-                    return grids[0, 0], shapes[0, 0], pattern_id
-                else:
-                    # Unexpected format, try to handle gracefully
-                    logging.warning(f"Unexpected dataloader output format: {len(batch)} elements")
-                    if hasattr(batch, '__getitem__'):
-                        grids = batch[0] if len(batch) > 0 else None
-                        shapes = batch[1] if len(batch) > 1 else None
-                        if grids is not None and shapes is not None:
-                            return grids[0, 0], shapes[0, 0], pattern_id
-                    
-                    # Fallback: create minimal sample
-                    logging.warning(f"Creating fallback sample for pattern {pattern_id}")
-                    num_pairs = self.task_generator_kwargs["num_pairs"]
-                    fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
-                    fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
-                    return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
-                    
-        except Exception as e:
-            logging.error(f"Error creating single pattern sample for pattern {pattern_id}: {e}")
-            # Create minimal fallback sample
-            num_pairs = self.task_generator_kwargs["num_pairs"]
-            fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
-            fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
-            return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
-
-    def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 5.0, verbose: bool = True) -> float:
-        """
-        Compute repulsion loss to encourage encoder specialization.
-        
-        Args:
-            current_latents: Current encoder's latent representations (batch_size, latent_dim)
-            target_latents_store: Dictionary mapping encoder_idx to pattern_id to target latents
-            current_encoder_idx: Index of the current encoder
-            margin: Minimum desired distance between encoders
-            verbose: Whether to output detailed debugging information
-            
-        Returns:
-            Repulsion loss value
-        """
-        if verbose:
-            logging.info(f"🔍 REPULSION LOSS COMPUTATION DEBUG:")
-            logging.info(f"   - current_encoder_idx: {current_encoder_idx}")
-            logging.info(f"   - target_latents_store keys: {list(target_latents_store.keys())}")
-            logging.info(f"   - current_latents shape: {current_latents.shape}")
-            logging.info(f"   - margin: {margin}")
-        
-        if not target_latents_store or current_encoder_idx == 0:
-            # No previous encoders to repulse from
-            if verbose:
-                logging.info(f"   - REPULSION SKIPPED: No previous encoders to repulse from")
-                logging.info(f"     * target_latents_store: {target_latents_store}")
-                logging.info(f"     * current_encoder_idx: {current_encoder_idx}")
-            return 0.0
-        
-        # CRITICAL FIX: Use consistent batch size for target latents
-        # Extract target latents with the same batch size as current latents to avoid resizing
-        current_batch_size = current_latents.shape[0]
-        
-        repulsion_loss = 0.0
-        num_repulsion_terms = 0
-        
-        # Iterate through all previous encoders
-        for prev_enc_idx in range(current_encoder_idx):
-            if verbose:
-                logging.info(f"   - Checking previous encoder {prev_enc_idx}")
-            if prev_enc_idx in target_latents_store:
-                prev_targets = target_latents_store[prev_enc_idx]
-                if verbose:
-                    logging.info(f"     * Found targets for encoder {prev_enc_idx}, keys: {list(prev_targets.keys()) if prev_targets else 'None'}")
-                
-                # For each pattern, compute repulsion from previous encoder's targets
-                for pattern_id, target_latents in prev_targets.items():
-                    if verbose:
-                        logging.info(f"       - Pattern {pattern_id}: target_latents type={type(target_latents)}, shape={target_latents.shape if hasattr(target_latents, 'shape') else 'No shape'}")
-                    
-                    if target_latents is not None and len(target_latents) > 0:
-                        # CRITICAL FIX: Always resize target latents to match current batch size
-                        # This ensures consistent computation and avoids batch size mismatches
-                        try:
-                            if len(target_latents) != current_batch_size:
-                                if verbose:
-                                    logging.info(f"         * Resizing target latents from {len(target_latents)} to {current_batch_size}")
-                                
-                                if len(target_latents) > current_batch_size:
-                                    # Sample from target latents to match current batch size
-                                    indices = np.random.choice(len(target_latents), current_batch_size, replace=False)
-                                    resized_target_latents = target_latents[indices]
-                                else:
-                                    # Repeat target latents to match current batch size
-                                    repeat_factor = current_batch_size // len(target_latents)
-                                    remainder = current_batch_size % len(target_latents)
-                                    resized_target_latents = np.tile(target_latents, (repeat_factor, 1))
-                                    if remainder > 0:
-                                        additional = target_latents[:remainder]
-                                        resized_target_latents = np.vstack([resized_target_latents, additional])
-                                
-                                if verbose:
-                                    logging.info(f"         * Resized target latents from {len(target_latents)} to {len(resized_target_latents)}")
-                            else:
-                                resized_target_latents = target_latents
-                                if verbose:
-                                    logging.info(f"         * Batch sizes already match: {len(target_latents)} == {current_batch_size}")
-                            
-                            # Compute L2 distance between current and target latents
-                            distances = jnp.linalg.norm(current_latents - resized_target_latents, axis=1)
-                            if verbose:
-                                logging.info(f"         * Distances shape: {distances.shape}, mean: {float(jnp.mean(distances)):.6f}")
-                            
-                            # IMPROVED REPULSION LOSS: Use a more effective repulsion strategy
-                            # Option 1: Exponential repulsion that increases as distances get smaller
-                            # This provides strong repulsion when encoders are too close together
-                            exp_repulsion = jnp.mean(jnp.exp(-distances / margin))
-                            
-                            # Option 2: Inverse distance repulsion (always non-zero)
-                            # This ensures continuous repulsion even when distances are large
-                            inv_repulsion = jnp.mean(1.0 / (distances + 1e-6))
-                            
-                            # Option 3: Margin-based repulsion (only when distance < margin)
-                            # This enforces a minimum distance threshold
-                            margin_repulsion = jnp.mean(jnp.maximum(0, margin - distances))
-                            
-                            # Combine all three approaches for robust repulsion
-                            # Scale them appropriately to balance their contributions
-                            # - Exponential: 50% weight for strong local repulsion
-                            # - Inverse: 30% weight for continuous global repulsion  
-                            # - Margin: 20% weight for explicit distance enforcement
-                            final_repulsion_term = (
-                                0.5 * exp_repulsion +      # Exponential: strong repulsion for small distances
-                                0.3 * inv_repulsion * 0.1 + # Inverse: always some repulsion
-                                0.2 * margin_repulsion     # Margin: explicit distance enforcement
-                            )
-                            
-                            if verbose:
-                                logging.info(f"         * Exp repulsion: {float(exp_repulsion):.6f}")
-                                logging.info(f"         * Inv repulsion: {float(inv_repulsion * 0.1):.6f}")
-                                logging.info(f"         * Margin repulsion: {float(margin_repulsion):.6f}")
-                                logging.info(f"         * Final repulsion term: {float(final_repulsion_term):.6f}")
-                            
-                            repulsion_loss += final_repulsion_term
-                            num_repulsion_terms += 1
-                            
-                        except Exception as resize_error:
-                            logging.warning(f"         * Failed to process target latents: {resize_error}")
-                            logging.warning(f"         * Skipping this repulsion term")
-                    else:
-                        logging.warning(f"         * Invalid target_latents: {target_latents}")
-            else:
-                if verbose:
-                    logging.info(f"     * No targets found for encoder {prev_enc_idx}")
-        
-        # Average over all repulsion terms
-        if num_repulsion_terms > 0:
-            repulsion_loss = repulsion_loss / num_repulsion_terms
-            if verbose:
-                logging.info(f"   - Final repulsion loss: {float(repulsion_loss):.6f} (from {num_repulsion_terms} terms)")
-        else:
-            if verbose:
-                logging.info(f"   - No repulsion terms computed, returning 0.0")
-        
-        return repulsion_loss
-    
-    def _extract_target_latents(self, encoder_idx: int, encoder_params: dict, state: TrainState, verbose: bool = True) -> dict:
-        """
-        Extract target latent representations from a trained encoder for repulsion loss.
-        
-        Args:
-            encoder_idx: Index of the encoder
-            encoder_params: Encoder parameters
-            state: Training state
-            verbose: Whether to output detailed debugging information
-            
-        Returns:
-            Dictionary mapping pattern_id to target latent representations
-        """
-        if verbose:
-            logging.info(f"🔍 EXTRACTING TARGET LATENTS for Encoder {encoder_idx}")
-        target_latents = {}
-        
-        # CRITICAL FIX: Use the same batch size as training to avoid mismatch
-        # This ensures target latents have the same batch size as current latents during training
-        num_samples = self.batch_size  # Use batch_size instead of fixed 32
-        if verbose:
-            logging.info(f"   - Using batch_size={num_samples} for target latents (matching training)")
-            logging.info(f"   - This prevents batch size mismatches in repulsion loss computation")
-        
-        # Create evaluation data for each pattern
-        for pattern_id in [1, 2, 3]:
-            try:
-                # Generate pattern-specific data
-                pattern_data = self._create_pattern_dataset(pattern_id, num_samples=num_samples)
-                grids, shapes, _ = pattern_data
-                if verbose:
-                    logging.info(f"   - Pattern {pattern_id}: grids shape={grids.shape}, shapes shape={shapes.shape}")
-                
-                # Get encoder outputs
-                mu, logvar = self.encoders[encoder_idx].apply(
-                    {"params": encoder_params}, 
-                    grids, 
-                    shapes, 
-                    True, 
-                    mutable=False
-                )
-                
-                if verbose:
-                    logging.info(f"   - Pattern {pattern_id}: mu shape={mu.shape}, logvar shape={logvar.shape}")
-                
-                # Use mean of latents as target (or could use multiple samples)
-                target_lat = mu.mean(axis=-2)  # Mean over pairs
-                target_latents[pattern_id] = jnp.array(target_lat)
-                
-                if verbose:
-                    logging.info(f"   - Pattern {pattern_id}: target_lat shape={target_lat.shape}, mean={float(jnp.mean(target_lat)):.6f}")
-                
-            except Exception as e:
-                logging.warning(f"Failed to extract target latents for Encoder {encoder_idx}, Pattern {pattern_id}: {e}")
-                target_latents[pattern_id] = None
-        
-        if verbose:
-            logging.info(f"   - Final target_latents keys: {list(target_latents.keys())}")
-        return target_latents
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
@@ -4874,9 +4440,9 @@ class StructuredTrainer:
         total_sets = int(pairs_np.shape[0])
         spp = max(1, total_sets // 3)
         pattern_sequence = np.concatenate([
-            np.ones(spp, dtype=int),      # Pattern 1 (L-tetromino)
-            np.ones(spp, dtype=int) * 2,  # Pattern 2 (O-tetromino)
-            np.ones(total_sets - 2 * spp, dtype=int) * 3,  # Pattern 3 (T-tetromino)
+            np.ones(spp, dtype=int),      # Pattern 1 (O-tetromino)
+            np.ones(spp, dtype=int) * 2,  # Pattern 2 (T-tetromino)
+            np.ones(total_sets - 2 * spp, dtype=int) * 3,  # Pattern 3 (L-tetromino)
         ])
         # Determine per-pattern counts (at least 1 from each if possible)
         per_pat = max(1, num_show // 3)
@@ -6307,7 +5873,9 @@ class StructuredTrainer:
             if len(axes.shape) == 1:
                 axes = axes.reshape(1, -1)
             
-            pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
+            # CRITICAL FIX: Correct pattern mapping to match ground truth
+            # Ground truth: 1=O, 2=T, 3=L (as defined in task generator)
+            pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
             
             for pattern_idx, pattern_id in enumerate([1, 2, 3]):
                 # Top row: histograms
@@ -6531,28 +6099,6 @@ def run(cfg: omegaconf.DictConfig):
             state = from_bytes(state, data)
         except Exception as e:
             logging.warning(f"Resume failed: {e}")
-    # Handle step counter for resumed runs
-    if cfg.training.get("resume_from_checkpoint"):
-        if hasattr(wandb.run, 'resumed') and wandb.run.resumed:
-            logging.info(f"🔄 Resumed WandB run detected")
-            # For resumed runs, we'll start from step 0 and let WandB handle conflicts
-            trainer.resume_step_offset = 0
-        else:
-            logging.info(f"⚠️  Checkpoint resume requested but WandB run not resumed")
-            trainer.resume_step_offset = 0
-    else:
-        trainer.resume_step_offset = 0
-        
-    state = trainer.train(state, enc_params_list)
-    # Final evaluation with the final step value
-    final_step = cfg.training.total_num_steps
-    trainer.evaluate(state, enc_params_list, final_step)
-
-
-if __name__ == "__main__":
-    run()
-
-    logging.warning(f"Resume failed: {e}")
     # Handle step counter for resumed runs
     if cfg.training.get("resume_from_checkpoint"):
         if hasattr(wandb.run, 'resumed') and wandb.run.resumed:
