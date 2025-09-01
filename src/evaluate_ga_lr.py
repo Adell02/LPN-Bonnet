@@ -360,7 +360,9 @@ def extract_intermediate_losses(npz_path: str, max_budget: int) -> Tuple[Dict[in
             print(f"⚠️  No loss data found in NPZ. Available keys: {list(data.keys())}")
             return {}, {}
         losses = losses.reshape(-1)
-        checkpoints = list(2 * np.arange(1, len(losses) + 1))
+        # FIX: Budget should start from 0 and increment by 2 for each step
+        # This prevents the "2 points at budget 0" issue
+        checkpoints = list(2 * np.arange(0, len(losses)))
         checkpoints = [int(b) for b in checkpoints if b <= max_budget]
         intermediate_losses = {}
         for budget in checkpoints:

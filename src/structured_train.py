@@ -831,98 +831,60 @@ class StructuredTrainer:
         self.encoder_expose_steps = max(0, self.encoder_expose_steps - num_steps)
         return state, avg_metrics
 
-    def _create_balanced_pattern_batch(self, batch_size: int, samples_per_pattern: int) -> tuple[chex.Array, chex.Array, chex.Array]:
+    def _create_balanced_pattern_batch(self, target_pattern: int, step: int) -> tuple[chex.Array, chex.Array, chex.Array]:
         """
-        Create a balanced batch with equal representation from all 3 patterns.
+        SIMPLEST: Create mixed batch with target pattern (T) + fresh other patterns (O) every batch.
         
-        This ensures each batch contains exactly the same number of samples from each pattern,
-        which is crucial for proper contrastive loss computation.
-        
-        FIXED: Now generates NEW data every batch while maintaining strict pattern control.
-        Each encoder gets samples from its target pattern with fresh data every batch.
+        This matches the recommended approach: mixed batches with fresh reshuffling to avoid overfitting.
+        Each batch contains K_T samples from target pattern + K_O samples from other patterns.
         
         Args:
-            batch_size: Total batch size (must be divisible by 3)
-            samples_per_pattern: Number of samples per pattern per batch
+            target_pattern: Target pattern for this batch (T)
+            step: Training step for fresh reshuffling of O samples
             
         Returns:
-            Tuple of (grids, shapes, pattern_ids) with balanced pattern distribution
+            Tuple of (grids, shapes, pattern_ids) with mixed T + O samples
         """
-        if batch_size % 3 != 0:
-            raise ValueError(f"Batch size {batch_size} must be divisible by 3 for uniform pattern distribution")
+        batch_size = self.batch_size
+        target_ratio = self.cfg.training.get("target_pattern_ratio", 0.6)
         
-        # Generate samples for each pattern
+        K_T = int(batch_size * target_ratio)  # Target pattern samples
+        K_O = batch_size - K_T                # Other pattern samples
+        
         grids_list = []
         shapes_list = []
+        pattern_ids_list = []
         
-        for pattern_id in [1, 2, 3]:  # Pattern 1, Pattern 2, Pattern 3
-            # Generate samples_per_pattern samples for this pattern
-            # Use make_task_gen_dataloader directly since make_dataset doesn't support STRUCT_PATTERN
-            from datasets.task_gen.dataloader import make_task_gen_dataloader
-            
-            # CRITICAL FIX: Use unique seed for each pattern AND batch
-            # This ensures new data every batch while maintaining pattern separation
-            pattern_seed = self.cfg.training.seed + (pattern_id * 1000) + (self._batch_counter if hasattr(self, '_batch_counter') else 0) * 10000
-            
-            # Create dataloader for this specific pattern
-            dataloader = make_task_gen_dataloader(
-                batch_size=1,
-                log_every_n_steps=1,
-                num_workers=0,  # No workers for single batch generation
-                task_generator_class="STRUCT_PATTERN",
-                num_pairs=self.task_generator_kwargs["num_pairs"],
-                online_data_augmentation=self.cfg.training.online_data_augmentation,
-                seed=pattern_seed,  # FIXED: Unique seed per pattern per batch
-                pattern=pattern_id,  # FIXED: Specific pattern (not 0)
-                pattern_per_task=True,  # FIXED: Ensure consistent pattern per task
-                num_rows=self.task_generator_kwargs.get("num_rows", 5),
-                num_cols=self.task_generator_kwargs.get("num_cols", 5),
-            )
-            
-            # Generate samples using the dataloader
-            grids_list_pattern = []
-            shapes_list_pattern = []
-            for i, ((grids, shapes), _) in enumerate(zip(dataloader, range(samples_per_pattern))):
-                # The dataloader returns (log_every_n_steps, batch_size, ...) format
-                # Since we set batch_size=1 and log_every_n_steps=1, extract the actual data
-                # grids shape: (1, 1, num_pairs, max_rows, max_cols, 2) -> (num_pairs, max_rows, max_cols, 2)
-                # shapes shape: (1, 1, num_pairs, 2, 2) -> (num_pairs, 2, 2)
-                grids_list_pattern.append(grids[0, 0])  # Extract from batch format
-                shapes_list_pattern.append(shapes[0, 0])  # Extract from batch format
-            
-            # Stack the samples for this pattern
-            g = jnp.stack(grids_list_pattern, axis=0)
-            s = jnp.stack(shapes_list_pattern, axis=0)
-            
-            # DEBUG: Log the actual shapes returned by direct dataloader
-            logging.debug(f"Pattern {pattern_id} - grids shape: {g.shape}, shapes shape: {s.shape}")
-            
-            grids_list.append(g)
-            shapes_list.append(s)
+        # 1. Sample from target pattern (T) - known pattern
+        for i in range(K_T):
+            sample_seed = step * 1000 + target_pattern * 100 + i * 10
+            grids, shapes, _ = self._create_single_pattern_sample_with_seed(target_pattern, sample_seed)
+            grids_list.append(grids)
+            shapes_list.append(shapes)
+            pattern_ids_list.append(target_pattern)
         
-        # CRITICAL FIX: Align pattern generation with pattern IDs
-        # Create explicit pattern IDs that match the concatenation order
-        pattern_ids = jnp.concatenate([
-            jnp.full((samples_per_pattern,), 1),  # Pattern 1
-            jnp.full((samples_per_pattern,), 2),  # Pattern 2  
-            jnp.full((samples_per_pattern,), 3),  # Pattern 3
-        ], axis=0)
+        # 2. Sample from other patterns (O) - fresh reshuffling every batch
+        other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
         
-        # Concatenate all patterns to create balanced batch
-        balanced_grids = jnp.concatenate(grids_list, axis=0)
-        balanced_shapes = jnp.concatenate(shapes_list, axis=0)
+        # Fresh reshuffling: use step to ensure new O samples every batch
+        np.random.seed(step * 1000 + target_pattern * 100)  # Deterministic but fresh per batch
+        other_patterns_shuffled = np.random.permutation(other_patterns)
         
-        # DEBUG: Log the final concatenated shapes and pattern alignment
-        logging.debug(f"Final balanced batch - grids shape: {balanced_grids.shape}, shapes shape: {balanced_shapes.shape}")
-        logging.debug(f"Pattern IDs: {pattern_ids[:10]}... (first 10) - should be [1,1,1,...,2,2,2,...,3,3,3,...]")
-        logging.debug(f"Batch {self._batch_counter if hasattr(self, '_batch_counter') else 0}: Generated NEW data with pattern separation maintained")
+        for i in range(K_O):
+            pattern_idx = i % len(other_patterns)
+            pattern_id = other_patterns_shuffled[pattern_idx]
+            sample_seed = step * 1000 + pattern_id * 100 + i * 10
+            grids, shapes, _ = self._create_single_pattern_sample_with_seed(pattern_id, sample_seed)
+            grids_list.append(grids)
+            shapes_list.append(shapes)
+            pattern_ids_list.append(pattern_id)
         
-        # Increment batch counter for different seeds
-        if not hasattr(self, '_batch_counter'):
-            self._batch_counter = 0
-        self._batch_counter += 1
+        # Concatenate T + O samples into single mixed batch
+        grids = jnp.stack(grids_list, axis=0)
+        shapes = jnp.stack(shapes_list, axis=0)
+        pattern_ids = jnp.array(pattern_ids_list)
         
-        return balanced_grids, balanced_shapes, pattern_ids
+        return grids, shapes, pattern_ids
 
     def _create_balanced_dataloader(self, log_every_n_steps: int):
         """
@@ -940,8 +902,8 @@ class StructuredTrainer:
         
         # Generate the first batch to get the pattern IDs (they're the same for all steps)
         first_batch = self._create_balanced_pattern_batch(
-            self.batch_size, 
-            self.samples_per_pattern_per_batch
+            target_pattern=1,  # Use pattern 1 as base
+            step=0
         )
         first_grids, first_shapes, first_pattern_ids = first_batch
         all_grids.append(first_grids)
@@ -951,8 +913,8 @@ class StructuredTrainer:
         for step in range(1, log_every_n_steps):
             # Generate a balanced batch for this step
             balanced_grids, balanced_shapes, _ = self._create_balanced_pattern_batch(
-                self.batch_size, 
-                self.samples_per_pattern_per_batch
+                target_pattern=1,  # Use pattern 1 as base
+                step=step
             )
             all_grids.append(balanced_grids)
             all_shapes.append(balanced_shapes)
@@ -1449,27 +1411,27 @@ class StructuredTrainer:
                 
                 # FIXED: Compute gradients properly for contrastive learning
                 def contrastive_loss_fn(params):
-                    # SIMPLIFIED: Leave-one-out fine-tuning approach
-                    # Single batch with mixed patterns, simple variance terms
+                    # SIMPLEST: Mixed batches with fresh reshuffling every batch
+                    # Target pattern (T) + Other patterns (O) in same batch
                     
                     # Forward pass through encoder on mixed batch
                     mu, logvar = encoder.apply(
                         {"params": params}, batch[0], batch[1], dropout_eval=False, mutable=False
                     )
                     
-                    # Separate by pattern using masks
+                    # Separate by pattern using masks (T vs O)
                     target_var = jnp.exp(logvar[target_mask])
                     other_var = jnp.exp(logvar[other_mask])
                     
-                    # Simple variance terms as per the recipe
+                    # Simple variance terms as per your recipe
                     alpha_T = self.cfg.training.get("contrastive_kl", 0.1)  # Target pattern coefficient
                     alpha_O = self.cfg.training.get("contrastive_kl", 0.1)  # Other patterns coefficient
                     margin = self.cfg.training.get("contrastive_margin", 1.0)  # Target variance margin
                     
-                    # Target subset: minimize variance (uncertainty down)
+                    # Target subset (T): minimize variance (uncertainty down)
                     L_T = alpha_T * jnp.mean(target_var)
                     
-                    # Other subset: push variance above margin (uncertainty up)
+                    # Other subset (O): push variance above margin (uncertainty up)
                     # Use softplus for smooth gradients at threshold
                     L_O = alpha_O * jnp.mean(jax.nn.softplus(margin - other_var))
                     
@@ -3490,7 +3452,7 @@ class StructuredTrainer:
                 
                 # Generate balanced batch
                 grids, shapes, pattern_ids = self._create_balanced_pattern_batch(
-                    target_pattern, batch_seed
+                    target_pattern, batch_idx
                 )
                 
                 cached_batches.append((grids, shapes, pattern_ids, target_pattern))
@@ -3504,56 +3466,7 @@ class StructuredTrainer:
         
         return cached_batches
     
-    def _create_balanced_pattern_batch(self, target_pattern: int, seed: int) -> tuple:
-        """
-        Create a balanced batch for a specific target pattern.
-        
-        Args:
-            target_pattern: Target pattern for this batch
-            seed: Random seed for reproducibility
-            
-        Returns:
-            Tuple of (grids, shapes, pattern_ids)
-        """
-        batch_size = self.batch_size
-        target_ratio = self.cfg.training.get("target_pattern_ratio", 0.6)
-        
-        target_samples = int(batch_size * target_ratio)
-        other_samples = batch_size - target_samples
-        
-        # Set random seed for this batch
-        np.random.seed(seed)
-        
-        grids_list = []
-        shapes_list = []
-        pattern_ids_list = []
-        
-        # Generate target pattern samples
-        for i in range(target_samples):
-            sample_seed = seed + i * 10
-            grids, shapes, _ = self._create_single_pattern_sample_with_seed(target_pattern, sample_seed)
-            grids_list.append(grids)
-            shapes_list.append(shapes)
-            pattern_ids_list.append(target_pattern)
-        
-        # Generate other pattern samples
-        other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
-        samples_per_other = other_samples // len(other_patterns)
-        
-        for pattern_id in other_patterns:
-            for i in range(samples_per_other):
-                sample_seed = seed + pattern_id * 100 + i * 10
-                grids, shapes, _ = self._create_single_pattern_sample_with_seed(pattern_id, sample_seed)
-                grids_list.append(grids)
-                shapes_list.append(shapes)
-                pattern_ids_list.append(pattern_id)
-        
-        # Stack all samples
-        grids = jnp.stack(grids_list, axis=0)
-        shapes = jnp.stack(shapes_list, axis=0)
-        pattern_ids = jnp.array(pattern_ids_list)
-        
-        return grids, shapes, pattern_ids
+
     
     def _extract_target_latents(self, enc_idx: int, encoder_params: dict, state: TrainState, verbose: bool = False) -> dict:
         """
@@ -3612,15 +3525,18 @@ class StructuredTrainer:
         
         return target_latents
     
-    def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 5.0, verbose: bool = False) -> chex.Array:
+    def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 1.0, verbose: bool = False) -> chex.Array:
         """
-        Compute repulsion loss to push current encoder away from previous encoders' target patterns.
+        SIMPLE REPULSION LOSS: Push current encoder's target latents away from previous encoders'.
+        
+        Minimal implementation: compute mean of previous target latents, then hinge loss on distances.
+        This matches the recommended approach: simple margin-based repulsion with mean aggregation.
         
         Args:
-            current_latents: Current encoder's latent representations
+            current_latents: Current encoder's target latents [batch_size, latent_dim]
             target_latents_store: Dictionary mapping encoder_idx to target latents
             current_encoder_idx: Index of the current encoder being trained
-            margin: Minimum distance margin for repulsion
+            margin: Minimum distance margin for repulsion (default: 1.0)
             verbose: Whether to show verbose output
             
         Returns:
@@ -3629,11 +3545,10 @@ class StructuredTrainer:
         if verbose:
             logging.info(f"       🚫 Computing repulsion loss for Encoder {current_encoder_idx}...")
         
-        total_repulsion = 0.0
-        num_repulsions = 0
-        
         try:
-            # Iterate through previous encoders' target latents
+            # Collect all previous encoders' target latents
+            prev_latents_list = []
+            
             for prev_enc_idx, prev_target_latents in target_latents_store.items():
                 if prev_enc_idx >= current_encoder_idx:
                     continue  # Skip current and future encoders
@@ -3643,39 +3558,44 @@ class StructuredTrainer:
                 
                 if prev_target_pattern in prev_target_latents:
                     prev_latents = prev_target_latents[prev_target_pattern]
+                    prev_latents_list.append(prev_latents)
                     
                     if verbose:
                         logging.info(f"         🚫 Repulsing from Encoder {prev_enc_idx} (Pattern {prev_target_pattern})")
-                        logging.info(f"         📊 Current latents shape: {current_latents.shape}")
                         logging.info(f"         📊 Previous target latents shape: {prev_latents.shape}")
-                    
-                    # Compute pairwise distances between current and previous target latents
-                    # Use mean squared distance as repulsion metric
-                    distances = jnp.mean((current_latents[:, None, :] - prev_latents[None, :, :]) ** 2, axis=-1)
-                    
-                    # Repulsion loss: encourage distances to be larger than margin
-                    # Use hinge loss: max(0, margin - distance)
-                    repulsion_per_pair = jnp.mean(jnp.maximum(0, margin - jnp.sqrt(distances)))
-                    
-                    total_repulsion += repulsion_per_pair
-                    num_repulsions += 1
-                    
-                    if verbose:
-                        mean_dist = float(jnp.mean(jnp.sqrt(distances)))
-                        logging.info(f"         📊 Mean distance: {mean_dist:.6f}, Repulsion: {float(repulsion_per_pair):.6f}")
             
-            if num_repulsions > 0:
-                avg_repulsion = total_repulsion / num_repulsions
-                if verbose:
-                    logging.info(f"       ✅ Repulsion loss computed: {float(avg_repulsion):.6f} (from {num_repulsions} encoders)")
-                return avg_repulsion
-            else:
+            if not prev_latents_list:
                 if verbose:
                     logging.info(f"       ⚠️  No repulsion targets available for Encoder {current_encoder_idx}")
                 return 0.0
+            
+            # SIMPLE: Compute mean of all previous target latents
+            # This is the minimal, effective approach you recommended
+            prev_latents_mean = jnp.mean(jnp.stack(prev_latents_list, axis=0), axis=0)  # [latent_dim]
+            
+            if verbose:
+                logging.info(f"         📊 Current latents shape: {current_latents.shape}")
+                logging.info(f"         📊 Previous mean latents shape: {prev_latents_mean.shape}")
+            
+            # SIMPLE: Compute distances from current latents to previous mean
+            # current_latents: [batch_size, latent_dim]
+            # prev_latents_mean: [latent_dim]
+            # distances: [batch_size]
+            distances = jnp.sqrt(jnp.sum((current_latents - prev_latents_mean[None, :]) ** 2, axis=1))
+            
+            # SIMPLE: Hinge loss - no penalty when distance > margin, otherwise push away
+            # L_repel = γ × Σ max(0, margin - distance)
+            repulsion_loss = jnp.mean(jnp.maximum(0, margin - distances))
+            
+            if verbose:
+                mean_dist = float(jnp.mean(distances))
+                logging.info(f"         📊 Mean distance: {mean_dist:.6f}, Repulsion: {float(repulsion_loss):.6f}")
+                logging.info(f"       ✅ Repulsion loss computed: {float(repulsion_loss):.6f} (from {len(prev_latents_list)} encoders)")
+            
+            return repulsion_loss
                 
         except Exception as e:
-            logging.warning(f"       ⚠️  Repulsion loss computation failed: {e}")
+            logging.warning(f"       ⚠️  Error computing repulsion loss: {e}")
             return 0.0
     
     def _generate_phase2_plots(self, all_encoder_outputs: list, pattern_ids: chex.Array, num_steps: int) -> dict:
@@ -4579,8 +4499,8 @@ class StructuredTrainer:
             # Generate a balanced test batch with uniform pattern distribution
             if hasattr(self, 'task_generator') and self.task_generator:
                 test_grids, test_shapes, test_pattern_ids = self._create_balanced_pattern_batch(
-                    self.batch_size, 
-                    self.samples_per_pattern_per_batch
+                    target_pattern=1,  # Use pattern 1 as base for testing
+                    step=0
                 )
                 test_batch = test_grids, test_shapes
                 logging.info(f"✅ Test forward pass: Using EXPLICIT pattern IDs from balanced generation")

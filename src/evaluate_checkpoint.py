@@ -973,7 +973,9 @@ def evaluate_custom_dataset(
                                     try:
                                         num_steps = payload["ga_losses"].shape[0]
                                         # Create budget array: [0, 2, 4, 6, ...] for GA (2 evaluations per step)
-                                        fallback_budget = np.concatenate([[0], (2 * np.arange(1, num_steps + 1))]).astype(np.int32)
+                                        # FIX: Don't concatenate [0] with the range - this creates duplicate points
+                                        # The budget should start from 0 and increment by 2 for each step
+                                        fallback_budget = (2 * np.arange(0, num_steps)).astype(np.int32)
                                         payload["ga_budget"] = fallback_budget
                                         print(f"[store_latents] Created fallback ga_budget: {fallback_budget.shape}")
                                     except Exception as budget_e:
@@ -1253,7 +1255,9 @@ def evaluate_custom_dataset(
                     payload["ga_losses_per_sample"] = ga_losses_per_sample
                 
                 # Include budget 0 for mean latent evaluation, then 2, 4, 6, ... for optimization steps
-                payload["ga_budget"] = np.concatenate([[0], (2 * np.arange(1, ga_steps_len + 1))]).astype(np.int32)
+                # FIX: Don't concatenate [0] with the range - this creates duplicate points
+                # The budget should start from 0 and increment by 2 for each step
+                payload["ga_budget"] = (2 * np.arange(0, ga_steps_len)).astype(np.int32)
             if es_losses_rows and es_gen_len is not None:
                 es_losses_per_sample = np.vstack(es_losses_rows).astype(np.float32)
                 payload["es_generation_losses_per_sample"] = es_losses_per_sample
