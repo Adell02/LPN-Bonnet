@@ -1020,7 +1020,7 @@ def visualize_loss_difference_heatmap(
     method_B_name: str = "Method B"
 ) -> plt.Figure:
     """
-    Visualize loss difference between two optimization methods as a heatmap with log scaling.
+    Visualize loss difference between two optimization methods as a heatmap without log scaling.
     
     Args:
         steps: 1D array of training steps [S]
@@ -1030,7 +1030,7 @@ def visualize_loss_difference_heatmap(
         method_B_name: Name of second method (typically ES)
         
     Returns:
-        Figure showing heatmap of log-scaled loss differences
+        Figure showing heatmap of raw loss differences (delta)
     """
     from mpl_toolkits.axes_grid1 import make_axes_locatable
 
@@ -1070,27 +1070,19 @@ def visualize_loss_difference_heatmap(
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
-    # Prepare data for log scaling
-    # Handle zero and negative values for log scaling
-    # For loss differences, we want to show the magnitude of the difference
-    abs_diff = np.abs(loss_diff)
-    
-    # Add small epsilon to avoid log(0) and handle very small differences
-    epsilon = 1e-10
-    log_diff = np.log10(abs_diff + epsilon)
-    
+    # Use raw loss difference values without log scaling
     # Create masked array to handle NaN values
-    log_diff_masked = np.ma.masked_invalid(log_diff)
+    loss_diff_masked = np.ma.masked_invalid(loss_diff)
     
     # Determine color limits for better visualization
-    if log_diff_masked.count() > 0:
-        vmin = float(np.nanmin(log_diff_masked))
-        vmax = float(np.nanmax(log_diff_masked))
-        # Ensure reasonable range
-        vmin = max(vmin, -10)  # Don't go below -10 in log space
-        vmax = min(vmax, 10)   # Don't go above 10 in log space
+    if loss_diff_masked.count() > 0:
+        vmin = float(np.nanmin(loss_diff_masked))
+        vmax = float(np.nanmax(loss_diff_masked))
+        # Ensure reasonable range for delta values
+        vmin = max(vmin, -10.0)  # Don't go below -10
+        vmax = min(vmax, 10.0)   # Don't go above 10
     else:
-        vmin, vmax = -5, 5
+        vmin, vmax = -5.0, 5.0
 
     # Create heatmap
     # Handle single-point axes for sane extents
@@ -1108,7 +1100,7 @@ def visualize_loss_difference_heatmap(
     custom_cmap = LinearSegmentedColormap.from_list('custom_continuous', colors, N=n_bins)
     
     im = ax.imshow(
-        log_diff_masked,
+        loss_diff_masked,
         extent=[x0, x1, y0, y1],
         origin='lower', aspect='auto',
         cmap=custom_cmap,  # Use continuous custom color palette
@@ -1144,7 +1136,7 @@ def visualize_loss_difference_heatmap(
     # Colorbar axis
     cax = divider.append_axes("right", size="4%", pad=0.6)
     cbar = fig.colorbar(im, cax=cax)
-    cbar.ax.set_title(f"LOG(LOSS_GA - LOSS_ES)", fontsize=11, pad=10, rotation=0, loc='center')
+    cbar.ax.set_title(f"LOSS_GA - LOSS_ES", fontsize=11, pad=10, rotation=0, loc='center')
     cbar.ax.tick_params(length=3, pad=3)
 
     # Add explanatory text axis

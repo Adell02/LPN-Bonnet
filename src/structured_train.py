@@ -1174,6 +1174,63 @@ class StructuredTrainer:
         logging.info("   - Clustering metrics computed and logged for each encoder")
         logging.info("   - Ready for Phase 2: Joint decoder training")
         
+        # Phase 2: Initial evaluation after Phase 1 completion
+        if cfg.training.get("eval_every_n_logs"):
+            try:
+                logging.info(f"🔍 Phase 2: Running initial evaluation after Phase 1 completion")
+                self.evaluate(updated_state, enc_params_list, step=0)
+                
+                # Initial test datasets evaluation for Phase 2
+                if hasattr(self, 'test_datasets') and self.test_datasets:
+                    for dataset_dict in self.test_datasets:
+                        try:
+                            start = time.time()
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                                updated_state, dataset_dict, step=0
+                            )
+                            test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
+                            
+                            # Upload all figures
+                            for fig, name in [
+                                (fig_grids, "generation"),
+                                (fig_heatmap, "pixel_accuracy"),
+                                (fig_latents, "latents"),
+                                (fig_latents_samples, "latents_samples"),
+                                (fig_search_progress, "search_progress"),
+                                (fig_tsne_samples, "latents_samples"),
+                            ]:
+                                if fig is not None:
+                                    test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)
+                            
+                            # Upload all pattern-specific T-SNE plots
+                            pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+                            for pattern_idx, fig_tsne_encoders_single in enumerate(fig_tsne_encoders_list, 1):
+                                if fig_tsne_encoders_single is not None:
+                                    test_metrics[f"test/{dataset_dict['test_name']}/latents_encoders_pattern{pattern_idx}"] = wandb.Image(fig_tsne_encoders_single)
+                                    logging.info(f"Phase 2 Initial: Logged T-SNE for pattern {pattern_idx} ({pattern_names[pattern_idx]})")
+                                else:
+                                    logging.warning(f"Phase 2 Initial: No T-SNE plot available for pattern {pattern_idx}")
+                            
+                            # Log initial test metrics to WandB
+                            wandb.log(test_metrics, step=0)
+                            logging.info(f"Phase 2 Initial: Test metrics logged for {dataset_dict['test_name']} at step 0")
+                            
+                            # Close all figures to prevent memory leaks
+                            plt.close('all')
+                            if fig_tsne_samples is not None:
+                                plt.close(fig_tsne_samples)
+                            for fig_tsne_encoders_single in fig_tsne_encoders_list:
+                                if fig_tsne_encoders_single is not None:
+                                    plt.close(fig_tsne_encoders_single)
+                            
+                        except Exception as e:
+                            logging.warning(f"Phase 2 Initial: Test dataset {dataset_dict['test_name']} failed: {e}")
+                else:
+                    logging.warning(f"Phase 2 Initial: No test datasets available for evaluation")
+                    
+            except Exception as e:
+                logging.warning(f"Phase 2 Initial evaluation failed: {e}")
+        
         return updated_state
     
     def _train_encoder_individually(self, enc_idx: int, state: TrainState, model: StructuredLPN, target_latents_store: dict = None) -> dict:
@@ -4137,6 +4194,62 @@ class StructuredTrainer:
                 
                 # Note: Comprehensive metrics (T-SNE, clustering, certainty plots) are computed once 
                 # at the beginning of Phase 2 and uploaded through the train_n_steps_phase2 function
+                
+                # Phase 2: Test evaluation every eval_every_n_logs
+                if eval_every_n_logs and (step // log_every) % eval_every_n_logs == 0:
+                    try:
+                        logging.info(f"🔍 Phase 2: Running test evaluation at step {step}")
+                        
+                        # Test datasets evaluation for Phase 2
+                        if hasattr(self, 'test_datasets') and self.test_datasets:
+                            for dataset_dict in self.test_datasets:
+                                try:
+                                    start = time.time()
+                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                                        state, dataset_dict, step=step
+                                    )
+                                    test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
+                                    
+                                    # Upload all figures
+                                    for fig, name in [
+                                        (fig_grids, "generation"),
+                                        (fig_heatmap, "pixel_accuracy"),
+                                        (fig_latents, "latents"),
+                                        (fig_latents_samples, "latents_samples"),
+                                        (fig_search_progress, "search_progress"),
+                                        (fig_tsne_samples, "latents_samples"),
+                                    ]:
+                                        if fig is not None:
+                                            test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)
+                                    
+                                    # Upload all pattern-specific T-SNE plots
+                                    pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+                                    for pattern_idx, fig_tsne_encoders_single in enumerate(fig_tsne_encoders_list, 1):
+                                        if fig_tsne_encoders_single is not None:
+                                            test_metrics[f"test/{dataset_dict['test_name']}/latents_encoders_pattern{pattern_idx}"] = wandb.Image(fig_tsne_encoders_single)
+                                            logging.info(f"Phase 2: Logged T-SNE for pattern {pattern_idx} ({pattern_names[pattern_idx]})")
+                                        else:
+                                            logging.warning(f"Phase 2: No T-SNE plot available for pattern {pattern_idx}")
+                                    
+                                    # Log test metrics to WandB
+                                    wandb.log(test_metrics, step=step)
+                                    logging.info(f"Phase 2: Test metrics logged for {dataset_dict['test_name']} at step {step}")
+                                    
+                                    # Close all figures to prevent memory leaks
+                                    plt.close('all')
+                                    if fig_tsne_samples is not None:
+                                        plt.close(fig_tsne_samples)
+                                    for fig_tsne_encoders_single in fig_tsne_encoders_list:
+                                        if fig_tsne_encoders_single is not None:
+                                            plt.close(fig_tsne_encoders_single)
+                                    
+                                except Exception as e:
+                                    logging.warning(f"Phase 2: Test dataset {dataset_dict['test_name']} failed at step {step}: {e}")
+                        else:
+                            logging.warning(f"Phase 2: No test datasets available for evaluation")
+                            
+                    except Exception as e:
+                        logging.warning(f"Phase 2: Test evaluation failed at step {step}: {e}")
             else:
                 # Phase 1: Log metrics as is
                 wandb.log(metrics, step=step)
@@ -4223,6 +4336,64 @@ class StructuredTrainer:
             epoch += 1
         
         pbar.close()
+        
+        # Final evaluation at the end of training
+        if cfg.training.get("eval_every_n_logs"):
+            try:
+                logging.info(f"🔍 Running final evaluation at step {step} (end of training)")
+                self.evaluate(state, enc_params_list, step)
+                
+                # Final test datasets evaluation
+                if hasattr(self, 'test_datasets') and self.test_datasets:
+                    for dataset_dict in self.test_datasets:
+                        try:
+                            start = time.time()
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                                state, dataset_dict, step=step
+                            )
+                            test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
+                            
+                            # Upload all figures
+                            for fig, name in [
+                                (fig_grids, "generation"),
+                                (fig_heatmap, "pixel_accuracy"),
+                                (fig_latents, "latents"),
+                                (fig_latents_samples, "latents_samples"),
+                                (fig_search_progress, "search_progress"),
+                                (fig_tsne_samples, "latents_samples"),
+                            ]:
+                                if fig is not None:
+                                    test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)
+                            
+                            # Upload all pattern-specific T-SNE plots
+                            pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+                            for pattern_idx, fig_tsne_encoders_single in enumerate(fig_tsne_encoders_list, 1):
+                                if fig_tsne_encoders_single is not None:
+                                    test_metrics[f"test/{dataset_dict['test_name']}/latents_encoders_pattern{pattern_idx}"] = wandb.Image(fig_tsne_encoders_single)
+                                    logging.info(f"Final evaluation: Logged T-SNE for pattern {pattern_idx} ({pattern_names[pattern_idx]})")
+                                else:
+                                    logging.warning(f"Final evaluation: No T-SNE plot available for pattern {pattern_idx}")
+                            
+                            # Log final test metrics to WandB
+                            wandb.log(test_metrics, step=step)
+                            logging.info(f"Final evaluation: Test metrics logged for {dataset_dict['test_name']} at step {step}")
+                            
+                            # Close all figures to prevent memory leaks
+                            plt.close('all')
+                            if fig_tsne_samples is not None:
+                                plt.close(fig_tsne_samples)
+                            for fig_tsne_encoders_single in fig_tsne_encoders_list:
+                                if fig_tsne_encoders_single is not None:
+                                    plt.close(fig_tsne_encoders_single)
+                            
+                        except Exception as e:
+                            logging.warning(f"Final evaluation: Test dataset {dataset_dict['test_name']} failed: {e}")
+                else:
+                    logging.warning(f"Final evaluation: No test datasets available")
+                    
+            except Exception as e:
+                logging.warning(f"Final evaluation failed: {e}")
+        
         return state
 
     def evaluate(self, state: TrainState, enc_params_list: list[dict] = None, step: int = None) -> dict:

@@ -2246,7 +2246,7 @@ def main():
                                 # Create plot with selected methods
                                 if len(args.plot_methods) == 2:
                                     if args.loss:
-                                        # Loss difference plotting: show difference between methods with log scaling
+                                        # Loss difference plotting: show difference between methods (raw delta)
                                         # For loss, lower is better, so we show method_B - method_A (positive = method_A better)
                                         loss_diff = method_arrays[args.plot_methods[1]] - method_arrays[args.plot_methods[0]]
                                         
@@ -2700,8 +2700,8 @@ def main():
                         progress_percentage = int((max_progress / denom_final) * 100)
 
                     if args.loss and len(args.plot_methods) == 2:
-                        plot_type = "Loss Difference (Log-scaled)"
-                        plot_description = f"Log-scaled magnitude of loss difference: {args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()}"
+                        plot_type = "Loss Difference (Delta)"
+                        plot_description = f"Raw loss difference (delta): {args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()}"
                     else:
                         plot_type = "Accuracy Comparison"
                         plot_description = "Higher values = better performance"
