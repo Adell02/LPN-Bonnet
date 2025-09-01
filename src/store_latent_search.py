@@ -497,7 +497,10 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
             # Fix GA shape mismatch: collapse latents to one point per step
             if prefix == "ga_" and t.pts is not None and t.vals is not None:
                 print(f"[plot] GA shape fix: pts={t.pts.shape}, vals={t.vals.shape}")
-                t.pts = _collapse_to_steps(t.pts, steps_len=len(t.vals))
+                # FIX: Don't truncate trajectory - let it keep its full length
+                # The budget calculation will be adjusted later to match the actual trajectory length
+                # This prevents the mismatch where trajectory has 2000 steps but budget only has 1001 points
+                t.pts = _collapse_to_steps(t.pts, steps_len=len(t.pts) if t.pts.ndim >= 2 else len(t.pts))
                 print(f"[plot] GA shape after fix: pts={t.pts.shape}, vals={t.vals.shape}")
             
             t.best_per_gen = _extract_best_per_gen(f, prefix)
@@ -1582,7 +1585,17 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     print(f"[loss] Debug: GA budget NOT found in NPZ")
                 if (dataset_length is not None and dataset_length > 1) and 'ga_losses_per_sample' in f:
                     L = np.array(f['ga_losses_per_sample'])  # (N, S)
-                    x = ga_budget if ga_budget is not None and len(ga_budget) == L.shape[1] else np.arange(L.shape[1])
+                    # FIX: Ensure budget array matches the per-sample losses length
+                    if ga_budget is not None and len(ga_budget) == L.shape[1]:
+                        x = ga_budget
+                        print(f"[loss] Using GA budget from NPZ: {ga_budget.shape}")
+                    else:
+                        # Create budget array that matches the per-sample losses length
+                        x = 2 * np.arange(1, L.shape[1] + 1)
+                        print(f"[loss] Created GA budget array to match per-sample losses: {x.shape}")
+                        if ga_budget is not None:
+                            print(f"[loss] ⚠️  Budget length mismatch: NPZ budget={len(ga_budget)}, losses={L.shape[1]}")
+                    
                     ga_min = np.min(L, axis=0)
                     ga_max = np.max(L, axis=0)
                     ga_mean = np.mean(L, axis=0)
@@ -1599,11 +1612,35 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Fallback single GA curve if no per-sample available
     if has_ga_loss and not did_ga_overlay:
         if ga_steps is not None:
-            ga_budget = 2 * np.arange(1, len(ga.vals) + 1)
-            print(f"[loss] GA budget calculation: {len(ga.vals)} steps → budget points: {ga_budget}")
+            # FIX: Ensure budget array matches the actual trajectory length
+            # The trajectory may have been doubled (e.g., 1000 steps → 2000 steps)
+            actual_steps = len(ga.vals)
+            actual_trajectory_steps = len(ga.pts) if ga.pts is not None else actual_steps
+            
+            print(f"[loss] GA trajectory analysis: loss_values={actual_steps}, trajectory_points={actual_trajectory_steps}, expected_steps={ga_steps + 1}")
+            
+            # Use the larger of the two to ensure budget covers the full trajectory
+            budget_steps = max(actual_steps, actual_trajectory_steps)
+            
+            if budget_steps != ga_steps + 1:  # +1 because trajectory includes initial point
+                print(f"[loss] ⚠️  GA trajectory length mismatch: expected {ga_steps + 1}, using {budget_steps}")
+                print(f"[loss] 🔧 Adjusting budget calculation to match actual trajectory length")
+            
+            # Create budget array that covers the full trajectory
+            ga_budget = 2 * np.arange(1, budget_steps + 1)
+            
+            print(f"[loss] GA budget calculation: {budget_steps} steps → budget points: {ga_budget}")
             print(f"[loss] Debug: GA fallback budget: {ga_budget}")
-            ax.plot(ga_budget, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
-                    markersize=6, label=f"Gradient Ascent (2×{ga_steps} steps)", zorder=3)
+            
+            # Plot the trajectory with the correct budget
+            if ga.pts is not None and len(ga.pts) == budget_steps:
+                # Use trajectory points for x-axis
+                ax.plot(ga_budget, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
+                        markersize=6, label=f"Gradient Ascent (2×{ga_steps} steps)", zorder=3)
+            else:
+                # Fallback to using budget array
+                ax.plot(ga_budget, ga.vals, color="#FBB998", linewidth=3.0, marker='o', 
+                        markersize=6, label=f"Gradient Ascent (2×{ga_steps} steps)", zorder=3)
         else:
             ga_steps_indices = np.arange(len(ga.vals))
             print(f"[loss] Debug: GA using step indices as budget: {ga_steps_indices}")

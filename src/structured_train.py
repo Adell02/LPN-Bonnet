@@ -1449,49 +1449,32 @@ class StructuredTrainer:
                 
                 # FIXED: Compute gradients properly for contrastive learning
                 def contrastive_loss_fn(params):
-                    # CRITICAL FIX: Use DISTINCT batches for target vs other patterns
-                    # This prevents the contradictory goal of maximizing variance on seen samples
+                    # SIMPLIFIED: Leave-one-out fine-tuning approach
+                    # Single batch with mixed patterns, simple variance terms
                     
-                    # Forward pass through encoder on target pattern batch
-                    target_mu, target_logvar = encoder.apply(
+                    # Forward pass through encoder on mixed batch
+                    mu, logvar = encoder.apply(
                         {"params": params}, batch[0], batch[1], dropout_eval=False, mutable=False
                     )
                     
-                    # CRITICAL: Generate FRESH other pattern batch for contrastive learning
-                    # This ensures we're truly pushing uncertainty on unseen other patterns
-                    other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
-                    other_batch_seed = seed + 1000 + step  # Different seed for other batch
+                    # Separate by pattern using masks
+                    target_var = jnp.exp(logvar[target_mask])
+                    other_var = jnp.exp(logvar[other_mask])
                     
-                    # Create other pattern batch with same size as target batch
-                    other_grids, other_shapes, other_pattern_ids = self._create_balanced_pattern_batch(
-                        other_patterns[0], other_batch_seed  # Use first other pattern
-                    )
+                    # Simple variance terms as per the recipe
+                    alpha_T = self.cfg.training.get("contrastive_kl", 0.1)  # Target pattern coefficient
+                    alpha_O = self.cfg.training.get("contrastive_kl", 0.1)  # Other patterns coefficient
+                    margin = self.cfg.training.get("contrastive_margin", 1.0)  # Target variance margin
                     
-                    # Forward pass through encoder on other pattern batch
-                    other_mu, other_logvar = encoder.apply(
-                        {"params": params}, other_grids, other_shapes, dropout_eval=False, mutable=False
-                    )
+                    # Target subset: minimize variance (uncertainty down)
+                    L_T = alpha_T * jnp.mean(target_var)
                     
-                    # Compute variances from DISTINCT batches
-                    target_var = jnp.exp(target_logvar)
-                    other_var = jnp.exp(other_logvar)
+                    # Other subset: push variance above margin (uncertainty up)
+                    # Use softplus for smooth gradients at threshold
+                    L_O = alpha_O * jnp.mean(jax.nn.softplus(margin - other_var))
                     
-                    avg_target_var = jnp.mean(target_var)
-                    avg_other_var = jnp.mean(other_var)
-                    
-                    # CRITICAL FIX: Proper contrastive loss with correct signs
-                    contrastive_coeff = self.cfg.training.get("contrastive_kl", 0.5)
-                    
-                    # Target variance: minimize (positive term)
-                    target_cost = contrastive_coeff * avg_target_var
-                    
-                    # Other variance: maximize by minimizing negative term (push up)
-                    # Use margin-based approach to explicitly drive variances apart
-                    margin = self.cfg.training.get("contrastive_margin", 0.5)
-                    other_cost = contrastive_coeff * jnp.maximum(0, margin - avg_other_var)
-                    
-                    # Total contrastive loss: always positive, drives specialization
-                    contrastive_loss = target_cost + other_cost
+                    # Total contrastive loss: simple addition
+                    contrastive_loss = L_T + L_O
                     
                     # Add regularization
                     reg = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
@@ -1507,15 +1490,19 @@ class StructuredTrainer:
                 # Compute gradients
                 grads = jax.grad(contrastive_loss_fn)(encoder_params)
                 
-                # FIXED: Log contrastive loss details after gradient computation (outside JAX trace)
+                # Log contrastive loss details after gradient computation (outside JAX trace)
                 if step % 50 == 0:
-                    contrastive_coeff = self.cfg.training.get("contrastive_kl", 0.5)
-                    margin = self.cfg.training.get("contrastive_margin", 0.5)
-                    target_cost = contrastive_coeff * float(avg_target_var)
-                    other_cost = contrastive_coeff * max(0, margin - float(avg_other_var))
-                    logging.info(f"       🔧 Using contrastive_kl coefficient: {contrastive_coeff}")
+                    alpha_T = self.cfg.training.get("contrastive_kl", 0.1)
+                    alpha_O = self.cfg.training.get("contrastive_kl", 0.1)
+                    margin = self.cfg.training.get("contrastive_margin", 1.0)
+                    
+                    # Compute costs for logging
+                    L_T = alpha_T * float(avg_target_var)
+                    L_O = alpha_O * float(jax.nn.softplus(margin - avg_other_var))
+                    
+                    logging.info(f"       🔧 Using alpha_T: {alpha_T}, alpha_O: {alpha_O}")
                     logging.info(f"       🔧 Using contrastive_margin: {margin}")
-                    logging.info(f"       🔧 Target cost: {target_cost:.6f}, Other cost: {other_cost:.6f}")
+                    logging.info(f"       🔧 L_T (target): {L_T:.6f}, L_O (other): {L_O:.6f}")
                     logging.info(f"       🔧 Target variance: {float(avg_target_var):.6f} (should decrease)")
                     logging.info(f"       🔧 Other variance: {float(avg_other_var):.6f} (should increase above {margin})")
                 

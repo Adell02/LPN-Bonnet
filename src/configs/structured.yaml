@@ -62,14 +62,13 @@ training:
   total_num_steps: 200
   encoder_expose_steps: 200  # number of initial gradient steps encoders are trainable
   repulsion_kl: 0.5  # Not needed for variance differences
-  # This coefficient controls the strength of contrastive loss
+  # These coefficients control the strength of contrastive loss terms
   # Lower values = more stable, higher values = more aggressive specialization
-  # The system will dynamically adjust this coefficient based on specialization progress
-  contrastive_kl: 1.0  # variance amplification for pre-trained encoders (increased for stronger effect)
+  contrastive_kl: 0.1  # alpha_T and alpha_O coefficients for target vs other patterns
   # This margin controls the target variance for "other" patterns
   # Higher values = stronger push to make encoders uncertain on non-target patterns
   # The loss will penalize when other variance is below this margin
-  contrastive_margin: 0.8  # target variance for other patterns (should be higher than target variance)
+  contrastive_margin: 1.0  # target variance for other patterns (should be higher than target variance)
   target_pattern_ratio: 0.7  # 70% target, 30% others
   log_every_n_steps: 5
   eval_every_n_logs: 5       # null to disable
