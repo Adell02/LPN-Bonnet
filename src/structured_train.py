@@ -1175,7 +1175,7 @@ class StructuredTrainer:
         logging.info("   - Ready for Phase 2: Joint decoder training")
         
         # Phase 2: Initial evaluation after Phase 1 completion
-        if cfg.training.get("eval_every_n_logs"):
+        if self.cfg.training.get("eval_every_n_logs"):
             try:
                 logging.info(f"🔍 Phase 2: Running initial evaluation after Phase 1 completion")
                 self.evaluate(updated_state, enc_params_list, step=0)
@@ -3628,113 +3628,51 @@ class StructuredTrainer:
                             num_repulsion_terms += 1
                         else:
                             logging.warning(f"         * Batch size mismatch: {target_len} != {current_len}")
-                            logging.warning(f"         * Attempting to resize target latents to match current batch size")
-                            
-                            # Try to resize target latents to match current batch size
+                            logging.warning("         * Attempting to resize target latents to match current batch size")
+
                             try:
-                                # Convert JAX tensors to numpy arrays for safe numpy operations
-                                if hasattr(target_latents, 'numpy'):
-                                    target_latents_np = target_latents.numpy()
-                                else:
-                                    target_latents_np = np.array(target_latents)
-                                
                                 if target_len > current_len:
-                                    # Sample from target latents to match current batch size
-                                    indices = np.random.choice(target_len, current_len, replace=False)
-                                    resized_target_latents = target_latents_np[indices]
+                                    # Truncate excess target latents
+                                    resized_target_latents = target_latents[:current_len]
                                 else:
-                                    # Repeat target latents to match current batch size
+                                    # Repeat target latents deterministically to match current batch size
                                     repeat_factor = current_len // target_len
                                     remainder = current_len % target_len
-                                    resized_target_latents = np.tile(target_latents_np, (repeat_factor, 1))
-                                    if remainder > 0:
-                                        additional = target_latents_np[:remainder]
-                                        resized_target_latents = np.vstack([resized_target_latents, additional])
-                                
-                                # Convert to Python scalars for safe logging (avoid JAX format string issues)
-                                target_size = int(target_latents_np.shape[0])
-                                resized_size = int(resized_target_latents.shape[0])
-                                logging.info(f"         * Resized target latents from {target_size} to {resized_size}")
+                                    resized_target_latents = jnp.concatenate(
+                                        [
+                                            jnp.tile(target_latents, (repeat_factor, 1)),
+                                            target_latents[:remainder],
+                                        ],
+                                        axis=0,
+                                    )
 
-                                # Safety check: ensure resized tensor has correct shape
-                                if resized_target_latents.shape[0] != current_len:
-                                    logging.error(f"         ❌ Resize failed: expected {current_len}, got {resized_target_latents.shape[0]}")
-                                    continue
-
-                                # Compute L2 distance between current and resized target latents
-                                resized_target_latents = jnp.asarray(resized_target_latents)
                                 distances = jnp.linalg.norm(current_latents - resized_target_latents, axis=1)
-                                jax.debug.print("         * Resized distances shape: {shape}, mean: {mean:.6f}",
-                                                shape=distances.shape,
-                                                mean=jnp.mean(distances))
-                                
-                                # Repulsion loss: penalize when distance < margin
+                                jax.debug.print(
+                                    "         * Resized distances shape: {shape}, mean: {mean:.6f}",
+                                    shape=distances.shape,
+                                    mean=jnp.mean(distances),
+                                )
+
                                 repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
-                                
-                                # Alternative: soft repulsion using inverse distance (always non-zero)
                                 soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))
-                                
-                                # Use the maximum of both approaches
                                 final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)
-                                
+
                                 jax.debug.print("         * Resized repulsion term: {rt:.6f}", rt=repulsion_term)
                                 jax.debug.print("         * Resized soft repulsion term: {srt:.6f}", srt=soft_repulsion_term)
-                                jax.debug.print("         * Resized final repulsion term: {frt:.6f}", frt=final_repulsion_term)
-                                
+                                jax.debug.print(
+                                    "         * Resized final repulsion term: {frt:.6f}",
+                                    frt=final_repulsion_term,
+                                )
+
                                 repulsion_loss += final_repulsion_term
                                 num_repulsion_terms += 1
-                                
                             except Exception as resize_error:
-                                logging.warning(f"         * Failed to resize target latents: {resize_error}")
-                                logging.warning(f"         * Trying alternative strategy: resize current latents to match target")
-                                
-                                # Alternative strategy: try to resize current latents to match target batch size
-                                try:
-                                    if hasattr(current_latents, 'numpy'):
-                                        current_latents_np = current_latents.numpy()
-                                    else:
-                                        current_latents_np = np.array(current_latents)
-                                    
-                                    if current_len > target_len:
-                                        # Sample from current latents to match target batch size
-                                        indices = np.random.choice(current_len, target_len, replace=False)
-                                        resized_current_latents = current_latents_np[indices]
-                                        resized_target_latents = target_latents_np
-                                    else:
-                                        # Use all current latents, repeat target latents if needed
-                                        resized_current_latents = current_latents_np
-                                        repeat_factor = target_len // current_len
-                                        remainder = target_len % current_len
-                                        resized_target_latents = np.tile(target_latents_np, (repeat_factor, 1))
-                                        if remainder > 0:
-                                            additional = target_latents_np[:remainder]
-                                            resized_target_latents = np.vstack([resized_target_latents, additional])
-                                    
-                                    logging.info(f"         * Alternative strategy: resized current latents to {resized_current_latents.shape[0]}, target to {resized_target_latents.shape[0]}")
-                                    
-                                    # Safety check
-                                    if resized_current_latents.shape[0] != resized_target_latents.shape[0]:
-                                        logging.error(f"         ❌ Alternative strategy failed: size mismatch {resized_current_latents.shape[0]} != {resized_target_latents.shape[0]}")
-                                        continue
-                                    
-                                    # Compute L2 distance between resized current and target latents
-                                    resized_current_latents = jnp.asarray(resized_current_latents)
-                                    resized_target_latents = jnp.asarray(resized_target_latents)
-                                    distances = jnp.linalg.norm(resized_current_latents - resized_target_latents, axis=1)
-                                    
-                                    # Repulsion loss computation
-                                    repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
-                                    soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))
-                                    final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)
-                                    
-                                    jax.debug.print("         * Alternative strategy repulsion term: {rt:.6f}", rt=final_repulsion_term)
-                                    
-                                    repulsion_loss += final_repulsion_term
-                                    num_repulsion_terms += 1
-                                    
-                                except Exception as alt_error:
-                                    logging.warning(f"         * Alternative strategy also failed: {alt_error}")
-                                    logging.warning(f"         * Skipping this repulsion term - both strategies failed")
+                                logging.warning(
+                                    f"         * Failed to resize target latents: {resize_error}"
+                                )
+                                logging.warning(
+                                    "         * Skipping this repulsion term"
+                                )
                     else:
                         logging.warning(f"         * Invalid target_latents: {target_latents}")
             else:
