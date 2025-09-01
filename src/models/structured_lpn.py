@@ -200,7 +200,7 @@ class StructuredLPN(nn.Module):
                 logvar_poe_fixed = jax.lax.stop_gradient(logvar_poe)
                 
                 contrastive_loss, avg_var_target, avg_var_other = self._compute_contrastive_loss(
-                    mus, logvars, mu_poe_fixed, logvar_poe_fixed, pattern_ids
+                    mus, logvars, mu_poe_fixed, logvar_poe_fixed, pattern_ids, contrastive_kl_coeff
                 )
                 loss += contrastive_kl_coeff * contrastive_loss
             except Exception as e:
@@ -492,6 +492,7 @@ class StructuredLPN(nn.Module):
         mu_poe: chex.Array,  # Not used in this implementation but kept for compatibility
         logvar_poe: chex.Array,  # Not used in this implementation but kept for compatibility
         pattern_ids: chex.Array,
+        contrastive_kl_coeff: float = 1.0,  # Add configurable coefficient
     ) -> chex.Array:
         """Compute direct variance control loss for encoder specialization.
         
@@ -499,12 +500,12 @@ class StructuredLPN(nn.Module):
         - Target pattern: variance → 0 (high certainty)
         - Other patterns: variance → ∞ (low certainty)
         
-        The loss function is:
-        L_variance = λ_pos * avg_var_target + λ_neg * avg_var_other
+        The loss function is now per-encoder weighted:
+        L_total = Σ_e [λ_pos * avg_var_target_e + λ_neg * avg_var_other_e]
         
-        Where:
-        - avg_var_target: average variance of target pattern samples for each encoder
-        - avg_var_other: average variance of non-target pattern samples for each encoder
+        Where for each encoder e:
+        - avg_var_target_e: average variance of target pattern samples for encoder e
+        - avg_var_other_e: average variance of non-target pattern samples for encoder e
         - λ_pos: coefficient for target pattern variance (positive = minimize target variance)
         - λ_neg: coefficient for other pattern variance (negative = maximize other variance)
         
@@ -518,11 +519,12 @@ class StructuredLPN(nn.Module):
             mu_poe: (B, N, H) - mean from PoE aggregation (not used)
             logvar_poe: (B, N, H) - log variance from PoE aggregation (not used)
             pattern_ids: (B,) - pattern ID for each sample in batch (1, 2, or 3)
+            contrastive_kl_coeff: float - scaling coefficient for the contrastive loss
             
         Returns:
             variance_loss: scalar - encourages encoder specialization through direct variance control
-            avg_var_target: scalar - average target pattern variance
-            avg_var_other: scalar - average other pattern variance
+            avg_var_target: scalar - average target pattern variance across all encoders
+            avg_var_other: scalar - average other pattern variance across all encoders
         """
         E = mus.shape[0]  # Number of encoders
         B = mus.shape[1]  # Batch size
@@ -565,18 +567,21 @@ class StructuredLPN(nn.Module):
         avg_var_target = jnp.clip(avg_var_target, 0.0, clip_threshold)
         avg_var_other = jnp.clip(avg_var_other, 0.0, clip_threshold)
         
-        # Compute variance control loss
-        # L = λ_pos * avg_var_target + λ_neg * avg_var_other
-        # Where λ_pos > 0 (encourage low target variance) and λ_neg < 0 (encourage high other variance)
-        # For simplicity, we use λ_pos = 10.0 and λ_neg = -10.0
-        # This can be made configurable through the contrastive_kl_coeff parameter
+        # IMPROVED: Per-encoder weighted loss instead of global averaging
+        # This provides stronger specialization pressure for each individual encoder
         
-        lambda_pos = 10.0   # Positive coefficient for target variance (minimize)
-        lambda_neg = -10.0  # Negative coefficient for other variance (maximize)
+        # Dynamic coefficients based on contrastive_kl_coeff
+        # Higher values = more aggressive specialization
+        lambda_pos = contrastive_kl_coeff * 0.5   # Positive coefficient for target variance (minimize)
+        lambda_neg = -contrastive_kl_coeff * 0.5  # Negative coefficient for other variance (maximize)
         
-        variance_loss = lambda_pos * jnp.mean(avg_var_target) + lambda_neg * jnp.mean(avg_var_other)
+        # Per-encoder loss: each encoder gets its own specialization signal
+        per_encoder_loss = lambda_pos * avg_var_target + lambda_neg * avg_var_other  # (E,)
         
-        # Return metrics for monitoring
+        # Total loss: sum across encoders (not average) for stronger pressure
+        variance_loss = jnp.sum(per_encoder_loss)
+        
+        # Return metrics for monitoring (averaged for logging purposes)
         return variance_loss, jnp.mean(avg_var_target), jnp.mean(avg_var_other)
 
 

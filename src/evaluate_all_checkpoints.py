@@ -2528,16 +2528,18 @@ def main():
                     # Create plot with selected methods
                     if len(args.plot_methods) == 2:
                         if args.loss:
-                            # Loss difference plotting: show difference between methods
+                            # Loss difference plotting: show difference between methods with log scaling
                             # For loss, lower is better, so we show method_B - method_A (positive = method_A better)
                             loss_diff = method_arrays[args.plot_methods[1]] - method_arrays[args.plot_methods[0]]
-                            fig = visualize_optimization_comparison(
+                            
+                            # Use the new specialized loss difference visualization
+                            from visualization import visualize_loss_difference_heatmap
+                            fig = visualize_loss_difference_heatmap(
                                 steps=np.array(steps_sorted),
                                 budgets=np.array(actual_budgets),
-                                acc_A=loss_diff,  # This will be the loss difference
-                                acc_B=np.full_like(loss_diff, np.nan),  # Not used for difference plot
-                                method_A_name=f"Loss Diff ({args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()})",
-                                method_B_name="",
+                                loss_diff=loss_diff,
+                                method_A_name=args.plot_methods[0].replace("_", " ").title(),  # First method (typically GA)
+                                method_B_name=args.plot_methods[1].replace("_", " ").title(),  # Second method (typically ES)
                             )
                         else:
                             # Regular accuracy comparison
@@ -2571,19 +2573,31 @@ def main():
                         progress_percentage = int((max_progress / denom_final) * 100)
 
                     if args.loss and len(args.plot_methods) == 2:
-                        plot_type = "Loss Difference"
-                        plot_description = f"Positive values = {args.plot_methods[0].replace('_', ' ').title()} better (lower loss)"
+                        plot_type = "Loss Difference (Log-scaled)"
+                        plot_description = f"Log-scaled magnitude of loss difference: {args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()}"
                     else:
                         plot_type = "Accuracy Comparison"
                         plot_description = "Higher values = better performance"
 
-                    fig.suptitle(
-                        f"Final {plot_type} - {args.run_name}\n"
-                        f"{plot_description}\n"
-                        f"Training Progress: {len(steps_sorted)} steps (0% → {progress_percentage}%), Budgets: {len(actual_budgets)}",
-                        fontsize=14,
-                        y=0.98,
-                    )
+                    if args.loss and len(args.plot_methods) == 2:
+                        # For loss difference plots, show more detailed information
+                        fig.suptitle(
+                            f"Final {plot_type} - {args.run_name}\n"
+                            f"{plot_description}\n"
+                            f"Training Progress: {len(steps_sorted)} checkpoints (0% → {progress_percentage}%), Budgets: {len(actual_budgets)}\n"
+                            f"Red = {args.plot_methods[1].replace('_', ' ').title()} better, Blue = {args.plot_methods[0].replace('_', ' ').title()} better",
+                            fontsize=14,
+                            y=0.98,
+                        )
+                    else:
+                        # Regular title for accuracy comparisons
+                        fig.suptitle(
+                            f"Final {plot_type} - {args.run_name}\n"
+                            f"{plot_description}\n"
+                            f"Training Progress: {len(steps_sorted)} steps (0% → {progress_percentage}%), Budgets: {len(actual_budgets)}",
+                            fontsize=14,
+                            y=0.98,
+                        )
 
                     plot_path = out_dir / f"optim_comparison_final_{args.run_name}.png"
                     fig.savefig(plot_path, dpi=200, bbox_inches="tight")

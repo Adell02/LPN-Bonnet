@@ -682,6 +682,11 @@ class StructuredTrainer:
                     logging.warning(f"   Got: {pattern_distribution}")
                     logging.warning(f"   This will break contrastive loss effectiveness!")
                 
+                # Validate batch pattern distribution for contrastive loss effectiveness
+                batch_valid = self._validate_batch_pattern_distribution((batch_pairs, batch_shapes, pattern_ids))
+                if not batch_valid:
+                    logging.error("❌ Batch validation failed - contrastive loss may not work effectively!")
+                
                 # CRITICAL: Conditionally disable repulsion and contrastive losses after encoder exposure
                 # During encoder exposure: use full coefficients for specialization
                 # After encoder exposure: set to 0 to only train decoder with reconstruction loss
@@ -3437,7 +3442,7 @@ class StructuredTrainer:
                     ax.set_ylabel('Mean Variance')
                     ax.grid(True, alpha=0.3)
                     ax.legend()
-                else:
+            else:
                     ax.text(0.5, 0.5, f'No data for Encoder {enc_idx}', 
                            ha='center', va='center', transform=ax.transAxes)
                     ax.set_title(f'Encoder {enc_idx} - No Data')
@@ -3448,7 +3453,7 @@ class StructuredTrainer:
         except Exception as e:
             logging.warning(f"Encoder specialization plot creation failed: {e}")
             return None
-    
+
     def _create_poe_aggregation_plot(self, all_encoder_outputs: list, pattern_ids: chex.Array) -> Optional[plt.Figure]:
         """
         Create plot showing PoE aggregation effectiveness.
@@ -3716,7 +3721,7 @@ class StructuredTrainer:
             logging.error(f"        ❌ CRITICAL: Invalid pattern ID values detected!")
             logging.error(f"           Valid range: [1, 2, 3], Got: [{np.min(pattern_ids_np)}, {np.max(pattern_ids_np)}]")
             return False
-        
+            
         # CRITICAL CHECK 2: Verify target pattern is present
         target_mask = (pattern_ids_np == target_pattern)
         target_count = np.sum(target_mask)
@@ -3732,7 +3737,7 @@ class StructuredTrainer:
             logging.error(f"        ❌ CRITICAL: No other pattern samples found for contrastive learning!")
             logging.error(f"           All samples are target pattern {target_pattern}")
             return False
-        
+            
         # CRITICAL CHECK 4: Verify data consistency
         if len(grids) != len(pattern_ids_np):
             logging.error(f"        ❌ CRITICAL: Data length mismatch!")
