@@ -448,6 +448,11 @@ class StructuredTrainer:
         # This ensures the same data is used every time the certainty plot is generated
         # FIXES: The issue where certainty plots mixed datasets after step 100
         logging.info("🔍 Loading pattern datasets for consistent certainty plots...")
+        
+        # Import required modules for dataset loading
+        import os
+        import numpy as np
+        
         self.pattern_datasets = {}
         pattern_to_folder = {
             1: "struct_pattern_1",
@@ -1524,7 +1529,8 @@ class StructuredTrainer:
                 'variances': variances
             }
 
-            # Generate certainty figure for this pattern
+            # Generate certainty figure for this pattern using pre-loaded dataset
+            # This ensures consistency with all other certainty plots
             try:
                 pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
                 
@@ -1568,6 +1574,7 @@ class StructuredTrainer:
             }, step=current_global_step)
         
         # Create essential T-SNE visualization only (like train.py)
+        # Uses the same pre-loaded eval_data for consistency
         logging.info(f"       Creating T-SNE plot for Encoder {enc_idx}...")
         self._create_encoder_tsne(enc_idx, encoder_params, eval_data, current_global_step)
         
@@ -1824,16 +1831,20 @@ class StructuredTrainer:
         """
         Generate certainty plots for all patterns during Phase A training to monitor encoder specialization progress.
         
+        CRITICAL: This method uses eval_data that comes from pre-loaded datasets (struct_pattern_1, struct_pattern_2, struct_pattern_3)
+        ensuring the same data is used every time for consistent certainty plots.
+        
         Args:
             enc_idx: Index of the encoder being trained
             encoder_params: Current encoder parameters
-            eval_data: Evaluation data for all patterns
+            eval_data: Evaluation data for all patterns (from pre-loaded datasets)
             global_step: Global training step
             step: Current step within encoder training
             total_steps: Total steps for encoder training
         """
         try:
-            # Generate certainty plots for each pattern (like the working implementation)
+            # Generate certainty plots for each pattern using PRE-LOADED datasets
+            # This ensures consistency with Phase 1 evaluation and prevents dataset mixing
             for pattern_id in [1, 2, 3]:
                 if pattern_id in eval_data:
                     grids, shapes, pattern_ids = eval_data[pattern_id]
