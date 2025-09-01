@@ -1123,7 +1123,7 @@ def visualize_loss_difference_heatmap(
         cs = ax.contour(X, Y, loss_diff, levels=[0.0], colors='black', linewidths=2.0, alpha=0.9)
         # Label the contour
         if cs.collections:
-            cs.collections[0].set_label('Equal loss (GA = ES)')
+            cs.collections[0].set_label('LOSS_GA = LOSS_ES')
     except (ValueError, RuntimeError, TypeError):
         cs = None  # ignore if not possible
 
@@ -1153,14 +1153,15 @@ def visualize_loss_difference_heatmap(
     label_ax = divider.append_axes("right", size="15%", pad=0.8)
     label_ax.axis("off")
     
-    # Add interpretation text using colors from the palette
-    # Colors: #FBB998 (orange), #DB74DB (pink), #5361E5 (blue), #96DCF8 (light blue)
-    label_ax.text(0.05, 0.95, f"{method_B_name}\nbetter\n(lower loss)", 
-                  ha="left", va="top", fontsize=9, color=colors[0], weight='bold')  # Orange
-    label_ax.text(0.05, 0.05, f"{method_A_name}\nbetter\n(lower loss)", 
-                  ha="left", va="bottom", fontsize=9, color=colors[2], weight='bold')  # Blue
-    label_ax.text(0.05, 0.5, f"Equal\nperformance", 
-                  ha="left", va="center", fontsize=9, color='black', weight='bold')
+    # Add interpretation text with proper subscripts and black color
+    # For loss difference: method_B - method_A (ES - GA)
+    # Positive values = method_A (GA) better, Negative values = method_B (ES) better
+    label_ax.text(0.05, 0.95, f"LOSS_GA < LOSS_ES", 
+                  ha="left", va="top", fontsize=10, color='black', weight='bold')
+    label_ax.text(0.05, 0.05, f"LOSS_GA > LOSS_ES", 
+                  ha="left", va="bottom", fontsize=10, color='black', weight='bold')
+    label_ax.text(0.05, 0.5, f"LOSS_GA = LOSS_ES", 
+                  ha="left", va="center", fontsize=10, color='black', weight='bold')
 
     # Legend
     handles = []
@@ -1168,7 +1169,7 @@ def visualize_loss_difference_heatmap(
     if cs and cs.collections:
         from matplotlib.lines import Line2D
         handles.append(Line2D([0], [0], color='black', lw=2))
-        labels.append('Equal loss (GA = ES)')
+        labels.append('LOSS_GA = LOSS_ES')
     
     if handles:
         ax.legend(handles, labels, loc='upper left', frameon=True)

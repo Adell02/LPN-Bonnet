@@ -2312,14 +2312,23 @@ def main():
                                     plot_type = "Accuracy Comparison"
                                     plot_description = "Higher values = better performance"
 
-                                fig.suptitle(
-                                    f"{plot_type} - Accumulated Data\n"
-                                    f"{plot_description}\n"
-                                    f"Current Training Progress: {training_progress}/{denom} ({pct}%)\n"
-                                    f"Checkpoint {i}/{len(checkpoints)} | Total Steps: {len(all_steps)}, Budgets: {len(all_budgets)}",
-                                    fontsize=14,
-                                    y=0.98,
-                                )
+                                if args.loss and len(args.plot_methods) == 2:
+                                    # For loss difference plots, use simplified title
+                                    fig.suptitle(
+                                        f"SEARCH ANALYSIS - {args.run_name}",
+                                        fontsize=16,
+                                        y=0.98,
+                                    )
+                                else:
+                                    # Regular title for accuracy comparisons
+                                    fig.suptitle(
+                                        f"{plot_type} - Accumulated Data\n"
+                                        f"{plot_description}\n"
+                                        f"Current Training Progress: {training_progress}/{denom} ({pct}%)\n"
+                                        f"Checkpoint {i}/{len(checkpoints)} | Total Steps: {len(all_steps)}, Budgets: {len(all_budgets)}",
+                                        fontsize=14,
+                                        y=0.98,
+                                    )
 
                                 step_plot_path = out_dir / f"optim_comparison_accumulated_progress_{training_progress}.png"
                                 fig.savefig(step_plot_path, dpi=200, bbox_inches="tight")
@@ -2702,13 +2711,10 @@ def main():
                         plot_description = "Higher values = better performance"
 
                     if args.loss and len(args.plot_methods) == 2:
-                        # For loss difference plots, show more detailed information
+                        # For loss difference plots, use simplified title
                         fig.suptitle(
-                            f"Final {plot_type} - {args.run_name}\n"
-                            f"{plot_description}\n"
-                            f"Training Progress: {len(steps_sorted)} checkpoints (0% → {progress_percentage}%), Budgets: {len(actual_budgets)}\n"
-                            f"Orange = {args.plot_methods[1].replace('_', ' ').title()} better, Blue = {args.plot_methods[0].replace('_', ' ').title()} better",
-                            fontsize=14,
+                            f"SEARCH ANALYSIS - {args.run_name}",
+                            fontsize=16,
                             y=0.98,
                         )
                     else:
