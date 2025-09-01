@@ -3547,6 +3547,63 @@ class StructuredTrainer:
         
         return grids, shapes, pattern_ids
     
+    def _extract_target_latents(self, enc_idx: int, encoder_params: dict, state: TrainState, verbose: bool = False) -> dict:
+        """
+        Extract target pattern latents from a trained encoder for repulsion loss computation.
+        
+        Args:
+            enc_idx: Index of the encoder
+            encoder_params: Trained encoder parameters
+            state: Training state with all parameters
+            verbose: Whether to show verbose output
+            
+        Returns:
+            Dictionary mapping pattern_id to target latents
+        """
+        if verbose:
+            logging.info(f"       🔍 Extracting target latents from Encoder {enc_idx}...")
+        
+        target_latents = {}
+        target_pattern = enc_idx + 1  # Encoder 0 -> Pattern 1, etc.
+        
+        try:
+            # Create a temporary model for evaluation
+            temp_model = StructuredLPN(
+                encoders=(self.encoders[enc_idx],),
+                decoder=self.decoder
+            )
+            
+            # Generate evaluation data for the target pattern
+            eval_data = self._create_specialized_training_data(target_pattern)
+            grids, shapes, pattern_ids = eval_data
+            
+            # Get encoder outputs for target pattern samples
+            mu, logvar = self.encoders[enc_idx].apply(
+                {"params": encoder_params},
+                grids,
+                shapes,
+                dropout_eval=False,
+                mutable=False,
+            )
+            
+            # Use mean of latents over pairs
+            latents = mu.mean(axis=-2)  # (batch_size, latent_dim)
+            
+            # Store target latents
+            target_latents[target_pattern] = np.array(latents)
+            
+            if verbose:
+                logging.info(f"       ✅ Extracted {len(latents)} target latents for Pattern {target_pattern}")
+                logging.info(f"       📊 Latent shape: {latents.shape}")
+                logging.info(f"       📊 Mean variance: {float(jnp.mean(jnp.exp(logvar))):.6f}")
+            
+        except Exception as e:
+            logging.warning(f"       ⚠️  Failed to extract target latents for Encoder {enc_idx}: {e}")
+            # Return empty dict as fallback
+            target_latents = {}
+        
+        return target_latents
+    
     def _generate_phase2_plots(self, all_encoder_outputs: list, pattern_ids: chex.Array, num_steps: int) -> dict:
         """
         Generate Phase 2 plots for visualization.

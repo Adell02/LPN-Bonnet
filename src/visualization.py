@@ -1098,18 +1098,21 @@ def visualize_loss_difference_heatmap(
     x0, x1 = (steps[0] - 0.5, steps[0] + 0.5) if steps.size == 1 else (steps[0], steps[-1])
     y0, y1 = (budgets[0] - 0.5, budgets[0] + 0.5) if budgets.size == 1 else (budgets[0], budgets[-1])
     
-    # Use the consistent color palette from the codebase
-    colors = ['#FBB998', '#DB74DB', '#5361E5', '#96DCF8']
-    
-    # Create custom colormap from the specified colors
+    # Create a continuous colormap for better visualization
+    # Use a diverging colormap that goes from blue (negative) to white to red (positive)
     from matplotlib.colors import LinearSegmentedColormap
-    custom_cmap = LinearSegmentedColormap.from_list('custom_loss_diff', colors, N=256)
+    import matplotlib.pyplot as plt
+    
+    # Create a custom diverging colormap: blue -> white -> red
+    colors = ['#1f77b4', '#ffffff', '#d62728']  # Blue, White, Red
+    n_bins = 256
+    custom_cmap = LinearSegmentedColormap.from_list('custom_diverging', colors, N=n_bins)
     
     im = ax.imshow(
         log_diff_masked,
         extent=[x0, x1, y0, y1],
         origin='lower', aspect='auto',
-        cmap=custom_cmap,  # Use custom color palette
+        cmap=custom_cmap,  # Use continuous diverging colormap
         vmin=vmin, vmax=vmax
     )
 
@@ -1127,8 +1130,7 @@ def visualize_loss_difference_heatmap(
     # Axes labels and title
     ax.set_xlabel("Training Checkpoint", fontsize=12)
     ax.set_ylabel("Search Budget", fontsize=12)
-    ax.set_title(f"Loss Difference: {method_B_name} - {method_A_name}\n"
-                f"Log-scaled magnitude (log₁₀|Δ|)", fontsize=14)
+    ax.set_title(f"SEARCH ANALYSIS", fontsize=14)
 
     # Set ticks
     ax.set_xticks(steps)
