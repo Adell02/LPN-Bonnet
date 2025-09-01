@@ -9,18 +9,11 @@ KEY EQUIVALENCE FEATURES:
 2. **Same Training Loop**: Processes data in the same way as train.py
 3. **Same Batch Processing**: Uses the same batch sizes and logging frequencies
 4. **Same Evaluation**: Implements the same evaluation metrics and visualization
-5. **Same Phase 2 Metrics**: Phase 2 now shows the SAME comprehensive metrics and plots as regular training
 
 The only difference is the model architecture: instead of training both encoder and decoder,
 this trains only the decoder while using multiple pre-trained encoders via Product of Experts (PoE).
 
 This eliminates the data size mismatch that was causing training to get stuck.
-
-CRITICAL FIXES APPLIED:
-- Phase 2 now runs the SAME evaluation loop as Phase 1
-- Phase 2 generates the SAME T-SNE visualizations as regular training
-- Phase 2 shows the SAME confidence panels and comprehensive metrics
-- Phase 2 maintains the SAME evaluation frequency and test dataset evaluation
 """
 
 # from __future__ import annotations  # Not supported in Python 3.6
@@ -305,9 +298,6 @@ class StructuredTrainer:
         
         # Phase A global step counter for WandB metrics
         self.phase_a_global_step = 0
-        
-        # Step tracking for validation
-        self.last_global_step = -1  # Track last logged global step to ensure monotonicity
         
         # Store original encoder params for individual training
         self.original_encoder_params = None
@@ -606,7 +596,7 @@ class StructuredTrainer:
         shapes = shapes.reshape(num_logs, log_every_n_steps, self.batch_size, *shapes.shape[2:])
         return grids, shapes
 
-    def train_n_steps(self, state: TrainState, batches: tuple[chex.Array, chex.Array, chex.Array], key: chex.PRNGKey, global_step: int) -> tuple[TrainState, dict]:
+    def train_n_steps(self, state: TrainState, batches: tuple[chex.Array, chex.Array, chex.Array], key: chex.PRNGKey) -> tuple[TrainState, dict]:
         """Process log_every_n_steps batches and return updated state and metrics."""
         num_steps = batches[0].shape[0]  # Should be log_every_n_steps
         keys = jax.random.split(key, num_steps)
@@ -1104,22 +1094,15 @@ class StructuredTrainer:
             
             # Store target latents from this encoder for future repulsion
             if repulsion_kl > 0:
-                logging.info(f"   📦 Extracting target latents for Encoder {enc_idx}...")
-                extracted_targets = self._extract_target_latents(enc_idx, specialized_encoder, individual_state)
-                target_latents_store[enc_idx] = extracted_targets
-                logging.info(f"   📦 Stored target latents for Encoder {enc_idx}: {list(extracted_targets.keys())}")
-                for pattern_id, target_lat in extracted_targets.items():
-                    if target_lat is not None:
-                        logging.info(f"     Pattern {pattern_id}: {target_lat.shape}")
-                    else:
-                        logging.warning(f"     Pattern {pattern_id}: None")
+                target_latents_store[enc_idx] = self._extract_target_latents(enc_idx, specialized_encoder, individual_state)
+                logging.info(f"   📦 Stored target latents for Encoder {enc_idx} (will be used for repulsion)")
             
             # Evaluate the specialized encoder and create visualizations
             logging.info(f"   Evaluating specialized Encoder {enc_idx}...")
             # Calculate global step: current phase_a_global_step + steps completed by this encoder
-            phase_a_eval_global_step = self.phase_a_global_step + self.encoder_expose_steps
-            logging.info(f"   📊 Evaluation global step: {phase_a_eval_global_step} (phase_a: {self.phase_a_global_step} + encoder_steps: {self.encoder_expose_steps})")
-            self._evaluate_specialized_encoder(enc_idx, specialized_encoder, individual_state, phase_a_eval_global_step)
+            current_global_step = self.phase_a_global_step + self.encoder_expose_steps
+            logging.info(f"   📊 Evaluation global step: {current_global_step} (phase_a: {self.phase_a_global_step} + encoder_steps: {self.encoder_expose_steps})")
+            self._evaluate_specialized_encoder(enc_idx, specialized_encoder, individual_state, current_global_step)
             
             specialized_encoders.append(specialized_encoder)
             logging.info(f"✅ Encoder {enc_idx} specialization completed")
@@ -1256,9 +1239,6 @@ class StructuredTrainer:
                 # Add repulsion loss to push away from previous encoders' latent targets
                 repulsion_loss = 0.0
                 if target_latents_store and self.cfg.training.get("repulsion_kl", 0) > 0:
-                    logging.info(f"       🔍 Computing repulsion loss for Encoder {enc_idx}...")
-                    logging.info(f"       📦 target_latents_store keys: {list(target_latents_store.keys())}")
-                    
                     # Compute repulsion from previous encoders' targets
                     repulsion_loss = self._compute_repulsion_loss(
                         current_latents=mu.mean(axis=-2),  # Use mean over pairs
@@ -1273,12 +1253,6 @@ class StructuredTrainer:
                     
                     if step % 50 == 0:
                         logging.info(f"       Repulsion Loss: {float(repulsion_loss):.6f} (λ={repulsion_coeff})")
-                else:
-                    if step % 50 == 0:
-                        if not target_latents_store:
-                            logging.info(f"       🚫 Repulsion Loss: 0.000000 (target_latents_store is empty)")
-                        else:
-                            logging.info(f"       🚫 Repulsion Loss: 0.000000 (repulsion_kl={self.cfg.training.get('repulsion_kl', 0)})")
                 
                 total_loss = contrastive_loss + reg_loss + repulsion_loss
                 
@@ -1339,7 +1313,7 @@ class StructuredTrainer:
                 
                 # Log essential metrics to WandB with proper tab organization
                 if step % 10 == 0:  # Log more frequently
-                    phase_a_step_global_step = self.phase_a_global_step + step
+                    current_global_step = self.phase_a_global_step + step
                     
                     # Organize metrics into proper WandB tabs
                     wandb.log({
@@ -1373,7 +1347,7 @@ class StructuredTrainer:
                         # Repulsion loss metrics (if enabled)
                         f"encoder_{enc_idx}/repulsion_loss": float(repulsion_loss) if repulsion_loss > 0 else 0.0,
                         f"encoder_{enc_idx}/repulsion_coefficient": self.cfg.training.get("repulsion_kl", 0),
-                    }, step=phase_a_step_global_step)
+                    }, step=current_global_step)
                 
                 if step % 50 == 0:
                     # Calculate specialization metrics
@@ -1492,7 +1466,7 @@ class StructuredTrainer:
                     {
                         f"phase_a/encoder_{enc_idx}/pattern_{pattern_id}/certainty_panel": wandb.Image(fig_cert)
                     },
-                    step=global_step,
+                    step=current_global_step,
                 )
                 plt.close(fig_cert)
             except Exception as e:
@@ -1501,23 +1475,23 @@ class StructuredTrainer:
                 )
         
         # Log essential encoder variance metrics (scaled and minimal)
-        # Use passed global_step parameter directly
+        current_global_step = global_step  # Use passed global step parameter
         
         # Only log mean variance per pattern (essential for specialization monitoring)
         for pattern_id, stats in pattern_variances.items():
             wandb.log({
                 f"encoder_{enc_idx}/pattern_{pattern_id}/mean_variance": stats['mean'],
-            }, step=global_step)
+            }, step=current_global_step)
         
         # Create essential T-SNE visualization only (like train.py)
         logging.info(f"       Creating T-SNE plot for Encoder {enc_idx}...")
-        self._create_encoder_tsne(enc_idx, encoder_params, eval_data, global_step)
+        self._create_encoder_tsne(enc_idx, encoder_params, eval_data, current_global_step)
         
         # Evaluate target pattern reconstruction quality
         logging.info(f"       Evaluating target pattern reconstruction for Encoder {enc_idx}...")
         target_pattern = enc_idx + 1  # Encoder 0 -> Pattern 1, Encoder 1 -> Pattern 2, Encoder 2 -> Pattern 3
         reconstruction_metrics = self._evaluate_target_pattern_reconstruction(
-            enc_idx, encoder_params, target_pattern, eval_data[target_pattern], global_step, state
+            enc_idx, encoder_params, target_pattern, eval_data[target_pattern], current_global_step, state
         )
         
         logging.info(f"     ✅ Evaluation completed for Encoder {enc_idx}")
@@ -1695,16 +1669,14 @@ class StructuredTrainer:
             logging.info(f"       🔍 Phase A Evaluation at step {step}/{total_steps}")
             
             # Create evaluation data for all patterns to show specialization progress
-            # Use clean, pure patterns for visualization (not mixed training data)
             eval_data = {}
-            num_eval_samples = 100  # Same number for each pattern to ensure even coverage
             for pattern_id in [1, 2, 3]:
-                pattern_data = self._create_pattern_dataset(pattern_id, num_eval_samples)
+                pattern_data = self._create_specialized_training_data(pattern_id)
                 eval_data[pattern_id] = pattern_data
             
             # Generate T-SNE visualization
-            phase_a_global_step = self.phase_a_global_step + step
-            self._create_encoder_tsne(enc_idx, encoder_params, eval_data, phase_a_global_step)
+            current_global_step = self.phase_a_global_step + step
+            self._create_encoder_tsne(enc_idx, encoder_params, eval_data, current_global_step)
             
             # Generate certainty plots for all patterns
             logging.info(f"       📊 Generating certainty plots for all patterns...")
@@ -1716,7 +1688,7 @@ class StructuredTrainer:
                     # Show a sample of the first grid to verify pattern
                     sample_grid = np.array(grids[0, 0, :, :, 1])  # First sample, first pair, output channel
                     logging.info(f"         Pattern {pattern_id} sample output grid:\n{sample_grid}")
-            self._generate_phase_a_certainty_plots(enc_idx, encoder_params, eval_data, phase_a_global_step, step, total_steps)
+            self._generate_phase_a_certainty_plots(enc_idx, encoder_params, eval_data, current_global_step, step, total_steps)
             
             # Evaluate target pattern reconstruction during Phase A training
             logging.info(f"       🔍 Evaluating target pattern reconstruction progress...")
@@ -1732,12 +1704,12 @@ class StructuredTrainer:
                         f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction": reconstruction_metrics.get('overall_accuracy', 0.0),
                         f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction/pixel_correctness": reconstruction_metrics.get('pixel_correctness', 0.0),
                         f"phase_a/encoder_{enc_idx}/target_pattern_reconstruction/shape_correctness": reconstruction_metrics.get('shape_correctness', 0.0),
-                    }, step=phase_a_global_step)
+                    }, step=current_global_step)
             
             # Additional Phase A specific metrics
             wandb.log({
                 # No meaningless metrics - only meaningful data
-            }, step=phase_a_global_step)
+            }, step=current_global_step)
             
             logging.info(f"       ✅ Phase A T-SNE and certainty plots generated and logged to WandB")
             
@@ -1846,7 +1818,7 @@ class StructuredTrainer:
         
         return batch_grids, batch_shapes, batch_pattern_ids
     
-    def train_n_steps_phase2(self, state: TrainState, batches: tuple[chex.Array, chex.Array, chex.Array], key: chex.PRNGKey, global_step: int) -> tuple[TrainState, dict]:
+    def train_n_steps_phase2(self, state: TrainState, batches: tuple[chex.Array, chex.Array, chex.Array], key: chex.PRNGKey) -> tuple[TrainState, dict]:
         """
         Phase 2: Joint decoder training with frozen encoders.
         
@@ -1854,7 +1826,6 @@ class StructuredTrainer:
             state: Current training state
             batches: Tuple of (grids, shapes, pattern_ids)
             key: Random key
-            global_step: Current global training step for WandB logging
             
         Returns:
             Updated state and metrics
@@ -1935,7 +1906,7 @@ class StructuredTrainer:
         
         # Phase 2: Generate comprehensive metrics and plots
         phase2_metrics = self._generate_phase2_metrics_and_plots(
-            avg_metrics, all_encoder_outputs, explicit_pattern_ids, num_steps, state, global_step
+            avg_metrics, all_encoder_outputs, explicit_pattern_ids, num_steps
         )
         
         # Merge with training metrics
@@ -1987,28 +1958,7 @@ class StructuredTrainer:
         
         return encoder_outputs
     
-    def _validate_step_monotonicity(self, global_step: int, phase: str) -> None:
-        """
-        Validate that global_step is monotonically increasing.
-        
-        Args:
-            global_step: Current global step
-            phase: Current training phase ("1" or "2")
-        """
-        if self.last_global_step != -1 and global_step <= self.last_global_step:
-            logging.warning(f"⚠️  Step monotonicity violation detected!")
-            logging.warning(f"   Previous step: {self.last_global_step}, Current step: {global_step}")
-            logging.warning(f"   Phase: {phase}, Step difference: {global_step - self.last_global_step}")
-            if global_step == self.last_global_step:
-                logging.warning(f"   ⚠️  Duplicate step detected - this may cause WandB logging issues")
-            else:
-                logging.warning(f"   ⚠️  Step regression detected - this will cause WandB step ordering issues")
-        else:
-            logging.debug(f"✅ Step monotonicity validated: {self.last_global_step} -> {global_step} (Phase {phase})")
-        
-        self.last_global_step = global_step
-    
-    def _generate_phase2_metrics_and_plots(self, avg_metrics: dict, all_encoder_outputs: list, pattern_ids: chex.Array, num_steps: int, state: TrainState, global_step: int) -> dict:
+    def _generate_phase2_metrics_and_plots(self, avg_metrics: dict, all_encoder_outputs: list, pattern_ids: chex.Array, num_steps: int) -> dict:
         """
         Generate comprehensive Phase 2 metrics and plots.
         
@@ -2017,8 +1967,6 @@ class StructuredTrainer:
             all_encoder_outputs: List of encoder outputs from all steps
             pattern_ids: Pattern IDs for the batch
             num_steps: Number of training steps
-            state: Training state with encoder parameters
-            global_step: Current global training step for WandB logging
             
         Returns:
             Dictionary containing Phase 2 metrics and plots
@@ -2045,23 +1993,6 @@ class StructuredTrainer:
                 all_encoder_outputs, pattern_ids, num_steps
             )
             phase2_metrics.update(phase2_plots)
-            
-            # 5. GENERATE PHASE 2 CONFIDENCE PANELS (showing all encoders together)
-            logging.info(f"       🔍 Generating Phase 2 confidence panels for step {global_step}")
-            phase2_confidence_panels = self._generate_phase2_confidence_panels(
-                all_encoder_outputs, pattern_ids, num_steps, state, global_step
-            )
-            phase2_metrics.update(phase2_confidence_panels)
-            logging.info(f"       ✅ Generated {len(phase2_confidence_panels)} Phase 2 confidence panels for step {global_step}")
-            
-            # 6. STORE PHASE 2 CONFIDENCE PANELS FOR LATER LOGGING (don't log here to avoid duplicates)
-            # The confidence panels will be logged in the main training loop with the correct global_step
-            for panel_key, panel_fig in phase2_confidence_panels.items():
-                if panel_fig is not None and not isinstance(panel_fig, str):
-                    logging.info(f"       ✅ Phase 2 confidence panel {panel_key} created for step {global_step}")
-                elif isinstance(panel_fig, str):
-                    # Log error message if panel generation failed
-                    logging.warning(f"       ❌ Phase 2 confidence panel {panel_key} failed: {panel_fig}")
             
         except Exception as e:
             logging.warning(f"Phase 2 metrics generation failed: {e}")
@@ -2468,126 +2399,6 @@ class StructuredTrainer:
         
         return organized_metrics
     
-    def _generate_phase2_confidence_panels(self, all_encoder_outputs: list, pattern_ids: chex.Array, num_steps: int, state: TrainState, global_step: int) -> dict:
-        """
-        Generate confidence panels for Phase 2 showing all encoders together.
-        Uses the same data generation approach as Phase A but creates multi-encoder panels.
-        
-        Args:
-            all_encoder_outputs: List of encoder outputs from all steps
-            pattern_ids: Pattern IDs for the batch
-            num_steps: Number of training steps
-            state: Training state with encoder parameters
-            global_step: Current global training step for WandB logging
-            
-        Returns:
-            Dictionary containing confidence panel plots
-        """
-        confidence_panels = {}
-        
-        try:
-            # Generate confidence panels for each pattern showing ALL encoders
-            for pattern_id in [1, 2, 3]:
-                confidence_panels[f"phase_b/confidence_panels/pattern_{pattern_id}"] = self._create_phase2_confidence_panel(
-                    pattern_id, all_encoder_outputs, num_steps, state, global_step
-                )
-                
-        except Exception as e:
-            logging.warning(f"Phase 2 confidence panel generation failed: {e}")
-            confidence_panels["phase_b/confidence_panels/error"] = f"Confidence panel generation failed: {str(e)}"
-        
-        return confidence_panels
-    
-    def _create_phase2_confidence_panel(self, pattern_id: int, all_encoder_outputs: list, num_steps: int, state: TrainState = None, global_step: int = None) -> Optional[plt.Figure]:
-        """
-        Create a confidence panel for Phase 2 showing ALL encoders together for a specific pattern.
-        Uses the same data generation approach as Phase A.
-        
-        Args:
-            pattern_id: Pattern to visualize (1, 2, or 3)
-            all_encoder_outputs: List of encoder outputs from all steps
-            num_steps: Number of training steps
-            state: Training state with encoder parameters
-            global_step: Current global training step for WandB logging
-            
-        Returns:
-            matplotlib Figure or None if creation fails
-        """
-        try:
-            import matplotlib.pyplot as plt
-            
-            # 1. CREATE EVALUATION DATA USING THE SAME APPROACH AS PHASE A
-            # Use the same data generation method that Phase A uses
-            eval_data = self._create_specialized_training_data(pattern_id)
-            grids, shapes, pattern_ids = eval_data
-            
-            logging.info(f"       📊 Phase 2 Confidence Panel: Pattern {pattern_id}")
-            logging.info(f"         Generated {len(grids)} samples: grids shape {grids.shape}, shapes shape {shapes.shape}")
-            
-            # 2. SELECT A UNIQUE SAMPLE FOR THIS PATTERN (like Phase A)
-            # Use a consistent sample index for this pattern across all encoders
-            sample_index = (pattern_id - 1) % len(grids)  # Pattern 1 -> index 0, Pattern 2 -> index 1, Pattern 3 -> index 2
-            logging.debug(f"         Confidence panel: Pattern {pattern_id}, Sample index {sample_index}/{len(grids)}")
-            
-            # 3. GET ENCODER OUTPUTS FOR ALL ENCODERS ON THIS SAMPLE
-            sample_grids = grids[sample_index]  # Single sample (not slice)
-            sample_shapes = shapes[sample_index]  # Single sample (not slice)
-            
-            # Collect encoder outputs for all encoders
-            all_encoder_mus = []
-            all_encoder_logvars = []
-            all_encoder_labels = []
-            all_encoder_indices = []
-            
-            for enc_idx in range(len(self.encoders)):
-                # Get encoder parameters from the passed state (frozen encoders)
-                if state is None:
-                    logging.warning(f"         ⚠️ No state provided for confidence panel, skipping pattern {pattern_id}")
-                    return None
-                encoder_params = state.params["encoders"][enc_idx]
-                
-                # Forward pass through this encoder
-                mu, logvar = self.encoders[enc_idx].apply(
-                    {"params": encoder_params},
-                    sample_grids[None, ...],  # Add batch dimension back
-                    sample_shapes[None, ...],  # Add batch dimension back
-                    dropout_eval=False,
-                    mutable=False,
-                )
-                
-                all_encoder_mus.append(np.array(mu))
-                all_encoder_logvars.append(np.array(logvar))
-                all_encoder_labels.append(f"Encoder {enc_idx}")
-                all_encoder_indices.append(enc_idx)
-            
-            # 4. CREATE MULTI-ENCODER CONFIDENCE PANEL
-            pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
-            pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
-            
-            # Create the confidence panel showing ALL encoders together
-            fig_cert = visualize_struct_confidence_panel(
-                sample_grids=np.array(sample_grids),
-                sample_shapes=np.array(sample_shapes),
-                encoder_mus=all_encoder_mus,  # All encoders
-                encoder_logvars=all_encoder_logvars,  # All encoders
-                poe_mu=None,  # No PoE for individual pattern visualization
-                poe_logvar=None,
-                title=f"Phase 2: All Encoders - {pattern_name} - Step {num_steps}",
-                encoder_labels=all_encoder_labels,  # All encoder labels
-                encoder_indices=all_encoder_indices,  # All encoder indices
-                pattern_id=pattern_id,
-                pattern_name=pattern_name,
-            )
-            
-            logging.info(f"         ✅ Phase 2 confidence panel created for Pattern {pattern_id} with {len(all_encoder_mus)} encoders")
-            return fig_cert
-            
-        except Exception as e:
-            logging.warning(f"Phase 2 confidence panel creation failed for pattern {pattern_id}: {e}")
-            import traceback
-            logging.error(f"         Traceback: {traceback.format_exc()}")
-            return None
-    
     def _create_specialized_training_data(self, target_pattern: int) -> tuple:
         """
         Create specialized training data for individual encoder training.
@@ -2653,15 +2464,11 @@ class StructuredTrainer:
         import numpy as np
         import random
         
-        # DEBUG: Log method entry
-        logging.info(f"      🔍 _create_pattern_dataset called for pattern_id={pattern_id}, num_samples={num_samples}")
-        
         # Set random seed for reproducibility
         random.seed(self.cfg.training.seed + pattern_id)
         
         # Get number of pairs from config
         num_pairs = self.task_generator_kwargs["num_pairs"]
-        logging.info(f"      📊 Using num_pairs={num_pairs} from task_generator_kwargs")
         
         # Define clean tetromino patterns (1-based indexing to match our system)
         pattern_definitions = {
@@ -2723,15 +2530,7 @@ class StructuredTrainer:
                 shapes[sample_idx, pair_idx, 1] = [5, 5]  # [output_rows, output_cols]
         
         logging.info(f"      Generated {num_samples} samples: {grids.shape}, {shapes.shape}")
-        
-        # DEBUG: Convert to JAX arrays and log
-        jax_grids = jnp.array(grids)
-        jax_shapes = jnp.array(shapes)
-        jax_pattern_ids = jnp.array(pattern_ids)
-        
-        logging.info(f"      ✅ Converted to JAX arrays: grids={jax_grids.shape}, shapes={jax_shapes.shape}, pattern_ids={jax_pattern_ids.shape}")
-        
-        return jax_grids, jax_shapes, jax_pattern_ids
+        return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
     
     def _create_single_pattern_sample(self, pattern_id: int) -> tuple:
         """
@@ -2810,14 +2609,8 @@ class StructuredTrainer:
         Returns:
             Repulsion loss value
         """
-        # DEBUG: Log method entry and parameters
-        logging.info(f"🔍 _compute_repulsion_loss called for Encoder {current_encoder_idx}")
-        logging.info(f"   target_latents_store keys: {list(target_latents_store.keys())}")
-        logging.info(f"   current_latents shape: {current_latents.shape}")
-        
         if not target_latents_store or current_encoder_idx == 0:
             # No previous encoders to repulse from
-            logging.info(f"   🚫 No repulsion: target_latents_store empty or current_encoder_idx=0")
             return 0.0
         
         repulsion_loss = 0.0
@@ -2825,39 +2618,26 @@ class StructuredTrainer:
         
         # Iterate through all previous encoders
         for prev_enc_idx in range(current_encoder_idx):
-            logging.info(f"   🔍 Checking previous encoder {prev_enc_idx}...")
             if prev_enc_idx in target_latents_store:
                 prev_targets = target_latents_store[prev_enc_idx]
-                logging.info(f"   📦 Found targets for encoder {prev_enc_idx}: {list(prev_targets.keys())}")
                 
                 # For each pattern, compute repulsion from previous encoder's targets
                 for pattern_id, target_latents in prev_targets.items():
-                    logging.info(f"   🎯 Pattern {pattern_id}: target_latents type={type(target_latents)}, len={len(target_latents) if target_latents is not None else 'None'}")
                     if target_latents is not None and len(target_latents) > 0:
                         # Ensure target latents have the same batch size
-                        # Compute pairwise L2 distances between current and stored latents
-                        distances = jnp.linalg.norm(
-                            current_latents[:, None, :] - target_latents[None, :, :],
-                            axis=-1,
-                        )
-
-                        # Repulsion loss: penalize when distance < margin
-                        # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2)
-                        repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
-                        repulsion_loss += repulsion_term
-                        num_repulsion_terms += 1
-                        logging.info(f"   ✅ Pattern {pattern_id}: repulsion_term={float(repulsion_term):.6f}")
-                    else:
-                        logging.warning(f"   ⚠️ Pattern {pattern_id}: target_latents is None or empty")
-            else:
-                logging.info(f"   ❌ No targets found for encoder {prev_enc_idx}")
+                        if len(target_latents) == len(current_latents):
+                            # Compute L2 distance between current and target latents
+                            distances = jnp.linalg.norm(current_latents - target_latents, axis=1)
+                            
+                            # Repulsion loss: penalize when distance < margin
+                            # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2^2)
+                            repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
+                            repulsion_loss += repulsion_term
+                            num_repulsion_terms += 1
         
         # Average over all repulsion terms
         if num_repulsion_terms > 0:
             repulsion_loss = repulsion_loss / num_repulsion_terms
-            logging.info(f"   🎯 Final repulsion loss: {float(repulsion_loss):.6f} (from {num_repulsion_terms} terms)")
-        else:
-            logging.warning(f"   ⚠️ No valid repulsion terms found!")
         
         return repulsion_loss
     
@@ -2878,16 +2658,11 @@ class StructuredTrainer:
         # Create evaluation data for each pattern
         for pattern_id in [1, 2, 3]:
             try:
-                logging.info(f"   🎯 Processing Pattern {pattern_id}...")
-                
                 # Generate pattern-specific data
                 pattern_data = self._create_pattern_dataset(pattern_id, num_samples=32)  # Use 32 samples for efficiency
                 grids, shapes, _ = pattern_data
                 
-                logging.info(f"   📊 Generated data - grids: {grids.shape}, shapes: {shapes.shape}")
-                
                 # Get encoder outputs
-                logging.info(f"   🔄 Calling encoder.apply...")
                 mu, logvar = self.encoders[encoder_idx].apply(
                     {"params": encoder_params}, 
                     grids, 
@@ -2896,19 +2671,12 @@ class StructuredTrainer:
                     mutable=False
                 )
                 
-                logging.info(f"   ✅ Encoder output - mu: {mu.shape}, logvar: {logvar.shape}")
-                
                 # Use mean of latents as target (or could use multiple samples)
                 target_lat = mu.mean(axis=-2)  # Mean over pairs
                 target_latents[pattern_id] = jnp.array(target_lat)
                 
-                logging.info(f"   🎯 Stored target latents for Pattern {pattern_id}: {target_lat.shape}")
-                
             except Exception as e:
-                logging.error(f"❌ Failed to extract target latents for Encoder {encoder_idx}, Pattern {pattern_id}: {e}")
-                logging.error(f"   Exception type: {type(e)}")
-                import traceback
-                logging.error(f"   Traceback: {traceback.format_exc()}")
+                logging.warning(f"Failed to extract target latents for Encoder {encoder_idx}, Pattern {pattern_id}: {e}")
                 target_latents[pattern_id] = None
         
         return target_latents
@@ -2919,8 +2687,7 @@ class StructuredTrainer:
         log_every = cfg.training.log_every_n_steps
         self.enc_params_list = enc_params_list  # Store for train_n_steps
         
-        step = 0  # Local step counter for this training run
-        global_step = 0  # Cumulative global step for WandB logging
+        step = 0  # Always start from 0 - unique run IDs prevent conflicts
         epoch = 0
         key = jax.random.PRNGKey(cfg.training.seed)
         logging.info("Starting structured training...")
@@ -2964,6 +2731,19 @@ class StructuredTrainer:
             logging.info("✅ PHASE 1 COMPLETED: Encoders specialized!")
             logging.info("   - Ready for Phase 2: Joint decoder training")
             logging.info("   - Encoders will be frozen during joint training")
+            
+            # Create merged encoder certainty panel after Phase 1 completion
+            logging.info("🔍 Creating merged encoder certainty panel after Phase 1 completion...")
+            merged_certainty_panel = self._create_merged_encoder_certainty_panel(state, step=0)
+            if merged_certainty_panel is not None:
+                # Log to WandB
+                wandb.log({
+                    "phase_1_completion/merged_encoder_certainty_panel": wandb.Image(merged_certainty_panel)
+                }, step=0)
+                plt.close(merged_certainty_panel)
+                logging.info("       ✅ Merged encoder certainty panel logged to WandB")
+            else:
+                logging.warning("       ❌ Failed to create merged encoder certainty panel")
         
         # Test forward pass first to catch any issues early
         logging.info("Testing forward pass...")
@@ -3101,7 +2881,7 @@ class StructuredTrainer:
         if cfg.training.get("eval_every_n_logs"):
             try:
                 logging.info(f"Running evaluation at step 0 (first step)")
-                self.evaluate(state, enc_params_list, global_step)
+                self.evaluate(state, enc_params_list, step)
                 
                 # Test datasets evaluation at first step
                 if hasattr(self, 'test_datasets') and self.test_datasets:
@@ -3109,7 +2889,7 @@ class StructuredTrainer:
                         try:
                             start = time.time()
                             test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
-                                state, dataset_dict, step=global_step
+                                state, dataset_dict, step=step
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                             
@@ -3134,7 +2914,7 @@ class StructuredTrainer:
                                 else:
                                     logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                             
-                            wandb.log(test_metrics, step=global_step)
+                            wandb.log(test_metrics, step=step)
                             plt.close('all')  # Close all figures to prevent memory leaks
                             # Explicitly close additional T-SNE figures
                             if fig_tsne_samples is not None:
@@ -3176,7 +2956,7 @@ class StructuredTrainer:
             
             dataloading_time = time.time()
             for batches in dataloader:
-                wandb.log({"timing/dataloading_time": time.time() - dataloading_time}, step=global_step)
+                wandb.log({"timing/dataloading_time": time.time() - dataloading_time}, step=step)
                 
                 # Training - process log_every_n_steps batches at once
                 key, train_key = jax.random.split(key)
@@ -3226,24 +3006,22 @@ class StructuredTrainer:
             if self.phase1_completed:
                 # Phase 2: Joint training with frozen encoders
                 batches_with_patterns = (grids, shapes, explicit_pattern_ids)
-                state, metrics = self.train_n_steps_phase2(state, batches_with_patterns, train_key, global_step)
+                state, metrics = self.train_n_steps_phase2(state, batches_with_patterns, train_key)
             else:
                 # Phase 1: Individual encoder training (should not reach here after Phase 1)
                 logging.warning(f"⚠️  Still in Phase 1 during main training loop - this shouldn't happen")
                 batches_with_patterns = (grids, shapes, explicit_pattern_ids)
-                state, metrics = self.train_n_steps(state, batches_with_patterns, train_key, global_step)
+                state, metrics = self.train_n_steps(state, batches_with_patterns, train_key)
             
             end = time.time()
             
             pbar.update(log_every)
             step += log_every
-            global_step += log_every
-            
-            # Log step progression for debugging
+                
+            # Log essential encoder status
             if step % 100 == 0:
                 encoder_status = "TRAINABLE" if self.encoder_expose_steps > 0 else "FROZEN"
                 logging.info(f"Step {step}/{num_steps}: Encoders {encoder_status}")
-                logging.info(f"   Global step: {global_step}, Phase: {'2' if self.phase1_completed else '1'}")
             throughput = log_every * self.batch_size / (end - start)
             metrics.update({
                 "timing/train_time": end - start,
@@ -3256,114 +3034,98 @@ class StructuredTrainer:
                 if "contrastive_loss_weighted" in metrics:
                     metrics["Charts/contrastive_loss_weighted"] = metrics["contrastive_loss_weighted"]
                 
-            # CRITICAL FIX: Both phases should log metrics to WandB
-            # This ensures Phase 2 shows the same comprehensive metrics as regular training
+            # Organize Phase 2 metrics for better WandB visualization
             if self.phase1_completed:
-                # Phase 2: Organize metrics by category for better visualization
+                # Phase 2: Organize metrics by category
                 organized_metrics = self._organize_phase2_metrics_for_wandb(metrics)
+                wandb.log(organized_metrics, step=step)
                 
-                # Validate step monotonicity before logging
-                self._validate_step_monotonicity(global_step, "2")
-                
-                # Extract confidence panels from metrics and log them separately to ensure proper step tracking
-                confidence_panels = {}
-                other_metrics = {}
-                
-                for key, value in organized_metrics.items():
-                    if key.startswith("phase_b/confidence_panels/") and not isinstance(value, str):
-                        confidence_panels[key] = value
+                # Phase 2: Generate merged encoder certainty panel periodically
+                if step % (cfg.training.get("eval_every_n_logs", 20) * log_every) == 0:
+                    logging.info(f"🔍 Phase 2: Generating merged encoder certainty panel at step {step}")
+                    merged_certainty_panel = self._create_merged_encoder_certainty_panel(state, step)
+                    if merged_certainty_panel is not None:
+                        wandb.log({
+                            "phase_2/merged_encoder_certainty_panel": wandb.Image(merged_certainty_panel)
+                        }, step=step)
+                        plt.close(merged_certainty_panel)
+                        logging.info(f"       ✅ Phase 2 merged encoder certainty panel logged to WandB")
                     else:
-                        other_metrics[key] = value
-                
-                # Log non-panel metrics first
-                if other_metrics:
-                    wandb.log(other_metrics, step=global_step)
-                    logging.info(f"       ✅ Logged Phase 2 non-panel metrics to WandB with step {global_step}")
-                
-                # Log confidence panels with explicit step tracking
-                for panel_key, panel_fig in confidence_panels.items():
-                    if panel_fig is not None:
-                        wandb.log({panel_key: wandb.Image(panel_fig)}, step=global_step)
-                        plt.close(panel_fig)  # Close figure to prevent memory leaks
-                        logging.info(f"       ✅ Logged Phase 2 confidence panel {panel_key} to WandB with step {global_step}")
-                
+                        logging.warning(f"       ❌ Phase 2 merged encoder certainty panel creation failed")
             else:
                 # Phase 1: Log metrics as is
-                self._validate_step_monotonicity(global_step, "1")
-                wandb.log(metrics, step=global_step)
-                logging.info(f"       ✅ Logged Phase 1 metrics to WandB with step {global_step}")
+                wandb.log(metrics, step=step)
+
+                # Save checkpoint
+                if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
+                    try:
+                        logging.info(f"Saving checkpoint at step {step}")
+                        from flax.serialization import msgpack_serialize, to_state_dict
+                        with open("state.msgpack", "wb") as outfile:
+                            outfile.write(msgpack_serialize(to_state_dict(state)))
+                        wandb.save("state.msgpack")
+                    except Exception as e:
+                        logging.warning(f"Checkpoint save failed: {e}")
+
+                # Evaluation - More frequent during encoder exposure period
+                eval_interval = 5 if self.encoder_expose_steps > 0 else cfg.training.get("eval_every_n_logs", 0)
+                if eval_interval and (step // log_every) % eval_interval == 0:
+                    try:
+                        logging.info(f"Running evaluation at step {step}")
+                        self.evaluate(state, enc_params_list, step)
+                        
+                        # Test datasets evaluation (like train.py)
+                        if hasattr(self, 'test_datasets') and self.test_datasets:
+                            for dataset_dict in self.test_datasets:
+                                try:
+                                    start = time.time()
+                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                                        state, dataset_dict, step=step
+                                    )
+                                    test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
+                                    
+                                    # Upload all figures
+                                    for fig, name in [
+                                        (fig_grids, "generation"),
+                                        (fig_heatmap, "pixel_accuracy"),
+                                        (fig_latents, "latents"),
+                                        (fig_latents_samples, "latents_samples"),
+                                        (fig_search_progress, "search_progress"),
+                                        (fig_tsne_samples, "latents_samples"),
+                                    ]:
+                                        if fig is not None:
+                                            test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)
+                                    
+                                    # Upload all pattern-specific T-SNE plots
+                                    pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+                                    for pattern_idx, fig_tsne_encoders_single in enumerate(fig_tsne_encoders_list, 1):
+                                        if fig_tsne_encoders_single is not None:
+                                            test_metrics[f"test/{dataset_dict['test_name']}/latents_encoders_pattern{pattern_idx}"] = wandb.Image(fig_tsne_encoders_single)
+                                            logging.info(f"Logged T-SNE for pattern {pattern_idx} ({pattern_names[pattern_idx]})")
+                                        else:
+                                            logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
+                                    
+                                    wandb.log(test_metrics, step=step)
+                                    plt.close('all')  # Close all figures to prevent memory leaks
+                                    # Explicitly close additional T-SNE figures
+                                    if fig_tsne_samples is not None:
+                                        plt.close(fig_tsne_samples)
+                                    # Close all pattern-specific T-SNE figures
+                                    for fig_tsne_encoders_single in fig_tsne_encoders_list:
+                                        if fig_tsne_encoders_single is not None:
+                                            plt.close(fig_tsne_encoders_single)
+                                    
+                                except Exception as e:
+                                    logging.warning(f"Test dataset {dataset_dict['test_name']} failed: {e}")
+                        
+                    except Exception as e:
+                        logging.warning(f"Eval failed: {e}")
+
+                # Exit if the total number of steps is reached
+                if step >= num_steps:
+                    break
                 
-            # CRITICAL FIX: Both phases should have the SAME evaluation frequency
-            # This ensures Phase 2 shows the same comprehensive metrics and plots as regular training
-            eval_interval = cfg.training.get("eval_every_n_logs", 0)
-            if eval_interval and (step // log_every) % eval_interval == 0:
-                try:
-                    logging.info(f"Running evaluation at step {global_step}")
-                    self.evaluate(state, enc_params_list, global_step)
-                    
-                    # Test datasets evaluation (like train.py) - CRITICAL for both phases
-                    if hasattr(self, 'test_datasets') and self.test_datasets:
-                        for dataset_dict in self.test_datasets:
-                            try:
-                                start = time.time()
-                                test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
-                                    state, dataset_dict, step=global_step
-                                )
-                                test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
-                                
-                                # Upload all figures
-                                for fig, name in [
-                                    (fig_grids, "generation"),
-                                    (fig_heatmap, "pixel_accuracy"),
-                                    (fig_latents, "latents"),
-                                    (fig_latents_samples, "latents_samples"),
-                                    (fig_search_progress, "search_progress"),
-                                    (fig_tsne_samples, "latents_samples"),
-                                ]:
-                                    if fig is not None:
-                                        test_metrics[f"test/{dataset_dict['test_name']}/{name}"] = wandb.Image(fig)
-                                
-                                # Upload all pattern-specific T-SNE plots
-                                pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
-                                for pattern_idx, fig_tsne_encoders_single in enumerate(fig_tsne_encoders_list, 1):
-                                    if fig_tsne_encoders_single is not None:
-                                        test_metrics[f"test/{dataset_dict['test_name']}/latents_encoders_pattern{pattern_idx}"] = wandb.Image(fig_tsne_encoders_single)
-                                        logging.info(f"Logged T-SNE for pattern {pattern_idx} ({pattern_names[pattern_idx]})")
-                                    else:
-                                        logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
-                                
-                                wandb.log(test_metrics, step=global_step)
-                                plt.close('all')  # Close all figures to prevent memory leaks
-                                # Explicitly close additional T-SNE figures
-                                if fig_tsne_samples is not None:
-                                    plt.close(fig_tsne_samples)
-                                # Close all pattern-specific T-SNE figures
-                                for fig_tsne_encoders_single in fig_tsne_encoders_list:
-                                    if fig_tsne_encoders_single is not None:
-                                        plt.close(fig_tsne_encoders_single)
-                                
-                            except Exception as e:
-                                logging.warning(f"Test dataset {dataset_dict['test_name']} failed: {e}")
-                    
-                except Exception as e:
-                    logging.warning(f"Eval failed: {e}")
-
-            # Save checkpoint (for both phases)
-            if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
-                try:
-                    logging.info(f"Saving checkpoint at step {global_step}")
-                    from flax.serialization import msgpack_serialize, to_state_dict
-                    with open("state.msgpack", "wb") as outfile:
-                        outfile.write(msgpack_serialize(to_state_dict(state)))
-                    wandb.save("state.msgpack")
-                except Exception as e:
-                    logging.warning(f"Checkpoint save failed: {e}")
-
-            # Exit if the total number of steps is reached
-            if step >= num_steps:
-                break
-            
-            dataloading_time = time.time()
+                dataloading_time = time.time()
             
             epoch += 1
         
@@ -4088,10 +3850,8 @@ class StructuredTrainer:
                 
                 # Log clustering metrics to WandB with proper step tracking
                 if step is not None:
-                    # Validate step monotonicity for clustering metrics
-                    self._validate_step_monotonicity(step, "2" if self.phase1_completed else "1")
                     wandb.log(clustering_metrics, step=step)
-                    logging.info(f"Clustering metrics computed and logged with step {step}: {clustering_metrics}")
+                    logging.info(f"Clustering metrics computed: {clustering_metrics}")
                 else:
                     # If no step provided, use a default step to avoid WandB step ordering issues
                     default_step = 0  # Use 0 as default to maintain consistency
@@ -4341,76 +4101,6 @@ class StructuredTrainer:
         plt.tight_layout()
         
         return fig
-    
-    def _organize_phase2_metrics_for_wandb(self, metrics: dict) -> dict:
-        """
-        Organize Phase 2 metrics for better WandB visualization.
-        
-        This ensures Phase 2 shows the same comprehensive metrics organization
-        as regular training while maintaining the architectural differences.
-        
-        Args:
-            metrics: Raw metrics from training
-            
-        Returns:
-            Organized metrics with proper namespacing
-        """
-        organized_metrics = {}
-        
-        try:
-            # 1. Core training metrics (always present)
-            if "loss" in metrics:
-                organized_metrics["training/total_loss"] = metrics["loss"]
-            if "reconstruction_loss" in metrics:
-                organized_metrics["training/reconstruction_loss"] = metrics["reconstruction_loss"]
-            if "prior_kl" in metrics:
-                organized_metrics["training/prior_kl"] = metrics["prior_kl"]
-            if "pairwise_kl" in metrics:
-                organized_metrics["training/pairwise_kl"] = metrics["pairwise_kl"]
-            
-            # 2. PoE metrics (structured training specific)
-            if "poe_prior_weight" in metrics:
-                organized_metrics["poe/prior_weight"] = metrics["poe_prior_weight"]
-            if "poe_num_encoders" in metrics:
-                organized_metrics["poe/num_encoders"] = metrics["poe_num_encoders"]
-            if "poe_alphas_mean" in metrics:
-                organized_metrics["poe/alphas_mean"] = metrics["poe_alphas_mean"]
-            
-            # 3. Encoder specialization metrics (maintaining frozen specialization)
-            for key, value in metrics.items():
-                if key.startswith("phase_b/encoder_"):
-                    # Convert phase_b/encoder_X/... to encoder_specialization/encoder_X/...
-                    new_key = key.replace("phase_b/encoder_", "encoder_specialization/encoder_")
-                    organized_metrics[new_key] = value
-                elif key.startswith("phase_b/poe/"):
-                    # Convert phase_b/poe/... to poe/...
-                    new_key = key.replace("phase_b/poe/", "poe/")
-                    organized_metrics[new_key] = value
-                elif key.startswith("phase_b/decoder/"):
-                    # Convert phase_b/decoder/... to decoder/...
-                    new_key = key.replace("phase_b/decoder/", "decoder/")
-                    organized_metrics[new_key] = value
-                elif key.startswith("phase_b/plots/"):
-                    # Keep plots as is for WandB media logging
-                    organized_metrics[key] = value
-            
-            # 4. Charts section for better visualization
-            if "contrastive_loss" in metrics:
-                organized_metrics["Charts/contrastive_loss"] = metrics["contrastive_loss"]
-            if "contrastive_loss_weighted" in metrics:
-                organized_metrics["Charts/contrastive_loss_weighted"] = metrics["contrastive_loss_weighted"]
-            
-            # 5. Phase 2 summary metrics
-            organized_metrics["phase_b/summary/training_mode"] = "Joint Decoder Training"
-            organized_metrics["phase_b/summary/encoder_status"] = "Frozen (Maintaining Specialization)"
-            organized_metrics["phase_b/summary/decoder_status"] = "Trainable (Reconstruction Focus)"
-            
-        except Exception as e:
-            logging.warning(f"Phase 2 metrics organization failed: {e}")
-            # Fallback to original metrics
-            organized_metrics = metrics
-        
-        return organized_metrics
         
     def test_dataset_submission(
         self,
@@ -4973,17 +4663,127 @@ class StructuredTrainer:
                         logging.info(f"Test clustering metrics computed: {test_clustering_metrics}")
                         
                         # Note: These metrics will be logged to wandb by the calling function with proper step
-                        # The step parameter passed to test_dataset_submission should be the global_step
-                        logging.info(f"Test clustering metrics will be logged with step {step}")
-                        
-                        # Validate step monotonicity for test clustering metrics
-                        if step is not None:
-                            self._validate_step_monotonicity(step, "2" if self.phase1_completed else "1")
                         
                     except Exception as e:
                         logging.warning(f"Test clustering metrics computation failed: {e}")
         
         return metrics, fig_gen, fig_heatmap, fig_latents, None, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list
+
+    def _create_merged_encoder_certainty_panel(self, state: TrainState, step: int) -> Optional[plt.Figure]:
+        """
+        Create a certainty panel AFTER PHASE 1 that merges ALL encoder solutions into single histograms for each pattern.
+        
+        This function creates a comprehensive view showing how all encoders (0, 1, 2) represent each pattern
+        by merging their variance distributions into single histograms per pattern.
+        
+        Args:
+            state: Current training state with all encoder parameters
+            step: Current training step
+            
+        Returns:
+            matplotlib Figure with merged encoder certainty panels or None if creation fails
+        """
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            logging.info(f"🔍 Creating merged encoder certainty panel after Phase 1 (step {step})")
+            
+            # Create evaluation data for all patterns using the SAME approach as Phase 1
+            eval_data = {}
+            num_eval_samples = 100  # Same number for each pattern to ensure even coverage
+            for pattern_id in [1, 2, 3]:
+                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
+            
+            # Create a figure with subplots for each pattern
+            fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+            if len(axes) == 1:
+                axes = [axes]
+            
+            pattern_names = {1: "L-tetromino", 2: "O-tetromino", 3: "T-tetromino"}
+            
+            for pattern_idx, pattern_id in enumerate([1, 2, 3]):
+                ax = axes[pattern_idx]
+                
+                if pattern_id in eval_data:
+                    grids, shapes, pattern_ids = eval_data[pattern_id]
+                    
+                    # Select a consistent sample for this pattern (same as Phase 1 approach)
+                    sample_index = (pattern_id - 1) % len(grids)
+                    sample_grids = grids[sample_index]
+                    sample_shapes = shapes[sample_index]
+                    
+                    # Collect encoder outputs for ALL encoders on this sample
+                    all_encoder_variances = []
+                    encoder_labels = []
+                    
+                    for enc_idx in range(len(self.encoders)):
+                        encoder_params = state.params["encoders"][enc_idx]
+                        
+                        # Forward pass through this encoder
+                        mu, logvar = self.encoders[enc_idx].apply(
+                            {"params": encoder_params},
+                            sample_grids[None, ...],  # Add batch dimension back
+                            sample_shapes[None, ...],  # Add batch dimension back
+                            dropout_eval=False,
+                            mutable=False,
+                        )
+                        
+                        # Convert logvar to variance and flatten
+                        var = np.exp(np.array(logvar))  # Convert to numpy
+                        var_flat = var.flatten()  # Flatten to 1D array
+                        
+                        all_encoder_variances.append(var_flat)
+                        encoder_labels.append(f"Encoder {enc_idx}")
+                    
+                    # Create merged histogram for this pattern
+                    # Use different colors for each encoder
+                    colors = ['#FBB998', '#DB74DB', '#5361E5']  # Orange, Pink, Blue
+                    
+                    for enc_idx, (variances, label, color) in enumerate(zip(all_encoder_variances, encoder_labels, colors)):
+                        # Create histogram with transparency for overlap
+                        ax.hist(variances, bins=30, alpha=0.7, label=label, color=color, 
+                               edgecolor='black', linewidth=0.5)
+                    
+                    # Customize the subplot
+                    ax.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances', 
+                               fontsize=14, fontweight='bold')
+                    ax.set_xlabel('Variance', fontsize=12)
+                    ax.set_ylabel('Frequency', fontsize=12)
+                    ax.legend(fontsize=10)
+                    ax.grid(True, alpha=0.3)
+                    
+                    # Add statistics text
+                    stats_text = []
+                    for enc_idx, variances in enumerate(all_encoder_variances):
+                        mean_var = np.mean(variances)
+                        std_var = np.std(variances)
+                        stats_text.append(f'E{enc_idx}: μ={mean_var:.4f}, σ={std_var:.4f}')
+                    
+                    stats_str = '\n'.join(stats_text)
+                    ax.text(0.02, 0.98, stats_str, transform=ax.transAxes, 
+                           verticalalignment='top', fontsize=9, 
+                           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    
+                    logging.info(f"       ✅ Pattern {pattern_id} merged histogram created with {len(all_encoder_variances)} encoders")
+                else:
+                    ax.text(0.5, 0.5, f'No data for Pattern {pattern_id}', 
+                           ha='center', va='center', transform=ax.transAxes)
+                    ax.set_title(f'Pattern {pattern_id} - No Data')
+            
+            # Set overall title
+            fig.suptitle(f'Merged Encoder Certainty Panel - All Patterns (Step {step})', 
+                        fontsize=16, fontweight='bold')
+            
+            plt.tight_layout()
+            logging.info(f"       📊 Merged encoder certainty panel created successfully")
+            return fig
+            
+        except Exception as e:
+            logging.error(f"       ❌ Merged encoder certainty panel creation failed: {e}")
+            import traceback
+            logging.error(f"       Traceback: {traceback.format_exc()}")
+            return None
 
 
 

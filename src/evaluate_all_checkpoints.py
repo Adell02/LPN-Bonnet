@@ -1614,26 +1614,28 @@ def main():
             print(f"⚠️  In-process dataset preload failed, falling back to subprocess mode: {e}")
             args.inprocess = False
 
-    with out_csv.open("a", newline="") as f_csv:
-        writer = csv.writer(f_csv)
-        if write_header:
-            # Always include all possible columns for consistent CSV structure
-            csv_headers = ["timestamp", "run_name", "checkpoint_name", "checkpoint_step", "method", "budget_type", "budget", 
-                          "overall_accuracy", "top_1_shape_accuracy", "top_1_accuracy", "top_1_pixel_correctness",
-                          "top_2_shape_accuracy", "top_2_accuracy", "top_2_pixel_correctness",
-                          "total_final_loss"]
-            
-            # Add sample information if multiple samples
-            if args.n_samples > 1:
-                csv_headers.extend(["sample_number", "sample_seed"])
-            
-            # Add subspace parameters if enabled
-            if args.es_use_subspace_mutation:
-                csv_headers.extend(["subspace_enabled", "subspace_dim", "ga_step_length", "trust_region_radius"])
-            
-            writer.writerow(csv_headers)
+    # Open CSV file for writing
+    f_csv = out_csv.open("a", newline="")
+    writer = csv.writer(f_csv)
+    
+    if write_header:
+        # Always include all possible columns for consistent CSV structure
+        csv_headers = ["timestamp", "run_name", "checkpoint_name", "checkpoint_step", "method", "budget_type", "budget", 
+                      "overall_accuracy", "top_1_shape_accuracy", "top_1_accuracy", "top_1_pixel_correctness",
+                      "top_2_shape_accuracy", "top_2_accuracy", "top_2_pixel_correctness",
+                      "total_final_loss"]
+        
+        # Add sample information if multiple samples
+        if args.n_samples > 1:
+            csv_headers.extend(["sample_number", "sample_seed"])
+        
+        # Add subspace parameters if enabled
+        if args.es_use_subspace_mutation:
+            csv_headers.extend(["subspace_enabled", "subspace_dim", "ga_step_length", "trust_region_radius"])
+        
+        writer.writerow(csv_headers)
 
-            # Iterate checkpoints
+    # Iterate checkpoints
     for i, checkpoint in enumerate(checkpoints, 1):
         step = checkpoint["step"]
         if step is None:
@@ -2282,6 +2284,7 @@ def main():
             except Exception as e:
                 print(f"⚠️  Failed to upload CSV artifact: {e}")
 
+
             # Build final optimization comparison plot from CSV (overall summary) (unless --no_files is specified)
             if not args.no_files:
                 try:
@@ -2635,6 +2638,13 @@ def main():
         print(f"   • {cp['name']} (Step: {cp['step']})")
     
     print(f"{'='*80}")
+
+    # Close CSV file
+    try:
+        f_csv.close()
+        print(f"📁 CSV file closed: {out_csv}")
+    except Exception as e:
+        print(f"⚠️  Failed to close CSV file: {e}")
 
     try:
         run.finish()

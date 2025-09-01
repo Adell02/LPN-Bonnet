@@ -904,14 +904,23 @@ def visualize_phase2_certainty_panel(
     # Bottom: histogram of variances for ALL encoders in the same figure
     ax_vars = fig.add_subplot(gs[2, :])  # Span all columns for better visibility
 
-    # Colors for encoders (matching visualize_tsne_sources)
+    # Colors for encoders (matching visualize_tsne_sources and structured_train.py)
     base_colors = ['#FBB998', '#DB74DB', '#5361E5', '#2ca02c']  # Orange, Pink, Blue, Green
 
     if encoder_labels is None:
         encoder_labels = [f"Encoder {i}" for i in range(len(encoder_mus))]
     if encoder_indices is None:
         encoder_indices = list(range(len(encoder_mus)))
-    enc_colors = [base_colors[i % len(base_colors)] for i in encoder_indices]
+    
+    # Ensure encoder indices are properly mapped to colors
+    # This should match the color palette: Encoder 0 -> Orange, Encoder 1 -> Pink, Encoder 2 -> Blue
+    enc_colors = []
+    for enc_idx in encoder_indices:
+        if enc_idx < len(base_colors):
+            enc_colors.append(base_colors[enc_idx])
+        else:
+            # Fallback for any additional encoders
+            enc_colors.append(base_colors[enc_idx % len(base_colors)])
 
     # Compute variances for all encoders
     encoder_vars = []
@@ -941,15 +950,15 @@ def visualize_phase2_certainty_panel(
         ax_vars.hist(var_flat, bins=30, alpha=alpha, color=color, 
                      label=label_with_status, density=True, edgecolor='black', linewidth=0.5)
 
-    ax_vars.set_title("Latent Variances - All Encoders", fontsize=14, fontweight='bold')
+    ax_vars.set_title(f"Latent Variances - All Encoders for Pattern {pattern_id} ({pattern_name})", fontsize=14, fontweight='bold')
     ax_vars.set_xlabel("Variance", fontsize=12)
     ax_vars.set_ylabel("Density", fontsize=12)
     ax_vars.legend(frameon=True, fontsize=10)
     ax_vars.grid(True, alpha=0.3)
 
     # Add comprehensive note on the right showing mean variances and encoder status
-    note_text = "Encoder Variances:\n"
-    note_text += "=" * 20 + "\n"
+    note_text = f"Encoder Variances for Pattern {pattern_id}:\n"
+    note_text += "=" * 30 + "\n"
     for idx, (label, mean_var) in enumerate(zip(encoder_labels, mean_vars)):
         status = "★ MOST CONFIDENT" if idx == most_confident_idx else "○"
         note_text += f"{status} {label}: {mean_var:.4f}\n"
@@ -960,7 +969,8 @@ def visualize_phase2_certainty_panel(
         note_text += f"\nPoE Mean: {poe_mean_var:.4f}\n"
     
     note_text += f"\nPattern: {pattern_name}\n"
-    note_text += f"ID: {pattern_id}\n"
+    note_text += f"Pattern ID: {pattern_id}\n"
+    note_text += f"All 3 Encoders Shown"
     
     # Add the note to the right of the entire figure (outside all subplots)
     # Position the text in the right margin of the figure
