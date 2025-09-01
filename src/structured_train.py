@@ -3462,7 +3462,7 @@ class StructuredTrainer:
         logging.info("     🔧 Creating cached Phase 1 dataset...")
         
         # Calculate how many batches we need
-        num_steps = self.cfg.training.phase_1_steps
+        num_steps = self.cfg.training.encoder_expose_steps
         batch_size = self.batch_size
         
         # Create enough batches to cover all training steps
