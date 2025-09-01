@@ -60,18 +60,18 @@ training:
   prior_kl_coeff: null
   pairwise_kl_coeff: null
   total_num_steps: 200
-  encoder_expose_steps: 100  # number of initial gradient steps encoders are trainable
+  encoder_expose_steps: 50  # number of initial gradient steps encoders are trainable
   # Repulsion loss coefficient - controls strength of pushing encoders apart
   repulsion_kl: 0.1  # Small weight for stable training
   # These coefficients control the strength of contrastive loss terms
-  # Lower values = more stable, higher values = more aggressive specialization
-  contrastive_kl: 0.1  # alpha_T and alpha_O coefficients for target vs other patterns
-  # This margin controls the target variance for "other" patterns
-  # Higher values = stronger push to make encoders uncertain on non-target patterns
-  contrastive_margin: 5.0  # target variance for other patterns (should be higher than target variance)
+  # CRITICAL FIX: Increased coefficients for stronger specialization pressure
+  contrastive_kl: 1.0  # alpha_T and alpha_O coefficients for target vs other patterns (was 0.1 - too weak!)
+  # This margin controls the target variance for other patterns
+  # CRITICAL FIX: Reduced margin to be more achievable during training
+  contrastive_margin: 2.0  # target variance for other patterns (was 5.0 - too high!)
   target_pattern_ratio: 0.5  # 50% target, 50% others
   log_every_n_steps: 5
-  eval_every_n_logs: 5       # null to disable
+  eval_every_n_logs: 1      # null to disable
   save_checkpoint_every_n_logs: null  # null to disable
   resume_from_checkpoint: null
   # Option B: balanced structured tetromino patterns (O, T, L) - now using task generator

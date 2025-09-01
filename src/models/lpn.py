@@ -896,6 +896,7 @@ class LPN(nn.Module):
                 
                 # Get initial log probs for the starting latents
                 initial_log_probs = vmap_log_probs_fn(original_latents, input_seq, output_seq, self.decoder)
+                print(f"         🔧 DEBUG: initial_log_probs shape: {initial_log_probs.shape}")
                 
                 # Fix: reshape all_latents to match original_latents dimensions
                 # all_latents has shape (1, 4, 1, 1000, 8) -> need (1, 4, 1000, 8)
@@ -920,6 +921,12 @@ class LPN(nn.Module):
                 
                 print(f"         🔧 DEBUG: reshaped_all_latents shape: {reshaped_all_latents.shape}")
                 print(f"         🔧 DEBUG: reshaped_all_log_probs shape: {reshaped_all_log_probs.shape}")
+                
+                # Ensure initial_log_probs has the right shape for concatenation
+                # If initial_log_probs is (1, 4, 1), we need to expand it to (1, 4, 1, 1) to match the pattern
+                if initial_log_probs.ndim == 3:  # (1, 4, 1)
+                    print(f"         🔧 DEBUG: Expanding initial_log_probs from {initial_log_probs.shape} to (1, 4, 1, 1)")
+                    initial_log_probs = initial_log_probs[..., None]  # Add dimension at the end
                 
                 trajectory_latents = jnp.concatenate([original_latents, reshaped_all_latents], axis=-2)
                 trajectory_log_probs = jnp.concatenate([initial_log_probs, reshaped_all_log_probs], axis=-2)

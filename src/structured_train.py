@@ -1370,6 +1370,12 @@ class StructuredTrainer:
                 # Use hinge loss: max(0, margin - other_var) to push other_var above margin
                 L_O = alpha_O * jnp.mean(jnp.maximum(0, margin - avg_other_var))
                 
+                # CRITICAL FIX: Add learning rate multiplier for contrastive loss
+                # This makes the gradients much stronger and more effective at pushing variances apart
+                contrastive_lr_multiplier = 10.0  # 10x stronger gradients for contrastive loss
+                L_T = L_T * contrastive_lr_multiplier
+                L_O = L_O * contrastive_lr_multiplier
+                
                 # Total contrastive loss: minimize target variance + push other variance above margin
                 contrastive_loss = L_T + L_O
                 
@@ -1384,6 +1390,8 @@ class StructuredTrainer:
                     logging.info(f"           - Specialization pressure: {float(contrastive_loss):.6f} (higher = stronger)")
                     logging.info(f"           - Variance difference: {float(avg_target_var - avg_other_var):.6f} (should become more negative)")
                     logging.info(f"           - Margin violation: {float(jnp.maximum(0, margin - avg_other_var)):.6f} (should decrease)")
+                    logging.info(f"           - Learning rate multiplier: {contrastive_lr_multiplier}x (stronger gradients)")
+                    logging.info(f"           - Effective L_T: {float(L_T):.6f}, Effective L_O: {float(L_O):.6f}")
                 
                 # Add regularization to prevent extreme values
                 # CRITICAL FIX: Only regularize target variance, not other variance
