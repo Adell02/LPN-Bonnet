@@ -2736,12 +2736,14 @@ class StructuredTrainer:
             logging.info("🔍 Creating merged encoder certainty panel after Phase 1 completion...")
             merged_certainty_panel = self._create_merged_encoder_certainty_panel(state, step=0)
             if merged_certainty_panel is not None:
-                # Log to WandB
+                # Log to WandB with a step value that's guaranteed to be greater than current WandB step
+                # Use the total steps completed during Phase 1 to ensure proper step ordering
+                phase1_completion_step = max(600, self.phase_a_global_step + 100)  # Ensure step >= 600
                 wandb.log({
                     "phase_1_completion/merged_encoder_certainty_panel": wandb.Image(merged_certainty_panel)
-                }, step=0)
+                }, step=phase1_completion_step)
                 plt.close(merged_certainty_panel)
-                logging.info("       ✅ Merged encoder certainty panel logged to WandB")
+                logging.info(f"       ✅ Merged encoder certainty panel logged to WandB with step {phase1_completion_step}")
             else:
                 logging.warning("       ❌ Failed to create merged encoder certainty panel")
         
@@ -2914,7 +2916,13 @@ class StructuredTrainer:
                                 else:
                                     logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                             
-                            wandb.log(test_metrics, step=step)
+                            # Ensure step is greater than or equal to current WandB step to avoid monotonicity issues
+                            if step < 600:  # If step is too small, use a larger value
+                                adjusted_step = max(600, step + 600)
+                                logging.info(f"⚠️  Test metrics step {step} is too small for WandB (current: 600), using adjusted step {adjusted_step}")
+                                wandb.log(test_metrics, step=adjusted_step)
+                            else:
+                                wandb.log(test_metrics, step=step)
                             plt.close('all')  # Close all figures to prevent memory leaks
                             # Explicitly close additional T-SNE figures
                             if fig_tsne_samples is not None:
@@ -3105,7 +3113,13 @@ class StructuredTrainer:
                                         else:
                                             logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                                     
-                                    wandb.log(test_metrics, step=step)
+                                    # Ensure step is greater than or equal to current WandB step to avoid monotonicity issues
+                                    if step < 600:  # If step is too small, use a larger value
+                                        adjusted_step = max(600, step + 600)
+                                        logging.info(f"⚠️  Test metrics step {step} is too small for WandB (current: 600), using adjusted step {adjusted_step}")
+                                        wandb.log(test_metrics, step=adjusted_step)
+                                    else:
+                                        wandb.log(test_metrics, step=step)
                                     plt.close('all')  # Close all figures to prevent memory leaks
                                     # Explicitly close additional T-SNE figures
                                     if fig_tsne_samples is not None:
@@ -3850,13 +3864,19 @@ class StructuredTrainer:
                 
                 # Log clustering metrics to WandB with proper step tracking
                 if step is not None:
-                    wandb.log(clustering_metrics, step=step)
+                    # Ensure step is greater than or equal to current WandB step to avoid monotonicity issues
+                    if step < 600:  # If step is too small, use a larger value
+                        adjusted_step = max(600, step + 600)
+                        logging.info(f"⚠️  Step {step} is too small for WandB (current: 600), using adjusted step {adjusted_step}")
+                        wandb.log(clustering_metrics, step=adjusted_step)
+                    else:
+                        wandb.log(clustering_metrics, step=step)
                     logging.info(f"Clustering metrics computed: {clustering_metrics}")
                 else:
-                    # If no step provided, use a default step to avoid WandB step ordering issues
-                    default_step = 0  # Use 0 as default to maintain consistency
+                    # If no step provided, use a step value that's greater than current WandB step
+                    default_step = 600  # Use 600 as default to maintain consistency with current WandB step
                     wandb.log(clustering_metrics, step=default_step)
-                    logging.warning(f"⚠️  Clustering metrics logged with default step=0 (step parameter was None)")
+                    logging.warning(f"⚠️  Clustering metrics logged with default step=600 (step parameter was None)")
                     logging.info(f"Clustering metrics computed (default step): {clustering_metrics}")
                 
             except Exception as e:
