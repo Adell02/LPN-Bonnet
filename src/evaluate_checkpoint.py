@@ -626,7 +626,7 @@ def evaluate_custom_dataset(
                         return x[0]
                     except Exception:
                         return x
-                info0 = jax.tree_map(_first_device, info_tree)
+                info0 = jax.tree_util.tree_map(_first_device, info_tree)
                 # Bring to host (avoid device-backed arrays in payload)
                 try:
                     info0 = jax.device_get(info0)
@@ -1110,7 +1110,7 @@ def evaluate_custom_dataset(
                             return x[0]
                         except Exception:
                             return x
-                    info0_batch = jax.tree_map(_first_device, info_tree)
+                    info0_batch = jax.tree_util.tree_map(_first_device, info_tree)
                     try:
                         info0_batch = jax.device_get(info0_batch)
                     except Exception:
@@ -1224,26 +1224,22 @@ def evaluate_custom_dataset(
                 if initial_ga_losses is not None:
                     # Debug: show the shapes we're working with
                     print(f"[store_latents] Debug shapes: initial_ga_losses={initial_ga_losses.shape}, ga_losses_per_sample={ga_losses_per_sample.shape}")
-                    
-                    # The issue is that initial_ga_losses has shape (1, 4) but ga_losses_per_sample has shape (4, 50)
-                    # We need to align the batch dimensions. The initial_ga_losses should be expanded to match
-                    # the batch size of ga_losses_per_sample
-                    
-                    # First, let's understand what we have:
-                    # - initial_ga_losses: (1, 4) - 1 batch, 4 samples
-                    # - ga_losses_per_sample: (4, 50) - 4 samples, 50 steps
-                    
-                    # We need to extract the 4 samples from initial_ga_losses and reshape them
-                    if initial_ga_losses.shape[0] == 1 and initial_ga_losses.shape[1] == 4:
-                        # Extract the 4 samples: (1, 4) -> (4,)
-                        initial_ga_losses = initial_ga_losses[0, :]  # Shape: (4,)
-                        # Reshape to (4, 1) for concatenation
-                        initial_ga_losses = initial_ga_losses.reshape(-1, 1)  # Shape: (4, 1)
+
+                    n_samples = ga_losses_per_sample.shape[0]
+                    initial_ga_losses = np.asarray(initial_ga_losses)
+
+                    if initial_ga_losses.ndim == 2 and initial_ga_losses.shape[0] == 1 and initial_ga_losses.shape[1] == n_samples:
+                        initial_ga_losses = initial_ga_losses.reshape(n_samples, 1)
                         print(f"[store_latents] Extracted and reshaped initial GA losses: {initial_ga_losses.shape}")
+                    elif initial_ga_losses.ndim == 1 and initial_ga_losses.shape[0] == n_samples:
+                        initial_ga_losses = initial_ga_losses.reshape(n_samples, 1)
+                        print(f"[store_latents] Reshaped 1D initial GA losses: {initial_ga_losses.shape}")
+                    elif initial_ga_losses.ndim == 2 and initial_ga_losses.shape == (n_samples, 1):
+                        pass
                     else:
                         print(f"[store_latents] Unexpected initial_ga_losses shape: {initial_ga_losses.shape}, skipping initial loss prepending")
                         initial_ga_losses = None
-                    
+
                     # Concatenate: initial + optimization steps
                     if initial_ga_losses is not None:
                         ga_losses_with_initial = np.concatenate([initial_ga_losses, ga_losses_per_sample], axis=1)
