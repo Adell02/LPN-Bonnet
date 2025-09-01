@@ -1127,10 +1127,9 @@ def visualize_loss_difference_heatmap(
     except (ValueError, RuntimeError, TypeError):
         cs = None  # ignore if not possible
 
-    # Axes labels and title
+    # Axes labels (no title)
     ax.set_xlabel("Training Checkpoint", fontsize=12)
     ax.set_ylabel("Search Budget", fontsize=12)
-    ax.set_title(f"SEARCH ANALYSIS", fontsize=14)
 
     # Set ticks
     ax.set_xticks(steps)
@@ -1146,7 +1145,7 @@ def visualize_loss_difference_heatmap(
     # Colorbar axis
     cax = divider.append_axes("right", size="4%", pad=0.6)
     cbar = fig.colorbar(im, cax=cax)
-    cbar.ax.set_title(f"Log₁₀|Δ|", fontsize=11, pad=10, rotation=0, loc='center')
+    cbar.ax.set_title(f"LOG(LOSS_GA - LOSS_ES)", fontsize=11, pad=10, rotation=0, loc='center')
     cbar.ax.tick_params(length=3, pad=3)
 
     # Add explanatory text axis
@@ -1158,7 +1157,7 @@ def visualize_loss_difference_heatmap(
     # Positive values = method_A (GA) better, Negative values = method_B (ES) better
     label_ax.text(0.05, 0.95, f"LOSS_GA < LOSS_ES", 
                   ha="left", va="top", fontsize=10, color='black', weight='bold')
-    label_ax.text(0.05, 0.05, f"LOSS_GA > LOSS_ES", 
+    label_ax.text(0.05, 0.05, f"LOSS_ES < LOSS_GA", 
                   ha="left", va="bottom", fontsize=10, color='black', weight='bold')
     label_ax.text(0.05, 0.5, f"LOSS_GA = LOSS_ES", 
                   ha="left", va="center", fontsize=10, color='black', weight='bold')

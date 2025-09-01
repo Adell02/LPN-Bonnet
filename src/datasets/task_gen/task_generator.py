@@ -133,7 +133,12 @@ class StructPatternTaskGenerator(IterableDataset):
         pattern_id = self._task_pattern if hasattr(self, '_task_pattern') else self.pattern
         if pattern_id in (0, None):
             # For mixed patterns, use a consistent ID for this task
-            pattern_id = hash(str(self._task_colors)) % 1000  # Deterministic hash-based ID
+            # FIXED: Use actual pattern ID (1, 2, or 3) instead of hash-based ID
+            if hasattr(self, '_task_pattern'):
+                pattern_id = self._task_pattern
+            else:
+                # Fallback: use a deterministic but valid pattern ID
+                pattern_id = (hash(str(self._task_colors)) % 3) + 1  # Maps to 1, 2, or 3
         
         info = {
             "num_attempts_generate_task": 1,

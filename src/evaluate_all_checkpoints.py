@@ -2313,12 +2313,8 @@ def main():
                                     plot_description = "Higher values = better performance"
 
                                 if args.loss and len(args.plot_methods) == 2:
-                                    # For loss difference plots, use simplified title
-                                    fig.suptitle(
-                                        f"SEARCH ANALYSIS - {args.run_name}",
-                                        fontsize=16,
-                                        y=0.98,
-                                    )
+                                    # For loss difference plots, no title (clean heatmap)
+                                    pass
                                 else:
                                     # Regular title for accuracy comparisons
                                     fig.suptitle(
@@ -2711,12 +2707,8 @@ def main():
                         plot_description = "Higher values = better performance"
 
                     if args.loss and len(args.plot_methods) == 2:
-                        # For loss difference plots, use simplified title
-                        fig.suptitle(
-                            f"SEARCH ANALYSIS - {args.run_name}",
-                            fontsize=16,
-                            y=0.98,
-                        )
+                        # For loss difference plots, no title (clean heatmap)
+                        pass
                     else:
                         # Regular title for accuracy comparisons
                         fig.suptitle(
