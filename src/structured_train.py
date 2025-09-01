@@ -1473,11 +1473,6 @@ class StructuredTrainer:
                     target_cost = contrastive_coeff * avg_target_var  # Minimize target variance
                     other_cost = contrastive_coeff * avg_other_var   # Push other variance up (competition)
                     
-                    # Log the coefficient being used for debugging
-                    if step % 50 == 0:
-                        logging.info(f"       🔧 Using contrastive_kl coefficient: {contrastive_coeff}")
-                        logging.info(f"       🔧 Target cost: {float(target_cost):.6f}, Other cost: {float(other_cost):.6f}")
-                    
                     contrastive_loss = target_cost + other_cost  # Always positive, both terms push in right direction
                     
                     # Add regularization
@@ -1494,6 +1489,14 @@ class StructuredTrainer:
                 
                 # Compute gradients
                 grads = jax.grad(contrastive_loss_fn)(encoder_params)
+                
+                # FIXED: Log contrastive loss details after gradient computation (outside JAX trace)
+                if step % 50 == 0:
+                    contrastive_coeff = self.cfg.training.get("contrastive_kl", 0.5)
+                    target_cost = contrastive_coeff * float(avg_target_var)
+                    other_cost = contrastive_coeff * float(avg_other_var)
+                    logging.info(f"       🔧 Using contrastive_kl coefficient: {contrastive_coeff}")
+                    logging.info(f"       🔧 Target cost: {target_cost:.6f}, Other cost: {other_cost:.6f}")
                 
                 # Update encoder parameters
                 new_encoder_params = jax.tree_util.tree_map(
