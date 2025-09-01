@@ -2585,7 +2585,7 @@ def main():
                             f"Final {plot_type} - {args.run_name}\n"
                             f"{plot_description}\n"
                             f"Training Progress: {len(steps_sorted)} checkpoints (0% → {progress_percentage}%), Budgets: {len(actual_budgets)}\n"
-                            f"Red = {args.plot_methods[1].replace('_', ' ').title()} better, Blue = {args.plot_methods[0].replace('_', ' ').title()} better",
+                            f"Orange = {args.plot_methods[1].replace('_', ' ').title()} better, Blue = {args.plot_methods[0].replace('_', ' ').title()} better",
                             fontsize=14,
                             y=0.98,
                         )
