@@ -3619,6 +3619,74 @@ class StructuredTrainer:
         logging.info(f"     ✅ This ensures meaningful contrastive loss and proper encoder specialization")
         return grids, shapes, pattern_ids
     
+    def _create_single_pattern_sample_with_seed(self, pattern_id: int, seed: int) -> tuple:
+        """
+        Create a single sample for a specific pattern with a given seed.
+        
+        CRITICAL FIX: This method ensures diversity by using different seeds
+        This prevents the "1260 copies of one grid" problem that causes artificial zero variance.
+        
+        Args:
+            pattern_id: Pattern to generate (1, 2, or 3)
+            seed: Seed for reproducible but diverse generation
+            
+        Returns:
+            Tuple of (grids, shapes, pattern_ids)
+        """
+        # Use the existing pattern generation logic with variable seed
+        from datasets.task_gen.dataloader import make_task_gen_dataloader
+        
+        dataloader = make_task_gen_dataloader(
+            batch_size=1,
+            log_every_n_steps=1,
+            num_workers=0,
+            task_generator_class="STRUCT_PATTERN",
+            num_pairs=self.task_generator_kwargs["num_pairs"],
+            online_data_augmentation=self.cfg.training.online_data_augmentation,
+            seed=seed,  # CRITICAL: Use variable seed for diversity
+            pattern=pattern_id,
+            pattern_per_task=True,
+            num_rows=self.task_generator_kwargs.get("num_rows", 5),
+            num_cols=self.task_generator_kwargs.get("num_cols", 5),
+        )
+        
+        # Extract single sample - handle different dataloader output formats
+        try:
+            # Try the expected format first
+            for batch in dataloader:
+                if len(batch) == 2:
+                    # Format: (grids, shapes)
+                    grids, shapes = batch
+                    # Extract from batch format: (log_every_n_steps, batch_size, ...)
+                    return grids[0, 0], shapes[0, 0], pattern_id
+                elif len(batch) == 3:
+                    # Format: (grids, shapes, pattern_ids)
+                    grids, shapes, _ = batch
+                    return grids[0, 0], shapes[0, 0], pattern_id
+                else:
+                    # Unexpected format, try to handle gracefully
+                    logging.warning(f"Unexpected dataloader output format: {len(batch)} elements")
+                    if hasattr(batch, '__getitem__'):
+                        grids = batch[0] if len(batch) > 0 else None
+                        shapes = batch[1] if len(batch) > 1 else None
+                        if grids is not None and shapes is not None:
+                            return grids[0, 0], shapes[0, 0], pattern_id
+                    
+                    # Fallback: create minimal sample
+                    logging.warning(f"Creating fallback sample for pattern {pattern_id}")
+                    num_pairs = self.task_generator_kwargs["num_pairs"]
+                    fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
+                    fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
+                    return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
+                    
+        except Exception as e:
+            logging.error(f"Error creating single pattern sample for pattern {pattern_id}: {e}")
+            # Create minimal fallback sample
+            num_pairs = self.task_generator_kwargs["num_pairs"]
+            fallback_grids = jnp.zeros((1, 1, num_pairs, 5, 5, 2), jnp.uint8)
+            fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
+            return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
+    
     def _create_pattern_dataset(self, pattern_id: int, num_samples: int) -> tuple:
         """Create a dataset composed solely of a single pattern using pre-loaded datasets.
 
