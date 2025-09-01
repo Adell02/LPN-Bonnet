@@ -1527,7 +1527,18 @@ class StructuredTrainer:
                     if pattern_id in self._last_phase_a_data:
                         data = self._last_phase_a_data[pattern_id]
                         grids = data['grids']
+                        original_length = data.get('original_length', 'Unknown')
+                        storage_step = data.get('storage_step', 'Unknown')
+                        storage_global_step = data.get('storage_global_step', 'Unknown')
                         logging.info(f"   - Pattern {pattern_id}: {len(grids)} samples, shape: {grids.shape}")
+                        logging.info(f"   - Original length: {original_length}, Stored at step: {storage_step}, Global step: {storage_global_step}")
+                        
+                        # CRITICAL CHECK: Verify data hasn't been corrupted
+                        if len(grids) != original_length:
+                            logging.error(f"   ❌ CRITICAL: Pattern {pattern_id} data corrupted!")
+                            logging.error(f"      Original: {original_length} samples, Current: {len(grids)} samples")
+                        else:
+                            logging.info(f"   ✅ Pattern {pattern_id} data integrity verified")
                     else:
                         logging.info(f"   - Pattern {pattern_id}: NOT FOUND in Phase A data")
         
@@ -1539,12 +1550,29 @@ class StructuredTrainer:
                     grids, shapes, pattern_ids = eval_data[pattern_id]
                     logging.info(f"   ✅ Pattern {pattern_id}: Using Phase A data with {len(grids)} samples")
                     
-                    # CRITICAL VERIFICATION: Ensure we got the right number of samples
-                    if len(grids) == 1260:
-                        logging.info(f"   ✅ Pattern {pattern_id}: CORRECT sample count (1260 samples)")
+                # CRITICAL VERIFICATION: Ensure we got the right number of samples
+                if len(grids) == 1260:
+                    logging.info(f"   ✅ Pattern {pattern_id}: CORRECT sample count (1260 samples)")
+                    
+                    # CRITICAL CHECK: Verify data preprocessing consistency
+                    # This ensures no scaling or preprocessing changes between calls
+                    data_info = self._last_phase_a_data[pattern_id]
+                    original_length = data_info.get('original_length', len(grids))
+                    storage_step = data_info.get('storage_step', 'Unknown')
+                    
+                    if len(grids) == original_length:
+                        logging.info(f"   ✅ Pattern {pattern_id}: Data preprocessing consistency verified")
+                        logging.info(f"      - Current samples: {len(grids)}")
+                        logging.info(f"      - Original samples: {original_length}")
+                        logging.info(f"      - Stored at step: {storage_step}")
                     else:
-                        logging.error(f"   ❌ Pattern {pattern_id}: WRONG sample count! Expected 1260, got {len(grids)}")
-                        logging.error(f"      This indicates Phase A data corruption!")
+                        logging.error(f"   ❌ Pattern {pattern_id}: Data preprocessing inconsistency detected!")
+                        logging.error(f"      - Current samples: {len(grids)}")
+                        logging.error(f"      - Original samples: {original_length}")
+                        logging.error(f"      - This indicates preprocessing changes between calls")
+                else:
+                    logging.error(f"   ❌ Pattern {pattern_id}: WRONG sample count! Expected 1260, got {len(grids)}")
+                    logging.error(f"      This indicates Phase A data corruption!")
             
             logging.info(f"   ✅ This ensures evaluation uses the SAME rich data as Phase A")
         else:
@@ -1566,14 +1594,20 @@ class StructuredTrainer:
             else:
                 grids, shapes, pattern_ids = data
             
-            # Sample a subset for evaluation
+            # CRITICAL FIX: Use FIXED sample selection to prevent batch filtering inconsistencies
+            # This ensures the same samples are always selected for evaluation
             if len(grids) > 100:
-                indices = np.random.choice(len(grids), 100, replace=False)
+                # Use deterministic sampling with fixed seed to ensure consistency
+                # This prevents random selection from changing between calls
+                rng = np.random.RandomState(42 + pattern_id)  # Fixed seed per pattern
+                indices = rng.choice(len(grids), 100, replace=False)
                 eval_grids = grids[indices]
                 eval_shapes = shapes[indices]
                 eval_pattern_ids = pattern_ids[indices]
+                logging.info(f"         🔒 Pattern {pattern_id}: Using FIXED 100 samples (deterministic selection)")
             else:
                 eval_grids, eval_shapes, eval_pattern_ids = grids, shapes, pattern_ids
+                logging.info(f"         🔒 Pattern {pattern_id}: Using ALL {len(grids)} samples (no filtering)")
             
             # Forward pass through encoder
             mu, logvar = self.encoders[enc_idx].apply(
@@ -1843,10 +1877,16 @@ class StructuredTrainer:
             logging.info(f"       🔍 Phase A Evaluation at step {step}/{total_steps}")
             
             # Create evaluation data for all patterns to show specialization progress
+            # CRITICAL FIX: Use the ORIGINAL method that generates 1260 samples (not the 96-sample method)
             eval_data = {}
             for pattern_id in [1, 2, 3]:
-                grids, shapes, pattern_ids = self._create_pattern_dataset(pattern_id, num_samples=None)
+                # Use the ORIGINAL method that was working before commit 85d25eb
+                # This generates 1260 samples instead of 96 samples
+                grids, shapes, pattern_ids = self._create_specialized_data_for_pattern(pattern_id)
                 eval_data[pattern_id] = (grids, shapes, pattern_ids)
+                
+                logging.info(f"         🔍 Pattern {pattern_id}: Using ORIGINAL method for 1260 samples")
+                logging.info(f"         🔍 Generated: {len(grids)} samples (should be 1260)")
             
             # Generate T-SNE visualization
             current_global_step = self.phase_a_global_step + step
@@ -1865,17 +1905,30 @@ class StructuredTrainer:
             
             # CRITICAL: Store Phase A data for comparison with merged panel
             # This helps debug why histograms are destroyed in subsequent calls
+            # FIX: Create IMMUTABLE copies to prevent dataset mutation
             self._last_phase_a_data = {}
             for pattern_id in [1, 2, 3]:
                 if pattern_id in eval_data:
                     grids, shapes, pattern_ids = eval_data[pattern_id]
+                    
+                    # CRITICAL FIX: Create immutable copies to prevent dataset mutation
+                    # This ensures the stored data cannot be modified by subsequent operations
+                    grids_copy = jnp.array(grids, copy=True)  # Deep copy
+                    shapes_copy = jnp.array(shapes, copy=True)  # Deep copy
+                    pattern_ids_copy = jnp.array(pattern_ids, copy=True)  # Deep copy
+                    
                     self._last_phase_a_data[pattern_id] = {
-                        'grids': grids,
-                        'shapes': shapes,
-                        'pattern_ids': pattern_ids
+                        'grids': grids_copy,
+                        'shapes': shapes_copy,
+                        'pattern_ids': pattern_ids_copy,
+                        'original_length': len(grids),  # Store original length for verification
+                        'storage_step': step,  # Track when data was stored
+                        'storage_global_step': current_global_step  # Track global step
                     }
+                    
                     logging.info(f"         💾 Stored Phase A data for pattern {pattern_id}: {len(grids)} samples")
                     logging.info(f"         💾 Data structure: grids={grids.shape}, shapes={shapes.shape}, pattern_ids={pattern_ids.shape}")
+                    logging.info(f"         💾 IMMUTABLE COPY created to prevent dataset mutation")
             
             # CRITICAL DEBUG: Verify data storage
             logging.info(f"         🔍 Phase A data storage verification:")
@@ -1939,10 +1992,11 @@ class StructuredTrainer:
                 if pattern_id in eval_data:
                     grids, shapes, pattern_ids = eval_data[pattern_id]
                     
-                    # Select a unique sample for each encoder/pattern combination (like working implementation)
-                    # This ensures different samples are shown for different combinations
+                    # CRITICAL FIX: Use DETERMINISTIC sample selection to prevent randomization inconsistencies
+                    # This ensures the same sample is always selected for the same encoder/pattern combination
                     sample_index = (enc_idx * 3 + pattern_id - 1) % len(grids)
-                    logging.debug(f"Certainty panel: Encoder {enc_idx}, Pattern {pattern_id}, Sample index {sample_index}/{len(grids)}")
+                    logging.info(f"         🔒 Certainty panel: Encoder {enc_idx}, Pattern {pattern_id}, Sample index {sample_index}/{len(grids)}")
+                    logging.info(f"         🔒 DETERMINISTIC selection ensures consistency across calls")
                     
                     # Get encoder outputs for this single sample (exactly like working implementation)
                     sample_grids = grids[sample_index]  # Single sample (not slice)

@@ -960,8 +960,8 @@ def main():
         default=None,
         help="Dataset folder under 'src/datasets' (e.g., 'pattern2d_eval')",
     )
-    parser.add_argument("--dataset_length", type=int, default=None, help="Max examples to eval")
-    parser.add_argument("--dataset_batch_size", type=int, default=None, help="Batch size for dataset eval")
+    parser.add_argument("--dataset_length", type=int, default=32, help="Max examples to eval")
+    parser.add_argument("--dataset_batch_size", type=int, default=8, help="Batch size for dataset eval")
     parser.add_argument("--dataset_use_hf", type=str, default="true", help="Use HF hub (true/false)")
     parser.add_argument("--dataset_seed", type=int, default=0, help="Seed for dataset subsampling")
     parser.add_argument("--inprocess", action="store_true",

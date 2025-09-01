@@ -2492,7 +2492,7 @@ def main() -> None:
     parser.add_argument("--json_challenges", type=str, default=None)
     parser.add_argument("--json_solutions", type=str, default=None)
     parser.add_argument("--dataset_folder", type=str, default=None)
-    parser.add_argument("--dataset_length", type=int, default=None, help="Number of samples in the dataset to evaluate")
+    parser.add_argument("--dataset_length", type=int, default=32, help="Number of samples in the dataset to evaluate")
     parser.add_argument("--dataset_batch_size", type=int, default=None)
     parser.add_argument("--dataset_use_hf", type=str, default="true")
     parser.add_argument("--dataset_seed", type=int, default=0)

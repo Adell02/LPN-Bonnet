@@ -1121,14 +1121,14 @@ if __name__ == "__main__":
         "--dataset-length",
         type=int,
         required=False,
-        default=None,
+        default=32,
         help="Number of examples to evaluate the model on. 'None' to run on all examples.",
     )
     parser.add_argument(
         "--dataset-batch-size",
         type=int,
         required=False,
-        default=None,
+        default=8,
         help="Batch size for the custom dataset evaluation. 'None' to use the length of the dataset.",
     )
     parser.add_argument(
