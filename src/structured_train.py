@@ -1208,7 +1208,7 @@ class StructuredTrainer:
         if self.cfg.training.get("eval_every_n_logs"):
             try:
                 logging.info(f"🔍 Phase 2: Running initial evaluation after Phase 1 completion")
-                self.evaluate(updated_state, enc_params_list, step=0)
+                self.evaluate(updated_state, step=0)
                 
                 # Initial test datasets evaluation for Phase 2
                 if hasattr(self, 'test_datasets') and self.test_datasets:
