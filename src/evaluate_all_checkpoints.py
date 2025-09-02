@@ -1023,6 +1023,125 @@ def extract_loss_from_trajectory_file(npz_path: str, method: str) -> Optional[fl
     return None
 
 
+def extract_full_trajectory_data(npz_path: str, method: str, dataset_length: int) -> Dict[str, Any]:
+    """
+    Extract full trajectory data from NPZ file for high-granularity heatmap generation.
+    Similar to store_latent_search.py but focused on data extraction for heatmaps.
+    
+    Args:
+        npz_path: Path to the saved trajectory file
+        method: Method name ('gradient_ascent', 'evolutionary_search', 'random_search')
+        dataset_length: Number of samples evaluated
+        
+    Returns:
+        Dictionary with full trajectory data for heatmap generation
+    """
+    import numpy as np
+    
+    if not os.path.exists(npz_path):
+        print(f"[extract_full] NPZ file not found: {npz_path}")
+        return {}
+    
+    print(f"[extract_full] Extracting full trajectory data from {npz_path} for {method}...")
+    
+    try:
+        with np.load(npz_path, allow_pickle=True) as npz:
+            print(f"[extract_full] Available keys: {list(npz.keys())}")
+            
+            trajectory_data = {}
+            
+            if method == "gradient_ascent":
+                # Extract GA trajectory data
+                if "ga_losses_per_sample" in npz:
+                    losses_per_sample = np.array(npz["ga_losses_per_sample"])  # (N, T)
+                    trajectory_data['losses_per_sample'] = losses_per_sample
+                    trajectory_data['losses_mean'] = np.mean(losses_per_sample, axis=0)  # (T,)
+                    trajectory_data['losses_std'] = np.std(losses_per_sample, axis=0)  # (T,)
+                    print(f"[extract_full] GA losses: {losses_per_sample.shape}, mean range: [{trajectory_data['losses_mean'].min():.4f}, {trajectory_data['losses_mean'].max():.4f}]")
+                
+                # Extract GA accuracy data if available
+                if "ga_accuracy_per_sample_per_step" in npz:
+                    acc_per_sample = np.array(npz["ga_accuracy_per_sample_per_step"])  # (N, T)
+                    trajectory_data['accuracy_per_sample'] = acc_per_sample
+                    trajectory_data['accuracy_mean'] = np.mean(acc_per_sample, axis=0)  # (T,)
+                    trajectory_data['accuracy_std'] = np.std(acc_per_sample, axis=0)  # (T,)
+                    print(f"[extract_full] GA accuracy: {acc_per_sample.shape}, mean range: [{trajectory_data['accuracy_mean'].min():.4f}, {trajectory_data['accuracy_mean'].max():.4f}]")
+                
+                # Extract budget information (steps)
+                if "ga_budget" in npz:
+                    trajectory_data['budget'] = np.array(npz["ga_budget"]).reshape(-1)
+                else:
+                    # Create budget from number of steps
+                    if 'losses_per_sample' in trajectory_data:
+                        T = trajectory_data['losses_per_sample'].shape[1]
+                        trajectory_data['budget'] = np.arange(1, T + 1)  # 1, 2, 3, ..., T
+                
+                # Extract other metrics
+                for metric in ['shape_correctness', 'pixel_correctness']:
+                    key = f"ga_{metric}_per_sample_per_step"
+                    if key in npz:
+                        metric_data = np.array(npz[key])  # (N, T)
+                        trajectory_data[f'{metric}_per_sample'] = metric_data
+                        trajectory_data[f'{metric}_mean'] = np.mean(metric_data, axis=0)  # (T,)
+                        trajectory_data[f'{metric}_std'] = np.std(metric_data, axis=0)  # (T,)
+                        print(f"[extract_full] GA {metric}: {metric_data.shape}")
+                
+            elif method == "evolutionary_search":
+                # Extract ES trajectory data
+                if "es_generation_losses_per_sample" in npz:
+                    losses_per_sample = np.array(npz["es_generation_losses_per_sample"])  # (N, G)
+                    trajectory_data['losses_per_sample'] = losses_per_sample
+                    trajectory_data['losses_mean'] = np.mean(losses_per_sample, axis=0)  # (G,)
+                    trajectory_data['losses_std'] = np.std(losses_per_sample, axis=0)  # (G,)
+                    print(f"[extract_full] ES losses: {losses_per_sample.shape}, mean range: [{trajectory_data['losses_mean'].min():.4f}, {trajectory_data['losses_mean'].max():.4f}]")
+                
+                # Extract ES accuracy data if available
+                if "per_sample_accuracy_per_generation" in npz:
+                    acc_per_sample = np.array(npz["per_sample_accuracy_per_generation"])  # (N, G)
+                    trajectory_data['accuracy_per_sample'] = acc_per_sample
+                    trajectory_data['accuracy_mean'] = np.mean(acc_per_sample, axis=0)  # (G,)
+                    trajectory_data['accuracy_std'] = np.std(acc_per_sample, axis=0)  # (G,)
+                    print(f"[extract_full] ES accuracy: {acc_per_sample.shape}, mean range: [{trajectory_data['accuracy_mean'].min():.4f}, {trajectory_data['accuracy_mean'].max():.4f}]")
+                
+                # Extract budget information (generations)
+                if "es_budget" in npz:
+                    trajectory_data['budget'] = np.array(npz["es_budget"]).reshape(-1)
+                else:
+                    # Create budget from number of generations
+                    if 'losses_per_sample' in trajectory_data:
+                        G = trajectory_data['losses_per_sample'].shape[1]
+                        trajectory_data['budget'] = np.arange(1, G + 1)  # 1, 2, 3, ..., G
+                
+                # Extract other metrics
+                for metric in ['shape_correctness', 'pixel_correctness']:
+                    key = f"per_sample_{metric}_per_generation"
+                    if key in npz:
+                        metric_data = np.array(npz[key])  # (N, G)
+                        trajectory_data[f'{metric}_per_sample'] = metric_data
+                        trajectory_data[f'{metric}_mean'] = np.mean(metric_data, axis=0)  # (G,)
+                        trajectory_data[f'{metric}_std'] = np.std(metric_data, axis=0)  # (G,)
+                        print(f"[extract_full] ES {metric}: {metric_data.shape}")
+                
+            elif method == "random_search":
+                # For random search, extract what's available
+                if "per_sample_accuracy" in npz:
+                    acc_data = np.array(npz["per_sample_accuracy"])  # (N,)
+                    trajectory_data['accuracy_per_sample'] = acc_data.reshape(-1, 1)  # (N, 1)
+                    trajectory_data['accuracy_mean'] = np.array([np.mean(acc_data)])  # (1,)
+                    trajectory_data['accuracy_std'] = np.array([np.std(acc_data)])  # (1,)
+                    print(f"[extract_full] RS accuracy: {acc_data.shape}")
+                
+                # Create single budget point
+                trajectory_data['budget'] = np.array([1])
+            
+            print(f"[extract_full] Extracted trajectory data with keys: {list(trajectory_data.keys())}")
+            return trajectory_data
+            
+    except Exception as e:
+        print(f"[extract_full] Error extracting trajectory data from {npz_path}: {e}")
+        return {}
+
+
 def extract_loss_from_trajectory(info: dict, method: str) -> Optional[float]:
     """
     Extract final loss from optimization trajectory using store_latent_search functions.
@@ -1840,6 +1959,12 @@ def main():
     parser.add_argument("--no_files", action="store_true",
                        help="Disable file generation and plotting (faster, just return values)")
     
+    # High-granularity evaluation options
+    parser.add_argument("--high_granularity", action="store_true",
+                       help="Enable high-granularity evaluation: only evaluate highest budget and extract full trajectory data for detailed heatmaps")
+    parser.add_argument("--max_budget_only", action="store_true",
+                       help="Only evaluate the maximum budget value (for high-granularity mode)")
+    
     args = parser.parse_args()
     
     # Setup trajectory storage for loss extraction
@@ -1867,6 +1992,11 @@ def main():
     
     # Generate shared budgets
     shared_budgets = generate_budgets(BUDGET_CONFIG)
+    
+    # Apply high-granularity mode: only use highest budget for detailed trajectory extraction
+    if args.high_granularity or args.max_budget_only:
+        shared_budgets = [max(shared_budgets)] if shared_budgets else [args.budget_end]
+        print(f"🔬 High-granularity mode: using only highest budget {shared_budgets[0]} for detailed trajectory extraction")
     
     # Use the same target compute budgets for all methods
     ga_budgets = shared_budgets    # GA compute budget = 2 * num_steps
@@ -3161,44 +3291,114 @@ def main():
                                 print(f"   🔍 Data coverage: {data_point_count} data points")
 
                                 # Generate per-checkpoint GA/ES single-method and difference heatmaps (overall & pixel)
+                                # Use full trajectory data for high-granularity heatmaps instead of just CSV data
                                 try:
-                                    # Build pixel-correctness maps for selected methods from CSV
-                                    method_to_step_to_budget_pixel: Dict[str, Dict[int, Dict[int, float]]] = {}
-                                    for m in args.plot_methods:
-                                        method_to_step_to_budget_pixel[m] = {}
+                                    print(f"📊 Generating high-granularity heatmaps using full trajectory data...")
+                                    
+                                    # Extract full trajectory data for each method
+                                    trajectory_data_by_method = {}
+                                    for method in args.plot_methods:
+                                        trajectory_path = f"temp_trajectories/{method}_{checkpoint['name']}.npz"
+                                        if os.path.exists(trajectory_path):
+                                            trajectory_data = extract_full_trajectory_data(
+                                                trajectory_path, method, args.dataset_length or 1
+                                            )
+                                            if trajectory_data:
+                                                trajectory_data_by_method[method] = trajectory_data
+                                                print(f"📊 Extracted trajectory data for {method}: {list(trajectory_data.keys())}")
+                                            else:
+                                                print(f"⚠️  No trajectory data extracted for {method}")
+                                        else:
+                                            print(f"⚠️  Trajectory file not found for {method}: {trajectory_path}")
+                                    
+                                    # Build high-granularity arrays from trajectory data
+                                    method_arrays_high_granularity = {}
+                                    method_arrays_pixel_high_granularity = {}
+                                    
+                                    for method in args.plot_methods:
+                                        if method in trajectory_data_by_method:
+                                            traj_data = trajectory_data_by_method[method]
+                                            
+                                            # Get the actual budget points from trajectory (much higher granularity)
+                                            if 'budget' in traj_data:
+                                                traj_budgets = traj_data['budget']
+                                                print(f"📊 {method} trajectory budgets: {len(traj_budgets)} points, range: [{traj_budgets.min()}, {traj_budgets.max()}]")
+                                                
+                                                # Create high-granularity arrays
+                                                method_arrays_high_granularity[method] = np.full((len(traj_budgets), len(all_steps)), np.nan)
+                                                method_arrays_pixel_high_granularity[method] = np.full((len(traj_budgets), len(all_steps)), np.nan)
+                                                
+                                                # Fill with trajectory data (only for current checkpoint step)
+                                                current_step_idx = all_steps.index(training_progress) if training_progress in all_steps else 0
+                                                
+                                                # Overall accuracy/loss data
+                                                if 'accuracy_mean' in traj_data:
+                                                    method_arrays_high_granularity[method][:, current_step_idx] = traj_data['accuracy_mean']
+                                                elif 'losses_mean' in traj_data:
+                                                    # Convert losses to accuracy-like values (inverted)
+                                                    losses = traj_data['losses_mean']
+                                                    # Normalize losses to 0-1 range for visualization
+                                                    if losses.max() > losses.min():
+                                                        normalized = 1.0 - (losses - losses.min()) / (losses.max() - losses.min())
+                                                    else:
+                                                        normalized = np.ones_like(losses) * 0.5
+                                                    method_arrays_high_granularity[method][:, current_step_idx] = normalized
+                                                
+                                                # Pixel correctness data
+                                                if 'pixel_correctness_mean' in traj_data:
+                                                    method_arrays_pixel_high_granularity[method][:, current_step_idx] = traj_data['pixel_correctness_mean']
+                                                
+                                                print(f"📊 {method} high-granularity array: {method_arrays_high_granularity[method].shape}")
+                                            else:
+                                                print(f"⚠️  No budget data in trajectory for {method}")
+                                        else:
+                                            print(f"⚠️  No trajectory data available for {method}")
+                                    
+                                    # Fallback to CSV data if trajectory data is insufficient
+                                    if not method_arrays_high_granularity:
+                                        print("📊 Falling back to CSV data for heatmaps...")
+                                        
+                                        # Build pixel-correctness maps for selected methods from CSV
+                                        method_to_step_to_budget_pixel: Dict[str, Dict[int, Dict[int, float]]] = {}
+                                        for m in args.plot_methods:
+                                            method_to_step_to_budget_pixel[m] = {}
 
-                                    with out_csv.open("r") as f_pix:
-                                        reader_pix = csv.DictReader(f_pix)
-                                        for rowp in reader_pix:
-                                            try:
-                                                row_stepp = int(rowp["checkpoint_step"]) if rowp["checkpoint_step"] else None
-                                            except Exception:
-                                                row_stepp = None
-                                            if row_stepp is None:
-                                                continue
-                                            mth = rowp["method"]
-                                            try:
-                                                bud = int(rowp["budget"]) if rowp["budget"] else None
-                                            except Exception:
-                                                bud = None
-                                            if bud is None:
-                                                continue
-                                            try:
-                                                pix = float(rowp["top_1_pixel_correctness"]) if rowp["top_1_pixel_correctness"] not in ("", None) else np.nan
-                                            except Exception:
-                                                pix = np.nan
-                                            if mth in method_to_step_to_budget_pixel:
-                                                method_to_step_to_budget_pixel[mth].setdefault(row_stepp, {})[bud] = pix
+                                        with out_csv.open("r") as f_pix:
+                                            reader_pix = csv.DictReader(f_pix)
+                                            for rowp in reader_pix:
+                                                try:
+                                                    row_stepp = int(rowp["checkpoint_step"]) if rowp["checkpoint_step"] else None
+                                                except Exception:
+                                                    row_stepp = None
+                                                if row_stepp is None:
+                                                    continue
+                                                mth = rowp["method"]
+                                                try:
+                                                    bud = int(rowp["budget"]) if rowp["budget"] else None
+                                                except Exception:
+                                                    bud = None
+                                                if bud is None:
+                                                    continue
+                                                try:
+                                                    pix = float(rowp["top_1_pixel_correctness"]) if rowp["top_1_pixel_correctness"] not in ("", None) else np.nan
+                                                except Exception:
+                                                    pix = np.nan
+                                                if mth in method_to_step_to_budget_pixel:
+                                                    method_to_step_to_budget_pixel[mth].setdefault(row_stepp, {})[bud] = pix
 
-                                    # Build arrays for pixel correctness aligned to all_steps/all_budgets
-                                    method_arrays_pixel: Dict[str, np.ndarray] = {}
-                                    for m in args.plot_methods:
-                                        method_arrays_pixel[m] = np.full((len(all_budgets), len(all_steps)), np.nan)
-                                    for j, s_ in enumerate(all_steps):
-                                        for k, b_ in enumerate(all_budgets):
-                                            for m in args.plot_methods:
-                                                if m in method_to_step_to_budget_pixel:
-                                                    method_arrays_pixel[m][k, j] = method_to_step_to_budget_pixel[m].get(s_, {}).get(b_, np.nan)
+                                        # Build arrays for pixel correctness aligned to all_steps/all_budgets
+                                        method_arrays_pixel: Dict[str, np.ndarray] = {}
+                                        for m in args.plot_methods:
+                                            method_arrays_pixel[m] = np.full((len(all_budgets), len(all_steps)), np.nan)
+                                        for j, s_ in enumerate(all_steps):
+                                            for k, b_ in enumerate(all_budgets):
+                                                for m in args.plot_methods:
+                                                    if m in method_to_step_to_budget_pixel:
+                                                        method_arrays_pixel[m][k, j] = method_to_step_to_budget_pixel[m].get(s_, {}).get(b_, np.nan)
+                                        
+                                        # Use CSV data as fallback
+                                        method_arrays_high_granularity = method_arrays
+                                        method_arrays_pixel_high_granularity = method_arrays_pixel
 
                                     # Helper to render heatmap with consistent color palette and statistical annotations
                                     def _save_heatmap(data: np.ndarray, steps_list: List[int], budgets_list: List[int], title: str, center: float | None, stats_data: Dict[str, Any] = None) -> Path | None:
@@ -3323,36 +3523,50 @@ def main():
                                         except Exception as e:
                                             print(f"⚠️  Failed to compute statistical analysis for heatmap annotations: {e}")
                                     
+                                    # Use high-granularity data for heatmaps if available, otherwise fallback to CSV data
+                                    arrays_to_use = method_arrays_high_granularity if method_arrays_high_granularity else method_arrays
+                                    pixel_arrays_to_use = method_arrays_pixel_high_granularity if method_arrays_pixel_high_granularity else method_arrays_pixel
+                                    
+                                    # Get the appropriate budget list (high-granularity trajectory budgets or CSV budgets)
+                                    if method_arrays_high_granularity and "gradient_ascent" in trajectory_data_by_method:
+                                        # Use trajectory budgets for high granularity
+                                        traj_budgets = trajectory_data_by_method["gradient_ascent"].get('budget', all_budgets)
+                                        budget_list = traj_budgets.tolist() if hasattr(traj_budgets, 'tolist') else traj_budgets
+                                        print(f"📊 Using high-granularity trajectory budgets: {len(budget_list)} points")
+                                    else:
+                                        budget_list = all_budgets
+                                        print(f"📊 Using CSV budgets: {len(budget_list)} points")
+                                    
                                     # GA overall accuracy heatmap (symmetric around 0)
-                                    if "gradient_ascent" in method_arrays:
-                                        p = _save_heatmap(method_arrays["gradient_ascent"], all_steps, all_budgets, f"checkpoint_{step_tag}_ga_overall_accuracy", center=0, stats_data=heatmap_stats)
+                                    if "gradient_ascent" in arrays_to_use:
+                                        p = _save_heatmap(arrays_to_use["gradient_ascent"], all_steps, budget_list, f"checkpoint_{step_tag}_ga_overall_accuracy", center=0, stats_data=heatmap_stats)
                                         if p and p.exists():
                                             wandb.log({f"checkpoint_{training_progress}/ga_overall_accuracy": wandb.Image(str(p))})
                                     # ES overall accuracy heatmap (symmetric around 0)
-                                    if "evolutionary_search" in method_arrays:
-                                        p = _save_heatmap(method_arrays["evolutionary_search"], all_steps, all_budgets, f"checkpoint_{step_tag}_es_overall_accuracy", center=0, stats_data=heatmap_stats)
+                                    if "evolutionary_search" in arrays_to_use:
+                                        p = _save_heatmap(arrays_to_use["evolutionary_search"], all_steps, budget_list, f"checkpoint_{step_tag}_es_overall_accuracy", center=0, stats_data=heatmap_stats)
                                         if p and p.exists():
                                             wandb.log({f"checkpoint_{training_progress}/es_overall_accuracy": wandb.Image(str(p))})
                                     # GA pixel accuracy heatmap (symmetric around 0)
-                                    if "gradient_ascent" in method_arrays_pixel:
-                                        p = _save_heatmap(method_arrays_pixel["gradient_ascent"], all_steps, all_budgets, f"checkpoint_{step_tag}_ga_pixel_accuracy", center=0, stats_data=heatmap_stats)
+                                    if "gradient_ascent" in pixel_arrays_to_use:
+                                        p = _save_heatmap(pixel_arrays_to_use["gradient_ascent"], all_steps, budget_list, f"checkpoint_{step_tag}_ga_pixel_accuracy", center=0, stats_data=heatmap_stats)
                                         if p and p.exists():
                                             wandb.log({f"checkpoint_{training_progress}/ga_pixel_accuracy": wandb.Image(str(p))})
                                     # ES pixel accuracy heatmap (symmetric around 0)
-                                    if "evolutionary_search" in method_arrays_pixel:
-                                        p = _save_heatmap(method_arrays_pixel["evolutionary_search"], all_steps, all_budgets, f"checkpoint_{step_tag}_es_pixel_accuracy", center=0, stats_data=heatmap_stats)
+                                    if "evolutionary_search" in pixel_arrays_to_use:
+                                        p = _save_heatmap(pixel_arrays_to_use["evolutionary_search"], all_steps, budget_list, f"checkpoint_{step_tag}_es_pixel_accuracy", center=0, stats_data=heatmap_stats)
                                         if p and p.exists():
                                             wandb.log({f"checkpoint_{training_progress}/es_pixel_accuracy": wandb.Image(str(p))})
                                     # GA − ES overall accuracy diff (center at 0)
-                                    if "gradient_ascent" in method_arrays and "evolutionary_search" in method_arrays:
-                                        diff_overall = method_arrays["gradient_ascent"] - method_arrays["evolutionary_search"]
-                                        p = _save_heatmap(diff_overall, all_steps, all_budgets, f"checkpoint_{step_tag}_ga_minus_es_overall_accuracy", center=None, stats_data=heatmap_stats)
+                                    if "gradient_ascent" in arrays_to_use and "evolutionary_search" in arrays_to_use:
+                                        diff_overall = arrays_to_use["gradient_ascent"] - arrays_to_use["evolutionary_search"]
+                                        p = _save_heatmap(diff_overall, all_steps, budget_list, f"checkpoint_{step_tag}_ga_minus_es_overall_accuracy", center=None, stats_data=heatmap_stats)
                                         if p and p.exists():
                                             wandb.log({f"checkpoint_{training_progress}/ga_minus_es_overall_accuracy": wandb.Image(str(p))})
                                     # GA − ES pixel accuracy diff (center at 0)
-                                    if "gradient_ascent" in method_arrays_pixel and "evolutionary_search" in method_arrays_pixel:
-                                        diff_pixel = method_arrays_pixel["gradient_ascent"] - method_arrays_pixel["evolutionary_search"]
-                                        p = _save_heatmap(diff_pixel, all_steps, all_budgets, f"checkpoint_{step_tag}_ga_minus_es_pixel_accuracy", center=None, stats_data=heatmap_stats)
+                                    if "gradient_ascent" in pixel_arrays_to_use and "evolutionary_search" in pixel_arrays_to_use:
+                                        diff_pixel = pixel_arrays_to_use["gradient_ascent"] - pixel_arrays_to_use["evolutionary_search"]
+                                        p = _save_heatmap(diff_pixel, all_steps, budget_list, f"checkpoint_{step_tag}_ga_minus_es_pixel_accuracy", center=None, stats_data=heatmap_stats)
                                         if p and p.exists():
                                             wandb.log({f"checkpoint_{training_progress}/ga_minus_es_pixel_accuracy": wandb.Image(str(p))})
                                     print("📊 Generated and uploaded per-checkpoint GA/ES heatmaps (overall/pixel and diffs)")
