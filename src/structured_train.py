@@ -1524,7 +1524,7 @@ class StructuredTrainer:
             logging.info(f"     🔍 Phase A Final Evaluation at step {num_steps}/{num_steps}")
             # Create evaluation data for final certainty plots
             eval_data = {}
-            num_eval_samples = 100  # Same as in _evaluate_specialized_encoder for consistency
+            num_eval_samples = 96  # Use available samples from each dataset (same as _evaluate_specialized_encoder)
             for pattern_id in [1, 2, 3]:
                 eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
             
@@ -1559,7 +1559,8 @@ class StructuredTrainer:
         
         # Generate evaluation data for all patterns using balanced pattern-specific datasets
         eval_data = {}
-        num_eval_samples = 100  # same number for each pattern to ensure even coverage
+        # Use available samples instead of forcing 100 - each dataset has 96 samples
+        num_eval_samples = 96  # Use available samples from each dataset
         for pattern_id in [1, 2, 3]:
             eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
 
@@ -1568,8 +1569,8 @@ class StructuredTrainer:
         pattern_variances = {}
         for pattern_id, (grids, shapes, pattern_ids) in eval_data.items():
             # Sample a subset for evaluation
-            if len(grids) > 100:
-                indices = np.random.choice(len(grids), 100, replace=False)
+            if len(grids) > 96:
+                indices = np.random.choice(len(grids), 96, replace=False)
                 eval_grids = grids[indices]
                 eval_shapes = shapes[indices]
                 eval_pattern_ids = pattern_ids[indices]
@@ -3384,26 +3385,29 @@ class StructuredTrainer:
             grids = np.load(os.path.join(dataset_path, "grids.npy")).astype(np.uint8)
             shapes = np.load(os.path.join(dataset_path, "shapes.npy")).astype(np.uint8)
 
-            # Ensure we have enough samples
+            # Use available samples instead of forcing requested number
             available_samples = len(grids)
             rng = np.random.default_rng(self.cfg.training.seed)
+            
+            # Use the minimum of requested samples and available samples
+            actual_samples = min(num_samples, available_samples)
+            
             if available_samples >= num_samples:
                 # Sample without replacement when enough data is available
-                indices = rng.choice(available_samples, size=num_samples, replace=False)
+                indices = rng.choice(available_samples, size=actual_samples, replace=False)
                 grids = grids[indices]
                 shapes = shapes[indices]
             else:
-                # Sample with replacement to match the requested batch size
-                logging.warning(
-                    f"      Dataset {dataset_folder} only has {available_samples} samples, sampling with replacement to reach {num_samples}"
+                # Use all available samples without replacement
+                logging.info(
+                    f"      Dataset {dataset_folder} has {available_samples} samples, using all available samples"
                 )
-                indices = rng.choice(available_samples, size=num_samples, replace=True)
-                grids = grids[indices]
-                shapes = shapes[indices]
+                grids = grids  # Use all available samples
+                shapes = shapes  # Use all available samples
 
-            pattern_ids = np.full(num_samples, pattern_id, dtype=np.uint8)
+            pattern_ids = np.full(actual_samples, pattern_id, dtype=np.uint8)
             
-            logging.info(f"      Loaded {num_samples} samples from {dataset_folder}: {grids.shape}, {shapes.shape}")
+            logging.info(f"      Loaded {actual_samples} samples from {dataset_folder}: {grids.shape}, {shapes.shape}")
             return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
                 
         except Exception as e:

@@ -3659,15 +3659,25 @@ def main():
                                         print(f"🔍 DEBUG: Generating GA-ES overall accuracy difference heatmap...")
                                         ga_data = arrays_to_use["gradient_ascent"]
                                         es_data = arrays_to_use["evolutionary_search"]
-                                        
-                                        # Check if arrays have compatible shapes for subtraction
-                                        if ga_data.shape == es_data.shape:
-                                            diff_overall = ga_data - es_data
-                                            # Use the budget list from the first method (GA) for consistency
-                                            ga_budget_list = get_budget_list_for_method("gradient_ascent")
-                                            p = _save_heatmap(diff_overall, all_steps, ga_budget_list, f"checkpoint_{step_tag}_ga_minus_es_overall_accuracy", center=0, stats_data=heatmap_stats)
+                                        ga_budget_list = get_budget_list_for_method("gradient_ascent")
+                                        es_budget_list = get_budget_list_for_method("evolutionary_search")
+
+                                        # Align arrays using the intersection of budgets
+                                        common_budgets = [b for b in ga_budget_list if b in es_budget_list]
+                                        if common_budgets:
+                                            ga_idx = [ga_budget_list.index(b) for b in common_budgets]
+                                            es_idx = [es_budget_list.index(b) for b in common_budgets]
+                                            ga_aligned = ga_data[ga_idx, :]
+                                            es_aligned = es_data[es_idx, :]
+
+                                            if ga_aligned.shape == es_aligned.shape:
+                                                diff_overall = ga_aligned - es_aligned
+                                                p = _save_heatmap(diff_overall, all_steps, common_budgets, f"checkpoint_{step_tag}_ga_minus_es_overall_accuracy", center=0, stats_data=heatmap_stats)
+                                            else:
+                                                print(f"❌ DEBUG: Cannot subtract GA-ES arrays even after alignment - GA shape: {ga_aligned.shape}, ES shape: {es_aligned.shape}")
+                                                p = None
                                         else:
-                                            print(f"❌ DEBUG: Cannot subtract GA-ES arrays - GA shape: {ga_data.shape}, ES shape: {es_data.shape}")
+                                            print(f"❌ DEBUG: No common budgets between GA ({ga_budget_list}) and ES ({es_budget_list})")
                                             p = None
                                         if p and p.exists():
                                             print(f"✅ DEBUG: GA-ES overall accuracy difference heatmap saved to {p}")
@@ -3681,15 +3691,24 @@ def main():
                                         print(f"🔍 DEBUG: Generating GA-ES pixel accuracy difference heatmap...")
                                         ga_pixel_data = pixel_arrays_to_use["gradient_ascent"]
                                         es_pixel_data = pixel_arrays_to_use["evolutionary_search"]
-                                        
-                                        # Check if arrays have compatible shapes for subtraction
-                                        if ga_pixel_data.shape == es_pixel_data.shape:
-                                            diff_pixel = ga_pixel_data - es_pixel_data
-                                            # Use the budget list from the first method (GA) for consistency
-                                            ga_budget_list = get_budget_list_for_method("gradient_ascent")
-                                            p = _save_heatmap(diff_pixel, all_steps, ga_budget_list, f"checkpoint_{step_tag}_ga_minus_es_pixel_accuracy", center=0, stats_data=heatmap_stats)
+                                        ga_budget_list = get_budget_list_for_method("gradient_ascent")
+                                        es_budget_list = get_budget_list_for_method("evolutionary_search")
+
+                                        common_budgets = [b for b in ga_budget_list if b in es_budget_list]
+                                        if common_budgets:
+                                            ga_idx = [ga_budget_list.index(b) for b in common_budgets]
+                                            es_idx = [es_budget_list.index(b) for b in common_budgets]
+                                            ga_aligned = ga_pixel_data[ga_idx, :]
+                                            es_aligned = es_pixel_data[es_idx, :]
+
+                                            if ga_aligned.shape == es_aligned.shape:
+                                                diff_pixel = ga_aligned - es_aligned
+                                                p = _save_heatmap(diff_pixel, all_steps, common_budgets, f"checkpoint_{step_tag}_ga_minus_es_pixel_accuracy", center=0, stats_data=heatmap_stats)
+                                            else:
+                                                print(f"❌ DEBUG: Cannot subtract GA-ES pixel arrays even after alignment - GA shape: {ga_aligned.shape}, ES shape: {es_aligned.shape}")
+                                                p = None
                                         else:
-                                            print(f"❌ DEBUG: Cannot subtract GA-ES pixel arrays - GA shape: {ga_pixel_data.shape}, ES shape: {es_pixel_data.shape}")
+                                            print(f"❌ DEBUG: No common budgets between GA ({ga_budget_list}) and ES ({es_budget_list}) for pixel data")
                                             p = None
                                         if p and p.exists():
                                             print(f"✅ DEBUG: GA-ES pixel accuracy difference heatmap saved to {p}")
@@ -3704,12 +3723,24 @@ def main():
                                         print(f"🔍 DEBUG: Generating GA-ES loss difference heatmap...")
                                         ga_loss = loss_arrays_to_use["gradient_ascent"]
                                         es_loss = loss_arrays_to_use["evolutionary_search"]
-                                        if ga_loss.shape == es_loss.shape:
-                                            diff_loss = ga_loss - es_loss
-                                            ga_budget_list = get_budget_list_for_method("gradient_ascent")
-                                            p = _save_heatmap(diff_loss, all_steps, ga_budget_list, f"checkpoint_{step_tag}_ga_minus_es_loss", center=0, stats_data=heatmap_stats)
+                                        ga_budget_list = get_budget_list_for_method("gradient_ascent")
+                                        es_budget_list = get_budget_list_for_method("evolutionary_search")
+
+                                        common_budgets = [b for b in ga_budget_list if b in es_budget_list]
+                                        if common_budgets:
+                                            ga_idx = [ga_budget_list.index(b) for b in common_budgets]
+                                            es_idx = [es_budget_list.index(b) for b in common_budgets]
+                                            ga_aligned = ga_loss[ga_idx, :]
+                                            es_aligned = es_loss[es_idx, :]
+
+                                            if ga_aligned.shape == es_aligned.shape:
+                                                diff_loss = ga_aligned - es_aligned
+                                                p = _save_heatmap(diff_loss, all_steps, common_budgets, f"checkpoint_{step_tag}_ga_minus_es_loss", center=0, stats_data=heatmap_stats)
+                                            else:
+                                                print(f"❌ DEBUG: Cannot subtract GA-ES loss arrays even after alignment - GA shape: {ga_aligned.shape}, ES shape: {es_aligned.shape}")
+                                                p = None
                                         else:
-                                            print(f"❌ DEBUG: Cannot subtract GA-ES loss arrays - GA shape: {ga_loss.shape}, ES shape: {es_loss.shape}")
+                                            print(f"❌ DEBUG: No common budgets between GA ({ga_budget_list}) and ES ({es_budget_list}) for loss data")
                                             p = None
                                         if p and p.exists():
                                             print(f"✅ DEBUG: GA-ES loss difference heatmap saved to {p}")
