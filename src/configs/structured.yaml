@@ -73,17 +73,17 @@ training:
   
   # Enhanced uncertainty shaping parameters
   # Subset β for different pattern types
-  beta_target: 0.5      # β_T < 1 to make small σ² cheap for target patterns
-  beta_other: 1.5       # β_O ≥ 1 to maintain standard KL for other patterns
+  beta_target: 0.1      # β_T < 1 to make small σ² cheap for target patterns
+  beta_other: 5       # β_O ≥ 1 to maintain standard KL for other patterns
   
   # Class-conditional prior variances
   prior_var_target: 0.25  # s_T² < 1 for target patterns (σ² ≈ 0.25)
-  prior_var_other: 2.0    # s_O² > 1 for other patterns (σ² ≈ 2.0)
+  prior_var_other: 5.0    # s_O² > 1 for other patterns (σ² ≈ 2.0)
   
   # Per-sample, per-dimension uncertainty penalties
-  alpha_target: 1.0     # α_T for driving target certainty: L_T = α_T * Σ_d σ_T²
-  alpha_other: 0.5      # α_O for inflating other uncertainty: L_O = α_O * Σ_d softplus(m - σ_O²)
-  uncertainty_margin: 1.0  # m: minimum variance threshold for other patterns
+  alpha_target: 2.0     # α_T for driving target certainty: L_T = α_T * Σ_d σ_T²
+  alpha_other: 0.25      # α_O for inflating other uncertainty: L_O = α_O * Σ_d softplus(m - σ_O²)
+  uncertainty_margin: 2.0  # m: minimum variance threshold for other patterns
   
   # Entropy bonus on other patterns
   entropy_gamma: 0.1    # γ for entropy bonus: -γ * Σ_d log σ_O²
