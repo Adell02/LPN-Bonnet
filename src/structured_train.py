@@ -1079,9 +1079,11 @@ class StructuredTrainer:
         target_latents_store = {}  # {encoder_idx: {pattern_id: target_latents}}
         
         if repulsion_kl > 0:
-            logging.info(f"🚫 Repulsion Loss Enabled: λ={repulsion_kl}")
+            repulsion_margin = self.cfg.training.get("repulsion_margin", 10.0)
+            logging.info(f"🚫 Repulsion Loss Enabled: λ={repulsion_kl}, margin={repulsion_margin}")
             logging.info(f"   - Sequential training: Each encoder will be pushed away from previous encoders")
             logging.info(f"   - Training order: Encoder 0 → Encoder 1 (repulses from 0) → Encoder 2 (repulses from 0,1)")
+            logging.info(f"   - Repulsion margin: {repulsion_margin} (encourages distances > {repulsion_margin})")
         else:
             logging.info(f"⚠️  Repulsion Loss Disabled: repulsion_kl={repulsion_kl}")
             logging.info(f"   - Parallel training: All encoders train independently without repulsion")
@@ -1391,7 +1393,7 @@ class StructuredTrainer:
                             current_latents=current_latents,
                             target_latents_store=target_latents_store,
                             current_encoder_idx=enc_idx,
-                            margin=1.0
+                            margin=self.cfg.training.get("repulsion_margin", 10.0)
                         )
                         
                         # Scale repulsion loss by the coefficient
@@ -1416,7 +1418,8 @@ class StructuredTrainer:
                 # Log repulsion loss if it's significant
                 if step % 50 == 0 and repulsion_loss > 0:
                     repulsion_coeff = self.cfg.training.get("repulsion_kl", 0)
-                    logging.info(f"       Repulsion Loss: {float(repulsion_loss):.6f} (λ={repulsion_coeff})")
+                    repulsion_margin = self.cfg.training.get("repulsion_margin", 10.0)
+                    logging.info(f"       Repulsion Loss: {float(repulsion_loss):.6f} (λ={repulsion_coeff}, margin={repulsion_margin})")
                 
                 # Update encoder parameters
                 new_encoder_params = jax.tree_util.tree_map(
@@ -1471,6 +1474,7 @@ class StructuredTrainer:
                         # Repulsion loss metrics (if enabled)
                         f"encoder_{enc_idx}/repulsion_loss": float(repulsion_loss) if repulsion_loss > 0 else 0.0,
                         f"encoder_{enc_idx}/repulsion_coefficient": self.cfg.training.get("repulsion_kl", 0),
+                        f"encoder_{enc_idx}/repulsion_margin": self.cfg.training.get("repulsion_margin", 10.0),
                     }, step=current_global_step)
                 
                 if step % 50 == 0:
@@ -3530,7 +3534,7 @@ class StructuredTrainer:
             fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
             return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
         
-    def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 5.0) -> float:
+    def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 10.0) -> float:
         """
         Compute repulsion loss to push current encoder away from previous encoders' latent targets.
         
@@ -3538,7 +3542,7 @@ class StructuredTrainer:
             current_latents: Current encoder's latent representations [batch_size, latent_dim]
             target_latents_store: Dictionary of {encoder_idx: {pattern_id: target_latents}} from previous encoders
             current_encoder_idx: Index of the current encoder being trained
-            margin: Distance margin for repulsion (default: 1.0)
+            margin: Distance margin for repulsion (default: 10.0)
             
         Returns:
             Repulsion loss value
@@ -3553,7 +3557,7 @@ class StructuredTrainer:
         logging.info(f"   - margin: {margin}")
         
         # Adaptive margin: if margin is too small, compute a reasonable one based on data
-        if margin < 1.0:
+        if margin < 5.0:
             # Sample some distances to estimate a reasonable margin
             sample_distances = []
             for prev_enc_idx in range(current_encoder_idx):
@@ -3572,7 +3576,7 @@ class StructuredTrainer:
 
             if sample_distances:
                 sample_array = jnp.stack(sample_distances)
-                adaptive_margin = jnp.maximum(1.0, jnp.min(sample_array) * 0.8)
+                adaptive_margin = jnp.maximum(5.0, jnp.min(sample_array) * 0.8)
                 jax.debug.print("   - Adaptive margin computed: {m}", m=adaptive_margin)
                 margin = adaptive_margin
         
@@ -3790,6 +3794,8 @@ class StructuredTrainer:
             logging.info("With current config: Checkpointing disabled")
         logging.info(f"Encoder exposure period: {self.encoder_expose_steps} steps (encoders trainable during this period)")
         logging.info(f"Repulsion KL coefficient: {cfg.training.get('repulsion_kl', 'disabled')}")
+        if cfg.training.get('repulsion_kl', 0) > 0:
+            logging.info(f"Repulsion margin: {cfg.training.get('repulsion_margin', 10.0)}")
         logging.info(f"Contrastive KL coefficient: {cfg.training.get('contrastive_kl', 'disabled')}")
         logging.info(f"Training with {len(cfg.structured.artifacts.models)} encoders for pattern specialization")
         
@@ -4132,11 +4138,11 @@ class StructuredTrainer:
                 reconstruction_metrics = {}
                 
                 # Extract only reconstruction and decoder-related metrics
-                for key, value in metrics.items():
-                    if any(metric_type in key.lower() for metric_type in [
+                for metric_key, value in metrics.items():
+                    if any(metric_type in metric_key.lower() for metric_type in [
                         'loss', 'reconstruction', 'prior_kl', 'pairwise_kl', 'decoder', 'poe'
                     ]):
-                        reconstruction_metrics[key] = value
+                        reconstruction_metrics[metric_key] = value
                 
                 # Add timing metrics
                 if "timing/train_time" in metrics:
