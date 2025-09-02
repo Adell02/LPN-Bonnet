@@ -1068,7 +1068,6 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             print(f"[bounds] Background array dimensions: {dims}")
             
             # Find the most common dimension
-            from collections import Counter
             dim_counts = Counter(dims)
             most_common_dim = dim_counts.most_common(1)[0][0]
             print(f"[bounds] Most common dimension: {most_common_dim} (appears {dim_counts[most_common_dim]} times)")
@@ -1267,7 +1266,6 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 print(f"[plot] Background array dimensions for plotting: {dims}")
                 
                 # Find the most common dimension
-                from collections import Counter
                 dim_counts = Counter(dims)
                 most_common_dim = dim_counts.most_common(1)[0][0]
                 print(f"[plot] Most common dimension for plotting: {most_common_dim} (appears {dim_counts[most_common_dim]} times)")
