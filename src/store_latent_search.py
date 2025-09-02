@@ -84,6 +84,7 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
+from scipy.stats import ttest_ind
 
 
 def build_dataset_args(args: argparse.Namespace) -> list[str]:
@@ -3567,6 +3568,32 @@ def main() -> None:
                         wandb.log({
                             "aggregated/es_best_loss_mean": float(np.mean(es_bl_stats)),
                             "aggregated/es_best_loss_std": float(np.std(es_bl_stats)),
+                        })
+
+                    # Perform two-sample t-tests between GA and ES metrics
+                    if ga_acc_stats.size > 1 and es_acc_stats.size > 1:
+                        stat, p_val = ttest_ind(ga_acc_stats, es_acc_stats, equal_var=False)
+                        wandb.log({
+                            "aggregated/accuracy_ttest_stat": float(stat),
+                            "aggregated/accuracy_ttest_pvalue": float(p_val),
+                        })
+                    if ga_shp_stats.size > 1 and es_shp_stats.size > 1:
+                        stat, p_val = ttest_ind(ga_shp_stats, es_shp_stats, equal_var=False)
+                        wandb.log({
+                            "aggregated/shape_correctness_ttest_stat": float(stat),
+                            "aggregated/shape_correctness_ttest_pvalue": float(p_val),
+                        })
+                    if ga_pix_stats.size > 1 and es_pix_stats.size > 1:
+                        stat, p_val = ttest_ind(ga_pix_stats, es_pix_stats, equal_var=False)
+                        wandb.log({
+                            "aggregated/pixel_correctness_ttest_stat": float(stat),
+                            "aggregated/pixel_correctness_ttest_pvalue": float(p_val),
+                        })
+                    if ga_bl_stats.size > 1 and es_bl_stats.size > 1:
+                        stat, p_val = ttest_ind(ga_bl_stats, es_bl_stats, equal_var=False)
+                        wandb.log({
+                            "aggregated/best_loss_ttest_stat": float(stat),
+                            "aggregated/best_loss_ttest_pvalue": float(p_val),
                         })
                     
                     # Upload aggregated plots and NPZ files
