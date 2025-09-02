@@ -2369,6 +2369,120 @@ def main():
                                 print(f"   💰 Available budgets: {all_budgets}")
                                 print(f"   🔍 Data coverage: {data_point_count} data points")
 
+                                # Generate per-checkpoint GA/ES single-method and difference heatmaps (overall & pixel)
+                                try:
+                                    # Build pixel-correctness maps for selected methods from CSV
+                                    method_to_step_to_budget_pixel: Dict[str, Dict[int, Dict[int, float]]] = {}
+                                    for m in args.plot_methods:
+                                        method_to_step_to_budget_pixel[m] = {}
+
+                                    with out_csv.open("r") as f_pix:
+                                        reader_pix = csv.DictReader(f_pix)
+                                        for rowp in reader_pix:
+                                            try:
+                                                row_stepp = int(rowp["checkpoint_step"]) if rowp["checkpoint_step"] else None
+                                            except Exception:
+                                                row_stepp = None
+                                            if row_stepp is None:
+                                                continue
+                                            mth = rowp["method"]
+                                            try:
+                                                bud = int(rowp["budget"]) if rowp["budget"] else None
+                                            except Exception:
+                                                bud = None
+                                            if bud is None:
+                                                continue
+                                            try:
+                                                pix = float(rowp["top_1_pixel_correctness"]) if rowp["top_1_pixel_correctness"] not in ("", None) else np.nan
+                                            except Exception:
+                                                pix = np.nan
+                                            if mth in method_to_step_to_budget_pixel:
+                                                method_to_step_to_budget_pixel[mth].setdefault(row_stepp, {})[bud] = pix
+
+                                    # Build arrays for pixel correctness aligned to all_steps/all_budgets
+                                    method_arrays_pixel: Dict[str, np.ndarray] = {}
+                                    for m in args.plot_methods:
+                                        method_arrays_pixel[m] = np.full((len(all_budgets), len(all_steps)), np.nan)
+                                    for j, s_ in enumerate(all_steps):
+                                        for k, b_ in enumerate(all_budgets):
+                                            for m in args.plot_methods:
+                                                if m in method_to_step_to_budget_pixel:
+                                                    method_arrays_pixel[m][k, j] = method_to_step_to_budget_pixel[m].get(s_, {}).get(b_, np.nan)
+
+                                    # Helper to render heatmap with symmetric colorbar
+                                    def _save_heatmap(data: np.ndarray, steps_list: List[int], budgets_list: List[int], title: str, center: float | None) -> Path | None:
+                                        try:
+                                            if data is None or np.all(np.isnan(data)):
+                                                return None
+                                            fig_h, ax_h = plt.subplots(figsize=(10, 6))
+                                            if center is not None:
+                                                dmin = np.nanmin(data)
+                                                dmax = np.nanmax(data)
+                                                span = max(abs(dmin - center), abs(dmax - center))
+                                                vmin, vmax = center - span, center + span
+                                            else:
+                                                vmax_abs = float(np.nanmax(np.abs(data))) if not np.all(np.isnan(data)) else 1.0
+                                                vmin, vmax = -vmax_abs, vmax_abs
+                                            im = ax_h.imshow(
+                                                data,
+                                                aspect="auto",
+                                                origin="lower",
+                                                extent=[min(steps_list), max(steps_list), min(budgets_list), max(budgets_list)],
+                                                vmin=vmin,
+                                                vmax=vmax,
+                                                cmap="coolwarm",
+                                            )
+                                            ax_h.set_xlabel("Training Step")
+                                            ax_h.set_ylabel("Budget")
+                                            ax_h.set_title(title)
+                                            fig_h.colorbar(im, ax=ax_h)
+                                            out_dir_local = Path("results")
+                                            out_dir_local.mkdir(parents=True, exist_ok=True)
+                                            safe_title = re.sub(r"[^a-zA-Z0-9_\-]+", "_", title)
+                                            out_path = out_dir_local / f"{safe_title}.png"
+                                            fig_h.savefig(out_path, dpi=200, bbox_inches="tight")
+                                            plt.close(fig_h)
+                                            return out_path
+                                        except Exception:
+                                            return None
+
+                                    step_tag = training_progress
+                                    # GA overall accuracy heatmap (center=0.5)
+                                    if "gradient_ascent" in method_arrays:
+                                        p = _save_heatmap(method_arrays["gradient_ascent"], all_steps, all_budgets, f"checkpoint_{step_tag}_ga_overall_accuracy", center=0.5)
+                                        if p and p.exists():
+                                            wandb.log({f"checkpoint_{training_progress}/ga_overall_accuracy": wandb.Image(str(p))})
+                                    # ES overall accuracy heatmap (center=0.5)
+                                    if "evolutionary_search" in method_arrays:
+                                        p = _save_heatmap(method_arrays["evolutionary_search"], all_steps, all_budgets, f"checkpoint_{step_tag}_es_overall_accuracy", center=0.5)
+                                        if p and p.exists():
+                                            wandb.log({f"checkpoint_{training_progress}/es_overall_accuracy": wandb.Image(str(p))})
+                                    # GA pixel accuracy heatmap (center=0.5)
+                                    if "gradient_ascent" in method_arrays_pixel:
+                                        p = _save_heatmap(method_arrays_pixel["gradient_ascent"], all_steps, all_budgets, f"checkpoint_{step_tag}_ga_pixel_accuracy", center=0.5)
+                                        if p and p.exists():
+                                            wandb.log({f"checkpoint_{training_progress}/ga_pixel_accuracy": wandb.Image(str(p))})
+                                    # ES pixel accuracy heatmap (center=0.5)
+                                    if "evolutionary_search" in method_arrays_pixel:
+                                        p = _save_heatmap(method_arrays_pixel["evolutionary_search"], all_steps, all_budgets, f"checkpoint_{step_tag}_es_pixel_accuracy", center=0.5)
+                                        if p and p.exists():
+                                            wandb.log({f"checkpoint_{training_progress}/es_pixel_accuracy": wandb.Image(str(p))})
+                                    # GA − ES overall accuracy diff (center at 0)
+                                    if "gradient_ascent" in method_arrays and "evolutionary_search" in method_arrays:
+                                        diff_overall = method_arrays["gradient_ascent"] - method_arrays["evolutionary_search"]
+                                        p = _save_heatmap(diff_overall, all_steps, all_budgets, f"checkpoint_{step_tag}_ga_minus_es_overall_accuracy", center=None)
+                                        if p and p.exists():
+                                            wandb.log({f"checkpoint_{training_progress}/ga_minus_es_overall_accuracy": wandb.Image(str(p))})
+                                    # GA − ES pixel accuracy diff (center at 0)
+                                    if "gradient_ascent" in method_arrays_pixel and "evolutionary_search" in method_arrays_pixel:
+                                        diff_pixel = method_arrays_pixel["gradient_ascent"] - method_arrays_pixel["evolutionary_search"]
+                                        p = _save_heatmap(diff_pixel, all_steps, all_budgets, f"checkpoint_{step_tag}_ga_minus_es_pixel_accuracy", center=None)
+                                        if p and p.exists():
+                                            wandb.log({f"checkpoint_{training_progress}/ga_minus_es_pixel_accuracy": wandb.Image(str(p))})
+                                    print("📊 Generated and uploaded per-checkpoint GA/ES heatmaps (overall/pixel and diffs)")
+                                except Exception as e:
+                                    print(f"⚠️  Failed to generate per-checkpoint GA/ES heatmaps: {e}")
+
                                 # Generate additional loss plots if --loss flag is enabled
                                 if args.loss and len(args.plot_methods) == 2:
                                     try:
