@@ -1237,6 +1237,9 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         else:
             return v  # Losses: keep original sign (continuous custom background)
 
+    # Initialize ax to None to avoid UnboundLocalError
+    ax = None
+    
     # Skip trajectory plot if dataset_length > 1
     if dataset_length and dataset_length > 1:
         print(f"[plot] Skipping trajectory plot (dataset_length={dataset_length} > 1)")
@@ -1245,10 +1248,11 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         # figure
         fig, ax = plt.subplots(1, 1, figsize=(16, 14))
         title = f"Latent Search Trajectories: GA and ES (Z_dim = {original_dim})\nBoth methods start from mean latent"
-        ax.set_title(title, fontsize=20, fontweight='bold')
-        ax.set_xlabel("z1", fontsize=16); ax.set_ylabel("z2", fontsize=16)
-        ax.set_aspect("equal")  # With whitened PCA, this will look balanced
-        ax.set_xlim(*xlim); ax.set_ylim(*ylim)
+        if ax is not None:
+            ax.set_title(title, fontsize=20, fontweight='bold')
+            ax.set_xlabel("z1", fontsize=16); ax.set_ylabel("z2", fontsize=16)
+            ax.set_aspect("equal")  # With whitened PCA, this will look balanced
+            ax.set_xlim(*xlim); ax.set_ylim(*ylim)
 
         # Initialize background variables to avoid UnboundLocalError
         XX, YY, ZZ = None, None, None
@@ -1325,8 +1329,9 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 )
             
             # Display the background
-            im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.7)
-            cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            if ax is not None:
+                im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.7)
+                cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
             
             # Set appropriate colorbar label based on field type
             if field_name.lower() == "loss":
@@ -1337,9 +1342,11 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 cbar.set_label(field_name, fontsize=14)
             
             # Set unexplored areas to white by setting the background color
-            ax.set_facecolor("white")
+            if ax is not None:
+                ax.set_facecolor("white")
         else:
-            ax.set_facecolor("white")
+            if ax is not None:
+                ax.set_facecolor("white")
 
         # ES population: show all samples in orange with full alpha + translucent generation circles
         if es.pop_pts is not None:
@@ -1347,8 +1354,9 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             es_pop_pts_flat = es.pop_pts.reshape(-1, 2)
             
             # Plot ALL ES samples with custom color
-            ax.scatter(es_pop_pts_flat[:, 0], es_pop_pts_flat[:, 1], s=80, alpha=1.0,
-                       color="#DB74DB", linewidths=0, zorder=1, label="ES population (all samples)")
+            if ax is not None:
+                ax.scatter(es_pop_pts_flat[:, 0], es_pop_pts_flat[:, 1], s=80, alpha=1.0,
+                           color="#DB74DB", linewidths=0, zorder=1, label="ES population (all samples)")
         
         # Then add translucent circles to cluster samples from the same generation
         if es.gen_idx is not None or es.vals is not None:
@@ -1393,9 +1401,10 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                     print(f"[plot] Gen {gen} circle: center=({gen_center[0]:.3f}, {gen_center[1]:.3f}), radius={gen_radius:.3f}")
                     print(f"[plot] Gen {gen} bounds: x[{circle_xmin:.3f}, {circle_xmax:.3f}], y[{circle_ymin:.3f}, {circle_ymax:.3f}]")
                     # Draw translucent circle for this generation
-                    circle = plt.Circle(gen_center, gen_radius, fill=True, linewidth=4, 
-                                      edgecolor=color, facecolor=color, alpha=0.15)
-                    ax.add_patch(circle)
+                    if ax is not None:
+                        circle = plt.Circle(gen_center, gen_radius, fill=True, linewidth=4, 
+                                          edgecolor=color, facecolor=color, alpha=0.15)
+                        ax.add_patch(circle)
                     # Generation labels removed as requested
             else:
                 print(f"[plot] Skipping generation circles due to unavailable/mismatched generation index")
@@ -1440,7 +1449,8 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 
                 # CRITICAL FIX: Highlight generation 0 as the starting point (mean latent)
                 # Plot the full trajectory including generation 0
-                _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
+                if ax is not None:
+                    _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
                 
                 # Starting point info (no star marker)
                 if es_sel_flat.shape[0] > 0:
@@ -1453,7 +1463,8 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 print(f"[plot] Plotting ES trajectory (already flat): {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
                 
                 # CRITICAL FIX: Highlight generation 0 as the starting point
-                _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
+                if ax is not None:
+                    _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
                 
                 # Starting point info (no star marker)
                 if es_sel_flat.shape[0] > 0:
@@ -1469,7 +1480,8 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                 es_fallback = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])
                 if es_fallback.shape[0] > 1:
                     print(f"[plot] ES fallback plotting: {es_fallback.shape}")
-                    _plot_traj(ax, es_fallback, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
+                    if ax is not None:
+                        _plot_traj(ax, es_fallback, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
                     
                     # Starting point info (no star marker)
                     if es_fallback.shape[0] > 0:
@@ -1489,7 +1501,8 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             print(f"[plot] Plotting GA trajectory: {ga_pts_flat.shape}, range: x[{ga_pts_flat[:, 0].min():.3f}, {ga_pts_flat[:, 0].max():.3f}], y[{ga_pts_flat[:, 1].min():.3f}, {ga_pts_flat[:, 1].max():.3f}]")
             
             # CRITICAL FIX: Highlight that GA starts from mean latent
-            _plot_traj(ax, ga_pts_flat, color="#FBB998", label="GA trajectory (starts from mean latent)", alpha=1.0)
+            if ax is not None:
+                _plot_traj(ax, ga_pts_flat, color="#FBB998", label="GA trajectory (starts from mean latent)", alpha=1.0)
             
             # Starting point info (no star marker)
             if ga_pts_flat.shape[0] > 0:
@@ -1524,8 +1537,9 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         legend_elements.append(plt.Line2D([0], [0], marker='s', color='k', markerfacecolor='w', 
                                          markersize=15, markeredgewidth=2, label='Trajectory end'))
         
-        ax.legend(handles=legend_elements, loc="upper right", frameon=True, fontsize=14)
-        plt.tight_layout()
+        if ax is not None:
+            ax.legend(handles=legend_elements, loc="upper right", frameon=True, fontsize=14)
+            plt.tight_layout()
 
         # FINAL VERIFICATION: Ensure all elements are within plot bounds
         print(f"\n[verification] FINAL PLOT BOUNDS VERIFICATION:")
