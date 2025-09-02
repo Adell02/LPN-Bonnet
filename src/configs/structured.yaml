@@ -59,7 +59,7 @@ training:
   inference_kwargs: {}
   prior_kl_coeff: null
   pairwise_kl_coeff: null
-  total_num_steps: 500
+  decoder_expose_steps: 500
   encoder_expose_steps: 400  # number of initial gradient steps encoders are trainable
   repulsion_kl: 10
   # Distance margin for repulsion loss (default: 10.0)

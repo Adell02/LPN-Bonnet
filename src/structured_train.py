@@ -3796,7 +3796,8 @@ class StructuredTrainer:
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
-        num_steps = cfg.training.total_num_steps
+        # Use decoder_expose_steps to control Phase 2 duration; Phase 1 uses encoder_expose_steps
+        num_steps = cfg.training.decoder_expose_steps if self.encoder_expose_steps == 0 else cfg.training.total_num_steps
         log_every = cfg.training.log_every_n_steps
         self.enc_params_list = enc_params_list  # Store for train_n_steps
         
@@ -3893,6 +3894,12 @@ class StructuredTrainer:
             current_wandb_step = 0
         self.phase2_offset = max(self.phase2_offset, current_wandb_step + 1)
         logging.info(f"Phase 2 WandB step offset initialized to {self.phase2_offset}")
+
+        # Compute Phase 2 global step baseline and total global steps
+        phase2_global_start = len(self.encoders) * int(self.cfg.training.get("encoder_expose_steps", 0) or 0)
+        total_global_steps = phase2_global_start + (int(self.cfg.training.get("decoder_expose_steps", num_steps) or num_steps) if self.encoder_expose_steps == 0 else phase2_global_start)
+        logging.info(f"Global step baseline for Phase 2: {phase2_global_start}")
+        logging.info(f"Total global steps (Phase 1 + Phase 2): {total_global_steps}")
 
         # Test forward pass first to catch any issues early
         logging.info("Testing forward pass...")
@@ -4106,7 +4113,11 @@ class StructuredTrainer:
             # Log essential step info
             if step % 100 == 0:
                 encoder_status = "TRAINABLE" if self.encoder_expose_steps > 0 else "FROZEN"
-                logging.info(f"Step {step}/{num_steps}: Encoders {encoder_status} (exposure: {self.encoder_expose_steps} steps remaining)")
+                if self.encoder_expose_steps > 0:
+                    global_step = self.phase_a_global_step + step
+                else:
+                    global_step = phase2_global_start + step
+                logging.info(f"Step {step}/{num_steps} (global {global_step}/{total_global_steps}): Encoders {encoder_status} (exposure: {self.encoder_expose_steps} steps remaining)")
                 
                 # Log transition when encoders become frozen
                 if self.encoder_expose_steps == 0 and step >= 100:
@@ -4308,8 +4319,9 @@ class StructuredTrainer:
                         eval_interval = 0  # Disabled
                 if eval_interval and (step % eval_interval == 0):
                     try:
-                        logging.info(f"Running evaluation at step {self.phase2_offset + step}")
-                        self.evaluate(state, enc_params_list, self.phase2_offset + step)
+                        eval_global_step = (self.phase2_offset + step) if self.encoder_expose_steps == 0 else (self.phase_a_global_step + step)
+                        logging.info(f"Running evaluation at step {eval_global_step}")
+                        self.evaluate(state, enc_params_list, eval_global_step)
                         
                         # Test datasets evaluation (like train.py)
                         if hasattr(self, 'test_datasets') and self.test_datasets:
@@ -4375,8 +4387,9 @@ class StructuredTrainer:
         final_eval_setting = cfg.training.get("eval_every_n_logs_phase_2", 20) if self.encoder_expose_steps == 0 else cfg.training.get("eval_every_n_logs", 20)
         if final_eval_setting:
             try:
-                logging.info(f"🔍 Running final evaluation at step {self.phase2_offset + step} (end of training)")
-                self.evaluate(state, enc_params_list, self.phase2_offset + step)
+                final_eval_step = (self.phase2_offset + step) if self.encoder_expose_steps == 0 else (self.phase_a_global_step + step)
+                logging.info(f"🔍 Running final evaluation at step {final_eval_step} (end of training)")
+                self.evaluate(state, enc_params_list, final_eval_step)
                 
                 # Final test datasets evaluation
                 if hasattr(self, 'test_datasets') and self.test_datasets:
