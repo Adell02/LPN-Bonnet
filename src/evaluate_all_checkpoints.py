@@ -3315,6 +3315,11 @@ def main():
                                     method_arrays_high_granularity = {}
                                     method_arrays_pixel_high_granularity = {}
                                     
+                                    # Initialize fallback arrays in case they're needed
+                                    method_arrays_pixel: Dict[str, np.ndarray] = {}
+                                    for method in args.plot_methods:
+                                        method_arrays_pixel[method] = np.full((len(all_budgets), len(all_steps)), np.nan)
+                                    
                                     for method in args.plot_methods:
                                         if method in trajectory_data_by_method:
                                             traj_data = trajectory_data_by_method[method]
@@ -3407,9 +3412,7 @@ def main():
                                                     method_to_step_to_budget_pixel[mth].setdefault(row_stepp, {})[bud] = pix
 
                                         # Build arrays for pixel correctness aligned to all_steps/all_budgets
-                                        method_arrays_pixel: Dict[str, np.ndarray] = {}
-                                        for m in args.plot_methods:
-                                            method_arrays_pixel[m] = np.full((len(all_budgets), len(all_steps)), np.nan)
+                                        # method_arrays_pixel already initialized above
                                         for j, s_ in enumerate(all_steps):
                                             for k, b_ in enumerate(all_budgets):
                                                 for m in args.plot_methods:
