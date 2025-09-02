@@ -5788,20 +5788,47 @@ class StructuredTrainer:
                     f"Test dataset pattern types: {np.unique(pattern_ids_np)}"
                 )
 
-                task_id_sequence = np.arange(dataset_grids.shape[0], dtype=int)
-                task_ids_list = []
-
                 # NEW: Track encoder variances for each pattern in test datasets
                 test_encoder_variance_metrics = {}
                 
                 # Add encoder outputs (unique source_id per encoder)
+                # CRITICAL FIX: Use pattern-specific datasets like phase_a certainty plots
+                # Generate pattern-specific data for each pattern and merge them
+                pattern_specific_data = {}
+                for pattern_id in [1, 2, 3]:
+                    # Use the same method as phase_a certainty plots
+                    pattern_data = self._create_pattern_dataset(pattern_id, num_samples=self.batch_size)
+                    pattern_specific_data[pattern_id] = pattern_data
+                
+                # Merge all pattern data together
+                all_pattern_grids = []
+                all_pattern_shapes = []
+                all_pattern_ids = []
+                
+                for pattern_id in [1, 2, 3]:
+                    grids, shapes, pattern_ids = pattern_specific_data[pattern_id]
+                    all_pattern_grids.append(grids)
+                    all_pattern_shapes.append(shapes)
+                    all_pattern_ids.append(pattern_ids)
+                
+                # Concatenate all pattern data
+                merged_grids = jnp.concatenate(all_pattern_grids, axis=0)
+                merged_shapes = jnp.concatenate(all_pattern_shapes, axis=0)
+                merged_pattern_ids = jnp.concatenate(all_pattern_ids, axis=0)
+                
+                logging.info(f"Test: Generated pattern-specific data - grids: {merged_grids.shape}, shapes: {merged_shapes.shape}, pattern_ids: {merged_pattern_ids.shape}")
+                
+                # Update task_id_sequence to match merged data size
+                task_id_sequence = np.arange(merged_grids.shape[0], dtype=int)
+                task_ids_list = []
+                
                 for enc_idx, enc_params in enumerate(current_enc_params_list):
                     try:
                         mu_i, logvar_i = self.encoders[enc_idx].apply(
                             {"params": enc_params}, 
-                            dataset_grids, 
-                            dataset_shapes, 
-                            True, 
+                            merged_grids,  # Use pattern-specific merged data
+                            merged_shapes,  # Use pattern-specific merged data
+                            False,  # Use same dropout_eval=False as phase_a certainty plots
                             mutable=False
                         )
                         lat = mu_i.mean(axis=-2)  # Mean over pairs
@@ -5816,8 +5843,9 @@ class StructuredTrainer:
                         mean_var_per_task = np.mean(var_i_flat, axis=1)  # [num_tasks]
                         
                         # Group variances by pattern for detailed analysis
-                        for pattern_id in np.unique(pattern_ids_np):
-                            pattern_mask = (pattern_ids_np == pattern_id)
+                        # Use merged pattern IDs instead of original program_ids
+                        for pattern_id in np.unique(merged_pattern_ids):
+                            pattern_mask = (merged_pattern_ids == pattern_id)
                             if np.any(pattern_mask):
                                 pattern_variances = mean_var_per_task[pattern_mask]
                                 pattern_mean_var = float(np.mean(pattern_variances))
@@ -5853,7 +5881,7 @@ class StructuredTrainer:
                         logging.info(f"Test eval - Encoder {enc_idx} - final latent shape: {lat_np.shape}")
                         all_latents.append(lat_np)
                         source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
-                        pattern_ids_list.append(pattern_ids_np)
+                        pattern_ids_list.append(merged_pattern_ids)  # Use merged pattern IDs
                         task_ids_list.append(task_id_sequence)
                         
                     except Exception as e:
@@ -5883,7 +5911,7 @@ class StructuredTrainer:
                 
                 all_latents.append(context_np)
                 source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for context
-                pattern_ids_list.append(pattern_ids_np)
+                pattern_ids_list.append(merged_pattern_ids)  # Use merged pattern IDs
                 task_ids_list.append(task_id_sequence)
                 
                 if all_latents:
