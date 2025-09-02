@@ -298,13 +298,15 @@ class StructuredTrainer:
         # NEW: Two-phase training approach
         self.encoder_expose_steps = int(cfg.training.get("encoder_expose_steps", 0) or 0)
         self.phase1_completed = False  # Track if individual encoder specialization is done
+        # Once-only guard for comprehensive Phase 2 metrics/plots
+        self.phase2_once_done = False
         
         # Phase A global step counter for WandB metrics
         self.phase_a_global_step = 0
 
         # Cache for Phase 2 evaluation data to ensure consistency across metrics
         self._phase2_eval_cache = {}
-
+        
         # Store original encoder params for individual training
         self.original_encoder_params = None
         self.original_decoder_params = None
@@ -2041,44 +2043,47 @@ class StructuredTrainer:
         for key in all_metrics[0].keys():
             avg_metrics[key] = jnp.mean(jnp.stack([m[key] for m in all_metrics]))
         
+        phase2_metrics = {}
         # PHASE 2: COMPUTE ALL COMPREHENSIVE METRICS AND PLOTS ONCE AT THE BEGINNING
-        logging.info(f"🔍 Phase 2: Computing all comprehensive metrics and plots once...")
-        
-        # Generate comprehensive Phase 2 metrics and plots ONCE
-        try:
-            phase2_metrics = self._generate_phase2_metrics_and_plots(
-                avg_metrics, all_encoder_outputs, explicit_pattern_ids, num_steps
-            )
-
-            # Generate T-SNE visualizations ONCE
-            logging.info(f"🔍 Phase 2: Generating T-SNE visualizations...")
-            tsne_metrics = self._generate_phase2_tsne_visualizations(state, explicit_pattern_ids, num_steps)
-            phase2_metrics.update(tsne_metrics)
-            
-            # Generate certainty plots ONCE
-            logging.info(f"🔍 Phase 2: Generating certainty plots...")
+        if not getattr(self, "phase2_once_done", False):
+            logging.info(f"🔍 Phase 2: Computing all comprehensive metrics and plots once...")
             try:
-                import matplotlib.pyplot as plt
-                certainty_panel = self._create_merged_encoder_certainty_panel(state, 0)
-                if certainty_panel is not None:
-                    phase2_metrics["phase_2/certainty_panel"] = wandb.Image(certainty_panel)
-                    plt.close(certainty_panel)
-                    logging.info(f"✅ Phase 2: Certainty panel generated successfully")
-                else:
-                    logging.warning(f"⚠️  Phase 2: Certainty panel generation failed")
+                phase2_metrics = self._generate_phase2_metrics_and_plots(
+                    avg_metrics, all_encoder_outputs, explicit_pattern_ids, num_steps
+                )
 
-                poster_poe_fig = self._create_poster_poe_figure(state, 0)
-                if poster_poe_fig is not None:
-                    phase2_metrics["phase_2/poster_poe_figure"] = wandb.Image(poster_poe_fig)
-                    plt.close(poster_poe_fig)
+                # Generate T-SNE visualizations ONCE
+                logging.info(f"🔍 Phase 2: Generating T-SNE visualizations...")
+                tsne_metrics = self._generate_phase2_tsne_visualizations(state, explicit_pattern_ids, num_steps)
+                phase2_metrics.update(tsne_metrics)
+                
+                # Generate certainty plots ONCE
+                logging.info(f"🔍 Phase 2: Generating certainty plots...")
+                try:
+                    import matplotlib.pyplot as plt
+                    certainty_panel = self._create_merged_encoder_certainty_panel(state, 0)
+                    if certainty_panel is not None:
+                        phase2_metrics["phase_2/certainty_panel"] = wandb.Image(certainty_panel)
+                        plt.close(certainty_panel)
+                        logging.info(f"✅ Phase 2: Certainty panel generated successfully")
+                    else:
+                        logging.warning(f"⚠️  Phase 2: Certainty panel generation failed")
+
+                    poster_poe_fig = self._create_poster_poe_figure(state, 0)
+                    if poster_poe_fig is not None:
+                        phase2_metrics["phase_2/poster_poe_figure"] = wandb.Image(poster_poe_fig)
+                        plt.close(poster_poe_fig)
+                except Exception as e:
+                    logging.warning(f"⚠️  Phase 2: Certainty panel generation failed: {e}")
+                
+                logging.info(f"✅ Phase 2: All comprehensive metrics and plots generated successfully")
+                # Mark once-only block as done
+                self.phase2_once_done = True
             except Exception as e:
-                logging.warning(f"⚠️  Phase 2: Certainty panel generation failed: {e}")
-            
-            logging.info(f"✅ Phase 2: All comprehensive metrics and plots generated successfully")
-            
-        except Exception as e:
-            logging.warning(f"⚠️  Phase 2: Comprehensive metrics generation failed: {e}")
-            phase2_metrics = {}
+                logging.warning(f"⚠️  Phase 2: Comprehensive metrics generation failed: {e}")
+                phase2_metrics = {}
+        else:
+            logging.debug("Phase 2: Skipping comprehensive metrics; already generated once.")
         
         # Merge comprehensive metrics with training metrics
         avg_metrics.update(phase2_metrics)
@@ -2192,18 +2197,18 @@ class StructuredTrainer:
         
         try:
             logging.info(f"🔍 Phase 2: Creating T-SNE visualizations...")
-
+            
             # Use a cached uniform dataset so evaluations are consistent across runs
-            grids, shapes, pattern_ids_all = self._get_phase2_eval_data(
-                uniform=True
-            )
+            grids, shapes, pattern_ids_all = self._get_phase2_eval_data(uniform=True)
+            if grids is None or shapes is None or pattern_ids_all is None:
+                logging.warning("Phase 2 T-SNE: eval data incomplete (None). Skipping this pass.")
+                return tsne_metrics
 
             # Compute encoder outputs for all samples
             all_latents_list = []
             all_source_ids = []
             all_pattern_ids = []
             all_task_ids = []
-                    
             for enc_idx in range(len(self.encoders)):
                 mu, logvar = self.encoders[enc_idx].apply(
                     {"params": state.params["encoders"][enc_idx]}, 
@@ -2663,8 +2668,8 @@ class StructuredTrainer:
                         dropout_eval=False,
                         mutable=False,
                     )
-                        mus.append(mu)
-                        logvars.append(logvar)
+                    mus.append(mu)
+                    logvars.append(logvar)
 
                     mus_stack = jnp.stack(mus, axis=0)  # (E, B, 1, H)
                     logvars_stack = jnp.stack(logvars, axis=0)
@@ -2681,7 +2686,7 @@ class StructuredTrainer:
                 clustering_data = {
                     "pattern_data": pattern_latents,
                     "combined_data": {"latents": combined_latents, "pattern_ids": combined_patterns},
-                    }
+                }
                 logging.info(
                     f"       ✅ Structured clustering data created: {len(combined_latents)} total samples"
                 )
@@ -3273,7 +3278,7 @@ class StructuredTrainer:
                 f"     Generated {len(grids_list)} samples: {target_samples} target, {other_samples} others"
             )
         return grids, shapes, pattern_ids
-
+    
     def _get_phase2_eval_data(self, target_pattern: Optional[int] = None, uniform: bool = False) -> tuple:
         """Retrieve cached Phase 2 evaluation data or generate it if absent.
 
@@ -3293,12 +3298,24 @@ class StructuredTrainer:
 
         key = "uniform" if uniform else target_pattern
         if key not in self._phase2_eval_cache:
-            self._phase2_eval_cache[key] = self._create_specialized_training_data(
+            grids, shapes, pattern_ids = self._create_specialized_training_data(
                 target_pattern=target_pattern, uniform=uniform
             )
+            # Ensure non-None, consistent outputs
+            if pattern_ids is None:
+                # Synthesize balanced pattern ids
+                num = int(grids.shape[0])
+                if uniform:
+                    reps = num // 3
+                    remainder = num - 3 * reps
+                    pid = [1] * reps + [2] * reps + [3] * reps + [1] * max(0, remainder)
+                    pattern_ids = jnp.array(pid[:num])
+                else:
+                    pattern_ids = jnp.ones((grids.shape[0],), dtype=jnp.int32)
+            self._phase2_eval_cache[key] = (grids, shapes, pattern_ids)
 
         return self._phase2_eval_cache[key]
-
+    
     def _create_pattern_dataset(self, pattern_id: int, num_samples: int) -> tuple:
         """Create a dataset composed solely of a single pattern by loading from pre-existing datasets.
 
@@ -5876,7 +5893,7 @@ class StructuredTrainer:
                             random_state=42,
                             task_ids=poe_task_ids_np,
                         )
-
+                        
                         logging.info(
                             f"Test: Generated PoE task latents T-SNE: {poe_latents.shape[0]} points"
                         )
@@ -6031,7 +6048,7 @@ class StructuredTrainer:
             logging.info(f"🔍 Creating merged encoder certainty panel after Phase 1 (step {step})")
             logging.info(f"   - Using SAME computation approach as Phase 1: _create_specialized_training_data + visualize_struct_confidence_panel")
             logging.info(f"   - Merging all encoders into single comprehensive plots per pattern")
-
+            
             # Create evaluation data for all patterns using the SAME approach as Phase 1
             eval_data = {}
             for pattern_id in [1, 2, 3]:
@@ -6092,11 +6109,11 @@ class StructuredTrainer:
                         logvar_np = np.array(all_encoder_logvars[enc_idx])
                         all_encoder_means.append(mu_np.flatten())
                         all_encoder_stds.append(np.sqrt(np.exp(logvar_np)).flatten())
-
+                    
                     # Create merged histogram for this pattern (top row)
                     # Use different colors for each encoder
                     colors = ['#FBB998', '#DB74DB', '#5361E5']  # Orange, Pink, Blue
-
+                    
                     # Find the encoder with smallest mean std to highlight
                     mean_stds = [np.mean(stds) for stds in all_encoder_stds]
                     min_std_idx = np.argmin(mean_stds)
@@ -6106,17 +6123,17 @@ class StructuredTrainer:
                     x_min, x_max = np.min(all_means), np.max(all_means)
                     x_range = x_max - x_min
                     bins = np.linspace(x_min, x_max, 31)  # 31 edges = 30 bins
-
+                    
                     for enc_idx, (means, label, color) in enumerate(zip(all_encoder_means, encoder_labels, colors)):
                         # Highlight the encoder with smallest std, make others less visible
                         is_highlighted = enc_idx == min_std_idx
                         alpha = 0.9 if is_highlighted else 0.4
                         linewidth = 2.0 if is_highlighted else 0.5
-
+                        
                         # Create histogram with uniform bins
                         ax_hist.hist(means, bins=bins, alpha=alpha, label=label, color=color,
                                    edgecolor='black', linewidth=linewidth, density=True)
-
+                    
                     # Customize the histogram subplot
                     ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Means',
                                    fontsize=14, fontweight='bold')
@@ -6124,7 +6141,7 @@ class StructuredTrainer:
                     ax_hist.set_ylabel('Density', fontsize=12)
                     ax_hist.legend(fontsize=10)
                     ax_hist.grid(True, alpha=0.3)
-
+                    
                     # Add statistics text to histogram
                     stats_text = []
                     for enc_idx, means in enumerate(all_encoder_means):
@@ -6139,17 +6156,17 @@ class StructuredTrainer:
                                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                     
                     # Create Gaussian function plots for this pattern (bottom row)
-                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions + PoE',
+                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions + PoE', 
                                        fontsize=14, fontweight='bold')
                     ax_gauss.set_xlabel('Latent Value', fontsize=12)
                     ax_gauss.set_ylabel('Density', fontsize=12)
-
+                    
                     # Get range for x-axis based on all encoder means for this pattern
                     all_vals = np.concatenate(all_encoder_means)
                     x_min, x_max = np.min(all_vals), np.max(all_vals)
                     x_range = x_max - x_min
                     x_plot = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, 1000)
-
+                    
                     # Compute POE (Product of Experts) Gaussian
                     # Stack encoder outputs for POE computation
                     stacked_mus = np.stack(all_encoder_mus)
@@ -6161,19 +6178,24 @@ class StructuredTrainer:
                     # Compute POE mean and variance using the poe_diag_gaussians function
                     try:
                         from models.structured_lpn import poe_diag_gaussians
-                        
+
                         # Debug: Log input shapes
-                        logging.debug(f"       🔍 POE input shapes: stacked_mus={stacked_mus[None, ...].shape}, stacked_logvars={stacked_logvars[None, ...].shape}, alphas={poe_alphas.shape}")
-                        
+                        logging.debug(
+                            f"       🔍 POE input shapes: stacked_mus={stacked_mus[None, ...].shape}, "
+                            f"stacked_logvars={stacked_logvars[None, ...].shape}, alphas={poe_alphas.shape}"
+                        )
+
                         poe_mu, poe_logvar = poe_diag_gaussians(
                             stacked_mus[None, ...],  # Add batch dimension [1, E, H]
                             stacked_logvars[None, ...],  # Add batch dimension [1, E, H]
-                            poe_alphas
+                            poe_alphas,
                         )
-                        
+
                         # Debug: Log output shapes
-                        logging.debug(f"       🔍 POE output shapes: poe_mu={poe_mu.shape}, poe_logvar={poe_logvar.shape}")
-                        
+                        logging.debug(
+                            f"       🔍 POE output shapes: poe_mu={poe_mu.shape}, poe_logvar={poe_logvar.shape}"
+                        )
+
                         # Handle different possible shapes from poe_diag_gaussians
                         # Expected: (1, H) or (H,) - handle both cases safely
                         if poe_mu.ndim > 1 and poe_mu.shape[0] == 1:
@@ -6186,7 +6208,9 @@ class StructuredTrainer:
                             poe_logvar = poe_logvar
                         else:
                             # Unexpected shape - log warning and try to handle
-                            logging.warning(f"       ⚠️  Unexpected POE output shape: mu={poe_mu.shape}, logvar={poe_logvar.shape}")
+                            logging.warning(
+                                f"       ⚠️  Unexpected POE output shape: mu={poe_mu.shape}, logvar={poe_logvar.shape}"
+                            )
                             # Try to flatten to 1D if possible
                             if poe_mu.size == poe_mu.shape[-1]:  # Last dimension is the latent dimension
                                 poe_mu = poe_mu.flatten()
@@ -6195,48 +6219,54 @@ class StructuredTrainer:
                                 # Fallback: use first element if it's a batch
                                 poe_mu = poe_mu[0] if poe_mu.ndim > 1 else poe_mu
                                 poe_logvar = poe_logvar[0] if poe_logvar.ndim > 1 else poe_logvar
-                    
-                    # Convert POE statistics to mean and std and plot
-                        # Ensure we have valid numpy arrays
-                        if hasattr(poe_logvar, 'numpy'):
-                            poe_logvar_np = poe_logvar.numpy()
-                        else:
-                            poe_logvar_np = np.array(poe_logvar)
 
-                        if hasattr(poe_mu, 'numpy'):
-                            poe_mu_np = poe_mu.numpy()
-                        else:
-                            poe_mu_np = np.array(poe_mu)
+                        # Ensure numpy arrays
+                        poe_logvar_np = poe_logvar.numpy() if hasattr(poe_logvar, "numpy") else np.array(poe_logvar)
+                        poe_mu_np = poe_mu.numpy() if hasattr(poe_mu, "numpy") else np.array(poe_mu)
 
-                        # Safety check: ensure we have valid shapes
+                        # Safety check
                         if poe_logvar_np.size == 0 or poe_mu_np.size == 0:
-                            logging.error(f"       ❌ POE outputs have zero size: mu={poe_mu_np.size}, logvar={poe_logvar_np.size}")
-                            continue
+                            logging.error(
+                                f"       ❌ POE outputs have zero size: mu={poe_mu_np.size}, logvar={poe_logvar_np.size}"
+                            )
+                        else:
+                            poe_mean = np.mean(poe_mu_np)
+                            poe_std = np.mean(np.sqrt(np.exp(poe_logvar_np)))
+                            logging.debug(
+                                f"       ✅ POE statistics computed: mean={poe_mean:.6f}, std={poe_std:.6f}"
+                            )
 
-                        poe_mean = np.mean(poe_mu_np)
-                        poe_std = np.mean(np.sqrt(np.exp(poe_logvar_np)))
+                            # Plot POE Gaussian FIRST (at the back)
+                            poe_gaussian = norm.pdf(x_plot, poe_mean, poe_std)
+                            poe_gaussian = poe_gaussian / np.max(poe_gaussian)
+                            ax_gauss.plot(
+                                x_plot,
+                                poe_gaussian,
+                                color="#d62728",
+                                linewidth=3,
+                                alpha=0.9,
+                                label="PoE (Product of Experts)",
+                                linestyle="-",
+                            )
+                            # Add vertical line for POE mean
+                            ax_gauss.axvline(poe_mean, color="#d62728", linestyle="--", alpha=0.8, linewidth=2)
 
-                        logging.debug(f"       ✅ POE statistics computed: mean={poe_mean:.6f}, std={poe_std:.6f}")
-
-                        # Plot POE Gaussian FIRST (at the back)
-                        poe_gaussian = norm.pdf(x_plot, poe_mean, poe_std)
-                        poe_gaussian = poe_gaussian / np.max(poe_gaussian)
-                        ax_gauss.plot(x_plot, poe_gaussian, color='#d62728', linewidth=3, alpha=0.9,
-                                    label='PoE (Product of Experts)', linestyle='-')
-
-                        # Add vertical line for POE mean
-                        ax_gauss.axvline(poe_mean, color='#d62728', linestyle='--', alpha=0.8, linewidth=2)
-                        
                     except Exception as poe_error:
-                        logging.warning(f"       ⚠️  POE computation failed for pattern {pattern_id}: {poe_error}")
-                        logging.debug(f"       🔍 POE error details: {type(poe_error).__name__}: {str(poe_error)}")
+                        logging.warning(
+                            f"       ⚠️  POE computation failed for pattern {pattern_id}: {poe_error}"
+                        )
+                        logging.debug(
+                            f"       🔍 POE error details: {type(poe_error).__name__}: {str(poe_error)}"
+                        )
                         # Continue without POE visualization for this pattern, but still plot encoder Gaussians
-                        logging.info(f"       ℹ️  Continuing with encoder-only visualization for pattern {pattern_id}")
+                        logging.info(
+                            f"       ℹ️  Continuing with encoder-only visualization for pattern {pattern_id}"
+                        )
                     
                     # Plot normalized Gaussian for each encoder
                     max_gaussian_height = 0  # Track max height for normalization
                     encoder_gaussians = []
-
+                    
                     for enc_idx, (means, stds, color) in enumerate(zip(all_encoder_means, all_encoder_stds, colors)):
                         mean_mu = np.mean(means)
                         std_mu = np.mean(stds)
@@ -6244,17 +6274,17 @@ class StructuredTrainer:
                         gaussian = norm.pdf(x_plot, mean_mu, std_mu)
                         encoder_gaussians.append((gaussian, mean_mu, std_mu, color, enc_idx))
                         max_gaussian_height = max(max_gaussian_height, np.max(gaussian))
-
+                    
                     for gaussian, mean_mu, std_mu, color, enc_idx in encoder_gaussians:
                         normalized_gaussian = gaussian / max_gaussian_height
-
+                        
                         is_highlighted = enc_idx == min_std_idx
                         linewidth = 3.0 if is_highlighted else 1.5
                         alpha = 0.9 if is_highlighted else 0.6
-
-                        ax_gauss.plot(x_plot, normalized_gaussian, color=color, linewidth=linewidth, alpha=alpha,
+                        
+                        ax_gauss.plot(x_plot, normalized_gaussian, color=color, linewidth=linewidth, alpha=alpha, 
                                     label=f'Encoder {enc_idx}' + (" (★)" if is_highlighted else ""))
-
+                        
                         ax_gauss.axvline(mean_mu, color=color, linestyle='--', alpha=0.6, linewidth=1)
                     
                     ax_gauss.legend(fontsize=10)
@@ -6263,9 +6293,9 @@ class StructuredTrainer:
                     # Add POE statistics to the plot (only if POE was computed successfully)
                     if 'poe_mean' in locals():
                         poe_stats_text = f'PoE: μ={poe_mean:.4f}, σ={poe_std:.4f}'
-                        ax_gauss.text(0.02, 0.98, poe_stats_text, transform=ax_gauss.transAxes,
-                                   verticalalignment='top', fontsize=9,
-                                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                        ax_gauss.text(0.02, 0.98, poe_stats_text, transform=ax_gauss.transAxes, 
+                                      verticalalignment='top', fontsize=9, 
+                                      bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                     else:
                         # Add note that POE is not available
                         ax_gauss.text(0.02, 0.98, 'PoE: Not available', transform=ax_gauss.transAxes, 
