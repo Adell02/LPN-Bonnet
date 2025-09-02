@@ -2063,6 +2063,11 @@ class StructuredTrainer:
                     logging.info(f"✅ Phase 2: Certainty panel generated successfully")
                 else:
                     logging.warning(f"⚠️  Phase 2: Certainty panel generation failed")
+
+                poster_poe_fig = self._create_poster_poe_figure(state, 0)
+                if poster_poe_fig is not None:
+                    phase2_metrics["phase_2/poster_poe_figure"] = wandb.Image(poster_poe_fig)
+                    plt.close(poster_poe_fig)
             except Exception as e:
                 logging.warning(f"⚠️  Phase 2: Certainty panel generation failed: {e}")
             
@@ -3789,6 +3794,14 @@ class StructuredTrainer:
                 logging.info(f"       ✅ Merged encoder certainty panel logged to WandB with step {phase1_completion_step}")
             else:
                 logging.warning("       ❌ Failed to create merged encoder certainty panel")
+
+            poster_poe_fig = self._create_poster_poe_figure(state, step=0)
+            if poster_poe_fig is not None:
+                phase1_completion_step = max(600, self.phase_a_global_step + 100)
+                wandb.log({
+                    "phase_1_completion/poster_poe_figure": wandb.Image(poster_poe_fig)
+                }, step=phase1_completion_step)
+                plt.close(poster_poe_fig)
         
         # Test forward pass first to catch any issues early
         logging.info("Testing forward pass...")
@@ -6223,9 +6236,145 @@ class StructuredTrainer:
             plt.tight_layout()
             logging.info(f"       📊 Merged encoder histograms and Gaussian functions created successfully")
             return fig
-            
+
         except Exception as e:
             logging.error(f"       ❌ Merged encoder certainty panel creation failed: {e}")
+            import traceback
+            logging.error(f"       Traceback: {traceback.format_exc()}")
+            return None
+
+
+    def _create_poster_poe_figure(self, state: TrainState, step: int) -> Optional[plt.Figure]:
+        """Create a simplified PoE figure for posters without notes or dashed lines."""
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            from scipy.stats import norm
+            from models.structured_lpn import poe_diag_gaussians
+
+            # Prepare evaluation data for each pattern
+            eval_data = {}
+            for pattern_id in [1, 2, 3]:
+                eval_data[pattern_id] = self._create_specialized_training_data(pattern_id)
+
+            poster_fig, poster_axes = plt.subplots(2, 3, figsize=(20, 12))
+            if len(poster_axes.shape) == 1:
+                poster_axes = poster_axes.reshape(1, -1)
+
+            pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+
+            legend_handles = None
+            legend_labels = None
+
+            for pattern_idx, pattern_id in enumerate([1, 2, 3]):
+                ax_hist = poster_axes[0, pattern_idx]
+                ax_gauss = poster_axes[1, pattern_idx]
+
+                if pattern_id in eval_data:
+                    grids, shapes, _ = eval_data[pattern_id]
+                    sample_index = (pattern_id - 1) % len(grids)
+                    sample_grids = grids[sample_index]
+                    sample_shapes = shapes[sample_index]
+
+                    all_encoder_mus = []
+                    all_encoder_logvars = []
+                    for enc_idx in range(len(self.encoders)):
+                        encoder_params = state.params["encoders"][enc_idx]
+                        mu, logvar = self.encoders[enc_idx].apply(
+                            {"params": encoder_params},
+                            sample_grids[None, ...],
+                            sample_shapes[None, ...],
+                            dropout_eval=False,
+                            mutable=False,
+                        )
+                        all_encoder_mus.append(np.array(mu).squeeze())
+                        all_encoder_logvars.append(np.array(logvar).squeeze())
+
+                    all_encoder_variances = [np.exp(lv).flatten() for lv in all_encoder_logvars]
+                    colors = ['#FBB998', '#DB74DB', '#5361E5']
+
+                    all_vars = np.concatenate(all_encoder_variances)
+                    x_min, x_max = np.min(all_vars), np.max(all_vars)
+                    bins = np.linspace(x_min, x_max, 31)
+
+                    for variances, color in zip(all_encoder_variances, colors):
+                        ax_hist.hist(variances, bins=bins, alpha=0.7, color=color,
+                                     edgecolor='black', linewidth=1.0, density=True)
+
+                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances',
+                                      fontsize=14, fontweight='bold')
+                    ax_hist.set_xlabel('Variance', fontsize=12)
+                    ax_hist.set_ylabel('Density', fontsize=12)
+                    ax_hist.grid(True, alpha=0.3)
+
+                    x_range = x_max - x_min
+                    x_plot = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, 200)
+
+                    # Compute PoE Gaussian
+                    try:
+                        stacked_mus = np.stack(all_encoder_mus)
+                        stacked_logvars = np.stack(all_encoder_logvars)
+                        poe_alphas = np.ones(len(self.encoders)) / len(self.encoders)
+                        poe_mu, poe_logvar = poe_diag_gaussians(
+                            stacked_mus[None, ...],
+                            stacked_logvars[None, ...],
+                            poe_alphas,
+                        )
+                        poe_var = np.exp(np.array(poe_logvar).squeeze())
+                        poe_mean_var = np.mean(poe_var)
+                        poe_std_var = np.std(poe_var)
+                        poe_gaussian = norm.pdf(x_plot, poe_mean_var, poe_std_var)
+                        poe_gaussian = poe_gaussian / np.max(poe_gaussian)
+                        ax_gauss.plot(x_plot, poe_gaussian, color='#d62728', linewidth=3,
+                                      alpha=0.9, label='PoE (Product of Experts)')
+                    except Exception:
+                        pass
+
+                    max_height = 0
+                    gaussians = []
+                    for variances, color, enc_idx in zip(all_encoder_variances, colors, range(len(self.encoders))):
+                        mean_var = np.mean(variances)
+                        std_var = np.std(variances)
+                        gaussian = norm.pdf(x_plot, mean_var, std_var)
+                        gaussians.append((gaussian, color, enc_idx))
+                        max_height = max(max_height, np.max(gaussian))
+
+                    for gaussian, color, enc_idx in gaussians:
+                        normalized = gaussian / max_height
+                        ax_gauss.plot(x_plot, normalized, color=color, linewidth=2,
+                                      alpha=0.9, label=f'Encoder {enc_idx}')
+
+                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions + PoE',
+                                       fontsize=14, fontweight='bold')
+                    ax_gauss.set_xlabel('Variance', fontsize=12)
+                    ax_gauss.set_ylabel('Density', fontsize=12)
+                    ax_gauss.grid(True, alpha=0.3)
+
+                    if legend_handles is None:
+                        legend_handles, legend_labels = ax_gauss.get_legend_handles_labels()
+
+                else:
+                    ax_hist.text(0.5, 0.5, f'No data for Pattern {pattern_id}',
+                                 ha='center', va='center', transform=ax_hist.transAxes)
+                    ax_hist.set_title(f'Pattern {pattern_id} - No Data')
+                    ax_gauss.text(0.5, 0.5, f'No data for Pattern {pattern_id}',
+                                  ha='center', va='center', transform=ax_gauss.transAxes)
+                    ax_gauss.set_title(f'Pattern {pattern_id} - No Data')
+
+            poster_fig.suptitle(f'Poster PoE Figure - All Patterns (Step {step})',
+                                fontsize=16, fontweight='bold')
+
+            if legend_handles and legend_labels:
+                poster_fig.legend(legend_handles, legend_labels, loc='center left',
+                                  bbox_to_anchor=(1.02, 0.5))
+                poster_fig.tight_layout(rect=[0, 0, 0.85, 1])
+            else:
+                poster_fig.tight_layout()
+
+            return poster_fig
+
+        except Exception as e:
+            logging.error(f"       ❌ Poster PoE figure creation failed: {e}")
             import traceback
             logging.error(f"       Traceback: {traceback.format_exc()}")
             return None
