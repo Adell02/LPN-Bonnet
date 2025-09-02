@@ -6055,54 +6055,54 @@ class StructuredTrainer:
                     pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
                     pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
                     
-                    # Convert logvar to variance and flatten for histogram creation
-                    all_encoder_variances = []
+                    # Convert encoder outputs to mean and std arrays
+                    all_encoder_means = []
+                    all_encoder_stds = []
                     for enc_idx in range(len(self.encoders)):
-                        logvar = all_encoder_logvars[enc_idx]
-                        var = np.exp(np.array(logvar))  # Convert to numpy
-                        var_flat = var.flatten()  # Flatten to 1D array
-                        all_encoder_variances.append(var_flat)
-                    
+                        mu_np = np.array(all_encoder_mus[enc_idx])
+                        logvar_np = np.array(all_encoder_logvars[enc_idx])
+                        all_encoder_means.append(mu_np.flatten())
+                        all_encoder_stds.append(np.sqrt(np.exp(logvar_np)).flatten())
+
                     # Create merged histogram for this pattern (top row)
                     # Use different colors for each encoder
                     colors = ['#FBB998', '#DB74DB', '#5361E5']  # Orange, Pink, Blue
-                    
-                    # Find the encoder with smallest mean variance to highlight
-                    mean_variances = [np.mean(variances) for variances in all_encoder_variances]
-                    min_var_idx = np.argmin(mean_variances)
-                    
-                    # Create uniform bins across the entire range of all encoder variances
-                    all_vars = np.concatenate(all_encoder_variances)
-                    x_min, x_max = np.min(all_vars), np.max(all_vars)
+
+                    # Find the encoder with smallest mean std to highlight
+                    mean_stds = [np.mean(stds) for stds in all_encoder_stds]
+                    min_std_idx = np.argmin(mean_stds)
+
+                    # Create uniform bins across the entire range of all encoder means
+                    all_means = np.concatenate(all_encoder_means)
+                    x_min, x_max = np.min(all_means), np.max(all_means)
                     x_range = x_max - x_min
-                    # Create 30 uniform bins
                     bins = np.linspace(x_min, x_max, 31)  # 31 edges = 30 bins
-                    
-                    for enc_idx, (variances, label, color) in enumerate(zip(all_encoder_variances, encoder_labels, colors)):
-                        # Highlight the encoder with smallest variance, make others less visible
-                        is_highlighted = enc_idx == min_var_idx
+
+                    for enc_idx, (means, label, color) in enumerate(zip(all_encoder_means, encoder_labels, colors)):
+                        # Highlight the encoder with smallest std, make others less visible
+                        is_highlighted = enc_idx == min_std_idx
                         alpha = 0.9 if is_highlighted else 0.4
                         linewidth = 2.0 if is_highlighted else 0.5
-                        
+
                         # Create histogram with uniform bins
-                        ax_hist.hist(variances, bins=bins, alpha=alpha, label=label, color=color, 
+                        ax_hist.hist(means, bins=bins, alpha=alpha, label=label, color=color,
                                    edgecolor='black', linewidth=linewidth, density=True)
-                    
+
                     # Customize the histogram subplot
-                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances', 
+                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Means',
                                    fontsize=14, fontweight='bold')
-                    ax_hist.set_xlabel('Variance', fontsize=12)
+                    ax_hist.set_xlabel('Latent Value', fontsize=12)
                     ax_hist.set_ylabel('Density', fontsize=12)
                     ax_hist.legend(fontsize=10)
                     ax_hist.grid(True, alpha=0.3)
-                    
+
                     # Add statistics text to histogram
                     stats_text = []
-                    for enc_idx, variances in enumerate(all_encoder_variances):
-                        mean_var = np.mean(variances)
-                        std_var = np.std(variances)
-                        status = "★" if enc_idx == min_var_idx else "○"
-                        stats_text.append(f'{status} E{enc_idx}: μ={mean_var:.4f}, σ={std_var:.4f}')
+                    for enc_idx, means in enumerate(all_encoder_means):
+                        mean_mu = np.mean(means)
+                        std_mu = np.mean(all_encoder_stds[enc_idx])
+                        status = "★" if enc_idx == min_std_idx else "○"
+                        stats_text.append(f'{status} E{enc_idx}: μ={mean_mu:.4f}, σ={std_mu:.4f}')
                     
                     stats_str = '\n'.join(stats_text)
                     ax_hist.text(0.02, 0.98, stats_str, transform=ax_hist.transAxes, 
@@ -6110,21 +6110,21 @@ class StructuredTrainer:
                                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                     
                     # Create Gaussian function plots for this pattern (bottom row)
-                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions + PoE', 
+                    ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions + PoE',
                                        fontsize=14, fontweight='bold')
-                    ax_gauss.set_xlabel('Variance', fontsize=12)
+                    ax_gauss.set_xlabel('Latent Value', fontsize=12)
                     ax_gauss.set_ylabel('Density', fontsize=12)
-                    
-                    # Get range for x-axis based on all encoder variances for this pattern
-                    all_vars = np.concatenate(all_encoder_variances)
-                    x_min, x_max = np.min(all_vars), np.max(all_vars)
+
+                    # Get range for x-axis based on all encoder means for this pattern
+                    all_vals = np.concatenate(all_encoder_means)
+                    x_min, x_max = np.min(all_vals), np.max(all_vals)
                     x_range = x_max - x_min
                     x_plot = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, 1000)
-                    
+
                     # Compute POE (Product of Experts) Gaussian
                     # Stack encoder outputs for POE computation
-                    stacked_mus = np.stack([np.mean(mu) for mu in all_encoder_mus], axis=0)  # [E, H]
-                    stacked_logvars = np.stack([np.mean(logvar) for logvar in all_encoder_logvars], axis=0)  # [E, H]
+                    stacked_mus = np.stack(all_encoder_mus)
+                    stacked_logvars = np.stack(all_encoder_logvars)
                     
                     # Use uniform weights for POE (1/E for each encoder)
                     poe_alphas = np.ones(len(self.encoders)) / len(self.encoders)
@@ -6167,38 +6167,36 @@ class StructuredTrainer:
                                 poe_mu = poe_mu[0] if poe_mu.ndim > 1 else poe_mu
                                 poe_logvar = poe_logvar[0] if poe_logvar.ndim > 1 else poe_logvar
                     
-                    # Convert POE logvar to variance and compute statistics
+                    # Convert POE statistics to mean and std and plot
                         # Ensure we have valid numpy arrays
                         if hasattr(poe_logvar, 'numpy'):
                             poe_logvar_np = poe_logvar.numpy()
                         else:
                             poe_logvar_np = np.array(poe_logvar)
-                        
+
                         if hasattr(poe_mu, 'numpy'):
                             poe_mu_np = poe_mu.numpy()
                         else:
                             poe_mu_np = np.array(poe_mu)
-                        
+
                         # Safety check: ensure we have valid shapes
                         if poe_logvar_np.size == 0 or poe_mu_np.size == 0:
                             logging.error(f"       ❌ POE outputs have zero size: mu={poe_mu_np.size}, logvar={poe_logvar_np.size}")
                             continue
-                        
-                        poe_var = np.exp(poe_logvar_np)
-                        poe_mean_var = np.mean(poe_var)
-                        poe_std_var = np.std(poe_var)
-                        
-                        logging.debug(f"       ✅ POE statistics computed: mean_var={poe_mean_var:.6f}, std_var={poe_std_var:.6f}")
-                    
+
+                        poe_mean = np.mean(poe_mu_np)
+                        poe_std = np.mean(np.sqrt(np.exp(poe_logvar_np)))
+
+                        logging.debug(f"       ✅ POE statistics computed: mean={poe_mean:.6f}, std={poe_std:.6f}")
+
                         # Plot POE Gaussian FIRST (at the back)
-                        poe_gaussian = norm.pdf(x_plot, poe_mean_var, poe_std_var)
-                        # Normalize the POE Gaussian to match the scale of encoder Gaussians
+                        poe_gaussian = norm.pdf(x_plot, poe_mean, poe_std)
                         poe_gaussian = poe_gaussian / np.max(poe_gaussian)
-                        ax_gauss.plot(x_plot, poe_gaussian, color='#d62728', linewidth=3, alpha=0.9, 
+                        ax_gauss.plot(x_plot, poe_gaussian, color='#d62728', linewidth=3, alpha=0.9,
                                     label='PoE (Product of Experts)', linestyle='-')
 
-                        # Add vertical line for POE mean variance
-                        ax_gauss.axvline(poe_mean_var, color='#d62728', linestyle='--', alpha=0.8, linewidth=2)
+                        # Add vertical line for POE mean
+                        ax_gauss.axvline(poe_mean, color='#d62728', linestyle='--', alpha=0.8, linewidth=2)
                         
                     except Exception as poe_error:
                         logging.warning(f"       ⚠️  POE computation failed for pattern {pattern_id}: {poe_error}")
@@ -6209,40 +6207,35 @@ class StructuredTrainer:
                     # Plot normalized Gaussian for each encoder
                     max_gaussian_height = 0  # Track max height for normalization
                     encoder_gaussians = []
-                    
-                    for enc_idx, (variances, color) in enumerate(zip(all_encoder_variances, colors)):
-                        mean_var = np.mean(variances)
-                        std_var = np.std(variances)
-                        
-                        # Create Gaussian function
-                        gaussian = norm.pdf(x_plot, mean_var, std_var)
-                        encoder_gaussians.append((gaussian, mean_var, std_var, color, enc_idx))
+
+                    for enc_idx, (means, stds, color) in enumerate(zip(all_encoder_means, all_encoder_stds, colors)):
+                        mean_mu = np.mean(means)
+                        std_mu = np.mean(stds)
+
+                        gaussian = norm.pdf(x_plot, mean_mu, std_mu)
+                        encoder_gaussians.append((gaussian, mean_mu, std_mu, color, enc_idx))
                         max_gaussian_height = max(max_gaussian_height, np.max(gaussian))
-                    
-                    # Plot normalized encoder Gaussians
-                    for gaussian, mean_var, std_var, color, enc_idx in encoder_gaussians:
-                        # Normalize Gaussian to have max height of 1
+
+                    for gaussian, mean_mu, std_mu, color, enc_idx in encoder_gaussians:
                         normalized_gaussian = gaussian / max_gaussian_height
-                        
-                        # Highlight the encoder with smallest variance
-                        is_highlighted = enc_idx == min_var_idx
+
+                        is_highlighted = enc_idx == min_std_idx
                         linewidth = 3.0 if is_highlighted else 1.5
                         alpha = 0.9 if is_highlighted else 0.6
-                        
-                        ax_gauss.plot(x_plot, normalized_gaussian, color=color, linewidth=linewidth, alpha=alpha, 
+
+                        ax_gauss.plot(x_plot, normalized_gaussian, color=color, linewidth=linewidth, alpha=alpha,
                                     label=f'Encoder {enc_idx}' + (" (★)" if is_highlighted else ""))
-                        
-                        # Add vertical line at mean variance
-                        ax_gauss.axvline(mean_var, color=color, linestyle='--', alpha=0.6, linewidth=1)
+
+                        ax_gauss.axvline(mean_mu, color=color, linestyle='--', alpha=0.6, linewidth=1)
                     
                     ax_gauss.legend(fontsize=10)
                     ax_gauss.grid(True, alpha=0.3)
                     
                     # Add POE statistics to the plot (only if POE was computed successfully)
-                    if 'poe_mean_var' in locals():
-                        poe_stats_text = f'PoE: μ={poe_mean_var:.4f}, σ={poe_std_var:.4f}'
-                        ax_gauss.text(0.02, 0.98, poe_stats_text, transform=ax_gauss.transAxes, 
-                                   verticalalignment='top', fontsize=9, 
+                    if 'poe_mean' in locals():
+                        poe_stats_text = f'PoE: μ={poe_mean:.4f}, σ={poe_std:.4f}'
+                        ax_gauss.text(0.02, 0.98, poe_stats_text, transform=ax_gauss.transAxes,
+                                   verticalalignment='top', fontsize=9,
                                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                     else:
                         # Add note that POE is not available
@@ -6251,8 +6244,8 @@ class StructuredTrainer:
                                    bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
                     
                     logging.info(f"       ✅ Pattern {pattern_id} merged histograms and Gaussian functions created with {len(all_encoder_mus)} encoders")
-                    logging.info(f"         - Encoder {min_var_idx} highlighted (★) as most confident (smallest variance)")
-                    if 'poe_mean_var' in locals():
+                    logging.info(f"         - Encoder {min_std_idx} highlighted (★) as most confident (smallest std)")
+                    if 'poe_mean' in locals():
                         logging.info(f"         - PoE Gaussian added and normalized")
                     else:
                         logging.info(f"         - PoE visualization skipped (computation failed)")
@@ -6265,7 +6258,7 @@ class StructuredTrainer:
                     ax_gauss.set_title(f'Pattern {pattern_id} - No Data')
             
             # Set overall title
-            fig.suptitle(f'Merged Encoder Variance Analysis with PoE - All Patterns (Step {step})', 
+            fig.suptitle(f'Merged Encoder Mean Analysis with PoE - All Patterns (Step {step})',
                         fontsize=16, fontweight='bold')
             
             plt.tight_layout()
@@ -6313,6 +6306,8 @@ class StructuredTrainer:
 
                     all_encoder_mus = []
                     all_encoder_logvars = []
+                    all_encoder_means = []
+                    all_encoder_stds = []
                     for enc_idx in range(len(self.encoders)):
                         encoder_params = state.params["encoders"][enc_idx]
                         mu, logvar = self.encoders[enc_idx].apply(
@@ -6322,23 +6317,26 @@ class StructuredTrainer:
                             dropout_eval=False,
                             mutable=False,
                         )
-                        all_encoder_mus.append(np.array(mu).squeeze())
-                        all_encoder_logvars.append(np.array(logvar).squeeze())
+                        mu_np = np.array(mu).squeeze()
+                        logvar_np = np.array(logvar).squeeze()
+                        all_encoder_mus.append(mu_np)
+                        all_encoder_logvars.append(logvar_np)
+                        all_encoder_means.append(mu_np.flatten())
+                        all_encoder_stds.append(np.sqrt(np.exp(logvar_np)).flatten())
 
-                    all_encoder_variances = [np.exp(lv).flatten() for lv in all_encoder_logvars]
                     colors = ['#FBB998', '#DB74DB', '#5361E5']
 
-                    all_vars = np.concatenate(all_encoder_variances)
-                    x_min, x_max = np.min(all_vars), np.max(all_vars)
+                    all_means_flat = np.concatenate(all_encoder_means)
+                    x_min, x_max = np.min(all_means_flat), np.max(all_means_flat)
                     bins = np.linspace(x_min, x_max, 31)
 
-                    for variances, color in zip(all_encoder_variances, colors):
-                        ax_hist.hist(variances, bins=bins, alpha=0.7, color=color,
+                    for means, color in zip(all_encoder_means, colors):
+                        ax_hist.hist(means, bins=bins, alpha=0.7, color=color,
                                      edgecolor='black', linewidth=1.0, density=True)
 
-                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Variances',
+                    ax_hist.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nMerged Encoder Means',
                                       fontsize=14, fontweight='bold')
-                    ax_hist.set_xlabel('Variance', fontsize=12)
+                    ax_hist.set_xlabel('Latent Value', fontsize=12)
                     ax_hist.set_ylabel('Density', fontsize=12)
                     ax_hist.grid(True, alpha=0.3)
 
@@ -6355,10 +6353,11 @@ class StructuredTrainer:
                             stacked_logvars[None, ...],
                             poe_alphas,
                         )
-                        poe_var = np.exp(np.array(poe_logvar).squeeze())
-                        poe_mean_var = np.mean(poe_var)
-                        poe_std_var = np.std(poe_var)
-                        poe_gaussian = norm.pdf(x_plot, poe_mean_var, poe_std_var)
+                        poe_mu_np = np.array(poe_mu).squeeze()
+                        poe_logvar_np = np.array(poe_logvar).squeeze()
+                        poe_mean = np.mean(poe_mu_np)
+                        poe_std = np.mean(np.sqrt(np.exp(poe_logvar_np)))
+                        poe_gaussian = norm.pdf(x_plot, poe_mean, poe_std)
                         poe_gaussian = poe_gaussian / np.max(poe_gaussian)
                         ax_gauss.plot(x_plot, poe_gaussian, color='#d62728', linewidth=3,
                                       alpha=0.9, label='PoE (Product of Experts)')
@@ -6367,10 +6366,10 @@ class StructuredTrainer:
 
                     max_height = 0
                     gaussians = []
-                    for variances, color, enc_idx in zip(all_encoder_variances, colors, range(len(self.encoders))):
-                        mean_var = np.mean(variances)
-                        std_var = np.std(variances)
-                        gaussian = norm.pdf(x_plot, mean_var, std_var)
+                    for means, stds, color, enc_idx in zip(all_encoder_means, all_encoder_stds, colors, range(len(self.encoders))):
+                        mean_val = np.mean(means)
+                        std_val = np.mean(stds)
+                        gaussian = norm.pdf(x_plot, mean_val, std_val)
                         gaussians.append((gaussian, color, enc_idx))
                         max_height = max(max_height, np.max(gaussian))
 
@@ -6381,7 +6380,7 @@ class StructuredTrainer:
 
                     ax_gauss.set_title(f'{pattern_names.get(pattern_id, f"Pattern {pattern_id}")}\nGaussian Functions + PoE',
                                        fontsize=14, fontweight='bold')
-                    ax_gauss.set_xlabel('Variance', fontsize=12)
+                    ax_gauss.set_xlabel('Latent Value', fontsize=12)
                     ax_gauss.set_ylabel('Density', fontsize=12)
                     ax_gauss.grid(True, alpha=0.3)
 
