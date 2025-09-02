@@ -1205,7 +1205,7 @@ class StructuredTrainer:
                     for dataset_dict in self.test_datasets:
                         try:
                             start = time.time()
-                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples_pca, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
                                 updated_state, dataset_dict, step=0
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -1215,7 +1215,7 @@ class StructuredTrainer:
                                 (fig_grids, "generation"),
                                 (fig_heatmap, "pixel_accuracy"),
                                 (fig_latents, "latents"),
-                                (fig_latents_samples, "latents_samples"),
+                                (fig_latents_samples_pca, "latents_samples_pca"),
                                 (fig_search_progress, "search_progress"),
                                 (fig_tsne_samples, "latents_samples"),
                             ]:
@@ -4067,7 +4067,7 @@ class StructuredTrainer:
                     for dataset_dict in self.test_datasets:
                         try:
                             start = time.time()
-                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples_pca, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
                                 state, dataset_dict, step=step
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -4077,7 +4077,7 @@ class StructuredTrainer:
                                 (fig_grids, "generation"),
                                 (fig_heatmap, "pixel_accuracy"),
                                 (fig_latents, "latents"),
-                                (fig_latents_samples, "latents_samples"),
+                                (fig_latents_samples_pca, "latents_samples_pca"),
                                 (fig_search_progress, "search_progress"),
                                 (fig_tsne_samples, "latents_samples"),
                             ]:
@@ -4272,7 +4272,7 @@ class StructuredTrainer:
                             for dataset_dict in self.test_datasets:
                                 try:
                                     start = time.time()
-                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples_pca, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
                                         state, dataset_dict, step=self.phase2_offset + step
                                     )
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -4282,7 +4282,7 @@ class StructuredTrainer:
                                         (fig_grids, "generation"),
                                         (fig_heatmap, "pixel_accuracy"),
                                         (fig_latents, "latents"),
-                                        (fig_latents_samples, "latents_samples"),
+                                        (fig_latents_samples_pca, "latents_samples_pca"),
                                         (fig_search_progress, "search_progress"),
                                         (fig_tsne_samples, "latents_samples"),
                                     ]:
@@ -4353,7 +4353,7 @@ class StructuredTrainer:
                             for dataset_dict in self.test_datasets:
                                 try:
                                     start = time.time()
-                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples_pca, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
                                         state, dataset_dict, step=step
                                     )
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -4363,7 +4363,7 @@ class StructuredTrainer:
                                         (fig_grids, "generation"),
                                         (fig_heatmap, "pixel_accuracy"),
                                         (fig_latents, "latents"),
-                                        (fig_latents_samples, "latents_samples"),
+                                        (fig_latents_samples_pca, "latents_samples_pca"),
                                         (fig_search_progress, "search_progress"),
                                         (fig_tsne_samples, "latents_samples"),
                                     ]:
@@ -4421,7 +4421,7 @@ class StructuredTrainer:
                     for dataset_dict in self.test_datasets:
                         try:
                             start = time.time()
-                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples_pca, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
                                 state, dataset_dict, step=self.phase2_offset + step
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -4431,7 +4431,7 @@ class StructuredTrainer:
                                 (fig_grids, "generation"),
                                 (fig_heatmap, "pixel_accuracy"),
                                 (fig_latents, "latents"),
-                                (fig_latents_samples, "latents_samples"),
+                                (fig_latents_samples_pca, "latents_samples_pca"),
                                 (fig_search_progress, "search_progress"),
                                 (fig_tsne_samples, "latents_samples"),
                             ]:
@@ -5072,12 +5072,25 @@ class StructuredTrainer:
                         task_ids=all_encoder_task_ids,
                     )
                     
+                    # Create PCA for encoder samples (showing uncertainty across encoders)
+                    fig_pca_samples = self._create_pca_sources_visualization(
+                        latents=all_encoder_samples,
+                        program_ids=all_encoder_program_ids,  # Pattern types (1, 2, 3) for colors
+                        source_ids=np.zeros(len(all_encoder_samples), dtype=int),  # All same source (encoder samples)
+                        max_points=min(2000, len(all_encoder_samples)),
+                        random_state=42,
+                        task_ids=all_encoder_task_ids,
+                    )
+                    
                     logging.info(f"Generated encoder samples T-SNE: {len(all_encoder_samples)} points")
+                    logging.info(f"Generated encoder samples PCA: {len(all_encoder_samples)} points")
                 else:
                     fig_tsne_samples = None
+                    fig_pca_samples = None
                     logging.warning("No encoder samples found for samples T-SNE")
             else:
                 fig_tsne_samples = None
+                fig_pca_samples = None
                 logging.warning("No encoders available for samples T-SNE")
             
             # 2. ADDITIONAL T-SNE: Show just the 3 encoders latents for EACH pattern
@@ -5772,7 +5785,7 @@ class StructuredTrainer:
         inference_mode: str = "mean",
         inference_kwargs: dict = None,
         step: int = None,
-    ) -> tuple[dict[str, float], Optional[plt.Figure], plt.Figure, Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure], list[Optional[plt.Figure]]]:
+    ) -> tuple[dict[str, float], Optional[plt.Figure], plt.Figure, Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure], list[Optional[plt.Figure]]]:
         """
         Test dataset submission method for structured training (similar to train.py).
         Generates outputs using leave-one-out approach and computes metrics.
@@ -5782,7 +5795,7 @@ class StructuredTrainer:
             - A figure containing the visualization of the generated grids.
             - A figure containing the visualization of the pixel accuracy heatmap.
             - A figure containing the visualization of the latents (T-SNE).
-            - A figure containing the visualization of the latents samples (None for structured training).
+            - A figure containing the visualization of the latents samples (PCA projection).
             - A figure containing the visualization of the search progress (None if not applicable).
             - A figure containing the visualization of the context-only T-SNE.
             - A list of figures containing the visualization of the encoder-only T-SNE for each pattern.
@@ -6022,6 +6035,7 @@ class StructuredTrainer:
         # T-SNE visualization - Show encoders + context with different markers
         fig_latents = None
         fig_search_progress = None
+        fig_pca_samples = None
         
         if "context" in info and program_ids is not None:
             context = info["context"]
@@ -6399,7 +6413,7 @@ class StructuredTrainer:
         except Exception as e:
             logging.warning(f"Matplotlib cleanup failed in test_dataset_submission: {e}")
         
-        return metrics, fig_gen, fig_heatmap, fig_latents, None, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list
+        return metrics, fig_gen, fig_heatmap, fig_latents, fig_pca_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list
 
     def _create_merged_encoder_certainty_panel(self, state: TrainState, step: int) -> Optional[plt.Figure]:
         """
@@ -6427,8 +6441,9 @@ class StructuredTrainer:
             
             # Create evaluation data for all patterns using the SAME approach as Phase 1
             eval_data = {}
+            num_eval_samples = 100  # Same as Phase 1 for consistency
             for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._get_phase2_eval_data(target_pattern=pattern_id)
+                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
             
             # Create a figure with subplots for each pattern (histogram + Gaussian function)
             fig, axes = plt.subplots(2, 3, figsize=(20, 12))
@@ -6721,10 +6736,18 @@ class StructuredTrainer:
             import matplotlib.pyplot as plt
             import numpy as np
             
-            # Get evaluation data for each pattern
+            # Get evaluation data for each pattern using the SAME approach as Phase 1
             eval_data = {}
+            num_eval_samples = 100  # Same as Phase 1 for consistency
             for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._get_phase2_eval_data(target_pattern=pattern_id)
+                try:
+                    result = self._create_pattern_dataset(pattern_id, num_eval_samples)
+                    logging.info(f"  Pattern {pattern_id}: _create_pattern_dataset returned {len(result)} items")
+                    logging.info(f"  Pattern {pattern_id}: Result types: {[type(x) for x in result]}")
+                    eval_data[pattern_id] = result
+                except Exception as e:
+                    logging.error(f"  Pattern {pattern_id}: Failed to create pattern dataset: {e}")
+                    raise
             
             # Get encoder parameters
             enc_params_list = state.params["encoders"]
@@ -6737,7 +6760,14 @@ class StructuredTrainer:
             
             # Process each pattern
             for pattern_id in [1, 2, 3]:
-                grids, shapes, pattern_ids = eval_data[pattern_id]
+                try:
+                    grids, shapes, pattern_ids = eval_data[pattern_id]
+                    logging.info(f"  Pattern {pattern_id}: Successfully unpacked eval_data - grids: {grids.shape}, shapes: {shapes.shape}, pattern_ids: {pattern_ids.shape}")
+                except Exception as e:
+                    logging.error(f"  Pattern {pattern_id}: Failed to unpack eval_data: {e}")
+                    logging.error(f"  eval_data[pattern_id] type: {type(eval_data[pattern_id])}")
+                    logging.error(f"  eval_data[pattern_id] length: {len(eval_data[pattern_id]) if hasattr(eval_data[pattern_id], '__len__') else 'no length'}")
+                    raise
                 
                 # Get encoder outputs for this pattern
                 encoder_mus = []
@@ -6867,10 +6897,11 @@ class StructuredTrainer:
             from scipy.stats import norm
             from models.structured_lpn import poe_diag_gaussians
 
-            # Prepare evaluation data for each pattern - use same method as merged_encoder_certainty_panel
+            # Prepare evaluation data for each pattern using the SAME approach as Phase 1
             eval_data = {}
+            num_eval_samples = 100  # Same as Phase 1 for consistency
             for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._get_phase2_eval_data(target_pattern=pattern_id)
+                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
 
             poster_fig, poster_axes = plt.subplots(2, 3, figsize=(20, 12))
             if len(poster_axes.shape) == 1:
