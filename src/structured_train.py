@@ -3667,7 +3667,7 @@ class StructuredTrainer:
         # Average over all repulsion terms
         if num_repulsion_terms > 0:
             repulsion_loss = repulsion_loss / num_repulsion_terms
-            logging.debug(f"Repulsion loss: {repulsion_loss:.6f} (from {num_repulsion_terms} terms)")
+            logging.debug(f"Repulsion loss computed from {num_repulsion_terms} terms")
         else:
             logging.debug("No repulsion terms computed, returning 0.0")
         
