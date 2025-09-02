@@ -5945,11 +5945,23 @@ class StructuredTrainer:
                     poe_program_ids = []
                     poe_task_ids = []
 
-                    for batch_idx in range(num_batches):
+                    # CRITICAL FIX: Use pattern-specific merged data for PoE computation to match encoder evaluation
+                    # Create leave-one-out data from the pattern-specific merged data
+                    merged_leave_one_out_grids = make_leave_one_out(merged_grids, axis=-4)
+                    merged_leave_one_out_shapes = make_leave_one_out(merged_shapes, axis=-3)
+                    
+                    # Handle the extra dimension from make_leave_one_out
+                    if merged_leave_one_out_grids.shape[1] == merged_grids.shape[1]:
+                        merged_leave_one_out_grids = merged_leave_one_out_grids[:, 0, ...]
+                        merged_leave_one_out_shapes = merged_leave_one_out_shapes[:, 0, ...]
+                    
+                    # Process in batches using pattern-specific data
+                    merged_num_batches = merged_grids.shape[0] // batch_size
+                    for batch_idx in range(merged_num_batches):
                         start = batch_idx * batch_size
                         end = start + batch_size
-                        batch_lo_grids = leave_one_out_grids[start:end]
-                        batch_lo_shapes = leave_one_out_shapes[start:end]
+                        batch_lo_grids = merged_leave_one_out_grids[start:end]
+                        batch_lo_shapes = merged_leave_one_out_shapes[start:end]
 
                         enc_mus = []
                         enc_logvars = []
@@ -5972,9 +5984,9 @@ class StructuredTrainer:
                         poe_mu_np = np.array(poe_mu).mean(axis=1)  # Average across contexts
 
                         poe_latents_list.append(poe_mu_np)
-                        if program_ids is not None:
-                            poe_program_ids.append(np.array(program_ids[start:end]))
-                            poe_task_ids.append(np.arange(start, end, dtype=int))
+                        # Use merged pattern IDs instead of original program_ids
+                        poe_program_ids.append(np.array(merged_pattern_ids[start:end]))
+                        poe_task_ids.append(np.arange(start, end, dtype=int))
 
                     if poe_latents_list:
                         poe_latents = np.concatenate(poe_latents_list, axis=0)

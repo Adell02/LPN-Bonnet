@@ -1033,6 +1033,7 @@ def visualize_loss_difference_heatmap(
         Figure showing heatmap of raw loss differences (delta)
     """
     from mpl_toolkits.axes_grid1 import make_axes_locatable
+    from matplotlib.colors import TwoSlopeNorm
 
     # numpy
     steps = np.asarray(steps)
@@ -1074,15 +1075,16 @@ def visualize_loss_difference_heatmap(
     # Create masked array to handle NaN values
     loss_diff_masked = np.ma.masked_invalid(loss_diff)
     
-    # Determine color limits for better visualization
     if loss_diff_masked.count() > 0:
-        vmin = float(np.nanmin(loss_diff_masked))
-        vmax = float(np.nanmax(loss_diff_masked))
-        # Ensure reasonable range for delta values
-        vmin = max(vmin, -10.0)  # Don't go below -10
-        vmax = min(vmax, 10.0)   # Don't go above 10
+        dmin = float(np.nanmin(loss_diff_masked))
+        dmax = float(np.nanmax(loss_diff_masked))
+        L = max(abs(dmin), abs(dmax))
+        # optional global cap; keep symmetry
+        L = min(L, 10.0)
     else:
-        vmin, vmax = -5.0, 5.0
+        L = 5.0
+
+    norm = TwoSlopeNorm(vmin=-L, vcenter=0.0, vmax=L)
 
     # Create heatmap
     # Handle single-point axes for sane extents
@@ -1104,7 +1106,7 @@ def visualize_loss_difference_heatmap(
         extent=[x0, x1, y0, y1],
         origin='lower', aspect='auto',
         cmap=custom_cmap,  # Use continuous custom color palette
-        vmin=vmin, vmax=vmax
+        norm=norm
     )
 
     # Add zero contour line where methods have equal loss
