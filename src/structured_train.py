@@ -5380,8 +5380,14 @@ class StructuredTrainer:
             source_ids = source_ids[indices]
             task_ids = task_ids[indices]
         
-        # Perform T-SNE - EXACTLY like visualize_tsne_sources
-        tsne = TSNE(n_components=2, perplexity=2, max_iter=1000, random_state=random_state)
+        # Perform T-SNE - EXACTLY like visualize_tsne_sources, but with dynamic perplexity
+        n_points = len(latents)
+        # Choose a reasonable perplexity in [5, 30] and strictly < n_points
+        # Heuristic: ~ one third of points, clamped
+        suggested = max(5, n_points // 3)
+        perplexity = max(2, min(30, suggested, n_points - 1))
+        logging.info(f"T-SNE: using perplexity={perplexity} for n_points={n_points}")
+        tsne = TSNE(n_components=2, perplexity=perplexity, max_iter=1000, random_state=random_state)
         latents_2d = tsne.fit_transform(latents)
         
         # Create figure - EXACTLY like visualize_tsne_sources
