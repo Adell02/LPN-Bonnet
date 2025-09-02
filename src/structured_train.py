@@ -2046,7 +2046,7 @@ class StructuredTrainer:
             phase2_metrics = self._generate_phase2_metrics_and_plots(
                 avg_metrics, all_encoder_outputs, explicit_pattern_ids, num_steps
             )
-            
+
             # Generate T-SNE visualizations ONCE
             logging.info(f"🔍 Phase 2: Generating T-SNE visualizations...")
             tsne_metrics = self._generate_phase2_tsne_visualizations(state, explicit_pattern_ids, num_steps)
@@ -2189,7 +2189,7 @@ class StructuredTrainer:
         
         try:
             logging.info(f"🔍 Phase 2: Creating T-SNE visualizations...")
-
+            
             # Use the same specialized data function as Phase 1 but with a uniform distribution
             grids, shapes, pattern_ids_all = self._create_specialized_training_data(
                 target_pattern=None, uniform=True
@@ -2200,13 +2200,13 @@ class StructuredTrainer:
             all_source_ids = []
             all_pattern_ids = []
             all_task_ids = []
-
+                    
             for enc_idx in range(len(self.encoders)):
                 mu, logvar = self.encoders[enc_idx].apply(
-                    {"params": state.params["encoders"][enc_idx]},
-                    grids,
-                    shapes,
-                    True,
+                    {"params": state.params["encoders"][enc_idx]}, 
+                    grids, 
+                    shapes, 
+                    True, 
                     mutable=False,
                 )
 
@@ -2222,7 +2222,7 @@ class StructuredTrainer:
             combined_task_ids = np.array(all_task_ids)
 
             pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
-
+            
             # Generate T-SNE visualizations for each pattern
             for pattern_id in [1, 2, 3]:
                 mask = combined_pattern_ids == pattern_id
@@ -2239,7 +2239,7 @@ class StructuredTrainer:
                             max_points=None,
                             random_state=42,
                         )
-
+                        
                         if fig_tsne is not None:
                             tsne_metrics[f"phase_2/tsne_pattern_{pattern_id}"] = wandb.Image(fig_tsne)
                             logging.info(
@@ -2258,24 +2258,24 @@ class StructuredTrainer:
                     logging.warning(
                         f"No samples found for pattern {pattern_id} in uniform dataset"
                     )
-
+            
             # Generate combined T-SNE with all patterns and encoders
             try:
-                fig_combined = self._create_pattern_specific_tsne(
-                    latents=combined_latents,
-                    source_ids=combined_source_ids,
-                    task_ids=combined_task_ids,
-                    title=f"Phase 2: All Patterns - Encoder Latents (Step {num_steps})",
+                    fig_combined = self._create_pattern_specific_tsne(
+                        latents=combined_latents,
+                        source_ids=combined_source_ids,
+                        task_ids=combined_task_ids,
+                        title=f"Phase 2: All Patterns - Encoder Latents (Step {num_steps})",
                     max_points=None,
                     random_state=42,
-                )
-
-                if fig_combined is not None:
-                    tsne_metrics["phase_2/tsne_all_patterns"] = wandb.Image(fig_combined)
-                    logging.info(f"✅ Phase 2 combined T-SNE generated")
-                    plt.close(fig_combined)
-                else:
-                    logging.warning(f"❌ Phase 2 combined T-SNE generation failed")
+                    )
+                    
+                    if fig_combined is not None:
+                        tsne_metrics["phase_2/tsne_all_patterns"] = wandb.Image(fig_combined)
+                        logging.info(f"✅ Phase 2 combined T-SNE generated")
+                        plt.close(fig_combined)
+                    else:
+                        logging.warning(f"❌ Phase 2 combined T-SNE generation failed")
             except Exception as e:
                 logging.warning(f"Phase 2 combined T-SNE generation failed: {e}")
             
@@ -2627,21 +2627,21 @@ class StructuredTrainer:
 
         This samples a **single context per task** and combines encoder latents
         via Product of Experts to reflect the Structured LPN representation.
-
+        
         Args:
             state: Training state containing all encoder parameters
             eval_data: Evaluation data for all patterns
-
+            
         Returns:
             Dictionary containing clustering data or ``None`` if creation fails
         """
         try:
             enc_params_list = state.params["encoders"]
             alphas = jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32)
-
+            
             pattern_latents = {}
             pattern_ids_list = []
-
+            
             for pattern_id in [1, 2, 3]:
                 if pattern_id in eval_data:
                     grids, shapes, _ = eval_data[pattern_id]
@@ -2655,11 +2655,11 @@ class StructuredTrainer:
                     for enc_idx, encoder in enumerate(self.encoders):
                         mu, logvar = encoder.apply(
                             {"params": enc_params_list[enc_idx]},
-                            grids,
-                            shapes,
-                            dropout_eval=False,
-                            mutable=False,
-                        )
+                        grids,
+                        shapes,
+                        dropout_eval=False,
+                        mutable=False,
+                    )
                         mus.append(mu)
                         logvars.append(logvar)
 
@@ -2671,33 +2671,33 @@ class StructuredTrainer:
 
                     pattern_latents[pattern_id] = latents
                     pattern_ids_list.extend([pattern_id] * len(latents))
-
+            
             if pattern_latents:
                 combined_latents = np.concatenate(list(pattern_latents.values()), axis=0)
                 combined_patterns = np.array(pattern_ids_list)
                 clustering_data = {
                     "pattern_data": pattern_latents,
                     "combined_data": {"latents": combined_latents, "pattern_ids": combined_patterns},
-                }
+                    }
                 logging.info(
                     f"       ✅ Structured clustering data created: {len(combined_latents)} total samples"
                 )
                 return clustering_data
-
+            
             logging.warning("       ❌ No valid structured clustering data created")
             return None
-
+            
         except Exception as e:
             logging.warning(f"       ❌ Structured clustering data creation failed: {e}")
             return None
     
     def _compute_phase1_clustering_metrics(self, clustering_data: dict, enc_idx: Optional[int] = None) -> dict:
         """Compute clustering metrics for Phase 1 evaluation.
-
+        
         Args:
             clustering_data: Clustering data for evaluation
             enc_idx: Optional encoder index; ``None`` for Structured LPN
-
+            
         Returns:
             Dictionary containing clustering metrics
         """
@@ -3201,13 +3201,13 @@ class StructuredTrainer:
     ) -> tuple:
         """
         Create specialized training data for individual encoder training or evaluation.
-
+        
         Args:
             target_pattern: Pattern this encoder should specialize in (1, 2, or 3).
             total_samples: Total number of samples to generate. Defaults to ``batch_size * 10``.
             uniform: If ``True``, generate a uniform distribution over all patterns instead of
                 emphasizing ``target_pattern``.
-
+            
         Returns:
             Tuple of (grids, shapes, pattern_ids) for training or evaluation.
         """
@@ -3235,34 +3235,34 @@ class StructuredTrainer:
         else:
             if target_pattern is None:
                 raise ValueError("target_pattern must be specified when uniform=False")
-
-            # Generate balanced data with emphasis on target pattern
-            target_samples = int(total_samples * 0.7)  # 70% target pattern
-            other_samples = total_samples - target_samples
-
-            # Generate target pattern samples (reinforced)
-            for _ in range(target_samples):
-                grids, shapes, _ = self._create_single_pattern_sample(target_pattern)
+        
+        # Generate balanced data with emphasis on target pattern
+        target_samples = int(total_samples * 0.7)  # 70% target pattern
+        other_samples = total_samples - target_samples
+        
+        # Generate target pattern samples (reinforced)
+        for _ in range(target_samples):
+            grids, shapes, _ = self._create_single_pattern_sample(target_pattern)
+            grids_list.append(grids)
+            shapes_list.append(shapes)
+            pattern_ids_list.append(target_pattern)
+        
+        # Generate other pattern samples (reduced certainty)
+        other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
+        samples_per_other = other_samples // len(other_patterns)
+        
+        for pattern_id in other_patterns:
+            for _ in range(samples_per_other):
+                grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
                 grids_list.append(grids)
                 shapes_list.append(shapes)
-                pattern_ids_list.append(target_pattern)
-
-            # Generate other pattern samples (reduced certainty)
-            other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
-            samples_per_other = other_samples // len(other_patterns)
-
-            for pattern_id in other_patterns:
-                for _ in range(samples_per_other):
-                    grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
-                    grids_list.append(grids)
-                    shapes_list.append(shapes)
-                    pattern_ids_list.append(pattern_id)
-
+                pattern_ids_list.append(pattern_id)
+        
         # Stack and return
         grids = jnp.stack(grids_list, axis=0)
         shapes = jnp.stack(shapes_list, axis=0)
         pattern_ids = jnp.array(pattern_ids_list)
-
+        
         if uniform:
             logging.info(f"     Generated {len(grids_list)} samples (uniform distribution)")
         else:
@@ -3559,7 +3559,7 @@ class StructuredTrainer:
                             distances = jnp.linalg.norm(current_latents - target_latents, axis=1)
                             jax.debug.print(
                                 "         * Distances shape: {shape}, mean: {mean}",
-                                shape=distances.shape,
+                                             shape=distances.shape,
                                 mean=jnp.mean(distances),
                             )
                             
@@ -3609,14 +3609,14 @@ class StructuredTrainer:
                                 distances = jnp.linalg.norm(current_latents - resized_target_latents, axis=1)
                                 jax.debug.print(
                                     "         * Resized distances shape: {shape}, mean: {mean}",
-                                    shape=distances.shape,
+                                                shape=distances.shape,
                                     mean=jnp.mean(distances),
                                 )
-
+                                
                                 repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
                                 soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))
                                 final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)
-
+                                
                                 jax.debug.print(
                                     "         * Resized repulsion term: {rt}",
                                     rt=repulsion_term,
@@ -3629,7 +3629,7 @@ class StructuredTrainer:
                                     "         * Resized final repulsion term: {frt}",
                                     frt=final_repulsion_term,
                                 )
-
+                                
                                 repulsion_loss += final_repulsion_term
                                 num_repulsion_terms += 1
                             except Exception as resize_error:
@@ -4131,9 +4131,12 @@ class StructuredTrainer:
                 # Note: Comprehensive metrics (T-SNE, clustering, certainty plots) are computed once 
                 # at the beginning of Phase 2 and uploaded through the train_n_steps_phase2 function
                 
-                # Phase 2: Test evaluation every eval_every_n_logs_phase_2
+                # Phase 2: Test evaluation every eval_every_n_logs_phase_2 (step-based gate)
                 eval_every_n_logs_phase_2 = self.cfg.training.get("eval_every_n_logs_phase_2", 20)
-                if eval_every_n_logs_phase_2 and (step // log_every) % eval_every_n_logs_phase_2 == 0:
+                eval_every_n_steps_phase_2 = (
+                    eval_every_n_logs_phase_2 * log_every if eval_every_n_logs_phase_2 else 0
+                )
+                if eval_every_n_steps_phase_2 and (step % eval_every_n_steps_phase_2 == 0):
                     try:
                         logging.info(f"🔍 Phase 2: Running test evaluation at step {step}")
                         
@@ -4212,7 +4215,7 @@ class StructuredTrainer:
                         eval_interval = eval_interval * log_every  # Convert logs to steps
                     else:
                         eval_interval = 0  # Disabled
-                if eval_interval and (step // log_every) % eval_interval == 0:
+                if eval_interval and (step % eval_interval == 0):
                     try:
                         logging.info(f"Running evaluation at step {step}")
                         self.evaluate(state, enc_params_list, step)
@@ -6131,8 +6134,8 @@ class StructuredTrainer:
                                 # Fallback: use first element if it's a batch
                                 poe_mu = poe_mu[0] if poe_mu.ndim > 1 else poe_mu
                                 poe_logvar = poe_logvar[0] if poe_logvar.ndim > 1 else poe_logvar
-                        
-                        # Convert POE logvar to variance and compute statistics
+                    
+                    # Convert POE logvar to variance and compute statistics
                         # Ensure we have valid numpy arrays
                         if hasattr(poe_logvar, 'numpy'):
                             poe_logvar_np = poe_logvar.numpy()
@@ -6154,14 +6157,14 @@ class StructuredTrainer:
                         poe_std_var = np.std(poe_var)
                         
                         logging.debug(f"       ✅ POE statistics computed: mean_var={poe_mean_var:.6f}, std_var={poe_std_var:.6f}")
-                        
+                    
                         # Plot POE Gaussian FIRST (at the back)
                         poe_gaussian = norm.pdf(x_plot, poe_mean_var, poe_std_var)
                         # Normalize the POE Gaussian to match the scale of encoder Gaussians
                         poe_gaussian = poe_gaussian / np.max(poe_gaussian)
                         ax_gauss.plot(x_plot, poe_gaussian, color='#d62728', linewidth=3, alpha=0.9, 
                                     label='PoE (Product of Experts)', linestyle='-')
-                        
+
                         # Add vertical line for POE mean variance
                         ax_gauss.axvline(poe_mean_var, color='#d62728', linestyle='--', alpha=0.8, linewidth=2)
                         
@@ -6236,13 +6239,13 @@ class StructuredTrainer:
             plt.tight_layout()
             logging.info(f"       📊 Merged encoder histograms and Gaussian functions created successfully")
             return fig
-
+            
         except Exception as e:
             logging.error(f"       ❌ Merged encoder certainty panel creation failed: {e}")
             import traceback
             logging.error(f"       Traceback: {traceback.format_exc()}")
             return None
-
+    
 
     def _create_poster_poe_figure(self, state: TrainState, step: int) -> Optional[plt.Figure]:
         """Create a simplified PoE figure for posters without notes or dashed lines."""
@@ -6350,6 +6353,23 @@ class StructuredTrainer:
                     ax_gauss.set_ylabel('Density', fontsize=12)
                     ax_gauss.grid(True, alpha=0.3)
 
+                    # Ensure curves are fully visible (no snapping/clipping)
+                    # Add generous x/y margins and disable clipping on plotted lines
+                    try:
+                        # X limits with 15% padding beyond observed range
+                        pad = 0.15 * (x_max - x_min if x_max > x_min else 1.0)
+                        ax_gauss.set_xlim(x_min - pad, x_max + pad)
+                        # Y limits based on max of all drawn curves with padding
+                        y_max = 1.0  # normalized PoE and encoder curves are <= ~1 after normalization
+                        ax_gauss.set_ylim(-0.05 * y_max, 1.05 * y_max)
+                        # Also add axis auto-margin
+                        ax_gauss.margins(x=0.1, y=0.1)
+                        # Set no clipping for all line artists
+                        for line in ax_gauss.lines:
+                            line.set_clip_on(False)
+                    except Exception:
+                        pass
+
                     if legend_handles is None:
                         legend_handles, legend_labels = ax_gauss.get_legend_handles_labels()
 
@@ -6367,7 +6387,8 @@ class StructuredTrainer:
             if legend_handles and legend_labels:
                 poster_fig.legend(legend_handles, legend_labels, loc='center left',
                                   bbox_to_anchor=(1.02, 0.5))
-                poster_fig.tight_layout(rect=[0, 0, 0.85, 1])
+                # Tight layout with extra right margin for legend to avoid clipping
+                poster_fig.tight_layout(rect=[0, 0, 0.84, 1])
             else:
                 poster_fig.tight_layout()
 
