@@ -1256,7 +1256,9 @@ def evaluate_custom_dataset(
                 payload["ga_budget"] = (2 * np.arange(0, ga_steps_len)).astype(np.int32)
             if es_losses_rows and es_gen_len is not None:
                 es_losses_per_sample = np.vstack(es_losses_rows).astype(np.float32)
+                # Store under both legacy and new key for compatibility
                 payload["es_generation_losses_per_sample"] = es_losses_per_sample
+                payload["es_losses_per_sample"] = es_losses_per_sample
                 # Budget per generation (start from gen0 to include initial evaluation)
                 if es_pop_size is None:
                     es_pop_size = 1

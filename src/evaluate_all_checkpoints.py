@@ -205,10 +205,20 @@ def extract_losses_and_accuracies_per_budget(ga_npz_path: str, es_npz_path: str,
                 
                 # Extract per-sample losses if available
                 losses_key = f"{method_name.lower()}_losses_per_sample"
+                alt_losses_key = f"{method_name.lower()}_generation_losses_per_sample"
                 if losses_key in f:
                     data['losses_per_sample'] = np.array(f[losses_key])  # (N, T)
                     print(f"[extract] {method_name}: Losses per sample: {data['losses_per_sample'].shape}")
-                    
+
+                    # Compute statistics
+                    data['losses_mean'] = np.mean(data['losses_per_sample'], axis=0)
+                    data['losses_std'] = np.std(data['losses_per_sample'], axis=0)
+                    data['losses_se'] = data['losses_std'] / np.sqrt(data['losses_per_sample'].shape[0])
+                    print(f"[extract] {method_name}: Loss statistics computed")
+                elif alt_losses_key in f:
+                    data['losses_per_sample'] = np.array(f[alt_losses_key])  # (N, T)
+                    print(f"[extract] {method_name}: Losses per sample: {data['losses_per_sample'].shape} (from '{alt_losses_key}')")
+
                     # Compute statistics
                     data['losses_mean'] = np.mean(data['losses_per_sample'], axis=0)
                     data['losses_std'] = np.std(data['losses_per_sample'], axis=0)
