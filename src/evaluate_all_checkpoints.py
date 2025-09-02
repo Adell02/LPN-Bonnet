@@ -3705,33 +3705,40 @@ def main():
                                         print(f"❌ DEBUG: Cannot generate GA-ES difference - GA in arrays: {'gradient_ascent' in arrays_to_use}, ES in arrays: {'evolutionary_search' in arrays_to_use}")
                                     # GA − ES pixel accuracy diff (center at 0)
                                     if "gradient_ascent" in pixel_arrays_to_use and "evolutionary_search" in pixel_arrays_to_use:
-                                        print(f"🔍 DEBUG: Generating GA-ES pixel accuracy difference heatmap...")
                                         ga_pixel_data = pixel_arrays_to_use["gradient_ascent"]
                                         es_pixel_data = pixel_arrays_to_use["evolutionary_search"]
-                                        ga_budget_list = get_budget_list_for_method("gradient_ascent")
-                                        es_budget_list = get_budget_list_for_method("evolutionary_search")
+                                        if np.all(np.isnan(ga_pixel_data)) or np.all(np.isnan(es_pixel_data)):
+                                            print("⚠️ DEBUG: GA-ES pixel accuracy difference heatmap skipped (no valid data)")
+                                        else:
+                                            print(f"🔍 DEBUG: Generating GA-ES pixel accuracy difference heatmap...")
+                                            ga_budget_list = get_budget_list_for_method("gradient_ascent")
+                                            es_budget_list = get_budget_list_for_method("evolutionary_search")
 
-                                        common_budgets = [b for b in ga_budget_list if b in es_budget_list]
-                                        if common_budgets:
-                                            ga_idx = [ga_budget_list.index(b) for b in common_budgets]
-                                            es_idx = [es_budget_list.index(b) for b in common_budgets]
-                                            ga_aligned = ga_pixel_data[ga_idx, :]
-                                            es_aligned = es_pixel_data[es_idx, :]
+                                            common_budgets = [b for b in ga_budget_list if b in es_budget_list]
+                                            if common_budgets:
+                                                ga_idx = [ga_budget_list.index(b) for b in common_budgets]
+                                                es_idx = [es_budget_list.index(b) for b in common_budgets]
+                                                ga_aligned = ga_pixel_data[ga_idx, :]
+                                                es_aligned = es_pixel_data[es_idx, :]
 
-                                            if ga_aligned.shape == es_aligned.shape:
-                                                diff_pixel = ga_aligned - es_aligned
-                                                p = _save_heatmap(diff_pixel, all_steps, common_budgets, f"checkpoint_{step_tag}_ga_minus_es_pixel_accuracy", center=0, stats_data=heatmap_stats)
+                                                if ga_aligned.shape == es_aligned.shape:
+                                                    diff_pixel = ga_aligned - es_aligned
+                                                    if np.all(np.isnan(diff_pixel)):
+                                                        print("⚠️ DEBUG: GA-ES pixel accuracy difference heatmap skipped (no valid data)")
+                                                        p = None
+                                                    else:
+                                                        p = _save_heatmap(diff_pixel, all_steps, common_budgets, f"checkpoint_{step_tag}_ga_minus_es_pixel_accuracy", center=0, stats_data=heatmap_stats)
+                                                else:
+                                                    print(f"❌ DEBUG: Cannot subtract GA-ES pixel arrays even after alignment - GA shape: {ga_aligned.shape}, ES shape: {es_aligned.shape}")
+                                                    p = None
                                             else:
-                                                print(f"❌ DEBUG: Cannot subtract GA-ES pixel arrays even after alignment - GA shape: {ga_aligned.shape}, ES shape: {es_aligned.shape}")
+                                                print(f"❌ DEBUG: No common budgets between GA ({ga_budget_list}) and ES ({es_budget_list}) for pixel data")
                                                 p = None
-                                        else:
-                                            print(f"❌ DEBUG: No common budgets between GA ({ga_budget_list}) and ES ({es_budget_list}) for pixel data")
-                                            p = None
-                                        if p and p.exists():
-                                            print(f"✅ DEBUG: GA-ES pixel accuracy difference heatmap saved to {p}")
-                                            wandb.log({f"checkpoint_{training_progress}/ga_minus_es_pixel_accuracy": wandb.Image(str(p))})
-                                        else:
-                                            print(f"❌ DEBUG: GA-ES pixel accuracy difference heatmap generation failed (p={p})")
+                                            if p and p.exists():
+                                                print(f"✅ DEBUG: GA-ES pixel accuracy difference heatmap saved to {p}")
+                                                wandb.log({f"checkpoint_{training_progress}/ga_minus_es_pixel_accuracy": wandb.Image(str(p))})
+                                            elif p is not None:
+                                                print(f"❌ DEBUG: GA-ES pixel accuracy difference heatmap generation failed (p={p})")
                                     else:
                                         print(f"❌ DEBUG: Cannot generate GA-ES pixel difference - GA in pixel_arrays: {'gradient_ascent' in pixel_arrays_to_use}, ES in pixel_arrays: {'evolutionary_search' in pixel_arrays_to_use}")
 
