@@ -2318,7 +2318,8 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                 ]:
                     if key in f:
                         arr = np.array(f[key]).reshape(-1)
-                        arr = arr[1:] if arr.size > 0 else np.array([])
+                        # Use full per-sample arrays (no trimming)
+                        arr = arr if arr.size > 0 else np.array([])
                         if arr.size > 0:
                             ga_metrics[wandb_key] = arr
                             print(
@@ -2332,10 +2333,9 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                 # Extract best losses from per-sample loss trajectories
                 if 'ga_losses_per_sample' in f:
                     ga_losses_per_sample = np.array(f['ga_losses_per_sample'])
-                    if ga_losses_per_sample.size > 0 and ga_losses_per_sample.shape[1] > 1:
-                        ga_trimmed = ga_losses_per_sample[:, 1:]
-                        ga_best_losses = np.min(ga_trimmed, axis=1)
-                        ga_best_losses = ga_best_losses[1:] if ga_best_losses.size > 0 else np.array([])
+                    if ga_losses_per_sample.size > 0 and ga_losses_per_sample.shape[1] > 0:
+                        # Use untrimmed trajectories (include first step)
+                        ga_best_losses = np.min(ga_losses_per_sample, axis=1)
                         if ga_best_losses.size > 0:
                             ga_metrics['best_loss'] = ga_best_losses
                             print(
@@ -2365,7 +2365,8 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                 ]:
                     if key in f:
                         arr = np.array(f[key]).reshape(-1)
-                        arr = arr[1:] if arr.size > 0 else np.array([])
+                        # Use full per-sample arrays (no trimming)
+                        arr = arr if arr.size > 0 else np.array([])
                         if arr.size > 0:
                             es_metrics[wandb_key] = arr
                             print(
@@ -2379,10 +2380,9 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                 # Extract best losses from per-sample loss trajectories
                 if 'es_generation_losses_per_sample' in f:
                     es_losses_per_sample = np.array(f['es_generation_losses_per_sample'])
-                    if es_losses_per_sample.size > 0 and es_losses_per_sample.shape[1] > 1:
-                        es_trimmed = es_losses_per_sample[:, 1:]
-                        es_best_losses = np.min(es_trimmed, axis=1)
-                        es_best_losses = es_best_losses[1:] if es_best_losses.size > 0 else np.array([])
+                    if es_losses_per_sample.size > 0 and es_losses_per_sample.shape[1] > 0:
+                        # Use untrimmed trajectories (include first step)
+                        es_best_losses = np.min(es_losses_per_sample, axis=1)
                         if es_best_losses.size > 0:
                             es_metrics['best_loss'] = es_best_losses
                             print(
@@ -2425,6 +2425,43 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
     _warn_if_identical('shape_correctness', ga_metrics.get('shape_correctness'), es_metrics.get('shape_correctness'))
     _warn_if_identical('pixel_correctness', ga_metrics.get('pixel_correctness'), es_metrics.get('pixel_correctness'))
     _warn_if_identical('best_loss', ga_metrics.get('best_loss'), es_metrics.get('best_loss'))
+
+    # Perform Welch's two-sample t-tests and log to W&B (dataset_length > 1 case)
+    try:
+        import wandb  # Optional, only if available
+        has_wandb = getattr(wandb, 'run', None) is not None
+    except Exception:
+        wandb = None
+        has_wandb = False
+
+    metrics_for_test = ['accuracy', 'shape_correctness', 'pixel_correctness', 'best_loss']
+    for metric in metrics_for_test:
+        ga_data = ga_metrics.get(metric, None)
+        es_data = es_metrics.get(metric, None)
+        if ga_data is None or es_data is None:
+            continue
+        if len(ga_data) < 2 or len(es_data) < 2:
+            continue
+        try:
+            stat, p_val = ttest_ind(ga_data, es_data, equal_var=False)
+            ga_mean, ga_std = float(np.mean(ga_data)), float(np.std(ga_data))
+            es_mean, es_std = float(np.mean(es_data)), float(np.std(es_data))
+            log_payload = {
+                f"per_dataset/{metric}_ttest_stat": float(stat),
+                f"per_dataset/{metric}_ttest_pvalue": float(p_val),
+                f"per_dataset/{metric}_ga_mean": ga_mean,
+                f"per_dataset/{metric}_ga_std": ga_std,
+                f"per_dataset/{metric}_es_mean": es_mean,
+                f"per_dataset/{metric}_es_std": es_std,
+            }
+            print(f"[stats] t-test {metric}: stat={stat:.6f}, p={p_val:.6g}; GA μ={ga_mean:.4f} σ={ga_std:.4f}, ES μ={es_mean:.4f} σ={es_std:.4f}")
+            if has_wandb:
+                try:
+                    wandb.log(log_payload)
+                except Exception as _wl_e:
+                    print(f"[stats] Failed to log t-test for {metric} to W&B: {_wl_e}")
+        except Exception as _tt_e:
+            print(f"[stats] t-test failed for {metric}: {_tt_e}")
 
     # Create figure with 4 subplots (one for each metric)
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
@@ -3403,8 +3440,8 @@ def main() -> None:
                             ga_agg_pixel.append(np.array(fga['per_sample_pixel_correctness']).reshape(-1))
                         if 'ga_losses_per_sample' in fga:
                             ga_losses_per_sample = np.array(fga['ga_losses_per_sample'])
-                            if ga_losses_per_sample.size > 0 and ga_losses_per_sample.shape[1] > 1:
-                                ga_best_losses = np.min(ga_losses_per_sample[:, 1:], axis=1)
+                            if ga_losses_per_sample.size > 0 and ga_losses_per_sample.shape[1] > 0:
+                                ga_best_losses = np.min(ga_losses_per_sample, axis=1)
                                 ga_agg_best_loss.append(ga_best_losses)
                 # Load ES per-sample metrics from NPZ
                 if os.path.exists(es_out):
@@ -3417,8 +3454,8 @@ def main() -> None:
                             es_agg_pixel.append(np.array(fes['per_sample_pixel_correctness']).reshape(-1))
                         if 'es_generation_losses_per_sample' in fes:
                             es_losses_per_sample = np.array(fes['es_generation_losses_per_sample'])
-                            if es_losses_per_sample.size > 0 and es_losses_per_sample.shape[1] > 1:
-                                es_best_losses = np.min(es_losses_per_sample[:, 1:], axis=1)
+                            if es_losses_per_sample.size > 0 and es_losses_per_sample.shape[1] > 0:
+                                es_best_losses = np.min(es_losses_per_sample, axis=1)
                                 es_agg_best_loss.append(es_best_losses)
             except Exception as _agg_e:
                 print(f"[aggregate] Skipped aggregation for run {run_idx}: {_agg_e}")
