@@ -1672,8 +1672,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                             label="GA standard error",
                             zorder=2,
                         )
-                        ga_mean_ma = _moving_average(ga_mean, k=max(3, L.shape[1]//10))
-                        ax.plot(x, ga_mean_ma, color="#FBB998", linewidth=3.0, label="GA mean", zorder=4)
+                        ax.plot(x, ga_mean, color="#FBB998", linewidth=3.0, label="GA mean", zorder=4)
                         # Track y extents for axis scaling
                         y_values_for_limits.append(ga_mean - ga_se)
                         y_values_for_limits.append(ga_mean + ga_se)
@@ -1760,8 +1759,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                             label="ES standard error",
                             zorder=2,
                         )
-                        es_mean_ma = _moving_average(es_mean, k=max(3, L.shape[1]//4))
-                        ax.plot(x, es_mean_ma, color="#DB74DB", linewidth=3.0, label="ES mean", zorder=4)
+                        ax.plot(x, es_mean, color="#DB74DB", linewidth=3.0, label="ES mean", zorder=4)
                         # Track y extents
                         y_values_for_limits.append(es_mean - es_se)
                         y_values_for_limits.append(es_mean + es_se)

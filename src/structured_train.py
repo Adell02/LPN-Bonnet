@@ -2209,6 +2209,10 @@ class StructuredTrainer:
             all_source_ids = []
             all_pattern_ids = []
             all_task_ids = []
+            # Prepare storage for PoE
+            per_encoder_mu_list = []  # (num_samples, latent_dim)
+            per_encoder_var_list = [] # (num_samples, latent_dim)
+
             for enc_idx in range(len(self.encoders)):
                 mu, logvar = self.encoders[enc_idx].apply(
                     {"params": state.params["encoders"][enc_idx]}, 
@@ -2218,16 +2222,39 @@ class StructuredTrainer:
                     mutable=False,
                 )
 
-                latents = np.array(mu.mean(axis=-2))  # (num_samples, latent_dim)
+                mu_mean  = np.array(mu.mean(axis=-2))                 # (num_samples, latent_dim)
+                var_mean = np.array(np.exp(logvar).mean(axis=-2))     # (num_samples, latent_dim)
+                latents  = mu_mean
                 all_latents_list.append(latents)
                 all_source_ids.extend([enc_idx] * len(latents))
                 all_pattern_ids.extend(np.array(pattern_ids_all))
                 all_task_ids.extend(range(len(latents)))
 
+                per_encoder_mu_list.append(mu_mean)
+                per_encoder_var_list.append(var_mean)
+
             combined_latents = np.concatenate(all_latents_list, axis=0)
             combined_source_ids = np.array(all_source_ids)
             combined_pattern_ids = np.array(all_pattern_ids)
             combined_task_ids = np.array(all_task_ids)
+
+            # Append PoE latents as source_id=3 (precision-weighted combination across encoders)
+            try:
+                if len(per_encoder_mu_list) > 0 and len(per_encoder_var_list) > 0:
+                    mu_enc  = np.stack(per_encoder_mu_list, axis=0)     # [E,N,D]
+                    var_enc = np.stack(per_encoder_var_list, axis=0)    # [E,N,D]
+                    precision = 1.0 / np.clip(var_enc, 1e-12, None)     # [E,N,D]
+                    precision_sum = np.sum(precision, axis=0)           # [N,D]
+                    poe_var  = 1.0 / np.clip(precision_sum, 1e-12, None)
+                    poe_mean = poe_var * np.sum(precision * mu_enc, axis=0)  # [N,D]
+
+                    combined_latents = np.concatenate([combined_latents, poe_mean], axis=0)
+                    combined_source_ids = np.concatenate([combined_source_ids, np.full((poe_mean.shape[0],), 3, dtype=combined_source_ids.dtype)])
+                    combined_pattern_ids = np.concatenate([combined_pattern_ids, np.array(pattern_ids_all)])
+                    combined_task_ids = np.concatenate([combined_task_ids, np.arange(poe_mean.shape[0])])
+                    logging.info("Appended PoE latents (source_id=3) for pattern-specific T-SNE")
+            except Exception as _poe_e:
+                logging.warning(f"Failed to compute/append PoE latents: {_poe_e}")
 
             pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
             
