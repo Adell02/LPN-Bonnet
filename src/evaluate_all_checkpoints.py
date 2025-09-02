@@ -156,6 +156,145 @@ from visualization import visualize_optimization_comparison
 # Import functions from store_latent_search for trajectory analysis
 from store_latent_search import _extract_vals, _extract_best_per_gen, _extract_pop, Trace
 
+def extract_losses_and_accuracies_per_budget(ga_npz_path: str, es_npz_path: str, dataset_length: int) -> Dict[str, Any]:
+    """
+    Extract losses and accuracies per budget point for both GA and ES methods.
+    Similar to store_latent_search.py logic but focused on data extraction.
+    
+    Args:
+        ga_npz_path: Path to GA trajectory NPZ file
+        es_npz_path: Path to ES trajectory NPZ file  
+        dataset_length: Number of samples evaluated
+        
+    Returns:
+        Dictionary with extracted losses and accuracies per budget for both methods
+    """
+    import numpy as np
+    
+    print(f"[extract] Extracting losses and accuracies per budget for {dataset_length} samples...")
+    
+    def safe_array_to_scalar(arr: np.ndarray, default=None):
+        """Safely convert array to scalar, handling various array shapes"""
+        if arr is None:
+            return default
+        if arr.size == 0:
+            return default
+        if arr.size == 1:
+            return float(arr.flat[0])
+        return arr
+    
+    def _extract_method_data(npz_path: str, method_name: str) -> Dict[str, Any]:
+        """Extract data for a single method (GA or ES)"""
+        data = {}
+        
+        if not os.path.exists(npz_path):
+            print(f"[extract] {method_name}: NPZ file not found: {npz_path}")
+            return data
+            
+        try:
+            with np.load(npz_path, allow_pickle=True) as f:
+                print(f"[extract] {method_name}: Available keys: {list(f.keys())}")
+                
+                # Extract budget information
+                budget_key = f"{method_name.lower()}_budget"
+                if budget_key in f:
+                    data['budget'] = np.array(f[budget_key]).reshape(-1)
+                    print(f"[extract] {method_name}: Budget loaded: {data['budget'].shape}, range: [{data['budget'].min()}, {data['budget'].max()}]")
+                else:
+                    print(f"[extract] {method_name}: Budget key '{budget_key}' not found")
+                
+                # Extract per-sample losses if available
+                losses_key = f"{method_name.lower()}_losses_per_sample"
+                if losses_key in f:
+                    data['losses_per_sample'] = np.array(f[losses_key])  # (N, T)
+                    print(f"[extract] {method_name}: Losses per sample: {data['losses_per_sample'].shape}")
+                    
+                    # Compute statistics
+                    data['losses_mean'] = np.mean(data['losses_per_sample'], axis=0)
+                    data['losses_std'] = np.std(data['losses_per_sample'], axis=0)
+                    data['losses_se'] = data['losses_std'] / np.sqrt(data['losses_per_sample'].shape[0])
+                    print(f"[extract] {method_name}: Loss statistics computed")
+                else:
+                    print(f"[extract] {method_name}: Losses per sample key '{losses_key}' not found")
+                
+                # Extract per-sample accuracies if available
+                accuracy_keys = [
+                    f"{method_name.lower()}_accuracy_per_sample_per_step",
+                    f"{method_name.lower()}_accuracy_per_sample",
+                    f"{method_name.lower()}_overall_accuracy",
+                    "overall_accuracy"
+                ]
+                
+                for acc_key in accuracy_keys:
+                    if acc_key in f:
+                        acc_data = np.array(f[acc_key])
+                        if acc_data.ndim == 1 and acc_data.size == dataset_length:
+                            # Per-sample final accuracy
+                            data['accuracy_per_sample'] = acc_data.reshape(-1, 1)  # (N, 1)
+                            print(f"[extract] {method_name}: Final accuracy per sample: {data['accuracy_per_sample'].shape}")
+                        elif acc_data.ndim == 2 and acc_data.shape[0] == dataset_length:
+                            # Per-sample per-step accuracy
+                            data['accuracy_per_sample'] = acc_data  # (N, T)
+                            print(f"[extract] {method_name}: Accuracy per sample per step: {data['accuracy_per_sample'].shape}")
+                        else:
+                            # Overall accuracy
+                            overall_acc = safe_array_to_scalar(acc_data)
+                            data['overall_accuracy'] = overall_acc
+                            print(f"[extract] {method_name}: Overall accuracy: {overall_acc}")
+                        break
+                
+                # Compute accuracy statistics if per-sample data available
+                if 'accuracy_per_sample' in data:
+                    data['accuracy_mean'] = np.mean(data['accuracy_per_sample'], axis=0)
+                    data['accuracy_std'] = np.std(data['accuracy_per_sample'], axis=0)
+                    data['accuracy_se'] = data['accuracy_std'] / np.sqrt(data['accuracy_per_sample'].shape[0])
+                    print(f"[extract] {method_name}: Accuracy statistics computed")
+                
+                # Extract trajectory data for single-sample case
+                if dataset_length == 1:
+                    trajectory_keys = [
+                        f"{method_name.lower()}_trajectory_losses",
+                        f"{method_name.lower()}_losses",
+                        "trajectory_losses",
+                        "losses"
+                    ]
+                    
+                    for traj_key in trajectory_keys:
+                        if traj_key in f:
+                            data['trajectory_losses'] = np.array(f[traj_key]).reshape(-1)
+                            print(f"[extract] {method_name}: Trajectory losses: {data['trajectory_losses'].shape}")
+                            break
+                    
+                    # Extract trajectory accuracies
+                    traj_acc_keys = [
+                        f"{method_name.lower()}_trajectory_accuracy",
+                        f"{method_name.lower()}_accuracy",
+                        "trajectory_accuracy",
+                        "accuracy"
+                    ]
+                    
+                    for traj_acc_key in traj_acc_keys:
+                        if traj_acc_key in f:
+                            data['trajectory_accuracy'] = np.array(f[traj_acc_key]).reshape(-1)
+                            print(f"[extract] {method_name}: Trajectory accuracy: {data['trajectory_accuracy'].shape}")
+                            break
+                
+        except Exception as e:
+            print(f"[extract] {method_name}: Error loading NPZ: {e}")
+            
+        return data
+    
+    # Extract data for both methods
+    ga_data = _extract_method_data(ga_npz_path, "GA")
+    es_data = _extract_method_data(es_npz_path, "ES")
+    
+    return {
+        'ga': ga_data,
+        'es': es_data,
+        'dataset_length': dataset_length
+    }
+
+
 def compute_statistical_analysis_per_budget(ga_npz_path: str, es_npz_path: str, dataset_length: int) -> Dict[str, Any]:
     """
     Compute statistical analysis comparing GA vs ES performance per budget point.
@@ -177,6 +316,11 @@ def compute_statistical_analysis_per_budget(ga_npz_path: str, es_npz_path: str, 
         return {}
     
     print(f"[stats] Computing per-budget statistical analysis for {dataset_length} samples...")
+    
+    # Extract data using the new extraction function
+    extracted_data = extract_losses_and_accuracies_per_budget(ga_npz_path, es_npz_path, dataset_length)
+    ga_data = extracted_data['ga']
+    es_data = extracted_data['es']
     
     # Load GA per-sample data
     ga_per_sample_data = {}
@@ -559,6 +703,131 @@ def compute_statistical_analysis(ga_npz_path: str, es_npz_path: str, dataset_len
     
     print(f"[stats] Computed statistical analysis with {len(results)} metrics")
     return results
+
+def generate_budget_based_plots(ga_npz_path: str, es_npz_path: str, out_dir: str, 
+                               dataset_length: int, checkpoint_name: str, checkpoint_step: int) -> Dict[str, str]:
+    """
+    Generate budget-based plots similar to store_latent_search.py.
+    Creates loss vs budget and accuracy vs budget plots.
+    
+    Args:
+        ga_npz_path: Path to GA trajectory NPZ file
+        es_npz_path: Path to ES trajectory NPZ file
+        out_dir: Output directory for plots
+        dataset_length: Number of samples evaluated
+        checkpoint_name: Name of the checkpoint
+        checkpoint_step: Step number of the checkpoint
+        
+    Returns:
+        Dictionary with paths to generated plot files
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    print(f"[plots] Generating budget-based plots for {dataset_length} samples...")
+    
+    # Extract data using the extraction function
+    extracted_data = extract_losses_and_accuracies_per_budget(ga_npz_path, es_npz_path, dataset_length)
+    ga_data = extracted_data['ga']
+    es_data = extracted_data['es']
+    
+    plot_paths = {}
+    
+    # Create loss vs budget plot
+    try:
+        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+        title = f"Loss vs Budget: {checkpoint_name} (Step {checkpoint_step})"
+        ax.set_title(title)
+        ax.set_xlabel("Budget (evaluations)")
+        ax.set_ylabel("Loss (lower is better)")
+        ax.grid(True, alpha=0.3)
+        
+        # Plot GA data
+        if 'losses_mean' in ga_data and 'budget' in ga_data:
+            ga_budget = ga_data['budget']
+            ga_mean = ga_data['losses_mean']
+            ga_se = ga_data.get('losses_se', np.zeros_like(ga_mean))
+            
+            ax.fill_between(ga_budget, ga_mean - ga_se, ga_mean + ga_se, 
+                           color="#FBB998", alpha=0.25, label="GA standard error")
+            ax.plot(ga_budget, ga_mean, color="#FBB998", linewidth=3.0, 
+                   marker='o', markersize=4, label="GA mean")
+            print(f"[plots] GA: {len(ga_budget)} budget points, loss range: [{ga_mean.min():.4f}, {ga_mean.max():.4f}]")
+        
+        # Plot ES data
+        if 'losses_mean' in es_data and 'budget' in es_data:
+            es_budget = es_data['budget']
+            es_mean = es_data['losses_mean']
+            es_se = es_data.get('losses_se', np.zeros_like(es_mean))
+            
+            ax.fill_between(es_budget, es_mean - es_se, es_mean + es_se, 
+                           color="#5361E5", alpha=0.25, label="ES standard error")
+            ax.plot(es_budget, es_mean, color="#5361E5", linewidth=3.0, 
+                   marker='s', markersize=4, label="ES mean")
+            print(f"[plots] ES: {len(es_budget)} budget points, loss range: [{es_mean.min():.4f}, {es_mean.max():.4f}]")
+        
+        ax.legend()
+        ax.set_xlim(left=0)
+        
+        # Save plot
+        loss_plot_path = os.path.join(out_dir, f"loss_vs_budget_{checkpoint_name}_step{checkpoint_step}.png")
+        plt.savefig(loss_plot_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        plot_paths['loss_vs_budget'] = loss_plot_path
+        print(f"[plots] Loss vs budget plot saved: {loss_plot_path}")
+        
+    except Exception as e:
+        print(f"[plots] Error creating loss vs budget plot: {e}")
+    
+    # Create accuracy vs budget plot
+    try:
+        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+        title = f"Accuracy vs Budget: {checkpoint_name} (Step {checkpoint_step})"
+        ax.set_title(title)
+        ax.set_xlabel("Budget (evaluations)")
+        ax.set_ylabel("Accuracy (higher is better)")
+        ax.grid(True, alpha=0.3)
+        
+        # Plot GA accuracy data
+        if 'accuracy_mean' in ga_data and 'budget' in ga_data:
+            ga_budget = ga_data['budget']
+            ga_acc_mean = ga_data['accuracy_mean']
+            ga_acc_se = ga_data.get('accuracy_se', np.zeros_like(ga_acc_mean))
+            
+            ax.fill_between(ga_budget, ga_acc_mean - ga_acc_se, ga_acc_mean + ga_acc_se, 
+                           color="#FBB998", alpha=0.25, label="GA accuracy standard error")
+            ax.plot(ga_budget, ga_acc_mean, color="#FBB998", linewidth=3.0, 
+                   marker='o', markersize=4, label="GA accuracy mean")
+            print(f"[plots] GA accuracy: {len(ga_budget)} budget points, range: [{ga_acc_mean.min():.4f}, {ga_acc_mean.max():.4f}]")
+        
+        # Plot ES accuracy data
+        if 'accuracy_mean' in es_data and 'budget' in es_data:
+            es_budget = es_data['budget']
+            es_acc_mean = es_data['accuracy_mean']
+            es_acc_se = es_data.get('accuracy_se', np.zeros_like(es_acc_mean))
+            
+            ax.fill_between(es_budget, es_acc_mean - es_acc_se, es_acc_mean + es_acc_se, 
+                           color="#5361E5", alpha=0.25, label="ES accuracy standard error")
+            ax.plot(es_budget, es_acc_mean, color="#5361E5", linewidth=3.0, 
+                   marker='s', markersize=4, label="ES accuracy mean")
+            print(f"[plots] ES accuracy: {len(es_budget)} budget points, range: [{es_acc_mean.min():.4f}, {es_acc_mean.max():.4f}]")
+        
+        ax.legend()
+        ax.set_xlim(left=0)
+        ax.set_ylim(0, 1.05)  # Accuracy is typically 0-1
+        
+        # Save plot
+        acc_plot_path = os.path.join(out_dir, f"accuracy_vs_budget_{checkpoint_name}_step{checkpoint_step}.png")
+        plt.savefig(acc_plot_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        plot_paths['accuracy_vs_budget'] = acc_plot_path
+        print(f"[plots] Accuracy vs budget plot saved: {acc_plot_path}")
+        
+    except Exception as e:
+        print(f"[plots] Error creating accuracy vs budget plot: {e}")
+    
+    return plot_paths
+
 
 def generate_loss_vs_budget_plot(method_arrays: Dict[str, np.ndarray], 
                                 budgets: List[int], 
@@ -3111,6 +3380,34 @@ def main():
                                             checkpoint_step=step,
                                             total_checkpoints=len(checkpoints),
                                         )
+                                        
+                                        # Generate new budget-based plots (similar to store_latent_search.py)
+                                        if args.dataset_folder and args.dataset_length > 0:
+                                            try:
+                                                # Find GA and ES NPZ files for this checkpoint
+                                                ga_npz_path = None
+                                                es_npz_path = None
+                                                
+                                                for result in results_data:
+                                                    if result['method'] == 'gradient_ascent' and result['success']:
+                                                        ga_npz_path = result.get('trajectory_file')
+                                                    elif result['method'] == 'evolutionary_search' and result['success']:
+                                                        es_npz_path = result.get('trajectory_file')
+                                                
+                                                if ga_npz_path and es_npz_path:
+                                                    budget_plots = generate_budget_based_plots(
+                                                        ga_npz_path=ga_npz_path,
+                                                        es_npz_path=es_npz_path,
+                                                        out_dir=out_dir,
+                                                        dataset_length=args.dataset_length,
+                                                        checkpoint_name=checkpoint["name"],
+                                                        checkpoint_step=step
+                                                    )
+                                                    print(f"📊 Generated budget-based plots: {list(budget_plots.keys())}")
+                                                else:
+                                                    print("⚠️  Missing GA or ES NPZ files for budget-based plotting")
+                                            except Exception as e:
+                                                print(f"⚠️  Failed to generate budget-based plots: {e}")
 
                                         # Upload both plots to W&B
                                         if loss_budget_plot_path and loss_training_plot_path:
@@ -3485,6 +3782,36 @@ def main():
                                 checkpoint_step=max_progress,
                                 total_checkpoints=len(steps_sorted),  # Use steps_sorted length instead of checkpoints
                             )
+                            
+                            # Generate final budget-based plots (similar to store_latent_search.py)
+                            if args.dataset_folder and args.dataset_length > 0:
+                                try:
+                                    # Find GA and ES NPZ files from the last checkpoint
+                                    ga_npz_path = None
+                                    es_npz_path = None
+                                    
+                                    # Get the last checkpoint's results
+                                    last_checkpoint_results = all_results_data[-1] if all_results_data else []
+                                    for result in last_checkpoint_results:
+                                        if result['method'] == 'gradient_ascent' and result['success']:
+                                            ga_npz_path = result.get('trajectory_file')
+                                        elif result['method'] == 'evolutionary_search' and result['success']:
+                                            es_npz_path = result.get('trajectory_file')
+                                    
+                                    if ga_npz_path and es_npz_path:
+                                        final_budget_plots = generate_budget_based_plots(
+                                            ga_npz_path=ga_npz_path,
+                                            es_npz_path=es_npz_path,
+                                            out_dir=out_dir,
+                                            dataset_length=args.dataset_length,
+                                            checkpoint_name="final_summary",
+                                            checkpoint_step=max_progress
+                                        )
+                                        print(f"📊 Generated final budget-based plots: {list(final_budget_plots.keys())}")
+                                    else:
+                                        print("⚠️  Missing GA or ES NPZ files for final budget-based plotting")
+                                except Exception as e:
+                                    print(f"⚠️  Failed to generate final budget-based plots: {e}")
 
                             # Upload both plots to W&B
                             if final_loss_budget_plot_path and final_loss_training_plot_path:
