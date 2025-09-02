@@ -1061,19 +1061,50 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # 2. Background loss landscape points (CRITICAL for complete coverage)
     if have_field and bgP_original:
         # Project background points to 2D for bounds calculation
-        P_original = np.concatenate(bgP_original, axis=0)  # (N, D) where D is original dim
-        if original_dim > 2 and pca_transformer is not None:
-            print(f"[bounds] Including background points in bounds calculation: {P_original.shape}")
-            # Project original high-dimensional points to 2D for bounds
-            P_2d = _apply_fitted_pca(P_original, pca_transformer, target_dim=2)
-            print(f"[bounds] Background bounds: {P_original.shape} -> {P_2d.shape}")
-        else:
-            print(f"[bounds] Background already 2D: {P_original.shape}")
-            P_2d = P_original
+        # SAFETY CHECK: Ensure all arrays have the same dimension before concatenation
+        if len(bgP_original) > 1:
+            # Check dimensions of all arrays
+            dims = [pts.shape[-1] for pts in bgP_original]
+            print(f"[bounds] Background array dimensions: {dims}")
+            
+            # Find the most common dimension
+            from collections import Counter
+            dim_counts = Counter(dims)
+            most_common_dim = dim_counts.most_common(1)[0][0]
+            print(f"[bounds] Most common dimension: {most_common_dim} (appears {dim_counts[most_common_dim]} times)")
+            
+            # Filter to only use arrays with the most common dimension
+            bgP_original_filtered = []
+            bgV_original_filtered = []
+            for i, (pts, vals) in enumerate(zip(bgP_original, bgV_original)):
+                if pts.shape[-1] == most_common_dim:
+                    bgP_original_filtered.append(pts)
+                    bgV_original_filtered.append(vals)
+                else:
+                    print(f"[bounds] Skipping background array {i}: dimension {pts.shape[-1]} != {most_common_dim}")
+            
+            if bgP_original_filtered:
+                bgP_original = bgP_original_filtered
+                bgV_original = bgV_original_filtered
+                print(f"[bounds] Using {len(bgP_original)} background arrays with consistent dimension {most_common_dim}")
+            else:
+                print(f"[bounds] No background arrays with consistent dimension, disabling background")
+                have_field = False
         
-        # Add background points to bounds calculation
-        pts_for_bounds.append(P_2d)
-        print(f"[bounds] Added {len(P_2d)} background points to bounds calculation")
+        if have_field:
+            P_original = np.concatenate(bgP_original, axis=0)  # (N, D) where D is original dim
+            if original_dim > 2 and pca_transformer is not None:
+                print(f"[bounds] Including background points in bounds calculation: {P_original.shape}")
+                # Project original high-dimensional points to 2D for bounds
+                P_2d = _apply_fitted_pca(P_original, pca_transformer, target_dim=2)
+                print(f"[bounds] Background bounds: {P_original.shape} -> {P_2d.shape}")
+            else:
+                print(f"[bounds] Background already 2D: {P_original.shape}")
+                P_2d = P_original
+            
+            # Add background points to bounds calculation
+            pts_for_bounds.append(P_2d)
+            print(f"[bounds] Added {len(P_2d)} background points to bounds calculation")
     
     if not pts_for_bounds:
         print("No valid points found for bounds calculation")
@@ -1229,16 +1260,47 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             # KEY IMPROVEMENT: Create background using original high-dimensional points and their loss values
             # Project the points to 2D while preserving the loss landscape structure
             # This ensures each 2D point has its correct loss value, creating an accurate loss landscape
-            P_original = np.concatenate(bgP_original, axis=0)  # (N, D) where D is original dim
-            V_original = orient(np.concatenate(bgV_original, axis=0))  # (N,)         
-            if original_dim > 2 and pca_transformer is not None:
-                print(f"[plot] Creating background using {len(P_original)} {original_dim}D points projected to 2D")
-                # Project original high-dimensional points to 2D for background creation
-                P_2d = _apply_fitted_pca(P_original, pca_transformer, target_dim=2)
-                print(f"[plot] Background: {P_original.shape} -> {P_2d.shape}")
-            else:
-                print(f"[plot] Creating background using {len(P_original)} 2D points directly")
-                P_2d = P_original  # Already 2D
+            # SAFETY CHECK: Ensure all arrays have the same dimension before concatenation
+            if len(bgP_original) > 1:
+                # Check dimensions of all arrays
+                dims = [pts.shape[-1] for pts in bgP_original]
+                print(f"[plot] Background array dimensions for plotting: {dims}")
+                
+                # Find the most common dimension
+                from collections import Counter
+                dim_counts = Counter(dims)
+                most_common_dim = dim_counts.most_common(1)[0][0]
+                print(f"[plot] Most common dimension for plotting: {most_common_dim} (appears {dim_counts[most_common_dim]} times)")
+                
+                # Filter to only use arrays with the most common dimension
+                bgP_original_filtered = []
+                bgV_original_filtered = []
+                for i, (pts, vals) in enumerate(zip(bgP_original, bgV_original)):
+                    if pts.shape[-1] == most_common_dim:
+                        bgP_original_filtered.append(pts)
+                        bgV_original_filtered.append(vals)
+                    else:
+                        print(f"[plot] Skipping background array {i} for plotting: dimension {pts.shape[-1]} != {most_common_dim}")
+                
+                if bgP_original_filtered:
+                    bgP_original = bgP_original_filtered
+                    bgV_original = bgV_original_filtered
+                    print(f"[plot] Using {len(bgP_original)} background arrays for plotting with consistent dimension {most_common_dim}")
+                else:
+                    print(f"[plot] No background arrays with consistent dimension for plotting, disabling background")
+                    have_field = False
+            
+            if have_field:
+                P_original = np.concatenate(bgP_original, axis=0)  # (N, D) where D is original dim
+                V_original = orient(np.concatenate(bgV_original, axis=0))  # (N,)         
+                if original_dim > 2 and pca_transformer is not None:
+                    print(f"[plot] Creating background using {len(P_original)} {original_dim}D points projected to 2D")
+                    # Project original high-dimensional points to 2D for background creation
+                    P_2d = _apply_fitted_pca(P_original, pca_transformer, target_dim=2)
+                    print(f"[plot] Background: {P_original.shape} -> {P_2d.shape}")
+                else:
+                    print(f"[plot] Creating background using {len(P_original)} 2D points directly")
+                    P_2d = P_original  # Already 2D
             
             # Create the background heatmap using the projected points with their original loss values
             # Verify that background points are within the calculated bounds
@@ -1340,68 +1402,68 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             else:
                 print(f"[plot] Skipping generation circles due to unavailable/mismatched generation index")
 
-    # ES selected path (best per generation if present, otherwise es.pts)
-    print(f"[plot] ES trajectory debug: best_per_gen={es.best_per_gen.shape if es.best_per_gen is not None else None}, es.pts={es.pts.shape if es.pts is not None else None}")
-    
-    # CRITICAL FIX: Ensure ES trajectory matches the loss values
-    # If we have loss values, use them to determine the trajectory structure
-    if es.vals is not None and es.vals.size > 0:
-        print(f"[plot] ES has {es.vals.size} loss values, ensuring trajectory matches")
-        # Use the trajectory that matches the number of loss values
-        if es.best_per_gen is not None:
-            # Calculate expected trajectory size from best_per_gen
-            expected_size = es.best_per_gen.shape[0] * es.best_per_gen.shape[1]  # B * G
-            if expected_size == es.vals.size:
-                es_sel = es.best_per_gen
-                print(f"[plot] Using es.best_per_gen: {es_sel.shape} matches {es.vals.size} loss values")
-            else:
-                print(f"[plot] Size mismatch: best_per_gen={es.best_per_gen.shape} -> {expected_size}, vals={es.vals.size}")
-                # Try to reshape to match
-                if es.best_per_gen.size == es.vals.size:
-                    es_sel = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])
-                    print(f"[plot] Reshaped best_per_gen to match loss values: {es_sel.shape}")
+        # ES selected path (best per generation if present, otherwise es.pts)
+        print(f"[plot] ES trajectory debug: best_per_gen={es.best_per_gen.shape if es.best_per_gen is not None else None}, es.pts={es.pts.shape if es.pts is not None else None}")
+        
+        # CRITICAL FIX: Ensure ES trajectory matches the loss values
+        # If we have loss values, use them to determine the trajectory structure
+        if es.vals is not None and es.vals.size > 0:
+            print(f"[plot] ES has {es.vals.size} loss values, ensuring trajectory matches")
+            # Use the trajectory that matches the number of loss values
+            if es.best_per_gen is not None:
+                # Calculate expected trajectory size from best_per_gen
+                expected_size = es.best_per_gen.shape[0] * es.best_per_gen.shape[1]  # B * G
+                if expected_size == es.vals.size:
+                    es_sel = es.best_per_gen
+                    print(f"[plot] Using es.best_per_gen: {es_sel.shape} matches {es.vals.size} loss values")
                 else:
-                    es_sel = es.pts if es.pts is not None else es.best_per_gen
-                    print(f"[plot] Using fallback trajectory: {es_sel.shape if es_sel is not None else None}")
+                    print(f"[plot] Size mismatch: best_per_gen={es.best_per_gen.shape} -> {expected_size}, vals={es.vals.size}")
+                    # Try to reshape to match
+                    if es.best_per_gen.size == es.vals.size:
+                        es_sel = es.best_per_gen.reshape(-1, es.best_per_gen.shape[-1])
+                        print(f"[plot] Reshaped best_per_gen to match loss values: {es_sel.shape}")
+                    else:
+                        es_sel = es.pts if es.pts is not None else es.best_per_gen
+                        print(f"[plot] Using fallback trajectory: {es_sel.shape if es_sel is not None else None}")
+            else:
+                es_sel = es.pts
         else:
-            es_sel = es.pts
-    else:
-        es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
-    
-    print(f"[plot] ES selected for plotting: {es_sel.shape if es_sel is not None else None}")
-    
-    if es_sel is not None and es_sel.size > 0:
-        # Check if we have enough trajectory points (more than 1 generation)
-        # es_sel shape is typically (B, G, 2) where B=batches, G=generations
-        if es_sel.ndim == 3 and es_sel.shape[1] > 1:
-            # Flatten ES selected path for plotting: (B, G, 2) -> (B*G, 2)
-            es_sel_flat = es_sel.reshape(-1, 2)
-            print(f"[plot] Plotting ES trajectory: {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
-            
-            # CRITICAL FIX: Highlight generation 0 as the starting point (mean latent)
-            # Plot the full trajectory including generation 0
-            _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
-            
-            # Starting point info (no star marker)
-            if es_sel_flat.shape[0] > 0:
-                start_point = es_sel_flat[0]  # Generation 0 = mean latent
-                print(f"[plot] ES starting point (generation 0) at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
+            es_sel = es.best_per_gen if es.best_per_gen is not None else es.pts
+        
+        print(f"[plot] ES selected for plotting: {es_sel.shape if es_sel is not None else None}")
+        
+        if es_sel is not None and es_sel.size > 0:
+            # Check if we have enough trajectory points (more than 1 generation)
+            # es_sel shape is typically (B, G, 2) where B=batches, G=generations
+            if es_sel.ndim == 3 and es_sel.shape[1] > 1:
+                # Flatten ES selected path for plotting: (B, G, 2) -> (B*G, 2)
+                es_sel_flat = es_sel.reshape(-1, 2)
+                print(f"[plot] Plotting ES trajectory: {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
                 
-        elif es_sel.ndim == 2 and es_sel.shape[0] > 1:
-            # Already flattened: (G, 2)
-            es_sel_flat = es_sel
-            print(f"[plot] Plotting ES trajectory (already flat): {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
-            
-            # CRITICAL FIX: Highlight generation 0 as the starting point
-            _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
-            
-            # Starting point info (no star marker)
-            if es_sel_flat.shape[0] > 0:
-                start_point = es_sel_flat[0]  # Generation 0 = mean latent
-                print(f"[plot] ES starting point (generation 0) at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
+                # CRITICAL FIX: Highlight generation 0 as the starting point (mean latent)
+                # Plot the full trajectory including generation 0
+                _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
                 
-        else:
-            print(f"[plot] ES trajectory plotting skipped: es_sel shape={es_sel.shape}, not enough generations")
+                # Starting point info (no star marker)
+                if es_sel_flat.shape[0] > 0:
+                    start_point = es_sel_flat[0]  # Generation 0 = mean latent
+                    print(f"[plot] ES starting point (generation 0) at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
+                    
+            elif es_sel.ndim == 2 and es_sel.shape[0] > 1:
+                # Already flattened: (G, 2)
+                es_sel_flat = es_sel
+                print(f"[plot] Plotting ES trajectory (already flat): {es_sel_flat.shape}, range: x[{es_sel_flat[:, 0].min():.3f}, {es_sel_flat[:, 0].max():.3f}], y[{es_sel_flat[:, 1].min():.3f}, {es_sel_flat[:, 1].max():.3f}]")
+                
+                # CRITICAL FIX: Highlight generation 0 as the starting point
+                _plot_traj(ax, es_sel_flat, color="#DB74DB", label="ES trajectory (starts from mean latent)", alpha=1.0)
+                
+                # Starting point info (no star marker)
+                if es_sel_flat.shape[0] > 0:
+                    start_point = es_sel_flat[0]  # Generation 0 = mean latent
+                    print(f"[plot] ES starting point (generation 0) at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
+                    
+            else:
+                print(f"[plot] ES trajectory plotting skipped: es_sel shape={es_sel.shape}, not enough generations")
             
             # Fallback: try to plot ES trajectory from best_per_gen if available
             if es.best_per_gen is not None and es.best_per_gen.size > 0:
@@ -1419,24 +1481,24 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
                     print(f"[plot] ES fallback failed: not enough points ({es_fallback.shape[0]})")
             else:
                 print(f"[plot] ES fallback: no best_per_gen available")
-    else:
-        print(f"[plot] ES trajectory plotting skipped: es_sel is None or empty")
+        else:
+            print(f"[plot] ES trajectory plotting skipped: es_sel is None or empty")
 
-    # GA path
-    if ga.pts is not None and len(ga.pts) > 1:
-        # Flatten GA path for plotting
-        ga_pts_flat = ga.pts.reshape(-1, 2)
-        print(f"[plot] Plotting GA trajectory: {ga_pts_flat.shape}, range: x[{ga_pts_flat[:, 0].min():.3f}, {ga_pts_flat[:, 0].max():.3f}], y[{ga_pts_flat[:, 1].min():.3f}, {ga_pts_flat[:, 1].max():.3f}]")
-        
-        # CRITICAL FIX: Highlight that GA starts from mean latent
-        _plot_traj(ax, ga_pts_flat, color="#FBB998", label="GA trajectory (starts from mean latent)", alpha=1.0)
-        
-        # Starting point info (no star marker)
-        if ga_pts_flat.shape[0] > 0:
-            start_point = ga_pts_flat[0]  # First step = mean latent
-            print(f"[plot] GA starting point (mean latent) at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
-    else:
-        print(f"[plot] GA plotting skipped: pts={ga.pts is not None}, len={len(ga.pts) if ga.pts is not None else 0}")
+        # GA path
+        if ga.pts is not None and len(ga.pts) > 1:
+            # Flatten GA path for plotting
+            ga_pts_flat = ga.pts.reshape(-1, 2)
+            print(f"[plot] Plotting GA trajectory: {ga_pts_flat.shape}, range: x[{ga_pts_flat[:, 0].min():.3f}, {ga_pts_flat[:, 0].max():.3f}], y[{ga_pts_flat[:, 1].min():.3f}, {ga_pts_flat[:, 1].max():.3f}]")
+            
+            # CRITICAL FIX: Highlight that GA starts from mean latent
+            _plot_traj(ax, ga_pts_flat, color="#FBB998", label="GA trajectory (starts from mean latent)", alpha=1.0)
+            
+            # Starting point info (no star marker)
+            if ga_pts_flat.shape[0] > 0:
+                start_point = ga_pts_flat[0]  # First step = mean latent
+                print(f"[plot] GA starting point (mean latent) at: ({start_point[0]:.3f}, {start_point[1]:.3f})")
+        else:
+            print(f"[plot] GA plotting skipped: pts={ga.pts is not None}, len={len(ga.pts) if ga.pts is not None else 0}")
 
         # Create comprehensive legend with all elements
         legend_elements = []
