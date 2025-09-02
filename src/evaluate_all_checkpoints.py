@@ -245,14 +245,31 @@ def extract_losses_and_accuracies_per_budget(
                 for acc_key in accuracy_keys:
                     if acc_key in f:
                         acc_data = np.array(f[acc_key])
-                        if acc_data.ndim == 1 and acc_data.size == dataset_length:
-                            # Per-sample final accuracy
-                            data['accuracy_per_sample'] = acc_data.reshape(-1, 1)  # (N, 1)
-                            print(f"[extract] {method_name}: Final accuracy per sample: {data['accuracy_per_sample'].shape}")
-                        elif acc_data.ndim == 2 and acc_data.shape[0] == dataset_length:
-                            # Per-sample per-step accuracy
-                            data['accuracy_per_sample'] = acc_data  # (N, T)
-                            print(f"[extract] {method_name}: Accuracy per sample per step: {data['accuracy_per_sample'].shape}")
+
+                        # Determine the expected number of samples from losses or dataset length
+                        n_samples = (
+                            data['losses_per_sample'].shape[0]
+                            if 'losses_per_sample' in data
+                            else dataset_length
+                        )
+
+                        if acc_data.ndim == 1:
+                            # Some files store multiple metrics concatenated; trim to sample count
+                            acc_vec = acc_data[:n_samples].reshape(n_samples, 1)
+                            if 'losses_per_sample' in data:
+                                T = data['losses_per_sample'].shape[1]
+                                acc_vec = np.tile(acc_vec, (1, T))  # replicate across time steps
+                            data['accuracy_per_sample'] = acc_vec  # (N, T or 1)
+                            print(
+                                f"[extract] {method_name}: Final accuracy per sample: {data['accuracy_per_sample'].shape}"
+                            )
+                        elif acc_data.ndim == 2:
+                            # Per-sample per-step accuracy; ensure sample dimension matches
+                            acc_mat = acc_data[:n_samples]
+                            data['accuracy_per_sample'] = acc_mat
+                            print(
+                                f"[extract] {method_name}: Accuracy per sample per step: {data['accuracy_per_sample'].shape}"
+                            )
                         else:
                             # Overall accuracy
                             overall_acc = safe_array_to_scalar(acc_data)
@@ -361,11 +378,15 @@ def compute_statistical_analysis_per_budget(ga_npz_path: str, es_npz_path: str, 
                     print(f"[stats] GA accuracy per sample per step: {ga_per_sample_data['accuracy'].shape}")
                 elif "ga_accuracy_per_sample" in npz:
                     # If only final accuracy, replicate across all steps
-                    final_acc = np.array(npz["ga_accuracy_per_sample"]).reshape(-1, 1)  # (N, 1)
+                    final_acc = np.array(npz["ga_accuracy_per_sample"]).reshape(-1, 1)
                     if ga_per_sample_data.get('losses') is not None:
+                        n = ga_per_sample_data['losses'].shape[0]
                         T = ga_per_sample_data['losses'].shape[1]
-                        ga_per_sample_data['accuracy'] = np.tile(final_acc, (1, T))  # (N, T)
-                        print(f"[stats] GA accuracy replicated across {T} steps: {ga_per_sample_data['accuracy'].shape}")
+                        final_acc = final_acc[:n]
+                        ga_per_sample_data['accuracy'] = np.tile(final_acc, (1, T))
+                        print(
+                            f"[stats] GA accuracy replicated across {T} steps: {ga_per_sample_data['accuracy'].shape}"
+                        )
                 
                 # Load other metrics similarly
                 for metric in ['shape_correctness', 'pixel_correctness']:
@@ -376,9 +397,13 @@ def compute_statistical_analysis_per_budget(ga_npz_path: str, es_npz_path: str, 
                     elif f"ga_{metric}_per_sample" in npz:
                         final_metric = np.array(npz[f"ga_{metric}_per_sample"]).reshape(-1, 1)
                         if ga_per_sample_data.get('losses') is not None:
+                            n = ga_per_sample_data['losses'].shape[0]
                             T = ga_per_sample_data['losses'].shape[1]
+                            final_metric = final_metric[:n]
                             ga_per_sample_data[metric] = np.tile(final_metric, (1, T))
-                            print(f"[stats] GA {metric} replicated across {T} steps: {ga_per_sample_data[metric].shape}")
+                            print(
+                                f"[stats] GA {metric} replicated across {T} steps: {ga_per_sample_data[metric].shape}"
+                            )
         except Exception as e:
             print(f"[stats] Failed to load GA per-sample data: {e}")
     
@@ -404,11 +429,15 @@ def compute_statistical_analysis_per_budget(ga_npz_path: str, es_npz_path: str, 
                     print(f"[stats] ES accuracy per sample per generation: {es_per_sample_data['accuracy'].shape}")
                 elif "per_sample_accuracy" in npz:
                     # If only final accuracy, replicate across all generations
-                    final_acc = np.array(npz["per_sample_accuracy"]).reshape(-1, 1)  # (N, 1)
+                    final_acc = np.array(npz["per_sample_accuracy"]).reshape(-1, 1)
                     if es_per_sample_data.get('losses') is not None:
+                        n = es_per_sample_data['losses'].shape[0]
                         G = es_per_sample_data['losses'].shape[1]
-                        es_per_sample_data['accuracy'] = np.tile(final_acc, (1, G))  # (N, G)
-                        print(f"[stats] ES accuracy replicated across {G} generations: {es_per_sample_data['accuracy'].shape}")
+                        final_acc = final_acc[:n]
+                        es_per_sample_data['accuracy'] = np.tile(final_acc, (1, G))
+                        print(
+                            f"[stats] ES accuracy replicated across {G} generations: {es_per_sample_data['accuracy'].shape}"
+                        )
                 
                 # Load other metrics similarly
                 for metric in ['shape_correctness', 'pixel_correctness']:
@@ -419,9 +448,13 @@ def compute_statistical_analysis_per_budget(ga_npz_path: str, es_npz_path: str, 
                     elif f"per_sample_{metric}" in npz:
                         final_metric = np.array(npz[f"per_sample_{metric}"]).reshape(-1, 1)
                         if es_per_sample_data.get('losses') is not None:
+                            n = es_per_sample_data['losses'].shape[0]
                             G = es_per_sample_data['losses'].shape[1]
+                            final_metric = final_metric[:n]
                             es_per_sample_data[metric] = np.tile(final_metric, (1, G))
-                            print(f"[stats] ES {metric} replicated across {G} generations: {es_per_sample_data[metric].shape}")
+                            print(
+                                f"[stats] ES {metric} replicated across {G} generations: {es_per_sample_data[metric].shape}"
+                            )
         except Exception as e:
             print(f"[stats] Failed to load ES per-sample data: {e}")
     

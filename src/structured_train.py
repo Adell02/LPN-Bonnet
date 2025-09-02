@@ -714,6 +714,14 @@ class StructuredTrainer:
                     repulsion_kl_coeff=repulsion_coeff,  # Conditional coefficient
                     contrastive_kl_coeff=contrastive_coeff,  # Conditional coefficient
                     pattern_ids=pattern_ids,  # ADD PATTERN IDS FOR CONTRASTIVE LOSS
+                    # Enhanced uncertainty shaping parameters
+                    beta_target=self.cfg.training.get("beta_target"),
+                    beta_other=self.cfg.training.get("beta_other"),
+                    prior_var_target=self.cfg.training.get("prior_var_target"),
+                    prior_var_other=self.cfg.training.get("prior_var_other"),
+                    alpha_target=self.cfg.training.get("alpha_target"),
+                    alpha_other=self.cfg.training.get("alpha_other"),
+                    entropy_gamma=self.cfg.training.get("entropy_gamma"),
                     **(self.cfg.training.get("inference_kwargs") or {}),
                 )
                 return loss, metrics
@@ -1524,7 +1532,7 @@ class StructuredTrainer:
             logging.info(f"     🔍 Phase A Final Evaluation at step {num_steps}/{num_steps}")
             # Create evaluation data for final certainty plots
             eval_data = {}
-            num_eval_samples = 96  # Use available samples from each dataset (same as _evaluate_specialized_encoder)
+            num_eval_samples = 100  # Same as in _evaluate_specialized_encoder for consistency
             for pattern_id in [1, 2, 3]:
                 eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
             
@@ -1559,8 +1567,7 @@ class StructuredTrainer:
         
         # Generate evaluation data for all patterns using balanced pattern-specific datasets
         eval_data = {}
-        # Use available samples instead of forcing 100 - each dataset has 96 samples
-        num_eval_samples = 96  # Use available samples from each dataset
+        num_eval_samples = 100  # same number for each pattern to ensure even coverage
         for pattern_id in [1, 2, 3]:
             eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
 
@@ -1569,8 +1576,8 @@ class StructuredTrainer:
         pattern_variances = {}
         for pattern_id, (grids, shapes, pattern_ids) in eval_data.items():
             # Sample a subset for evaluation
-            if len(grids) > 96:
-                indices = np.random.choice(len(grids), 96, replace=False)
+            if len(grids) > 100:
+                indices = np.random.choice(len(grids), 100, replace=False)
                 eval_grids = grids[indices]
                 eval_shapes = shapes[indices]
                 eval_pattern_ids = pattern_ids[indices]
@@ -3385,29 +3392,26 @@ class StructuredTrainer:
             grids = np.load(os.path.join(dataset_path, "grids.npy")).astype(np.uint8)
             shapes = np.load(os.path.join(dataset_path, "shapes.npy")).astype(np.uint8)
 
-            # Use available samples instead of forcing requested number
+            # Ensure we have enough samples
             available_samples = len(grids)
             rng = np.random.default_rng(self.cfg.training.seed)
-            
-            # Use the minimum of requested samples and available samples
-            actual_samples = min(num_samples, available_samples)
-            
             if available_samples >= num_samples:
                 # Sample without replacement when enough data is available
-                indices = rng.choice(available_samples, size=actual_samples, replace=False)
+                indices = rng.choice(available_samples, size=num_samples, replace=False)
                 grids = grids[indices]
                 shapes = shapes[indices]
             else:
-                # Use all available samples without replacement
-                logging.info(
-                    f"      Dataset {dataset_folder} has {available_samples} samples, using all available samples"
+                # Sample with replacement to match the requested batch size
+                logging.warning(
+                    f"      Dataset {dataset_folder} only has {available_samples} samples, sampling with replacement to reach {num_samples}"
                 )
-                grids = grids  # Use all available samples
-                shapes = shapes  # Use all available samples
+                indices = rng.choice(available_samples, size=num_samples, replace=True)
+                grids = grids[indices]
+                shapes = shapes[indices]
 
-            pattern_ids = np.full(actual_samples, pattern_id, dtype=np.uint8)
+            pattern_ids = np.full(num_samples, pattern_id, dtype=np.uint8)
             
-            logging.info(f"      Loaded {actual_samples} samples from {dataset_folder}: {grids.shape}, {shapes.shape}")
+            logging.info(f"      Loaded {num_samples} samples from {dataset_folder}: {grids.shape}, {shapes.shape}")
             return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
                 
         except Exception as e:
@@ -3881,6 +3885,19 @@ class StructuredTrainer:
                 logging.info(f"       ✅ Merged encoder certainty panel logged to WandB with step {phase1_completion_step}")
             else:
                 logging.warning("       ❌ Failed to create merged encoder certainty panel")
+
+            # Analyze PoE weights after Phase 1 completion
+            logging.info("🔍 Analyzing PoE weights after Phase 1 completion...")
+            poe_weight_analysis = self._analyze_poe_weights(state, step=0)
+            if poe_weight_analysis is not None:
+                phase1_completion_step = max(600, self.phase_a_global_step + 100)
+                wandb.log({
+                    "phase_1_completion/poe_weight_analysis": wandb.Image(poe_weight_analysis)
+                }, step=phase1_completion_step)
+                plt.close(poe_weight_analysis)
+                logging.info(f"       ✅ PoE weight analysis logged to WandB with step {phase1_completion_step}")
+            else:
+                logging.warning("       ❌ Failed to create PoE weight analysis")
 
             poster_poe_fig = self._create_poster_poe_figure(state, step=0)
             if poster_poe_fig is not None:
@@ -5386,6 +5403,120 @@ class StructuredTrainer:
         del all_latents, latents_concat, source_ids_np, pattern_ids_concat
         return metrics
 
+    def _create_pattern_specific_pca(
+        self,
+        latents: np.ndarray,
+        source_ids: np.ndarray,
+        task_ids: np.ndarray,
+        title: str,
+        max_points: Optional[int] = 300,
+        random_state: int = 42
+    ) -> Optional[plt.Figure]:
+        """
+        Create a custom PCA visualization for pattern-specific plots with source color coding.
+        
+        This method creates PCA plots that match EXACTLY the style of visualize_tsne_sources:
+        - Same color palette, size, shapes, legend title, title style, axes style
+        - All points have the same pattern (same color)
+        - Different sources (encoders) have different colors and markers
+        - EXACTLY matches test/structured_mean/latents_context_only styling
+        
+        Args:
+            latents: [N, D] array of latent embeddings
+            source_ids: [N] array of source IDs (0, 1, 2 for encoders)
+            task_ids: [N] array of task IDs
+            title: Title for the PCA plot
+            max_points: Maximum number of points to show. If ``None``, use all points.
+            random_state: Random state for PCA (not used but kept for consistency)
+            
+        Returns:
+            matplotlib Figure with the PCA visualization
+        """
+        try:
+            from sklearn.decomposition import PCA
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            if len(latents) == 0:
+                logging.warning("No latents provided for PCA visualization")
+                return None
+            
+            # Downsample if needed
+            if max_points is not None and len(latents) > max_points:
+                # Stratified sampling to maintain source distribution
+                indices = []
+                unique_sources = np.unique(source_ids)
+                max_per_source = max_points // len(unique_sources)
+                
+                for source_id in unique_sources:
+                    source_mask = (source_ids == source_id)
+                    source_indices = np.where(source_mask)[0]
+                    if len(source_indices) > max_per_source:
+                        sampled_indices = np.random.RandomState(random_state).choice(
+                            source_indices, size=max_per_source, replace=False
+                        )
+                    else:
+                        sampled_indices = source_indices
+                    indices.extend(sampled_indices)
+                
+                latents = latents[indices]
+                source_ids = source_ids[indices]
+                task_ids = task_ids[indices]
+            
+            # Apply PCA
+            pca = PCA(n_components=2, random_state=random_state)
+            latents_2d = pca.fit_transform(latents)
+            
+            # Create figure with same style as visualize_tsne_sources
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            # Define colors and markers for different sources (same as visualize_tsne_sources)
+            source_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+            source_markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
+            source_labels = ['Encoder 0', 'Encoder 1', 'Encoder 2', 'Context', 'Source 4', 'Source 5', 'Source 6', 'Source 7', 'Source 8', 'Source 9']
+            
+            # Plot points for each source
+            unique_sources = np.unique(source_ids)
+            for i, source_id in enumerate(unique_sources):
+                source_mask = (source_ids == source_id)
+                if np.any(source_mask):
+                    color = source_colors[source_id % len(source_colors)]
+                    marker = source_markers[source_id % len(source_markers)]
+                    label = source_labels[source_id] if source_id < len(source_labels) else f'Source {source_id}'
+                    
+                    ax.scatter(
+                        latents_2d[source_mask, 0], 
+                        latents_2d[source_mask, 1],
+                        c=color, 
+                        marker=marker, 
+                        s=50, 
+                        alpha=0.7, 
+                        label=label,
+                        edgecolors='white',
+                        linewidth=0.5
+                    )
+            
+            # Style the plot to match visualize_tsne_sources
+            ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
+            ax.set_xlabel('PC1', fontsize=12)
+            ax.set_ylabel('PC2', fontsize=12)
+            ax.grid(True, alpha=0.3)
+            ax.legend(title='Sources', bbox_to_anchor=(1.05, 1), loc='upper left')
+            
+            # Add explained variance ratio to title
+            explained_var = pca.explained_variance_ratio_
+            total_explained = np.sum(explained_var)
+            ax.text(0.02, 0.98, f'Explained Variance: {total_explained:.1%}', 
+                   transform=ax.transAxes, fontsize=10, verticalalignment='top',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            
+            plt.tight_layout()
+            return fig
+            
+        except Exception as e:
+            logging.error(f"Failed to create PCA visualization: {e}")
+            return None
+
     def _create_pattern_specific_tsne(
         self,
         latents: np.ndarray,
@@ -5796,27 +5927,22 @@ class StructuredTrainer:
                 # Generate pattern-specific data for each pattern and merge them
                 pattern_specific_data = {}
                 for pattern_id in [1, 2, 3]:
-                    # Use the same method as phase_a certainty plots
-                    pattern_data = self._create_pattern_dataset(pattern_id, num_samples=self.batch_size)
-                    pattern_specific_data[pattern_id] = pattern_data
+                    pattern_specific_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_samples=self.batch_size)
                 
                 # Merge all pattern data together
-                all_pattern_grids = []
-                all_pattern_shapes = []
-                all_pattern_ids = []
+                merged_grids = []
+                merged_shapes = []
+                merged_pattern_ids = []
                 
                 for pattern_id in [1, 2, 3]:
                     grids, shapes, pattern_ids = pattern_specific_data[pattern_id]
-                    all_pattern_grids.append(grids)
-                    all_pattern_shapes.append(shapes)
-                    all_pattern_ids.append(pattern_ids)
+                    merged_grids.append(grids)
+                    merged_shapes.append(shapes)
+                    merged_pattern_ids.append(pattern_ids)
                 
-                # Concatenate all pattern data
-                merged_grids = jnp.concatenate(all_pattern_grids, axis=0)
-                merged_shapes = jnp.concatenate(all_pattern_shapes, axis=0)
-                merged_pattern_ids = jnp.concatenate(all_pattern_ids, axis=0)
-                
-                logging.info(f"Test: Generated pattern-specific data - grids: {merged_grids.shape}, shapes: {merged_shapes.shape}, pattern_ids: {merged_pattern_ids.shape}")
+                merged_grids = jnp.concatenate(merged_grids, axis=0)
+                merged_shapes = jnp.concatenate(merged_shapes, axis=0)
+                merged_pattern_ids = jnp.concatenate(merged_pattern_ids, axis=0)
                 
                 # Update task_id_sequence to match merged data size
                 task_id_sequence = np.arange(merged_grids.shape[0], dtype=int)
@@ -5826,9 +5952,9 @@ class StructuredTrainer:
                     try:
                         mu_i, logvar_i = self.encoders[enc_idx].apply(
                             {"params": enc_params}, 
-                            merged_grids,  # Use pattern-specific merged data
-                            merged_shapes,  # Use pattern-specific merged data
-                            False,  # Use same dropout_eval=False as phase_a certainty plots
+                            merged_grids, 
+                            merged_shapes, 
+                            dropout_eval=False, 
                             mutable=False
                         )
                         lat = mu_i.mean(axis=-2)  # Mean over pairs
@@ -5953,11 +6079,10 @@ class StructuredTrainer:
                     # Handle the extra dimension from make_leave_one_out
                     if merged_leave_one_out_grids.shape[1] == merged_grids.shape[1]:
                         merged_leave_one_out_grids = merged_leave_one_out_grids[:, 0, ...]
+                    if merged_leave_one_out_shapes.shape[1] == merged_shapes.shape[1]:
                         merged_leave_one_out_shapes = merged_leave_one_out_shapes[:, 0, ...]
                     
-                    # Process in batches using pattern-specific data
-                    merged_num_batches = merged_grids.shape[0] // batch_size
-                    for batch_idx in range(merged_num_batches):
+                    for batch_idx in range(num_batches):
                         start = batch_idx * batch_size
                         end = start + batch_size
                         batch_lo_grids = merged_leave_one_out_grids[start:end]
@@ -6464,6 +6589,158 @@ class StructuredTrainer:
             return None
     
 
+    def _analyze_poe_weights(self, state: TrainState, step: int) -> Optional[plt.Figure]:
+        """Analyze actual PoE weights per sample and per dimension.
+        
+        Computes:
+        - tau = 1.0 / var (precision)
+        - w = (alpha * tau) / (tau0 + sum(alpha * tau)) (per-dimension weights)
+        - w_enc = w.mean(-1) (per-encoder average weight)
+        
+        Plots w_enc histograms per pattern to show actual encoder weights.
+        """
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            # Get evaluation data for each pattern
+            eval_data = {}
+            for pattern_id in [1, 2, 3]:
+                eval_data[pattern_id] = self._get_phase2_eval_data(target_pattern=pattern_id)
+            
+            # Get encoder parameters
+            enc_params_list = state.params["encoders"]
+            poe_alphas = np.array(self.cfg.structured.alphas, dtype=np.float32)
+            
+            # Store results
+            all_w_enc = {pattern_id: [] for pattern_id in [1, 2, 3]}
+            all_encoder_mus = {pattern_id: [] for pattern_id in [1, 2, 3]}
+            all_encoder_logvars = {pattern_id: [] for pattern_id in [1, 2, 3]}
+            
+            # Process each pattern
+            for pattern_id in [1, 2, 3]:
+                grids, shapes = eval_data[pattern_id]
+                
+                # Get encoder outputs for this pattern
+                encoder_mus = []
+                encoder_logvars = []
+                
+                for enc_idx, enc_params in enumerate(enc_params_list):
+                    mu_i, logvar_i = self.encoders[enc_idx].apply(
+                        {"params": enc_params}, 
+                        grids, 
+                        shapes, 
+                        dropout_eval=False, 
+                        mutable=False
+                    )
+                    encoder_mus.append(np.array(mu_i))
+                    encoder_logvars.append(np.array(logvar_i))
+                
+                # Stack encoder outputs: [E, B, N, H]
+                stacked_mus = np.stack(encoder_mus)  # [E, B, N, H]
+                stacked_logvars = np.stack(encoder_logvars)  # [E, B, N, H]
+                
+                # Compute PoE weights for each sample
+                E, B, N, H = stacked_mus.shape
+                w_enc_per_sample = []
+                
+                for b in range(B):
+                    # Get data for this sample: [E, N, H]
+                    sample_mus = stacked_mus[:, b, :, :]
+                    sample_logvars = stacked_logvars[:, b, :, :]
+                    
+                    # Compute precisions: tau = 1.0 / var
+                    sample_vars = np.exp(sample_logvars)
+                    sample_taus = 1.0 / (sample_vars + 1e-8)  # [E, N, H]
+                    
+                    # Compute per-dimension weights: w = (alpha * tau) / (tau0 + sum(alpha * tau))
+                    prior_prec = np.maximum(1.0 - np.sum(poe_alphas), 1e-8)
+                    alpha_reshaped = poe_alphas.reshape(-1, 1, 1)  # [E, 1, 1]
+                    
+                    # Weighted precisions: alpha * tau
+                    weighted_taus = alpha_reshaped * sample_taus  # [E, N, H]
+                    
+                    # Sum over encoders: sum(alpha * tau)
+                    total_weighted_tau = np.sum(weighted_taus, axis=0)  # [N, H]
+                    
+                    # Per-dimension weights: w = (alpha * tau) / (tau0 + sum(alpha * tau))
+                    w_per_dim = weighted_taus / (prior_prec + total_weighted_tau + 1e-8)  # [E, N, H]
+                    
+                    # Per-encoder average weight: w_enc = w.mean(-1)
+                    w_enc = np.mean(w_per_dim, axis=(1, 2))  # [E] - average over N and H
+                    w_enc_per_sample.append(w_enc)
+                
+                # Store results
+                all_w_enc[pattern_id] = np.array(w_enc_per_sample)  # [B, E]
+                all_encoder_mus[pattern_id] = stacked_mus
+                all_encoder_logvars[pattern_id] = stacked_logvars
+            
+            # Create visualization
+            fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+            fig.suptitle(f'PoE Weight Analysis (Step {step})', fontsize=16)
+            
+            # Plot w_enc histograms per pattern
+            for pattern_id in [1, 2, 3]:
+                w_enc_data = all_w_enc[pattern_id]  # [B, E]
+                
+                # Plot per-encoder weight distributions
+                ax = axes[0, pattern_id - 1]
+                for enc_idx in range(len(enc_params_list)):
+                    weights = w_enc_data[:, enc_idx]
+                    ax.hist(weights, bins=20, alpha=0.7, label=f'Encoder {enc_idx}', density=True)
+                ax.set_title(f'Pattern {pattern_id} - PoE Weights per Encoder')
+                ax.set_xlabel('w_enc (per-encoder average weight)')
+                ax.set_ylabel('Density')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                
+                # Plot encoder variance distributions
+                ax = axes[1, pattern_id - 1]
+                for enc_idx in range(len(enc_params_list)):
+                    vars_data = all_encoder_logvars[pattern_id][enc_idx]  # [B, N, H]
+                    vars_flat = np.exp(vars_data).reshape(-1)
+                    ax.hist(vars_flat, bins=20, alpha=0.7, label=f'Encoder {enc_idx}', density=True)
+                ax.set_title(f'Pattern {pattern_id} - Encoder Variances')
+                ax.set_xlabel('Variance')
+                ax.set_ylabel('Density')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                ax.set_yscale('log')
+            
+            plt.tight_layout()
+            
+            # Log detailed summary statistics
+            logging.info(f"PoE Weight Analysis Summary (Step {step}):")
+            logging.info(f"  PoE alphas: {poe_alphas}")
+            logging.info(f"  Prior precision: {np.maximum(1.0 - np.sum(poe_alphas), 1e-8):.6f}")
+            
+            for pattern_id in [1, 2, 3]:
+                w_enc_data = all_w_enc[pattern_id]
+                logging.info(f"  Pattern {pattern_id}:")
+                for enc_idx in range(len(enc_params_list)):
+                    weights = w_enc_data[:, enc_idx]
+                    logging.info(f"    Encoder {enc_idx}: mean={np.mean(weights):.4f}, std={np.std(weights):.4f}, min={np.min(weights):.4f}, max={np.max(weights):.4f}")
+                    
+                    # Also log variance statistics for this encoder on this pattern
+                    vars_data = all_encoder_logvars[pattern_id][enc_idx]  # [B, N, H]
+                    vars_flat = np.exp(vars_data).reshape(-1)
+                    logging.info(f"      Variance: mean={np.mean(vars_flat):.6f}, std={np.std(vars_flat):.6f}, min={np.min(vars_flat):.6f}, max={np.max(vars_flat):.6f}")
+            
+            # Log key insights
+            logging.info("  Key Insights:")
+            for pattern_id in [1, 2, 3]:
+                w_enc_data = all_w_enc[pattern_id]
+                # Find which encoder has highest average weight on this pattern
+                avg_weights = np.mean(w_enc_data, axis=0)
+                best_encoder = np.argmax(avg_weights)
+                logging.info(f"    Pattern {pattern_id}: Encoder {best_encoder} has highest average weight ({avg_weights[best_encoder]:.4f})")
+            
+            return fig
+            
+        except Exception as e:
+            logging.error(f"Failed to analyze PoE weights: {e}")
+            return None
+
     def _create_poster_poe_figure(self, state: TrainState, step: int) -> Optional[plt.Figure]:
         """Create a simplified PoE figure for posters without notes or dashed lines."""
         try:
@@ -6554,8 +6831,8 @@ class StructuredTrainer:
                         stacked_logvars = np.stack(all_encoder_logvars)
                         poe_alphas = np.ones(len(self.encoders)) / len(self.encoders)
                         poe_mu, poe_logvar = poe_diag_gaussians(
-                            stacked_mus,        # Remove extra [None, ...] - use same as merged_encoder_certainty_panel
-                            stacked_logvars,    # Remove extra [None, ...] - use same as merged_encoder_certainty_panel
+                            stacked_mus,
+                            stacked_logvars,
                             poe_alphas,
                         )
                         poe_mu_np = np.array(poe_mu).squeeze()
