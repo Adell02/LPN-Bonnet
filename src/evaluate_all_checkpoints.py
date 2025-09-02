@@ -3458,11 +3458,20 @@ def main():
                                                 vmax_abs = float(np.nanmax(np.abs(data))) if not np.all(np.isnan(data)) else 1.0
                                                 vmin, vmax = -vmax_abs, vmax_abs
                                             
+                                            xmin, xmax = min(steps_list), max(steps_list)
+                                            ymin, ymax = min(budgets_list), max(budgets_list)
+                                            if xmin == xmax:
+                                                xmin -= 0.5
+                                                xmax += 0.5
+                                            if ymin == ymax:
+                                                ymin -= 0.5
+                                                ymax += 0.5
+
                                             im = ax_h.imshow(
                                                 data,
                                                 aspect="auto",
                                                 origin="lower",
-                                                extent=[min(steps_list), max(steps_list), min(budgets_list), max(budgets_list)],
+                                                extent=[xmin, xmax, ymin, ymax],
                                                 vmin=vmin,
                                                 vmax=vmax,
                                                 cmap="cool",  # Use same colormap as reference
@@ -3632,26 +3641,34 @@ def main():
                                         print(f"❌ DEBUG: ES not found in arrays_to_use")
                                     # GA pixel accuracy heatmap (symmetric around 0)
                                     if "gradient_ascent" in pixel_arrays_to_use:
-                                        print(f"🔍 DEBUG: Generating GA pixel accuracy heatmap...")
-                                        ga_budget_list = get_budget_list_for_method("gradient_ascent")
-                                        p = _save_heatmap(pixel_arrays_to_use["gradient_ascent"], all_steps, ga_budget_list, f"checkpoint_{step_tag}_ga_pixel_accuracy", center=0, stats_data=heatmap_stats)
-                                        if p and p.exists():
-                                            print(f"✅ DEBUG: GA pixel accuracy heatmap saved to {p}")
-                                            wandb.log({f"checkpoint_{training_progress}/ga_pixel_accuracy": wandb.Image(str(p))})
+                                        ga_pixel_data = pixel_arrays_to_use["gradient_ascent"]
+                                        if np.all(np.isnan(ga_pixel_data)):
+                                            print("⚠️ DEBUG: GA pixel accuracy heatmap skipped (no valid data)")
                                         else:
-                                            print(f"❌ DEBUG: GA pixel accuracy heatmap generation failed (p={p})")
+                                            print(f"🔍 DEBUG: Generating GA pixel accuracy heatmap...")
+                                            ga_budget_list = get_budget_list_for_method("gradient_ascent")
+                                            p = _save_heatmap(ga_pixel_data, all_steps, ga_budget_list, f"checkpoint_{step_tag}_ga_pixel_accuracy", center=0, stats_data=heatmap_stats)
+                                            if p and p.exists():
+                                                print(f"✅ DEBUG: GA pixel accuracy heatmap saved to {p}")
+                                                wandb.log({f"checkpoint_{training_progress}/ga_pixel_accuracy": wandb.Image(str(p))})
+                                            else:
+                                                print(f"❌ DEBUG: GA pixel accuracy heatmap generation failed (p={p})")
                                     else:
                                         print(f"❌ DEBUG: GA not found in pixel_arrays_to_use")
                                     # ES pixel accuracy heatmap (symmetric around 0)
                                     if "evolutionary_search" in pixel_arrays_to_use:
-                                        print(f"🔍 DEBUG: Generating ES pixel accuracy heatmap...")
-                                        es_budget_list = get_budget_list_for_method("evolutionary_search")
-                                        p = _save_heatmap(pixel_arrays_to_use["evolutionary_search"], all_steps, es_budget_list, f"checkpoint_{step_tag}_es_pixel_accuracy", center=0, stats_data=heatmap_stats)
-                                        if p and p.exists():
-                                            print(f"✅ DEBUG: ES pixel accuracy heatmap saved to {p}")
-                                            wandb.log({f"checkpoint_{training_progress}/es_pixel_accuracy": wandb.Image(str(p))})
+                                        es_pixel_data = pixel_arrays_to_use["evolutionary_search"]
+                                        if np.all(np.isnan(es_pixel_data)):
+                                            print("⚠️ DEBUG: ES pixel accuracy heatmap skipped (no valid data)")
                                         else:
-                                            print(f"❌ DEBUG: ES pixel accuracy heatmap generation failed (p={p})")
+                                            print(f"🔍 DEBUG: Generating ES pixel accuracy heatmap...")
+                                            es_budget_list = get_budget_list_for_method("evolutionary_search")
+                                            p = _save_heatmap(es_pixel_data, all_steps, es_budget_list, f"checkpoint_{step_tag}_es_pixel_accuracy", center=0, stats_data=heatmap_stats)
+                                            if p and p.exists():
+                                                print(f"✅ DEBUG: ES pixel accuracy heatmap saved to {p}")
+                                                wandb.log({f"checkpoint_{training_progress}/es_pixel_accuracy": wandb.Image(str(p))})
+                                            else:
+                                                print(f"❌ DEBUG: ES pixel accuracy heatmap generation failed (p={p})")
                                     else:
                                         print(f"❌ DEBUG: ES not found in pixel_arrays_to_use")
                                     # GA − ES overall accuracy diff (center at 0)
