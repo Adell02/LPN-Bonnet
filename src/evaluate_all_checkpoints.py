@@ -3293,7 +3293,7 @@ def main():
                                 # Generate per-checkpoint GA/ES single-method and difference heatmaps (overall & pixel)
                                 # Use full trajectory data for high-granularity heatmaps instead of just CSV data
                                 try:
-                                    print(f"📊 Generating high-granularity heatmaps using full trajectory data...")
+                                    # Generate high-granularity heatmaps using full trajectory data
                                     
                                     # Extract full trajectory data for each method
                                     trajectory_data_by_method = {}
@@ -3305,7 +3305,7 @@ def main():
                                             )
                                             if trajectory_data:
                                                 trajectory_data_by_method[method] = trajectory_data
-                                                print(f"📊 Extracted trajectory data for {method}: {list(trajectory_data.keys())}")
+                                                # Extracted trajectory data for method
                                             else:
                                                 print(f"⚠️  No trajectory data extracted for {method}")
                                         else:
@@ -3322,7 +3322,7 @@ def main():
                                             # Get the actual budget points from trajectory (much higher granularity)
                                             if 'budget' in traj_data:
                                                 traj_budgets = traj_data['budget']
-                                                print(f"📊 {method} trajectory budgets: {len(traj_budgets)} points, range: [{traj_budgets.min()}, {traj_budgets.max()}]")
+                                                # Method trajectory budgets extracted
                                                 
                                                 # Create high-granularity arrays
                                                 method_arrays_high_granularity[method] = np.full((len(traj_budgets), len(all_steps)), np.nan)
@@ -3331,12 +3331,26 @@ def main():
                                                 # Fill with trajectory data (only for current checkpoint step)
                                                 current_step_idx = all_steps.index(training_progress) if training_progress in all_steps else 0
                                                 
+                                                # Ensure array dimensions match
+                                                array_height = method_arrays_high_granularity[method].shape[0]
+                                                
                                                 # Overall accuracy/loss data
                                                 if 'accuracy_mean' in traj_data:
-                                                    method_arrays_high_granularity[method][:, current_step_idx] = traj_data['accuracy_mean']
+                                                    data = traj_data['accuracy_mean']
+                                                    # Truncate or pad to match array height
+                                                    if len(data) > array_height:
+                                                        data = data[:array_height]
+                                                    elif len(data) < array_height:
+                                                        data = np.pad(data, (0, array_height - len(data)), mode='constant', constant_values=np.nan)
+                                                    method_arrays_high_granularity[method][:, current_step_idx] = data
                                                 elif 'losses_mean' in traj_data:
                                                     # Convert losses to accuracy-like values (inverted)
                                                     losses = traj_data['losses_mean']
+                                                    # Truncate or pad to match array height
+                                                    if len(losses) > array_height:
+                                                        losses = losses[:array_height]
+                                                    elif len(losses) < array_height:
+                                                        losses = np.pad(losses, (0, array_height - len(losses)), mode='constant', constant_values=np.nan)
                                                     # Normalize losses to 0-1 range for visualization
                                                     if losses.max() > losses.min():
                                                         normalized = 1.0 - (losses - losses.min()) / (losses.max() - losses.min())
@@ -3346,9 +3360,15 @@ def main():
                                                 
                                                 # Pixel correctness data
                                                 if 'pixel_correctness_mean' in traj_data:
-                                                    method_arrays_pixel_high_granularity[method][:, current_step_idx] = traj_data['pixel_correctness_mean']
+                                                    data = traj_data['pixel_correctness_mean']
+                                                    # Truncate or pad to match array height
+                                                    if len(data) > array_height:
+                                                        data = data[:array_height]
+                                                    elif len(data) < array_height:
+                                                        data = np.pad(data, (0, array_height - len(data)), mode='constant', constant_values=np.nan)
+                                                    method_arrays_pixel_high_granularity[method][:, current_step_idx] = data
                                                 
-                                                print(f"📊 {method} high-granularity array: {method_arrays_high_granularity[method].shape}")
+                                                # High-granularity array created
                                             else:
                                                 print(f"⚠️  No budget data in trajectory for {method}")
                                         else:
@@ -3602,11 +3622,14 @@ def main():
                                                 ga_npz_path = None
                                                 es_npz_path = None
                                                 
-                                                for result in results_data:
-                                                    if result['method'] == 'gradient_ascent' and result['success']:
-                                                        ga_npz_path = result.get('trajectory_file')
-                                                    elif result['method'] == 'evolutionary_search' and result['success']:
-                                                        es_npz_path = result.get('trajectory_file')
+                                                # Find GA and ES NPZ files for this checkpoint
+                                                ga_trajectory_path = f"temp_trajectories/gradient_ascent_{checkpoint['name']}.npz"
+                                                es_trajectory_path = f"temp_trajectories/evolutionary_search_{checkpoint['name']}.npz"
+                                                
+                                                if os.path.exists(ga_trajectory_path):
+                                                    ga_npz_path = ga_trajectory_path
+                                                if os.path.exists(es_trajectory_path):
+                                                    es_npz_path = es_trajectory_path
                                                 
                                                 if ga_npz_path and es_npz_path:
                                                     budget_plots = generate_budget_based_plots(
@@ -4004,13 +4027,16 @@ def main():
                                     ga_npz_path = None
                                     es_npz_path = None
                                     
-                                    # Get the last checkpoint's results
-                                    last_checkpoint_results = all_results_data[-1] if all_results_data else []
-                                    for result in last_checkpoint_results:
-                                        if result['method'] == 'gradient_ascent' and result['success']:
-                                            ga_npz_path = result.get('trajectory_file')
-                                        elif result['method'] == 'evolutionary_search' and result['success']:
-                                            es_npz_path = result.get('trajectory_file')
+                                    # Find GA and ES NPZ files from the last checkpoint
+                                    last_checkpoint = checkpoints[-1] if checkpoints else None
+                                    if last_checkpoint:
+                                        ga_trajectory_path = f"temp_trajectories/gradient_ascent_{last_checkpoint['name']}.npz"
+                                        es_trajectory_path = f"temp_trajectories/evolutionary_search_{last_checkpoint['name']}.npz"
+                                        
+                                        if os.path.exists(ga_trajectory_path):
+                                            ga_npz_path = ga_trajectory_path
+                                        if os.path.exists(es_trajectory_path):
+                                            es_npz_path = es_trajectory_path
                                     
                                     if ga_npz_path and es_npz_path:
                                         final_budget_plots = generate_budget_based_plots(
