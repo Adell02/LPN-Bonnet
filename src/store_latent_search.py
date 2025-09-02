@@ -2426,7 +2426,7 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
     _warn_if_identical('pixel_correctness', ga_metrics.get('pixel_correctness'), es_metrics.get('pixel_correctness'))
     _warn_if_identical('best_loss', ga_metrics.get('best_loss'), es_metrics.get('best_loss'))
 
-    # Perform Welch's two-sample t-tests and log to W&B (dataset_length > 1 case)
+    # Perform paired statistical tests (dataset_length > 1): ttest_rel / Wilcoxon; McNemar for binary accuracy
     try:
         import wandb  # Optional, only if available
         has_wandb = getattr(wandb, 'run', None) is not None
@@ -2434,34 +2434,112 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
         wandb = None
         has_wandb = False
 
+    def _is_binary_array(arr: np.ndarray) -> bool:
+        if arr is None or arr.size == 0:
+            return False
+        u = np.unique(arr)
+        return set(u.tolist()).issubset({0, 1})
+
+    def _log_stats(prefix: str, payload: dict):
+        print(f"[stats] {prefix}: {payload}")
+        if has_wandb:
+            try:
+                wandb.log({f"per_dataset/{k}": v for k, v in payload.items()})
+            except Exception as _wl_e:
+                print(f"[stats] Failed to log {prefix} to W&B: {_wl_e}")
+
+    from scipy.stats import ttest_rel, wilcoxon
     metrics_for_test = ['accuracy', 'shape_correctness', 'pixel_correctness', 'best_loss']
     for metric in metrics_for_test:
         ga_data = ga_metrics.get(metric, None)
         es_data = es_metrics.get(metric, None)
         if ga_data is None or es_data is None:
             continue
-        if len(ga_data) < 2 or len(es_data) < 2:
+        # Ensure same length and not empty
+        n = min(len(ga_data), len(es_data))
+        if n < 2:
             continue
-        try:
-            stat, p_val = ttest_ind(ga_data, es_data, equal_var=False)
-            ga_mean, ga_std = float(np.mean(ga_data)), float(np.std(ga_data))
-            es_mean, es_std = float(np.mean(es_data)), float(np.std(es_data))
-            log_payload = {
-                f"per_dataset/{metric}_ttest_stat": float(stat),
-                f"per_dataset/{metric}_ttest_pvalue": float(p_val),
-                f"per_dataset/{metric}_ga_mean": ga_mean,
-                f"per_dataset/{metric}_ga_std": ga_std,
-                f"per_dataset/{metric}_es_mean": es_mean,
-                f"per_dataset/{metric}_es_std": es_std,
-            }
-            print(f"[stats] t-test {metric}: stat={stat:.6f}, p={p_val:.6g}; GA μ={ga_mean:.4f} σ={ga_std:.4f}, ES μ={es_mean:.4f} σ={es_std:.4f}")
-            if has_wandb:
+        ga_arr = np.asarray(ga_data[:n], dtype=float)
+        es_arr = np.asarray(es_data[:n], dtype=float)
+        diff = ga_arr - es_arr
+        # Paired effect size: Cohen's dz = mean(diff)/std(diff)
+        diff_mean = float(np.mean(diff))
+        diff_std = float(np.std(diff, ddof=1)) if n > 1 else np.nan
+        dz = float(diff_mean / diff_std) if diff_std > 0 else np.nan
+        # 95% CI for paired difference (normal approx)
+        se = diff_std / np.sqrt(n) if np.isfinite(diff_std) else np.nan
+        ci_low = diff_mean - 1.96 * se if np.isfinite(se) else np.nan
+        ci_high = diff_mean + 1.96 * se if np.isfinite(se) else np.nan
+
+        # Choose test
+        if metric == 'accuracy' and _is_binary_array(ga_arr) and _is_binary_array(es_arr):
+            # McNemar's test for paired binary outcomes
+            try:
+                from statsmodels.stats.contingency_tables import mcnemar
+                # Build 2x2: b = GA=1,ES=0; c = GA=0,ES=1
+                b = int(np.sum((ga_arr == 1) & (es_arr == 0)))
+                c = int(np.sum((ga_arr == 0) & (es_arr == 1)))
+                table = np.array([[0, b], [c, 0]])
+                res = mcnemar(table, exact=False, correction=True)
+                payload = {
+                    f"{metric}_paired_test": "mcnemar",
+                    f"{metric}_mcnemar_stat": float(res.statistic),
+                    f"{metric}_mcnemar_pvalue": float(res.pvalue),
+                    f"{metric}_paired_mean_diff": diff_mean,
+                    f"{metric}_paired_dz": dz,
+                    f"{metric}_paired_ci_low": ci_low,
+                    f"{metric}_paired_ci_high": ci_high,
+                    f"{metric}_b_discordant_ga1_es0": b,
+                    f"{metric}_c_discordant_ga0_es1": c,
+                }
+                _log_stats(f"paired_{metric}", payload)
+            except Exception as _mc_e:
+                print(f"[stats] McNemar failed for {metric}: {_mc_e}")
+                # Fallback to paired t-test on numeric values
                 try:
-                    wandb.log(log_payload)
-                except Exception as _wl_e:
-                    print(f"[stats] Failed to log t-test for {metric} to W&B: {_wl_e}")
-        except Exception as _tt_e:
-            print(f"[stats] t-test failed for {metric}: {_tt_e}")
+                    stat, p_val = ttest_rel(ga_arr, es_arr)
+                    payload = {
+                        f"{metric}_paired_test": "ttest_rel_fallback",
+                        f"{metric}_ttest_stat": float(stat),
+                        f"{metric}_ttest_pvalue": float(p_val),
+                        f"{metric}_paired_mean_diff": diff_mean,
+                        f"{metric}_paired_dz": dz,
+                        f"{metric}_paired_ci_low": ci_low,
+                        f"{metric}_paired_ci_high": ci_high,
+                    }
+                    _log_stats(f"paired_{metric}", payload)
+                except Exception as _ttf_e:
+                    print(f"[stats] Paired t-test fallback failed for {metric}: {_ttf_e}")
+        else:
+            # Continuous/near-continuous: paired t-test, Wilcoxon fallback
+            try:
+                stat, p_val = ttest_rel(ga_arr, es_arr)
+                payload = {
+                    f"{metric}_paired_test": "ttest_rel",
+                    f"{metric}_ttest_stat": float(stat),
+                    f"{metric}_ttest_pvalue": float(p_val),
+                    f"{metric}_paired_mean_diff": diff_mean,
+                    f"{metric}_paired_dz": dz,
+                    f"{metric}_paired_ci_low": ci_low,
+                    f"{metric}_paired_ci_high": ci_high,
+                }
+                _log_stats(f"paired_{metric}", payload)
+            except Exception as _tt_e:
+                print(f"[stats] Paired t-test failed for {metric}: {_tt_e}")
+                try:
+                    stat, p_val = wilcoxon(diff)
+                    payload = {
+                        f"{metric}_paired_test": "wilcoxon",
+                        f"{metric}_wilcoxon_stat": float(stat),
+                        f"{metric}_wilcoxon_pvalue": float(p_val),
+                        f"{metric}_paired_mean_diff": diff_mean,
+                        f"{metric}_paired_dz": dz,
+                        f"{metric}_paired_ci_low": ci_low,
+                        f"{metric}_paired_ci_high": ci_high,
+                    }
+                    _log_stats(f"paired_{metric}", payload)
+                except Exception as _wx_e:
+                    print(f"[stats] Wilcoxon failed for {metric}: {_wx_e}")
 
     # Create figure with 4 subplots (one for each metric)
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))

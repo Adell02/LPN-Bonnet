@@ -5866,7 +5866,8 @@ class StructuredTrainer:
                             poe_program_ids_np = poe_program_ids_np[indices]
                             poe_task_ids_np = poe_task_ids_np[indices]
 
-                        poe_source_ids = np.zeros(poe_latents.shape[0], dtype=int)
+                        # Label PoE-aggregated task latents as coming from the Context source in legend
+                        poe_source_ids = np.full(poe_latents.shape[0], len(current_enc_params_list), dtype=int)
                         fig_tsne_samples = visualize_tsne_sources(
                             latents=poe_latents,
                             program_ids=poe_program_ids_np,
@@ -6355,7 +6356,19 @@ class StructuredTrainer:
                     colors = ['#FBB998', '#DB74DB', '#5361E5']
 
                     all_means_flat = np.concatenate(all_encoder_means)
-                    x_min, x_max = np.min(all_means_flat), np.max(all_means_flat)
+                    # Compute tight x-range using encoder mean ± k * std (averaged per encoder)
+                    k_sigma = 3.0
+                    enc_rep_means = [float(np.mean(m)) for m in all_encoder_means]
+                    enc_rep_stds = [float(np.mean(s)) for s in all_encoder_stds]
+                    x_candidates_min = [m - k_sigma * s for m, s in zip(enc_rep_means, enc_rep_stds)]
+                    x_candidates_max = [m + k_sigma * s for m, s in zip(enc_rep_means, enc_rep_stds)]
+                    x_min = float(np.min(x_candidates_min)) if len(x_candidates_min) > 0 else float(np.min(all_means_flat))
+                    x_max = float(np.max(x_candidates_max)) if len(x_candidates_max) > 0 else float(np.max(all_means_flat))
+                    if not np.isfinite(x_min) or not np.isfinite(x_max) or x_min == x_max:
+                        # Fallback to means span
+                        x_min, x_max = float(np.min(all_means_flat)), float(np.max(all_means_flat))
+                        if x_min == x_max:
+                            x_min, x_max = x_min - 1.0, x_max + 1.0
                     bins = np.linspace(x_min, x_max, 31)
 
                     for means, color in zip(all_encoder_means, colors):
@@ -6369,7 +6382,8 @@ class StructuredTrainer:
                     ax_hist.grid(True, alpha=0.3)
 
                     x_range = x_max - x_min
-                    x_plot = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, 200)
+                    pad_frac = 0.05
+                    x_plot = np.linspace(x_min - pad_frac * x_range, x_max + pad_frac * x_range, 200)
 
                     # Compute PoE Gaussian
                     try:
@@ -6415,8 +6429,8 @@ class StructuredTrainer:
                     # Ensure curves are fully visible (no snapping/clipping)
                     # Add generous x/y margins and disable clipping on plotted lines
                     try:
-                        # X limits with 15% padding beyond observed range
-                        pad = 0.15 * (x_max - x_min if x_max > x_min else 1.0)
+                        # X limits with modest padding around tight sigma-based range
+                        pad = 0.05 * (x_max - x_min if x_max > x_min else 1.0)
                         ax_gauss.set_xlim(x_min - pad, x_max + pad)
                         # Y limits based on max of all drawn curves with padding
                         y_max = 1.0  # normalized PoE and encoder curves are <= ~1 after normalization

@@ -172,17 +172,26 @@ class StructuredLPN(nn.Module):
 
         # Add KL repulsion loss between encoder latents to spread them apart
         repulsion_loss = 0.0
-        if repulsion_kl_coeff is not None and repulsion_kl_coeff > 0 and E > 1:
+        if repulsion_kl_coeff is not None and repulsion_kl_coeff > 0 and E > 0:
             try:
-                # CRITICAL FIX: Repulsion loss should SUBTRACT from total loss to spread encoders apart
-                # A positive coefficient on repulsion_loss drives encoders toward similarity (wrong!)
-                # We want to minimize total loss, so we subtract repulsion_loss to drive KL divergence UP
-                # This encourages encoders to become more different (higher KL between them)
-                repulsion_loss = self._compute_encoder_repulsion_loss(mus, logvars)
-                loss -= repulsion_kl_coeff * repulsion_loss  # SUBTRACT to spread encoders apart
+                # New repulsion: per-encoder KL to a fixed offset prior N(mu_i_offset, I)
+                # Offsets are well-separated means, e.g., scaled one-hot vectors
+                latent_dim = int(mus.shape[-1])
+                scale = 3.0  # separation magnitude; can be made configurable
+                # Build offsets (E, H): first E basis vectors scaled by 'scale'; if E>H, wrap-around
+                eye = jnp.eye(latent_dim, dtype=mus.dtype)
+                if E <= latent_dim:
+                    offsets_eh = scale * eye[:E, :]
+                else:
+                    # Wrap-around if more encoders than dimensions
+                    repeats = (E + latent_dim - 1) // latent_dim
+                    offsets_eh = scale * jnp.tile(eye, (repeats, 1))[:E, :]
+
+                repulsion_loss = self._compute_encoder_offset_kl(mus, logvars, offsets_eh)
+                # Add to loss (penalize deviation from offset prior)
+                loss += repulsion_kl_coeff * repulsion_loss
             except Exception as e:
-                # Gracefully handle any memory or computation errors
-                logging.warning(f"Encoder repulsion loss computation failed: {e}. Skipping repulsion loss.")
+                logging.warning(f"Encoder offset-prior repulsion failed: {e}. Skipping repulsion term.")
                 repulsion_loss = 0.0
 
         # Compute contrastive loss to encourage encoder specialization
@@ -221,7 +230,7 @@ class StructuredLPN(nn.Module):
         if repulsion_kl_coeff is not None and repulsion_kl_coeff > 0:
             metrics.update(
                 repulsion_loss=repulsion_loss,
-                repulsion_loss_weighted=-repulsion_kl_coeff * repulsion_loss,  # Negative because we subtract from loss
+                repulsion_loss_weighted=repulsion_kl_coeff * repulsion_loss,
             )
         if contrastive_kl_coeff is not None and contrastive_kl_coeff > 0:
             metrics.update(
@@ -485,6 +494,37 @@ class StructuredLPN(nn.Module):
         
         # Return average KL divergence across all encoder pairs
         return total_kl / max(num_pairs, 1)
+
+    def _compute_encoder_offset_kl(self, mus: chex.Array, logvars: chex.Array, offsets_eh: chex.Array) -> chex.Array:
+        """KL divergence from each encoder's approximate posterior to N(mu_i_offset, I).
+        
+        Args:
+            mus: (E, *B, N, H) means from each encoder
+            logvars: (E, *B, N, H) log-variances from each encoder
+            offsets_eh: (E, H) fixed offsets per encoder
+        Returns:
+            Scalar KL averaged over encoders, batch, pairs, and dims.
+        """
+        # Ensure shapes
+        E = mus.shape[0]
+        latent_dim = mus.shape[-1]
+        assert offsets_eh.shape == (E, latent_dim), f"offsets shape {offsets_eh.shape} != ({E}, {latent_dim})"
+
+        # Broadcast offsets to mus shape
+        # offsets_eh -> (E, 1, ..., 1, H) matching mus ndim
+        expand_shape = (E,) + (1,) * (mus.ndim - 2) + (latent_dim,)
+        offsets = offsets_eh.reshape(expand_shape)
+
+        # Target prior has identity covariance: logvar_p = 0, var_p = 1
+        var_q = jnp.exp(logvars)
+        mean_diff2 = jnp.square(mus - offsets)
+        # KL(q || p) where p = N(mu_offset, I) for diagonal Gaussians:
+        # 0.5 * sum( var_q + (mu_q - mu_p)^2 - 1 - logvar_q )
+        kl = 0.5 * (var_q + mean_diff2 - 1.0 - logvars)
+        # Average over all axes except encoder axis, then average over encoders
+        reduce_axes = tuple(range(1, kl.ndim))
+        kl_mean_per_encoder = jnp.mean(kl, axis=reduce_axes)
+        return jnp.mean(kl_mean_per_encoder)
 
     def _compute_contrastive_loss(
         self,
