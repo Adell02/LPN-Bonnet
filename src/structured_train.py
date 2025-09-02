@@ -4881,7 +4881,7 @@ class StructuredTrainer:
                     logging.info(f"Main eval - Context final latent shape: {context_np.shape}")
                 
                 all_latents.append(context_np)
-                source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for generation context
+                source_ids.extend([len(current_enc_params_list)] * context_np.shape[0])  # num_encoders for generation context
                 # CRITICAL FIX: Use the correct pattern sequence length for context output
                 context_pattern_sequence = pattern_sequence[:context_np.shape[0]]
                 pattern_ids_list.append(context_pattern_sequence)  # Pattern sequence matching context output length
@@ -4925,7 +4925,7 @@ class StructuredTrainer:
             total_patterns = 3  # O, T, L tetrominos
             points_per_pattern = total_points // total_patterns
             logging.info(f"T-SNE structure: {total_points} total points, {total_patterns} patterns, {points_per_pattern} points per pattern")
-            logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
+            logging.info(f"Expected: {len(current_enc_params_list)} encoders + 1 context = {len(current_enc_params_list) + 1} points per set")
             logging.info(f"Generating 3 T-SNE visualizations: main (encoders+context), context-only, encoders-only (pattern 1)")
             
             # Downsample points for t-SNE to be memory efficient (match train.py default)
@@ -4978,7 +4978,7 @@ class StructuredTrainer:
             
             # 1. ADDITIONAL T-SNE: Show latent samples to demonstrate uncertainty (equivalent to train.py fig_latents_samples)
             # Since structured_train doesn't have latents_samples, we'll create multiple samples from encoders
-            if len(enc_params_list) > 0:
+            if len(current_enc_params_list) > 0:
                 # Create multiple samples by using different encoder outputs as "samples"
                 # This shows how different encoders represent the same patterns (uncertainty)
                 encoder_samples = []
@@ -4990,7 +4990,7 @@ class StructuredTrainer:
                     pattern_mask = (pattern_ids_concat == pattern_id)
                     if np.any(pattern_mask):
                         # Get encoder points only (exclude context)
-                        encoder_mask = (source_ids_np < len(enc_params_list))
+                        encoder_mask = (source_ids_np < len(current_enc_params_list))
                         combined_mask = pattern_mask & encoder_mask
                         
                         if np.any(combined_mask):
@@ -5003,11 +5003,11 @@ class StructuredTrainer:
                             if len(encoder_latents) > max_encoder_points:
                                 # Stratified sampling to maintain encoder distribution
                                 encoder_indices = []
-                                for enc_id in range(len(enc_params_list)):
+                                for enc_id in range(len(current_enc_params_list)):
                                     enc_mask = encoder_sources == enc_id
                                     enc_indices = np.where(enc_mask)[0]
                                     if len(enc_indices) > 0:
-                                        max_per_encoder = max_encoder_points // len(enc_params_list)
+                                        max_per_encoder = max_encoder_points // len(current_enc_params_list)
                                         if len(enc_indices) > max_per_encoder:
                                             sampled_indices = np.random.RandomState(42).choice(
                                                 enc_indices, size=max_per_encoder, replace=False
@@ -5072,8 +5072,8 @@ class StructuredTrainer:
                 
                 if np.any(pattern_mask):
                     # Get encoder points AND PoE context points for this pattern
-                    encoder_mask = (source_ids_np < len(enc_params_list))
-                    context_mask = (source_ids_np == len(enc_params_list))  # PoE context points
+                    encoder_mask = (source_ids_np < len(current_enc_params_list))
+                    context_mask = (source_ids_np == len(current_enc_params_list))  # PoE context points
                     
                     encoder_combined_mask = pattern_mask & encoder_mask
                     context_combined_mask = pattern_mask & context_mask
@@ -5110,12 +5110,12 @@ class StructuredTrainer:
                         if len(encoder_latents) > max_encoder_points:
                             # Stratified sampling to maintain encoder distribution
                             encoder_indices = []
-                            for enc_id in range(len(enc_params_list)):
+                            for enc_id in range(len(current_enc_params_list)):
                                 enc_mask = encoder_sources == enc_id
                                 enc_indices = np.where(enc_mask)[0]
                                 if len(enc_indices) > 0:
                                     # Sample up to max_encoder_points // num_encoders from each encoder
-                                    max_per_encoder = max_encoder_points // len(enc_params_list)
+                                    max_per_encoder = max_encoder_points // len(current_enc_params_list)
                                     if len(enc_indices) > max_per_encoder:
                                         sampled_indices = np.random.RandomState(42).choice(
                                             enc_indices, size=max_per_encoder, replace=False
@@ -5167,7 +5167,7 @@ class StructuredTrainer:
                 clustering_metrics = {}
                 
                 # OPTION 1: Encoder samples clustering (like train.py fig_latents_samples) - for direct comparison
-                encoder_mask = (source_ids_np < len(enc_params_list))
+                encoder_mask = (source_ids_np < len(current_enc_params_list))
                 if np.any(encoder_mask):
                     enc_emb = latents_concat[encoder_mask]
                     enc_prog = pattern_ids_concat[encoder_mask]
@@ -6138,7 +6138,7 @@ class StructuredTrainer:
                     logging.info(f"Test eval - Context final latent shape: {context_np.shape}")
                 
                 all_latents.append(context_np)
-                source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for context
+                source_ids.extend([len(current_enc_params_list)] * context_np.shape[0])  # num_encoders for context
                 pattern_ids_list.append(merged_pattern_ids)  # Use merged pattern IDs
                 task_ids_list.append(task_id_sequence)
                 
@@ -6155,7 +6155,7 @@ class StructuredTrainer:
                     logging.info(
                         f"Test T-SNE structure: {total_points} total points, {len(unique_patterns)} patterns, counts per pattern: {pattern_counts}"
                     )
-                    logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
+                    logging.info(f"Expected: {len(current_enc_params_list)} encoders + 1 context = {len(current_enc_params_list) + 1} points per set")
                     logging.info(f"Test: Generating 3 T-SNE visualizations: main (encoders+context), PoE task latents, encoders-only (single pattern)")
                     
                     # Use visualize_tsne_sources for different markers
@@ -6271,7 +6271,7 @@ class StructuredTrainer:
                         
                         if np.any(pattern_mask):
                             # Get encoder points only (exclude context)
-                            encoder_mask = (source_ids_np < len(enc_params_list))
+                            encoder_mask = (source_ids_np < len(current_enc_params_list))
                             combined_mask = pattern_mask & encoder_mask
                             
                             if np.any(combined_mask):
@@ -6284,12 +6284,12 @@ class StructuredTrainer:
                                 if len(encoder_latents) > max_encoder_points:
                                     # Stratified sampling to maintain encoder distribution
                                     encoder_indices = []
-                                    for enc_id in range(len(enc_params_list)):
+                                    for enc_id in range(len(current_enc_params_list)):
                                         enc_mask = encoder_sources == enc_id
                                         enc_indices = np.where(enc_mask)[0]
                                         if len(enc_indices) > 0:
                                             # Sample up to max_encoder_points // num_encoders from each encoder
-                                            max_per_encoder = max_encoder_points // len(enc_params_list)
+                                            max_per_encoder = max_encoder_points // len(current_enc_params_list)
                                             if len(enc_indices) > max_per_encoder:
                                                 sampled_indices = np.random.RandomState(42).choice(
                                                     enc_indices, size=max_per_encoder, replace=False
@@ -6339,7 +6339,7 @@ class StructuredTrainer:
                         test_clustering_metrics = {}
                         
                         # OPTION 1: Encoder samples clustering (like train.py fig_latents_samples) - for direct comparison
-                        encoder_mask = (source_ids_np < len(enc_params_list))
+                        encoder_mask = (source_ids_np < len(current_enc_params_list))
                         if np.any(encoder_mask):
                             enc_emb = latents_concat[encoder_mask]
                             enc_prog = pattern_ids_concat[encoder_mask]
