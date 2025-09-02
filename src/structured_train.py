@@ -298,6 +298,8 @@ class StructuredTrainer:
         # NEW: Two-phase training approach
         self.encoder_expose_steps = int(cfg.training.get("encoder_expose_steps", 0) or 0)
         self.phase1_completed = False  # Track if individual encoder specialization is done
+        # Offset to make Phase 2 WandB steps strictly increasing vs current run step
+        self.phase2_offset = 0
         # Once-only guard for comprehensive Phase 2 metrics/plots
         self.phase2_once_done = False
         
@@ -3883,6 +3885,15 @@ class StructuredTrainer:
                 }, step=phase1_completion_step)
                 plt.close(poster_poe_fig)
         
+        # Initialize Phase 2 step offset so that subsequent Phase 2 logs are monotonic
+        # Use current WandB step + 1 as the base to avoid drops
+        try:
+            current_wandb_step = wandb.run.step if hasattr(wandb.run, 'step') else 0
+        except Exception:
+            current_wandb_step = 0
+        self.phase2_offset = max(self.phase2_offset, current_wandb_step + 1)
+        logging.info(f"Phase 2 WandB step offset initialized to {self.phase2_offset}")
+
         # Test forward pass first to catch any issues early
         logging.info("Testing forward pass...")
         try:
@@ -4103,7 +4114,7 @@ class StructuredTrainer:
             
             dataloading_time = time.time()
             for batches in dataloader:
-                wandb.log({"timing/dataloading_time": time.time() - dataloading_time}, step=step)
+                wandb.log({"timing/dataloading_time": time.time() - dataloading_time}, step=self.phase2_offset + step)
                 
                 # Training - process log_every_n_steps batches at once
                 key, train_key = jax.random.split(key)
@@ -4203,7 +4214,7 @@ class StructuredTrainer:
                 # Log only reconstruction metrics during training
                 if reconstruction_metrics:
                     organized_reconstruction_metrics = self._organize_phase2_metrics_for_wandb(reconstruction_metrics)
-                    wandb.log(organized_reconstruction_metrics, step=step)
+                    wandb.log(organized_reconstruction_metrics, step=self.phase2_offset + step)
                     logging.debug(f"Phase 2: Logged {len(reconstruction_metrics)} reconstruction metrics to WandB")
                 else:
                     logging.warning(f"Phase 2: No reconstruction metrics found to log")
@@ -4226,7 +4237,7 @@ class StructuredTrainer:
                                 try:
                                     start = time.time()
                                     test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
-                                        state, dataset_dict, step=step
+                                        state, dataset_dict, step=self.phase2_offset + step
                                     )
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                                     
@@ -4252,8 +4263,8 @@ class StructuredTrainer:
                                             logging.warning(f"Phase 2: No T-SNE plot available for pattern {pattern_idx}")
                                     
                                     # Log test metrics to WandB
-                                    wandb.log(test_metrics, step=step)
-                                    logging.info(f"Phase 2: Test metrics logged for {dataset_dict['test_name']} at step {step}")
+                                    wandb.log(test_metrics, step=self.phase2_offset + step)
+                                    logging.info(f"Phase 2: Test metrics logged for {dataset_dict['test_name']} at step {self.phase2_offset + step}")
                                     
                                     # Close all figures to prevent memory leaks
                                     plt.close('all')
@@ -4297,8 +4308,8 @@ class StructuredTrainer:
                         eval_interval = 0  # Disabled
                 if eval_interval and (step % eval_interval == 0):
                     try:
-                        logging.info(f"Running evaluation at step {step}")
-                        self.evaluate(state, enc_params_list, step)
+                        logging.info(f"Running evaluation at step {self.phase2_offset + step}")
+                        self.evaluate(state, enc_params_list, self.phase2_offset + step)
                         
                         # Test datasets evaluation (like train.py)
                         if hasattr(self, 'test_datasets') and self.test_datasets:
@@ -4331,14 +4342,8 @@ class StructuredTrainer:
                                         else:
                                             logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                                     
-                                    # Ensure step is greater than or equal to current WandB step to avoid monotonicity issues
-                                    current_wandb_step = wandb.run.step if hasattr(wandb.run, 'step') else 0
-                                    if step <= current_wandb_step:
-                                        adjusted_step = current_wandb_step + 1
-                                        logging.info(f"⚠️  Test metrics step {step} is <= current WANDB step ({current_wandb_step}), using adjusted step {adjusted_step}")
-                                        wandb.log(test_metrics, step=adjusted_step)
-                                    else:
-                                        wandb.log(test_metrics, step=step)
+                                    # Log test metrics with Phase 2 offset to ensure monotonic steps
+                                    wandb.log(test_metrics, step=self.phase2_offset + step)
                                     
                                     plt.close('all')  # Close all figures to prevent memory leaks
                                     # Explicitly close additional T-SNE figures
@@ -4370,8 +4375,8 @@ class StructuredTrainer:
         final_eval_setting = cfg.training.get("eval_every_n_logs_phase_2", 20) if self.encoder_expose_steps == 0 else cfg.training.get("eval_every_n_logs", 20)
         if final_eval_setting:
             try:
-                logging.info(f"🔍 Running final evaluation at step {step} (end of training)")
-                self.evaluate(state, enc_params_list, step)
+                logging.info(f"🔍 Running final evaluation at step {self.phase2_offset + step} (end of training)")
+                self.evaluate(state, enc_params_list, self.phase2_offset + step)
                 
                 # Final test datasets evaluation
                 if hasattr(self, 'test_datasets') and self.test_datasets:
@@ -4379,7 +4384,7 @@ class StructuredTrainer:
                         try:
                             start = time.time()
                             test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
-                                state, dataset_dict, step=step
+                                state, dataset_dict, step=self.phase2_offset + step
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                             
@@ -4404,9 +4409,9 @@ class StructuredTrainer:
                                 else:
                                     logging.warning(f"Final evaluation: No T-SNE plot available for pattern {pattern_idx}")
                             
-                            # Log final test metrics to WandB
-                            wandb.log(test_metrics, step=step)
-                            logging.info(f"Final evaluation: Test metrics logged for {dataset_dict['test_name']} at step {step}")
+                            # Log final test metrics to WandB with Phase 2 offset
+                            wandb.log(test_metrics, step=self.phase2_offset + step)
+                            logging.info(f"Final evaluation: Test metrics logged for {dataset_dict['test_name']} at step {self.phase2_offset + step}")
                             
                             # Close all figures to prevent memory leaks
                             plt.close('all')
