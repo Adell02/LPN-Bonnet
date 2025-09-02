@@ -182,19 +182,21 @@ def _extract_vals(npz, prefix: str) -> Optional[np.ndarray]:
                             steps_from_latents = lat_arr.shape[0]
                         break
 
-                if (
-                    steps_from_latents is not None
-                    and trajectory_losses.shape[0] == steps_from_latents + 1
-                ):
-                    trajectory_losses = trajectory_losses[1:]
-                    print(
-                        "[plot] GA dropped initial loss to match latent steps:"
-                        f" {trajectory_losses.shape}"
-                    )
-                else:
-                    print(
-                        f"[plot] Using GA losses_per_sample for trajectory: {trajectory_losses.shape}"
-                    )
+                if steps_from_latents is not None:
+                    if trajectory_losses.shape[0] == steps_from_latents + 1:
+                        print(
+                            "[plot] GA losses_per_sample has extra final value; trimming to match latents while preserving initial"
+                        )
+                        trajectory_losses = trajectory_losses[:steps_from_latents]
+                    elif trajectory_losses.shape[0] != steps_from_latents:
+                        print(
+                            f"[plot] GA losses_per_sample length {trajectory_losses.shape[0]} != latents {steps_from_latents}; trimming to min"
+                        )
+                        min_len = min(trajectory_losses.shape[0], steps_from_latents)
+                        trajectory_losses = trajectory_losses[:min_len]
+                print(
+                    f"[plot] Using GA losses_per_sample for trajectory: {trajectory_losses.shape}"
+                )
 
                 return trajectory_losses
     
