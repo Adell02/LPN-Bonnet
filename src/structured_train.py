@@ -1177,6 +1177,16 @@ class StructuredTrainer:
         new_params["encoders"] = tuple(specialized_encoders)
         updated_state = state.replace(params=new_params)
         
+        # Debug: Verify that specialized encoders are properly saved
+        logging.info(f"🔍 Specialized encoders saved to main state:")
+        for enc_idx, specialized_encoder in enumerate(specialized_encoders):
+            logging.info(f"   - Encoder {enc_idx}: type={type(specialized_encoder)}, keys={list(specialized_encoder.keys()) if isinstance(specialized_encoder, dict) else 'Not a dict'}")
+        
+        # Verify the updated state has the specialized encoders
+        logging.info(f"🔍 Updated state encoder params:")
+        for enc_idx, enc_params in enumerate(updated_state.params["encoders"]):
+            logging.info(f"   - State Encoder {enc_idx}: type={type(enc_params)}, keys={list(enc_params.keys()) if isinstance(enc_params, dict) else 'Not a dict'}")
+        
         self.phase1_completed = True
         
         # Calculate Phase A evaluation statistics
@@ -1453,6 +1463,9 @@ class StructuredTrainer:
                 # Update state
                 state = state.replace(params=new_params)
                 
+                # CRITICAL FIX: Update encoder_params to use the trained parameters
+                encoder_params = state.params["encoders"][enc_idx]
+                
                 # Log essential metrics to WandB with proper tab organization
                 if step % 10 == 0:  # Log more frequently
                     current_global_step = self.phase_a_global_step + step
@@ -1546,7 +1559,15 @@ class StructuredTrainer:
             import traceback
             logging.error(f"     Traceback: {traceback.format_exc()}")
         
-        return state.params["encoders"][enc_idx]  # Return trained encoder params
+        # Return the final trained encoder parameters from the updated state
+        final_encoder_params = state.params["encoders"][enc_idx]
+        
+        # Debug: Verify that we're returning the trained parameters
+        logging.info(f"   ✅ Encoder {enc_idx} training completed - returning specialized parameters")
+        logging.info(f"   🔍 Final encoder params type: {type(final_encoder_params)}")
+        logging.info(f"   🔍 Final encoder params keys: {list(final_encoder_params.keys()) if isinstance(final_encoder_params, dict) else 'Not a dict'}")
+        
+        return final_encoder_params
     
     def _evaluate_specialized_encoder(self, enc_idx: int, encoder_params: dict, state: TrainState, global_step: int):
         """
@@ -3552,14 +3573,8 @@ class StructuredTrainer:
         Returns:
             Repulsion loss value
         """
-        # DEBUG: Log repulsion loss computation
-        logging.info(f"🔍 REPULSION LOSS COMPUTATION DEBUG:")
-        logging.info(f"   - current_encoder_idx: {current_encoder_idx}")
-        logging.info(f"   - target_latents_store keys: {list(target_latents_store.keys()) if target_latents_store else 'None'}")
-        # Convert JAX tensor shape to Python tuple for safe logging
-        current_shape = tuple(current_latents.shape) if hasattr(current_latents, 'shape') else 'No shape'
-        logging.info(f"   - current_latents shape: {current_shape}")
-        logging.info(f"   - margin: {margin}")
+        # Log basic repulsion info
+        logging.debug(f"Computing repulsion loss for encoder {current_encoder_idx}")
         
         # Adaptive margin: if margin is too small, compute a reasonable one based on data
         if margin < 5.0:
@@ -3582,14 +3597,10 @@ class StructuredTrainer:
             if sample_distances:
                 sample_array = jnp.stack(sample_distances)
                 adaptive_margin = jnp.maximum(5.0, jnp.min(sample_array) * 0.8)
-                jax.debug.print("   - Adaptive margin computed: {m}", m=adaptive_margin)
                 margin = adaptive_margin
         
         if not target_latents_store or current_encoder_idx == 0:
             # No previous encoders to repulse from
-            logging.info(f"   - REPULSION SKIPPED: No previous encoders to repulse from")
-            logging.info(f"     * target_latents_store: {target_latents_store}")
-            logging.info(f"     * current_encoder_idx: {current_encoder_idx}")
             return 0.0
         
         repulsion_loss = 0.0
@@ -3597,31 +3608,18 @@ class StructuredTrainer:
         
         # Iterate through all previous encoders
         for prev_enc_idx in range(current_encoder_idx):
-            logging.info(f"   - Checking previous encoder {prev_enc_idx}")
             if prev_enc_idx in target_latents_store:
                 prev_targets = target_latents_store[prev_enc_idx]
-                logging.info(f"     * Found targets for encoder {prev_enc_idx}, keys: {list(prev_targets.keys()) if prev_targets else 'None'}")
                 
                 # For each pattern, compute repulsion from previous encoder's targets
                 for pattern_id, target_latents in prev_targets.items():
-                    # Convert JAX tensor shape to Python tuple for safe logging
-                    target_shape = tuple(target_latents.shape) if hasattr(target_latents, 'shape') else 'No shape'
-                    logging.info(f"       - Pattern {pattern_id}: target_latents type={type(target_latents)}, shape={target_shape}")
-                    
                     if target_latents is not None and len(target_latents) > 0:
                         # Ensure target latents have the same batch size
                         target_len = int(target_latents.shape[0]) if hasattr(target_latents, 'shape') else len(target_latents)
                         current_len = int(current_latents.shape[0]) if hasattr(current_latents, 'shape') else len(current_latents)
                         if target_len == current_len:
-                            logging.info(f"         * Batch sizes match: {target_len} == {current_len}")
-                            
                             # Compute L2 distance between current and target latents
                             distances = jnp.linalg.norm(current_latents - target_latents, axis=1)
-                            jax.debug.print(
-                                "         * Distances shape: {shape}, mean: {mean}",
-                                             shape=distances.shape,
-                                mean=jnp.mean(distances),
-                            )
                             
                             # Repulsion loss: penalize when distance < margin
                             # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2^2)
@@ -3634,22 +3632,10 @@ class StructuredTrainer:
                             # Use the maximum of both approaches
                             final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)  # Scale soft term down
                             
-                            jax.debug.print("         * Repulsion term: {rt}", rt=repulsion_term)
-                            jax.debug.print(
-                                "         * Soft repulsion term: {srt}",
-                                srt=soft_repulsion_term,
-                            )
-                            jax.debug.print(
-                                "         * Final repulsion term: {frt}",
-                                frt=final_repulsion_term,
-                            )
-                            
                             repulsion_loss += final_repulsion_term
                             num_repulsion_terms += 1
                         else:
-                            logging.warning(f"         * Batch size mismatch: {target_len} != {current_len}")
-                            logging.warning("         * Attempting to resize target latents to match current batch size")
-
+                            # Handle batch size mismatch by resizing target latents
                             try:
                                 if target_len > current_len:
                                     # Truncate excess target latents
@@ -3667,57 +3653,23 @@ class StructuredTrainer:
                                     )
 
                                 distances = jnp.linalg.norm(current_latents - resized_target_latents, axis=1)
-                                jax.debug.print(
-                                    "         * Resized distances shape: {shape}, mean: {mean}",
-                                                shape=distances.shape,
-                                    mean=jnp.mean(distances),
-                                )
-                                
                                 repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
                                 soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))
                                 final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)
                                 
-                                jax.debug.print(
-                                    "         * Resized repulsion term: {rt}",
-                                    rt=repulsion_term,
-                                )
-                                jax.debug.print(
-                                    "         * Resized soft repulsion term: {srt}",
-                                    srt=soft_repulsion_term,
-                                )
-                                jax.debug.print(
-                                    "         * Resized final repulsion term: {frt}",
-                                    frt=final_repulsion_term,
-                                )
-                                
                                 repulsion_loss += final_repulsion_term
                                 num_repulsion_terms += 1
                             except Exception as resize_error:
-                                logging.warning(
-                                    f"         * Failed to resize target latents: {resize_error}"
-                                )
-                                logging.warning(
-                                    "         * Skipping this repulsion term"
-                                )
+                                logging.warning(f"Failed to resize target latents: {resize_error}")
                     else:
-                        logging.warning(f"         * Invalid target_latents: {target_latents}")
-            else:
-                logging.info(f"     * No targets found for encoder {prev_enc_idx}")
+                        logging.debug(f"Invalid target_latents for pattern {pattern_id}")
         
         # Average over all repulsion terms
         if num_repulsion_terms > 0:
             repulsion_loss = repulsion_loss / num_repulsion_terms
-            jax.debug.print(
-                "   - Final repulsion loss: {loss} (from {n} terms)",
-                loss=repulsion_loss,
-                n=num_repulsion_terms,
-            )
-            logging.info(
-                f"   ✅ REPULSION LOSS COMPUTATION SUCCESSFUL: {repulsion_loss} from {num_repulsion_terms} terms"
-            )
+            logging.debug(f"Repulsion loss: {repulsion_loss:.6f} (from {num_repulsion_terms} terms)")
         else:
-            jax.debug.print("   - No repulsion terms computed, returning 0.0")
-            logging.warning(f"   ⚠️  REPULSION LOSS COMPUTATION FAILED - no valid terms")
+            logging.debug("No repulsion terms computed, returning 0.0")
         
         return repulsion_loss
     
