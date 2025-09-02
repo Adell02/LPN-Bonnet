@@ -3386,40 +3386,10 @@ class StructuredTrainer:
         
         logging.info(f"      Loading {num_samples} samples from {dataset_folder} ({pattern_names[pattern_id]})")
         
-        # Load the pre-existing dataset
-        try:
-            dataset_path = os.path.join("src/datasets", dataset_folder)
-            grids = np.load(os.path.join(dataset_path, "grids.npy")).astype(np.uint8)
-            shapes = np.load(os.path.join(dataset_path, "shapes.npy")).astype(np.uint8)
-
-            # Ensure we have enough samples
-            available_samples = len(grids)
-            rng = np.random.default_rng(self.cfg.training.seed)
-            if available_samples >= num_samples:
-                # Sample without replacement when enough data is available
-                indices = rng.choice(available_samples, size=num_samples, replace=False)
-                grids = grids[indices]
-                shapes = shapes[indices]
-            else:
-                # Sample with replacement to match the requested batch size
-                logging.warning(
-                    f"      Dataset {dataset_folder} only has {available_samples} samples, sampling with replacement to reach {num_samples}"
-                )
-                indices = rng.choice(available_samples, size=num_samples, replace=True)
-                grids = grids[indices]
-                shapes = shapes[indices]
-
-            pattern_ids = np.full(num_samples, pattern_id, dtype=np.uint8)
-            
-            logging.info(f"      Loaded {num_samples} samples from {dataset_folder}: {grids.shape}, {shapes.shape}")
-            return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
-                
-        except Exception as e:
-            logging.error(f"      Failed to load dataset {dataset_folder}: {e}")
-            logging.info(f"      Falling back to synthetic data generation for pattern {pattern_id}")
-            
-            # Fallback to the original synthetic generation method
-            return self._create_pattern_dataset_synthetic(pattern_id, num_samples)
+        # Use synthetic data generation to ensure consistent structure (4 pairs per task)
+        # The pre-existing datasets have 2 pairs, but training expects 4 pairs
+        logging.info(f"      Using synthetic data generation for pattern {pattern_id} to ensure 4 pairs per task")
+        return self._create_pattern_dataset_synthetic(pattern_id, num_samples)
     
     def _create_pattern_dataset_synthetic(self, pattern_id: int, num_samples: int) -> tuple:
         """Create a dataset composed solely of a single pattern with clean tetromino shapes.
@@ -6740,14 +6710,7 @@ class StructuredTrainer:
             eval_data = {}
             num_eval_samples = 100  # Same as Phase 1 for consistency
             for pattern_id in [1, 2, 3]:
-                try:
-                    result = self._create_pattern_dataset(pattern_id, num_eval_samples)
-                    logging.info(f"  Pattern {pattern_id}: _create_pattern_dataset returned {len(result)} items")
-                    logging.info(f"  Pattern {pattern_id}: Result types: {[type(x) for x in result]}")
-                    eval_data[pattern_id] = result
-                except Exception as e:
-                    logging.error(f"  Pattern {pattern_id}: Failed to create pattern dataset: {e}")
-                    raise
+                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
             
             # Get encoder parameters
             enc_params_list = state.params["encoders"]
@@ -6760,14 +6723,7 @@ class StructuredTrainer:
             
             # Process each pattern
             for pattern_id in [1, 2, 3]:
-                try:
-                    grids, shapes, pattern_ids = eval_data[pattern_id]
-                    logging.info(f"  Pattern {pattern_id}: Successfully unpacked eval_data - grids: {grids.shape}, shapes: {shapes.shape}, pattern_ids: {pattern_ids.shape}")
-                except Exception as e:
-                    logging.error(f"  Pattern {pattern_id}: Failed to unpack eval_data: {e}")
-                    logging.error(f"  eval_data[pattern_id] type: {type(eval_data[pattern_id])}")
-                    logging.error(f"  eval_data[pattern_id] length: {len(eval_data[pattern_id]) if hasattr(eval_data[pattern_id], '__len__') else 'no length'}")
-                    raise
+                grids, shapes, pattern_ids = eval_data[pattern_id]
                 
                 # Get encoder outputs for this pattern
                 encoder_mus = []
