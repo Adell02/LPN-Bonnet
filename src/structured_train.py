@@ -5762,7 +5762,7 @@ class StructuredTrainer:
                         f"Test T-SNE structure: {total_points} total points, {len(unique_patterns)} patterns, counts per pattern: {pattern_counts}"
                     )
                     logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
-                    logging.info(f"Test: Generating 3 T-SNE visualizations: main (encoders+context), context-only, encoders-only (single pattern)")
+                    logging.info(f"Test: Generating 3 T-SNE visualizations: main (encoders+context), PoE task latents, encoders-only (single pattern)")
                     
                     # Use visualize_tsne_sources for different markers
                     fig_latents = visualize_tsne_sources(
@@ -5774,54 +5774,86 @@ class StructuredTrainer:
                         task_ids=task_ids_np,
                     )
                     
-                    # 1. ADDITIONAL T-SNE: Show just the context latents (with samples from the 3 patterns)
-                    context_mask = (source_ids_np == (len(enc_params_list)))
-                    if np.any(context_mask):
-                        context_latents = latents_concat[context_mask]
-                        context_patterns = pattern_ids_concat[context_mask]
-                        context_task_ids = task_ids_np[context_mask]
-                        
-                        # Downsample context points for cleaner visualization
-                        max_context_points = min(300, len(context_latents))
-                        if len(context_latents) > max_context_points:
-                            # Stratified sampling to maintain pattern distribution
-                            context_indices = []
-                            for pattern_id in np.unique(context_patterns):
-                                pattern_mask = context_patterns == pattern_id
-                                pattern_indices = np.where(pattern_mask)[0]
-                                if len(pattern_indices) > 0:
-                                    # Sample up to max_context_points // num_patterns from each pattern
-                                    max_per_pattern = max_context_points // len(np.unique(context_patterns))
-                                    if len(pattern_indices) > max_per_pattern:
-                                        sampled_indices = np.random.RandomState(42).choice(
-                                            pattern_indices, size=max_per_pattern, replace=False
-                                        )
-                                    else:
-                                        sampled_indices = pattern_indices
-                                    context_indices.extend(sampled_indices)
-                            
-                            # Apply sampling
-                            context_latents = context_latents[context_indices]
-                            context_patterns = context_patterns[context_indices]
-                            context_task_ids = context_task_ids[context_indices]
-                        
-                        # Create T-SNE for encoder samples (equivalent to train.py fig_latents_samples)
-                        # Use source_id = 0 for all points (will show as same marker type)
-                        context_source_ids = np.zeros(len(context_latents), dtype=int)
-                        
-                        fig_tsne_samples = visualize_tsne_sources(
-                            latents=context_latents,
-                            program_ids=context_patterns,  # Pattern types for colors
-                            source_ids=context_source_ids,  # All 0s (same marker type)
-                            max_points=max_context_points,
-                            random_state=42,
-                            task_ids=context_task_ids,
+                    # 1. ADDITIONAL T-SNE: PoE-combined task latents averaged over contexts
+                    poe_latents_list = []
+                    poe_program_ids = []
+                    poe_task_ids = []
+
+                    for batch_idx in range(num_batches):
+                        start = batch_idx * batch_size
+                        end = start + batch_size
+                        batch_lo_grids = leave_one_out_grids[start:end]
+                        batch_lo_shapes = leave_one_out_shapes[start:end]
+
+                        enc_mus = []
+                        enc_logvars = []
+                        for enc_idx, enc_params in enumerate(current_enc_params_list):
+                            mu_i, logvar_i = self.encoders[enc_idx].apply(
+                                {"params": enc_params},
+                                batch_lo_grids,
+                                batch_lo_shapes,
+                                True,
+                                mutable=False,
+                            )
+                            enc_mus.append(mu_i)
+                            if logvar_i is None:
+                                logvar_i = jnp.full_like(mu_i, -5.0)
+                            enc_logvars.append(logvar_i)
+
+                        mus_stack = jnp.stack(enc_mus, axis=0)
+                        logvars_stack = jnp.stack(enc_logvars, axis=0)
+                        poe_mu, _ = poe_diag_gaussians(mus_stack, logvars_stack, alphas)
+                        poe_mu_np = np.array(poe_mu).mean(axis=1)  # Average across contexts
+
+                        poe_latents_list.append(poe_mu_np)
+                        if program_ids is not None:
+                            poe_program_ids.append(np.array(program_ids[start:end]))
+                            poe_task_ids.append(np.arange(start, end, dtype=int))
+
+                    if poe_latents_list:
+                        poe_latents = np.concatenate(poe_latents_list, axis=0)
+                        poe_program_ids_np = (
+                            np.concatenate(poe_program_ids, axis=0)
+                            if poe_program_ids
+                            else None
                         )
-                        
-                        logging.info(f"Test: Generated encoder samples T-SNE: {len(context_latents)} points")
+                        poe_task_ids_np = (
+                            np.concatenate(poe_task_ids, axis=0)
+                            if poe_task_ids
+                            else np.arange(poe_latents.shape[0])
+                        )
+
+                        max_points = int(self.cfg.eval.get("tsne_max_points", 2000))
+                        if poe_latents.shape[0] > max_points and poe_program_ids_np is not None:
+                            indices = []
+                            rng = np.random.RandomState(42)
+                            unique_prog = np.unique(poe_program_ids_np)
+                            max_per_prog = max_points // len(unique_prog)
+                            for pid in unique_prog:
+                                pid_idx = np.where(poe_program_ids_np == pid)[0]
+                                if len(pid_idx) > max_per_prog:
+                                    pid_idx = rng.choice(pid_idx, size=max_per_prog, replace=False)
+                                indices.extend(pid_idx.tolist())
+                            poe_latents = poe_latents[indices]
+                            poe_program_ids_np = poe_program_ids_np[indices]
+                            poe_task_ids_np = poe_task_ids_np[indices]
+
+                        poe_source_ids = np.zeros(poe_latents.shape[0], dtype=int)
+                        fig_tsne_samples = visualize_tsne_sources(
+                            latents=poe_latents,
+                            program_ids=poe_program_ids_np,
+                            source_ids=poe_source_ids,
+                            max_points=min(max_points, poe_latents.shape[0]),
+                            random_state=42,
+                            task_ids=poe_task_ids_np,
+                        )
+
+                        logging.info(
+                            f"Test: Generated PoE task latents T-SNE: {poe_latents.shape[0]} points"
+                        )
                     else:
                         fig_tsne_samples = None
-                        logging.warning("Test: No encoder samples found for samples T-SNE")
+                        logging.warning("Test: No PoE latents found for samples T-SNE")
                     
                     # 2. ADDITIONAL T-SNE: Show just the 3 encoders latents for EACH pattern
                     # Generate one T-SNE plot for each pattern
