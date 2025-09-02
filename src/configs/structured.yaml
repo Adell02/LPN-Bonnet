@@ -61,7 +61,7 @@ training:
   pairwise_kl_coeff: null
   total_num_steps: 500
   encoder_expose_steps: 400  # number of initial gradient steps encoders are trainable
-  repulsion_kl: 1
+  repulsion_kl: 10
   # Distance margin for repulsion loss (default: 10.0)
   # Using a larger margin (e.g., 10) keeps the repulsion term active
   # since typical distances (~9) are already larger than the previous margin of 1.0
