@@ -6257,26 +6257,26 @@ class StructuredTrainer:
                     x_plot = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, 1000)
                     
                     # Compute POE (Product of Experts) Gaussian
-                    # Stack encoder outputs for POE computation
+                    # Stack encoder outputs for POE computation (shape: [E, 1, N, H])
                     stacked_mus = np.stack(all_encoder_mus)
                     stacked_logvars = np.stack(all_encoder_logvars)
-                    
+
                     # Use uniform weights for POE (1/E for each encoder)
                     poe_alphas = np.ones(len(self.encoders)) / len(self.encoders)
-                    
+
                     # Compute POE mean and variance using the poe_diag_gaussians function
                     try:
                         from models.structured_lpn import poe_diag_gaussians
 
                         # Debug: Log input shapes
                         logging.debug(
-                            f"       🔍 POE input shapes: stacked_mus={stacked_mus[None, ...].shape}, "
-                            f"stacked_logvars={stacked_logvars[None, ...].shape}, alphas={poe_alphas.shape}"
+                            f"       🔍 POE input shapes: stacked_mus={stacked_mus.shape}, "
+                            f"stacked_logvars={stacked_logvars.shape}, alphas={poe_alphas.shape}"
                         )
 
                         poe_mu, poe_logvar = poe_diag_gaussians(
-                            stacked_mus[None, ...],  # Add batch dimension [1, E, H]
-                            stacked_logvars[None, ...],  # Add batch dimension [1, E, H]
+                            stacked_mus,
+                            stacked_logvars,
                             poe_alphas,
                         )
 
