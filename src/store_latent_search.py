@@ -1533,7 +1533,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     # Generate statistical histograms if dataset_length > 1
     stats_plot_path = None
     if dataset_length and dataset_length > 1:
-        stats_plot_path = create_statistical_histograms(ga_npz_path, es_npz_path, out_dir, dataset_length)
+        stats_plot_path = create_statistical_histograms(ga_npz_path, es_npz_path, out_dir, dataset_length - 1)
         if stats_plot_path:
             print(f"[stats] Created statistical histograms: {stats_plot_path}")
         else:
@@ -1634,36 +1634,49 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     print(f"[loss] Debug: GA budget NOT found in NPZ")
                 if (dataset_length is not None and dataset_length > 1) and 'ga_losses_per_sample' in f:
                     L = np.array(f['ga_losses_per_sample'])  # (N, S)
-                    # FIX: Ensure budget array matches the per-sample losses length
-                    if ga_budget is not None and len(ga_budget) == L.shape[1]:
-                        x = ga_budget
-                        print(f"[loss] Using GA budget from NPZ: {ga_budget.shape}")
-                    else:
-                        # Create budget array that matches the per-sample losses length
-                        # FIX: Handle the case where trajectory was doubled but losses weren't
-                        # The budget should start from 0 and increment appropriately for each step
-                        # If trajectory is doubled, use smaller increment to maintain proper budget scaling
-                        if ga_steps is not None and L.shape[1] > ga_steps + 1:
-                            print(f"[loss] 🔧 Per-sample trajectory appears to be doubled: {ga_steps + 1} expected → {L.shape[1]} actual")
-                            print(f"[loss] 🔧 Using increment of 1 for budget calculation")
-                            x = np.arange(0, L.shape[1])  # Start from 0, increment by 1 for each step
+                    if L.shape[1] > 1:
+                        # FIX: Ensure budget array matches the per-sample losses length
+                        if ga_budget is not None and len(ga_budget) == L.shape[1]:
+                            x = ga_budget
+                            print(f"[loss] Using GA budget from NPZ: {ga_budget.shape}")
                         else:
-                            x = 2 * np.arange(0, L.shape[1])  # Start from 0, increment by 2 for each step
-                        print(f"[loss] Created GA budget array to match per-sample losses: {x.shape}")
-                        if ga_budget is not None:
-                            print(f"[loss] ⚠️  Budget length mismatch: NPZ budget={len(ga_budget)}, losses={L.shape[1]}")
-                            print(f"[loss] 🔧 Using corrected budget: {x}")
-                    
-                    ga_min = np.min(L, axis=0)
-                    ga_max = np.max(L, axis=0)
-                    ga_mean = np.mean(L, axis=0)
-                    ax.fill_between(x, ga_min, ga_max, color="#FBB998", alpha=0.25, label="GA range", zorder=2)
-                    ga_mean_ma = _moving_average(ga_mean, k=max(3, L.shape[1]//10))
-                    ax.plot(x, ga_mean_ma, color="#FBB998", linewidth=3.0, label=f"GA mean", zorder=4)
-                    # Track y extents for axis scaling
-                    y_values_for_limits.append(ga_min)
-                    y_values_for_limits.append(ga_max)
-                    did_ga_overlay = True
+                            # Create budget array that matches the per-sample losses length
+                            # FIX: Handle the case where trajectory was doubled but losses weren't
+                            # The budget should start from 0 and increment appropriately for each step
+                            # If trajectory is doubled, use smaller increment to maintain proper budget scaling
+                            if ga_steps is not None and L.shape[1] > ga_steps + 1:
+                                print(f"[loss] 🔧 Per-sample trajectory appears to be doubled: {ga_steps + 1} expected → {L.shape[1]} actual")
+                                print(f"[loss] 🔧 Using increment of 1 for budget calculation")
+                                x = np.arange(0, L.shape[1])  # Start from 0, increment by 1 for each step
+                            else:
+                                x = 2 * np.arange(0, L.shape[1])  # Start from 0, increment by 2 for each step
+                            print(f"[loss] Created GA budget array to match per-sample losses: {x.shape}")
+                            if ga_budget is not None:
+                                print(f"[loss] ⚠️  Budget length mismatch: NPZ budget={len(ga_budget)}, losses={L.shape[1]}")
+                                print(f"[loss] 🔧 Using corrected budget: {x}")
+
+                        # Exclude budget 0
+                        L = L[:, 1:]
+                        x = x[1:]
+
+                        ga_mean = np.mean(L, axis=0)
+                        ga_std = np.std(L, axis=0)
+                        ga_se = ga_std / np.sqrt(L.shape[0])
+                        ax.fill_between(
+                            x,
+                            ga_mean - ga_se,
+                            ga_mean + ga_se,
+                            color="#FBB998",
+                            alpha=0.25,
+                            label="GA standard error",
+                            zorder=2,
+                        )
+                        ga_mean_ma = _moving_average(ga_mean, k=max(3, L.shape[1]//10))
+                        ax.plot(x, ga_mean_ma, color="#FBB998", linewidth=3.0, label="GA mean", zorder=4)
+                        # Track y extents for axis scaling
+                        y_values_for_limits.append(ga_mean - ga_se)
+                        y_values_for_limits.append(ga_mean + ga_se)
+                        did_ga_overlay = True
         except Exception as _ge:
             print(f"[loss] Failed GA per-sample plotting: {_ge}")
 
@@ -1729,17 +1742,29 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                     print(f"[loss] Debug: ES budget NOT found in NPZ")
                 if (dataset_length is not None and dataset_length > 1) and 'es_generation_losses_per_sample' in f:
                     L = np.array(f['es_generation_losses_per_sample'])  # (N, G)
-                    x = es_budget if es_budget is not None and len(es_budget) == L.shape[1] else np.arange(1, L.shape[1]+1)
-                    es_min = np.min(L, axis=0)
-                    es_max = np.max(L, axis=0)
-                    es_mean = np.mean(L, axis=0)
-                    ax.fill_between(x, es_min, es_max, color="#DB74DB", alpha=0.25, label="ES range", zorder=2)
-                    es_mean_ma = _moving_average(es_mean, k=max(3, L.shape[1]//4))
-                    ax.plot(x, es_mean_ma, color="#DB74DB", linewidth=3.0, label=f"ES mean", zorder=4)
-                    # Track y extents
-                    y_values_for_limits.append(es_min)
-                    y_values_for_limits.append(es_max)
-                    did_es_overlay = True
+                    if L.shape[1] > 1:
+                        x = es_budget if es_budget is not None and len(es_budget) == L.shape[1] else np.arange(1, L.shape[1]+1)
+                        # Exclude budget 0
+                        L = L[:, 1:]
+                        x = x[1:]
+                        es_mean = np.mean(L, axis=0)
+                        es_std = np.std(L, axis=0)
+                        es_se = es_std / np.sqrt(L.shape[0])
+                        ax.fill_between(
+                            x,
+                            es_mean - es_se,
+                            es_mean + es_se,
+                            color="#DB74DB",
+                            alpha=0.25,
+                            label="ES standard error",
+                            zorder=2,
+                        )
+                        es_mean_ma = _moving_average(es_mean, k=max(3, L.shape[1]//4))
+                        ax.plot(x, es_mean_ma, color="#DB74DB", linewidth=3.0, label="ES mean", zorder=4)
+                        # Track y extents
+                        y_values_for_limits.append(es_mean - es_se)
+                        y_values_for_limits.append(es_mean + es_se)
+                        did_es_overlay = True
         except Exception as _ee:
             print(f"[loss] Failed ES per-sample plotting: {_ee}")
 
@@ -2292,22 +2317,31 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                 ]:
                     if key in f:
                         arr = np.array(f[key]).reshape(-1)
+                        arr = arr[1:] if arr.size > 0 else np.array([])
                         if arr.size > 0:
                             ga_metrics[wandb_key] = arr
-                            print(f"[stats] GA {wandb_key}: shape={arr.shape}, mean={arr.mean():.4f}, std={arr.std():.4f}")
+                            print(
+                                f"[stats] GA {wandb_key}: shape={arr.shape}, mean={arr.mean():.4f}, std={arr.std():.4f}"
+                            )
                         else:
-                            print(f"[stats] GA {wandb_key}: empty array")
+                            print(f"[stats] GA {wandb_key}: empty array after removing first sample")
                     else:
                         print(f"[stats] GA {wandb_key}: key '{key}' not found")
-                
+
                 # Extract best losses from per-sample loss trajectories
                 if 'ga_losses_per_sample' in f:
                     ga_losses_per_sample = np.array(f['ga_losses_per_sample'])
-                    if ga_losses_per_sample.size > 0:
-                        # Take the minimum loss (best performance) for each sample
-                        ga_best_losses = np.min(ga_losses_per_sample, axis=1)
-                        ga_metrics['best_loss'] = ga_best_losses
-                        print(f"[stats] GA best_loss: shape={ga_best_losses.shape}, mean={ga_best_losses.mean():.4f}, std={ga_best_losses.std():.4f}")
+                    if ga_losses_per_sample.size > 0 and ga_losses_per_sample.shape[1] > 1:
+                        ga_trimmed = ga_losses_per_sample[:, 1:]
+                        ga_best_losses = np.min(ga_trimmed, axis=1)
+                        ga_best_losses = ga_best_losses[1:] if ga_best_losses.size > 0 else np.array([])
+                        if ga_best_losses.size > 0:
+                            ga_metrics['best_loss'] = ga_best_losses
+                            print(
+                                f"[stats] GA best_loss: shape={ga_best_losses.shape}, mean={ga_best_losses.mean():.4f}, std={ga_best_losses.std():.4f}"
+                            )
+                        else:
+                            print(f"[stats] GA best_loss: empty array after removing first sample")
                     else:
                         print(f"[stats] GA best_loss: empty array")
                 else:
@@ -2330,22 +2364,31 @@ def create_statistical_histograms(ga_npz_path: str, es_npz_path: str, out_dir: s
                 ]:
                     if key in f:
                         arr = np.array(f[key]).reshape(-1)
+                        arr = arr[1:] if arr.size > 0 else np.array([])
                         if arr.size > 0:
                             es_metrics[wandb_key] = arr
-                            print(f"[stats] ES {wandb_key}: shape={arr.shape}, mean={arr.mean():.4f}, std={arr.std():.4f}")
+                            print(
+                                f"[stats] ES {wandb_key}: shape={arr.shape}, mean={arr.mean():.4f}, std={arr.std():.4f}"
+                            )
                         else:
-                            print(f"[stats] ES {wandb_key}: empty array")
+                            print(f"[stats] ES {wandb_key}: empty array after removing first sample")
                     else:
                         print(f"[stats] ES {wandb_key}: key '{key}' not found")
-                
+
                 # Extract best losses from per-sample loss trajectories
                 if 'es_generation_losses_per_sample' in f:
                     es_losses_per_sample = np.array(f['es_generation_losses_per_sample'])
-                    if es_losses_per_sample.size > 0:
-                        # Take the minimum loss (best performance) for each sample
-                        es_best_losses = np.min(es_losses_per_sample, axis=1)
-                        es_metrics['best_loss'] = es_best_losses
-                        print(f"[stats] ES best_loss: shape={es_best_losses.shape}, mean={es_best_losses.mean():.4f}, std={es_best_losses.std():.4f}")
+                    if es_losses_per_sample.size > 0 and es_losses_per_sample.shape[1] > 1:
+                        es_trimmed = es_losses_per_sample[:, 1:]
+                        es_best_losses = np.min(es_trimmed, axis=1)
+                        es_best_losses = es_best_losses[1:] if es_best_losses.size > 0 else np.array([])
+                        if es_best_losses.size > 0:
+                            es_metrics['best_loss'] = es_best_losses
+                            print(
+                                f"[stats] ES best_loss: shape={es_best_losses.shape}, mean={es_best_losses.mean():.4f}, std={es_best_losses.std():.4f}"
+                            )
+                        else:
+                            print(f"[stats] ES best_loss: empty array after removing first sample")
                     else:
                         print(f"[stats] ES best_loss: empty array")
                 else:
@@ -2691,6 +2734,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                 ]:
                     if key in f:
                         arr = np.array(f[key]).reshape(-1)
+                        arr = arr[1:] if arr.size > 0 else arr
                         if arr.size > 0:
                             try:
                                 run.log({f"{wandb_key}_hist": wandb.Histogram(arr)})
@@ -2807,6 +2851,7 @@ def upload_to_wandb(project: str, entity: Optional[str], cfg: dict, ga_npz: str,
                 ]:
                     if key in f:
                         arr = np.array(f[key]).reshape(-1)
+                        arr = arr[1:] if arr.size > 0 else arr
                         if arr.size > 0:
                             try:
                                 run.log({f"{wandb_key}_hist": wandb.Histogram(arr)})
@@ -3357,8 +3402,8 @@ def main() -> None:
                             ga_agg_pixel.append(np.array(fga['per_sample_pixel_correctness']).reshape(-1))
                         if 'ga_losses_per_sample' in fga:
                             ga_losses_per_sample = np.array(fga['ga_losses_per_sample'])
-                            if ga_losses_per_sample.size > 0:
-                                ga_best_losses = np.min(ga_losses_per_sample, axis=1)
+                            if ga_losses_per_sample.size > 0 and ga_losses_per_sample.shape[1] > 1:
+                                ga_best_losses = np.min(ga_losses_per_sample[:, 1:], axis=1)
                                 ga_agg_best_loss.append(ga_best_losses)
                 # Load ES per-sample metrics from NPZ
                 if os.path.exists(es_out):
@@ -3371,8 +3416,8 @@ def main() -> None:
                             es_agg_pixel.append(np.array(fes['per_sample_pixel_correctness']).reshape(-1))
                         if 'es_generation_losses_per_sample' in fes:
                             es_losses_per_sample = np.array(fes['es_generation_losses_per_sample'])
-                            if es_losses_per_sample.size > 0:
-                                es_best_losses = np.min(es_losses_per_sample, axis=1)
+                            if es_losses_per_sample.size > 0 and es_losses_per_sample.shape[1] > 1:
+                                es_best_losses = np.min(es_losses_per_sample[:, 1:], axis=1)
                                 es_agg_best_loss.append(es_best_losses)
             except Exception as _agg_e:
                 print(f"[aggregate] Skipped aggregation for run {run_idx}: {_agg_e}")
@@ -3421,6 +3466,7 @@ def main() -> None:
 
                 # Dataset length for aggregated plot is total number of per-sample entries if present
                 agg_len = int(max(ga_acc.size, es_acc.size, ga_shp.size, es_shp.size, ga_pix.size, es_pix.size, ga_bl.size, es_bl.size))
+                agg_len = max(0, agg_len - 1)  # Exclude first sample
                 
                 # Create aggregated statistical histograms - skip if no_files is set
                 if args.no_files:
@@ -3484,34 +3530,43 @@ def main() -> None:
                     )
                     print(f"[wandb] Started aggregated run: {agg_run_name}")
                     
-                    # Log aggregated metrics
-                    if ga_acc.size > 0:
+                    # Log aggregated metrics (excluding first sample)
+                    ga_acc_stats = ga_acc[1:] if ga_acc.size > 0 else np.array([])
+                    ga_shp_stats = ga_shp[1:] if ga_shp.size > 0 else np.array([])
+                    ga_pix_stats = ga_pix[1:] if ga_pix.size > 0 else np.array([])
+                    ga_bl_stats = ga_bl[1:] if ga_bl.size > 0 else np.array([])
+                    es_acc_stats = es_acc[1:] if es_acc.size > 0 else np.array([])
+                    es_shp_stats = es_shp[1:] if es_shp.size > 0 else np.array([])
+                    es_pix_stats = es_pix[1:] if es_pix.size > 0 else np.array([])
+                    es_bl_stats = es_bl[1:] if es_bl.size > 0 else np.array([])
+
+                    if ga_acc_stats.size > 0:
                         wandb.log({
-                            "aggregated/ga_accuracy_mean": float(np.mean(ga_acc)),
-                            "aggregated/ga_accuracy_std": float(np.std(ga_acc)),
-                            "aggregated/ga_shape_correctness_mean": float(np.mean(ga_shp)),
-                            "aggregated/ga_shape_correctness_std": float(np.std(ga_shp)),
-                            "aggregated/ga_pixel_correctness_mean": float(np.mean(ga_pix)),
-                            "aggregated/ga_pixel_correctness_std": float(np.std(ga_pix)),
+                            "aggregated/ga_accuracy_mean": float(np.mean(ga_acc_stats)),
+                            "aggregated/ga_accuracy_std": float(np.std(ga_acc_stats)),
+                            "aggregated/ga_shape_correctness_mean": float(np.mean(ga_shp_stats)),
+                            "aggregated/ga_shape_correctness_std": float(np.std(ga_shp_stats)),
+                            "aggregated/ga_pixel_correctness_mean": float(np.mean(ga_pix_stats)),
+                            "aggregated/ga_pixel_correctness_std": float(np.std(ga_pix_stats)),
                         })
-                    if ga_bl.size > 0:
+                    if ga_bl_stats.size > 0:
                         wandb.log({
-                            "aggregated/ga_best_loss_mean": float(np.mean(ga_bl)),
-                            "aggregated/ga_best_loss_std": float(np.std(ga_bl)),
+                            "aggregated/ga_best_loss_mean": float(np.mean(ga_bl_stats)),
+                            "aggregated/ga_best_loss_std": float(np.std(ga_bl_stats)),
                         })
-                    if es_acc.size > 0:
+                    if es_acc_stats.size > 0:
                         wandb.log({
-                            "aggregated/es_accuracy_mean": float(np.mean(es_acc)),
-                            "aggregated/es_accuracy_std": float(np.std(es_acc)),
-                            "aggregated/es_shape_correctness_mean": float(np.mean(es_shp)),
-                            "aggregated/es_shape_correctness_std": float(np.std(es_shp)),
-                            "aggregated/es_pixel_correctness_mean": float(np.mean(es_pix)),
-                            "aggregated/es_pixel_correctness_std": float(np.std(es_pix)),
+                            "aggregated/es_accuracy_mean": float(np.mean(es_acc_stats)),
+                            "aggregated/es_accuracy_std": float(np.std(es_acc_stats)),
+                            "aggregated/es_shape_correctness_mean": float(np.mean(es_shp_stats)),
+                            "aggregated/es_shape_correctness_std": float(np.std(es_shp_stats)),
+                            "aggregated/es_pixel_correctness_mean": float(np.mean(es_pix_stats)),
+                            "aggregated/es_pixel_correctness_std": float(np.std(es_pix_stats)),
                         })
-                    if es_bl.size > 0:
+                    if es_bl_stats.size > 0:
                         wandb.log({
-                            "aggregated/es_best_loss_mean": float(np.mean(es_bl)),
-                            "aggregated/es_best_loss_std": float(np.std(es_bl)),
+                            "aggregated/es_best_loss_mean": float(np.mean(es_bl_stats)),
+                            "aggregated/es_best_loss_std": float(np.std(es_bl_stats)),
                         })
                     
                     # Upload aggregated plots and NPZ files
