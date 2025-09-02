@@ -96,10 +96,13 @@ def get_checkpoints_from_run(run_name: str, project: str, max_checkpoints: int, 
     # Return artifact paths
     checkpoint_paths = []
     for artifact in selected:
-        path = f"{artifact.entity}/{artifact.project}/{artifact.name}:{artifact.version}"
+        # Format: entity/project/checkpoint_name (without version for evaluate_checkpoint.py)
+        # The artifact name should already be in the correct format
+        path = f"{artifact.entity}/{artifact.project}/{artifact.name}"
         checkpoint_paths.append(path)
     
     print(f"Selected {len(checkpoint_paths)} checkpoints from {len(artifacts)} total")
+    print(f"Sample checkpoint path: {checkpoint_paths[0] if checkpoint_paths else 'None'}")
     return checkpoint_paths
 
 
