@@ -3788,6 +3788,13 @@ class StructuredTrainer:
         else:
             logging.info("With current config: Evaluation disabled")
             
+        # Log Phase 2 evaluation frequency
+        eval_every_n_logs_phase_2 = cfg.training.get('eval_every_n_logs_phase_2')
+        if eval_every_n_logs_phase_2 is not None:
+            logging.info(f"Phase 2 evaluation: every {log_every * eval_every_n_logs_phase_2} steps")
+        else:
+            logging.info("Phase 2 evaluation: disabled")
+            
         if save_checkpoint_every_n_logs is not None:
             logging.info(f"With current config: Checkpoint every {log_every * save_checkpoint_every_n_logs} steps")
         else:
@@ -3819,6 +3826,14 @@ class StructuredTrainer:
             logging.info("✅ PHASE 1 COMPLETED: Encoders specialized!")
             logging.info("   - Ready for Phase 2: Joint decoder training")
             logging.info("   - Encoders will be frozen during joint training")
+            
+            # Log Phase 2 evaluation schedule
+            eval_every_n_logs_phase_2 = self.cfg.training.get("eval_every_n_logs_phase_2", 20)
+            if eval_every_n_logs_phase_2:
+                eval_every_n_steps_phase_2 = eval_every_n_logs_phase_2 * self.cfg.training.get("log_every_n_steps", 5)
+                logging.info(f"   - Phase 2 evaluation: every {eval_every_n_steps_phase_2} steps (every {eval_every_n_logs_phase_2} logs)")
+            else:
+                logging.info("   - Phase 2 evaluation: disabled")
             
             # Create merged encoder certainty panel after Phase 1 completion
             logging.info("🔍 Creating merged encoder certainty panel after Phase 1 completion...")
@@ -3968,7 +3983,9 @@ class StructuredTrainer:
         pbar = trange(num_steps, disable=False)
         
         # Run evaluation at step 0 (first step)
-        if cfg.training.get("eval_every_n_logs"):
+        # Use Phase 2 evaluation setting if we're in Phase 2, otherwise use Phase 1 setting
+        initial_eval_setting = cfg.training.get("eval_every_n_logs_phase_2", 20) if self.encoder_expose_steps == 0 else cfg.training.get("eval_every_n_logs", 20)
+        if initial_eval_setting:
             try:
                 logging.info(f"Running evaluation at step 0 (first step)")
                 self.evaluate(state, enc_params_list, step)
@@ -4161,8 +4178,9 @@ class StructuredTrainer:
                 # Note: Comprehensive metrics (T-SNE, clustering, certainty plots) are computed once 
                 # at the beginning of Phase 2 and uploaded through the train_n_steps_phase2 function
                 
-                # Phase 2: Test evaluation every eval_every_n_logs
-                if eval_every_n_logs and (step // log_every) % eval_every_n_logs == 0:
+                # Phase 2: Test evaluation every eval_every_n_logs_phase_2
+                eval_every_n_logs_phase_2 = self.cfg.training.get("eval_every_n_logs_phase_2", 20)
+                if eval_every_n_logs_phase_2 and (step // log_every) % eval_every_n_logs_phase_2 == 0:
                     try:
                         logging.info(f"🔍 Phase 2: Running test evaluation at step {step}")
                         
@@ -4231,8 +4249,16 @@ class StructuredTrainer:
                     except Exception as e:
                         logging.warning(f"Checkpoint save failed: {e}")
 
-                # Evaluation - More frequent during encoder exposure period
-                eval_interval = 5 if self.encoder_expose_steps > 0 else cfg.training.get("eval_every_n_logs", 0)
+                # Evaluation - More frequent during encoder exposure period (Phase 1), use Phase 2 setting otherwise
+                if self.encoder_expose_steps > 0:
+                    eval_interval = 5  # Phase 1: frequent evaluation during encoder specialization
+                else:
+                    # Phase 2: use Phase 2 evaluation frequency
+                    eval_interval = cfg.training.get("eval_every_n_logs_phase_2", 20)
+                    if eval_interval:
+                        eval_interval = eval_interval * log_every  # Convert logs to steps
+                    else:
+                        eval_interval = 0  # Disabled
                 if eval_interval and (step // log_every) % eval_interval == 0:
                     try:
                         logging.info(f"Running evaluation at step {step}")
@@ -4304,7 +4330,9 @@ class StructuredTrainer:
         pbar.close()
         
         # Final evaluation at the end of training
-        if cfg.training.get("eval_every_n_logs"):
+        # Use Phase 2 evaluation setting if we're in Phase 2, otherwise use Phase 1 setting
+        final_eval_setting = cfg.training.get("eval_every_n_logs_phase_2", 20) if self.encoder_expose_steps == 0 else cfg.training.get("eval_every_n_logs", 20)
+        if final_eval_setting:
             try:
                 logging.info(f"🔍 Running final evaluation at step {step} (end of training)")
                 self.evaluate(state, enc_params_list, step)
