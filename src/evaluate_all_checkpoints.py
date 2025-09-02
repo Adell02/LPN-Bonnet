@@ -154,7 +154,170 @@ import wandb
 from visualization import visualize_optimization_comparison
 
 # Import functions from store_latent_search for trajectory analysis
-from store_latent_search import _extract_vals, _extract_best_per_gen, _extract_pop, Trace
+from store_latent_search import _extract_vals, _extract_best_per_gen, _extract_pop, Trace, plot_and_save, create_statistical_histograms, upload_to_wandb
+
+def compute_statistical_analysis(ga_npz_path: str, es_npz_path: str, dataset_length: int) -> Dict[str, Any]:
+    """
+    Compute statistical analysis comparing GA vs ES performance across multiple metrics.
+    Returns a dictionary with p-values, test statistics, and effect sizes.
+    
+    Args:
+        ga_npz_path: Path to GA trajectory NPZ file
+        es_npz_path: Path to ES trajectory NPZ file  
+        dataset_length: Number of samples evaluated
+        
+    Returns:
+        Dictionary with statistical analysis results
+    """
+    import numpy as np
+    from scipy.stats import ttest_rel, wilcoxon
+    
+    if dataset_length <= 1:
+        print(f"[stats] Skipping statistical analysis: dataset_length={dataset_length} (need > 1)")
+        return {}
+    
+    print(f"[stats] Computing statistical analysis for {dataset_length} samples...")
+    
+    # Extract per-sample metrics from both NPZ files
+    ga_metrics = {}
+    es_metrics = {}
+    
+    # Load GA metrics
+    if os.path.exists(ga_npz_path):
+        try:
+            with np.load(ga_npz_path) as npz:
+                # Extract per-sample accuracy
+                if "ga_accuracy_per_sample" in npz:
+                    ga_metrics['accuracy'] = np.array(npz["ga_accuracy_per_sample"])
+                # Extract per-sample shape correctness
+                if "ga_shape_correctness_per_sample" in npz:
+                    ga_metrics['shape_correctness'] = np.array(npz["ga_shape_correctness_per_sample"])
+                # Extract per-sample pixel correctness
+                if "ga_pixel_correctness_per_sample" in npz:
+                    ga_metrics['pixel_correctness'] = np.array(npz["ga_pixel_correctness_per_sample"])
+                # Extract per-sample best loss
+                if "ga_losses_per_sample" in npz:
+                    ga_losses = np.array(npz["ga_losses_per_sample"])
+                    if ga_losses.ndim >= 2:
+                        ga_metrics['best_loss'] = np.min(ga_losses, axis=1)  # Best loss per sample
+        except Exception as e:
+            print(f"[stats] Failed to load GA metrics: {e}")
+    
+    # Load ES metrics
+    if os.path.exists(es_npz_path):
+        try:
+            with np.load(es_npz_path) as npz:
+                # Extract per-sample accuracy
+                if "es_accuracy_per_sample" in npz:
+                    es_metrics['accuracy'] = np.array(npz["es_accuracy_per_sample"])
+                # Extract per-sample shape correctness
+                if "es_shape_correctness_per_sample" in npz:
+                    es_metrics['shape_correctness'] = np.array(npz["es_shape_correctness_per_sample"])
+                # Extract per-sample pixel correctness
+                if "es_pixel_correctness_per_sample" in npz:
+                    es_metrics['pixel_correctness'] = np.array(npz["es_pixel_correctness_per_sample"])
+                # Extract per-sample best loss
+                if "es_generation_losses_per_sample" in npz:
+                    es_losses = np.array(npz["es_generation_losses_per_sample"])
+                    if es_losses.ndim >= 2:
+                        es_metrics['best_loss'] = np.min(es_losses, axis=1)  # Best loss per sample
+        except Exception as e:
+            print(f"[stats] Failed to load ES metrics: {e}")
+    
+    # Helper function to check if array is binary
+    def _is_binary_array(arr: np.ndarray) -> bool:
+        u = np.unique(arr)
+        return set(u.tolist()).issubset({0, 1})
+    
+    # Perform statistical tests
+    results = {}
+    metrics_for_test = ['accuracy', 'shape_correctness', 'pixel_correctness', 'best_loss']
+    
+    for metric in metrics_for_test:
+        ga_data = ga_metrics.get(metric, None)
+        es_data = es_metrics.get(metric, None)
+        if ga_data is None or es_data is None:
+            continue
+            
+        # Ensure same length and not empty
+        n = min(len(ga_data), len(es_data))
+        if n < 2:
+            continue
+            
+        ga_arr = np.asarray(ga_data[:n], dtype=float)
+        es_arr = np.asarray(es_data[:n], dtype=float)
+        diff = ga_arr - es_arr
+        
+        # Paired effect size: Cohen's dz = mean(diff)/std(diff)
+        diff_mean = float(np.mean(diff))
+        diff_std = float(np.std(diff, ddof=1)) if n > 1 else np.nan
+        dz = float(diff_mean / diff_std) if diff_std > 0 else np.nan
+        
+        # 95% CI for paired difference (normal approx)
+        se = diff_std / np.sqrt(n) if np.isfinite(diff_std) else np.nan
+        ci_low = diff_mean - 1.96 * se if np.isfinite(se) else np.nan
+        ci_high = diff_mean + 1.96 * se if np.isfinite(se) else np.nan
+        
+        # Choose appropriate test
+        if metric == 'accuracy' and _is_binary_array(ga_arr) and _is_binary_array(es_arr):
+            # McNemar's test for paired binary outcomes
+            try:
+                from statsmodels.stats.contingency_tables import mcnemar
+                # Build 2x2: b = GA=1,ES=0; c = GA=0,ES=1
+                b = int(np.sum((ga_arr == 1) & (es_arr == 0)))
+                c = int(np.sum((ga_arr == 0) & (es_arr == 1)))
+                table = np.array([[0, b], [c, 0]])
+                res = mcnemar(table, exact=False, correction=True)
+                results[f"{metric}_test"] = "mcnemar"
+                results[f"{metric}_statistic"] = float(res.statistic)
+                results[f"{metric}_pvalue"] = float(res.pvalue)
+                results[f"{metric}_mean_diff"] = diff_mean
+                results[f"{metric}_cohens_dz"] = dz
+                results[f"{metric}_ci_low"] = ci_low
+                results[f"{metric}_ci_high"] = ci_high
+                results[f"{metric}_discordant_ga1_es0"] = b
+                results[f"{metric}_discordant_ga0_es1"] = c
+            except Exception as e:
+                print(f"[stats] McNemar failed for {metric}: {e}")
+                # Fallback to paired t-test
+                try:
+                    stat, p_val = ttest_rel(ga_arr, es_arr)
+                    results[f"{metric}_test"] = "ttest_rel_fallback"
+                    results[f"{metric}_statistic"] = float(stat)
+                    results[f"{metric}_pvalue"] = float(p_val)
+                    results[f"{metric}_mean_diff"] = diff_mean
+                    results[f"{metric}_cohens_dz"] = dz
+                    results[f"{metric}_ci_low"] = ci_low
+                    results[f"{metric}_ci_high"] = ci_high
+                except Exception as e:
+                    print(f"[stats] Paired t-test fallback failed for {metric}: {e}")
+        else:
+            # Continuous/near-continuous: paired t-test, Wilcoxon fallback
+            try:
+                stat, p_val = ttest_rel(ga_arr, es_arr)
+                results[f"{metric}_test"] = "ttest_rel"
+                results[f"{metric}_statistic"] = float(stat)
+                results[f"{metric}_pvalue"] = float(p_val)
+                results[f"{metric}_mean_diff"] = diff_mean
+                results[f"{metric}_cohens_dz"] = dz
+                results[f"{metric}_ci_low"] = ci_low
+                results[f"{metric}_ci_high"] = ci_high
+            except Exception as e:
+                print(f"[stats] Paired t-test failed for {metric}: {e}")
+                try:
+                    stat, p_val = wilcoxon(diff)
+                    results[f"{metric}_test"] = "wilcoxon"
+                    results[f"{metric}_statistic"] = float(stat)
+                    results[f"{metric}_pvalue"] = float(p_val)
+                    results[f"{metric}_mean_diff"] = diff_mean
+                    results[f"{metric}_cohens_dz"] = dz
+                    results[f"{metric}_ci_low"] = ci_low
+                    results[f"{metric}_ci_high"] = ci_high
+                except Exception as e:
+                    print(f"[stats] Wilcoxon failed for {metric}: {e}")
+    
+    print(f"[stats] Computed statistical analysis with {len(results)} metrics")
+    return results
 
 def generate_loss_vs_budget_plot(method_arrays: Dict[str, np.ndarray], 
                                 budgets: List[int], 
@@ -2005,6 +2168,125 @@ def main():
                         writer.writerow(csv_row)
                         f_csv.flush()  # Ensure data is written to disk immediately
                         print(f"📝 CSV: Written row for evolutionary_search budget {es_cfg['budget']} -> loss: {metrics.get('total_final_loss', 'N/A')}")
+
+                # Perform statistical analysis and generate plots if both GA and ES were evaluated
+                if ("gradient_ascent" in args.plot_methods and "evolutionary_search" in args.plot_methods and 
+                    args.dataset_length and args.dataset_length > 1):
+                    
+                    # Find the trajectory files for this checkpoint
+                    checkpoint_name = checkpoint["name"]
+                    ga_trajectory_path = f"temp_trajectories/gradient_ascent_{checkpoint_name}.npz"
+                    es_trajectory_path = f"temp_trajectories/evolutionary_search_{checkpoint_name}.npz"
+                    
+                    # Create output directory for plots
+                    plot_out_dir = f"plots/checkpoint_{step}_{checkpoint_name}"
+                    os.makedirs(plot_out_dir, exist_ok=True)
+                    
+                    # Generate trajectory plots with heatmaps
+                    try:
+                        print(f"🎨 Generating trajectory plots for checkpoint {step}...")
+                        trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(
+                            ga_trajectory_path, 
+                            es_trajectory_path, 
+                            plot_out_dir,
+                            field_name="loss",
+                            background_resolution=400,
+                            background_smoothing=False,
+                            background_knn=5,
+                            background_bandwidth_scale=1.25,
+                            background_global_mix=0.05,
+                            ga_steps=ga_budgets[0] if ga_budgets else None,
+                            es_population=es_configs[0]["population_size"] if es_configs else None,
+                            es_generations=es_configs[0]["num_generations"] if es_configs else None,
+                            dataset_length=args.dataset_length
+                        )
+                        
+                        if trajectory_plot:
+                            print(f"✅ Generated trajectory plot: {trajectory_plot}")
+                        if loss_plot:
+                            print(f"✅ Generated loss curves plot: {loss_plot}")
+                        if stats_plot:
+                            print(f"✅ Generated statistical histograms: {stats_plot}")
+                            
+                    except Exception as e:
+                        print(f"⚠️  Failed to generate trajectory plots for checkpoint {step}: {e}")
+                        trajectory_plot, loss_plot, stats_plot = None, None, None
+                    
+                    # Compute statistical analysis
+                    try:
+                        stats_results = compute_statistical_analysis(
+                            ga_trajectory_path, 
+                            es_trajectory_path, 
+                            args.dataset_length
+                        )
+                        
+                        if stats_results:
+                            # Log statistical analysis results to W&B
+                            try:
+                                log_data = {}
+                                for metric in ['accuracy', 'shape_correctness', 'pixel_correctness', 'best_loss']:
+                                    if f"{metric}_pvalue" in stats_results:
+                                        log_data[f"training_step_{step}/statistical_analysis/{metric}/pvalue"] = stats_results[f"{metric}_pvalue"]
+                                        log_data[f"training_step_{step}/statistical_analysis/{metric}/statistic"] = stats_results[f"{metric}_statistic"]
+                                        log_data[f"training_step_{step}/statistical_analysis/{metric}/test_type"] = stats_results[f"{metric}_test"]
+                                        log_data[f"training_step_{step}/statistical_analysis/{metric}/mean_diff"] = stats_results[f"{metric}_mean_diff"]
+                                        log_data[f"training_step_{step}/statistical_analysis/{metric}/cohens_dz"] = stats_results[f"{metric}_cohens_dz"]
+                                        log_data[f"training_step_{step}/statistical_analysis/{metric}/ci_low"] = stats_results[f"{metric}_ci_low"]
+                                        log_data[f"training_step_{step}/statistical_analysis/{metric}/ci_high"] = stats_results[f"{metric}_ci_high"]
+                                        
+                                        # Log with budget on x-axis as requested
+                                        for budget in ga_budgets + [es_cfg["budget"] for es_cfg in es_configs]:
+                                            log_data[f"statistical_analysis/{metric}/checkpoint_{step}/budget_{budget}/pvalue"] = stats_results[f"{metric}_pvalue"]
+                                            log_data[f"statistical_analysis/{metric}/checkpoint_{step}/budget_{budget}/statistic"] = stats_results[f"{metric}_statistic"]
+                                            log_data[f"statistical_analysis/{metric}/checkpoint_{step}/budget_{budget}/test_type"] = stats_results[f"{metric}_test"]
+                                            log_data[f"statistical_analysis/{metric}/checkpoint_{step}/budget_{budget}/mean_diff"] = stats_results[f"{metric}_mean_diff"]
+                                            log_data[f"statistical_analysis/{metric}/checkpoint_{step}/budget_{budget}/cohens_dz"] = stats_results[f"{metric}_cohens_dz"]
+                                            log_data[f"statistical_analysis/{metric}/checkpoint_{step}/budget_{budget}/ci_low"] = stats_results[f"{metric}_ci_low"]
+                                            log_data[f"statistical_analysis/{metric}/checkpoint_{step}/budget_{budget}/ci_high"] = stats_results[f"{metric}_ci_high"]
+                                
+                                wandb.log(log_data)
+                                print(f"📊 Logged statistical analysis results for checkpoint {step} to W&B")
+                            except Exception as e:
+                                print(f"⚠️  Failed to log statistical analysis to W&B: {e}")
+                        else:
+                            print(f"⚠️  No statistical analysis results computed for checkpoint {step}")
+                    except Exception as e:
+                        print(f"⚠️  Failed to compute statistical analysis for checkpoint {step}: {e}")
+                    
+                    # Upload plots to W&B
+                    try:
+                        if trajectory_plot or loss_plot or stats_plot:
+                            print(f"📤 Uploading plots to W&B for checkpoint {step}...")
+                            
+                            # Create configuration for W&B upload
+                            cfg = {
+                                'run_name': args.run_name,
+                                'checkpoint_name': checkpoint_name,
+                                'checkpoint_step': step,
+                                'dataset_length': args.dataset_length,
+                                'ga_budgets': ga_budgets,
+                                'es_configs': es_configs,
+                                'latent_dim': latent_dim if 'latent_dim' in locals() else 2
+                            }
+                            
+                            # Upload to W&B
+                            upload_to_wandb(
+                                project=args.wandb_project if hasattr(args, 'wandb_project') else 'lpn-evaluation',
+                                entity=args.wandb_entity if hasattr(args, 'wandb_entity') else None,
+                                cfg=cfg,
+                                ga_npz=ga_trajectory_path,
+                                es_npz=es_trajectory_path,
+                                trajectory_plot=trajectory_plot,
+                                loss_plot=loss_plot,
+                                stats_plot=stats_plot,
+                                group_name=f"checkpoint_{step}_{checkpoint_name}",
+                                existing_run=None
+                            )
+                            print(f"✅ Uploaded plots to W&B for checkpoint {step}")
+                        else:
+                            print(f"⚠️  No plots to upload for checkpoint {step}")
+                    except Exception as e:
+                        print(f"⚠️  Failed to upload plots to W&B for checkpoint {step}: {e}")
 
                 # Progress update after each checkpoint
                 total_evals = results["successful_evals"] + results["failed_evals"]
