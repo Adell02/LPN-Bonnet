@@ -551,13 +551,13 @@ def _load_trace(npz_path: str, prefix: str) -> Trace:
                 len_pts = t.pts.shape[0]
                 len_vals = t.vals.shape[0]
                 if len_vals == len_pts + 1:
-                    # Loss array includes an extra initial value (mean) with no matching latent
-                    t.vals = t.vals[1:]
-                    print(f"[plot] {prefix.upper()} dropped initial loss to align with trajectory (budget 0 = mean)")
+                    # Loss array includes an extra final value with no matching latent
+                    t.vals = t.vals[:-1]
+                    print(f"[plot] {prefix.upper()} dropped final loss to align with trajectory (keeping budget 0)")
                 elif len_pts == len_vals + 1:
-                    # Trajectory includes an extra initial latent without corresponding loss
-                    t.pts = t.pts[1:]
-                    print(f"[plot] {prefix.upper()} dropped initial latent to align with losses (budget 0 = mean)")
+                    # Trajectory includes an extra final latent without corresponding loss
+                    t.pts = t.pts[:-1]
+                    print(f"[plot] {prefix.upper()} dropped final latent to align with losses (keeping budget 0)")
 
             # Debug: show what was extracted for best_per_gen
             if prefix == "es_":
@@ -1656,10 +1656,6 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                                 print(f"[loss] ⚠️  Budget length mismatch: NPZ budget={len(ga_budget)}, losses={L.shape[1]}")
                                 print(f"[loss] 🔧 Using corrected budget: {x}")
 
-                        # Exclude budget 0
-                        L = L[:, 1:]
-                        x = x[1:]
-
                         ga_mean = np.mean(L, axis=0)
                         ga_std = np.std(L, axis=0)
                         ga_se = ga_std / np.sqrt(L.shape[0])
@@ -1743,10 +1739,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                 if (dataset_length is not None and dataset_length > 1) and 'es_generation_losses_per_sample' in f:
                     L = np.array(f['es_generation_losses_per_sample'])  # (N, G)
                     if L.shape[1] > 1:
-                        x = es_budget if es_budget is not None and len(es_budget) == L.shape[1] else np.arange(1, L.shape[1]+1)
-                        # Exclude budget 0
-                        L = L[:, 1:]
-                        x = x[1:]
+                        x = es_budget if es_budget is not None and len(es_budget) == L.shape[1] else np.arange(L.shape[1])
                         es_mean = np.mean(L, axis=0)
                         es_std = np.std(L, axis=0)
                         es_se = es_std / np.sqrt(L.shape[0])
@@ -2146,7 +2139,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                             es_losses_per_sample = np.array(f['es_generation_losses_per_sample'])
                             if es_losses_per_sample.size > 0:
                                 # Use the same budget calculation as the plotting
-                                x = es_budget if es_budget is not None else np.arange(1, es_losses_per_sample.shape[1]+1)
+                                x = es_budget if es_budget is not None else np.arange(es_losses_per_sample.shape[1])
                                 # Check if overall mean accuracy is 1
                                 overall_mean_acc = np.mean(per_sample_acc)
                                 if np.isclose(overall_mean_acc, 1.0, atol=1e-6):
