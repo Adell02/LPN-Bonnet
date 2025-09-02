@@ -3547,48 +3547,135 @@ def main():
                                     arrays_to_use = method_arrays_high_granularity if method_arrays_high_granularity else method_arrays
                                     pixel_arrays_to_use = method_arrays_pixel_high_granularity if method_arrays_pixel_high_granularity else method_arrays_pixel
                                     
-                                    # Get the appropriate budget list (high-granularity trajectory budgets or CSV budgets)
-                                    if method_arrays_high_granularity and "gradient_ascent" in trajectory_data_by_method:
-                                        # Use trajectory budgets for high granularity
-                                        traj_budgets = trajectory_data_by_method["gradient_ascent"].get('budget', all_budgets)
-                                        budget_list = traj_budgets.tolist() if hasattr(traj_budgets, 'tolist') else traj_budgets
-                                        print(f"📊 Using high-granularity trajectory budgets: {len(budget_list)} points")
-                                    else:
-                                        budget_list = all_budgets
-                                        print(f"📊 Using CSV budgets: {len(budget_list)} points")
+                                    # Debug: Print data availability
+                                    print(f"🔍 DEBUG: Heatmap data availability:")
+                                    print(f"   method_arrays_high_granularity: {bool(method_arrays_high_granularity)}")
+                                    print(f"   method_arrays_pixel_high_granularity: {bool(method_arrays_pixel_high_granularity)}")
+                                    print(f"   method_arrays: {bool(method_arrays)}")
+                                    print(f"   method_arrays_pixel: {bool(method_arrays_pixel)}")
+                                    print(f"   arrays_to_use keys: {list(arrays_to_use.keys()) if arrays_to_use else 'None'}")
+                                    print(f"   pixel_arrays_to_use keys: {list(pixel_arrays_to_use.keys()) if pixel_arrays_to_use else 'None'}")
+                                    
+                                    # Debug: Check data content
+                                    for method in args.plot_methods:
+                                        if method in arrays_to_use:
+                                            data = arrays_to_use[method]
+                                            valid_count = np.sum(~np.isnan(data))
+                                            total_count = data.size
+                                            print(f"   {method} overall data: {data.shape}, {valid_count}/{total_count} valid values")
+                                        if method in pixel_arrays_to_use:
+                                            data = pixel_arrays_to_use[method]
+                                            valid_count = np.sum(~np.isnan(data))
+                                            total_count = data.size
+                                            print(f"   {method} pixel data: {data.shape}, {valid_count}/{total_count} valid values")
+                                    
+                                    # Get the appropriate budget list for each method's data
+                                    def get_budget_list_for_method(method: str) -> List[int]:
+                                        if method_arrays_high_granularity and method in trajectory_data_by_method:
+                                            # Use trajectory budgets for high granularity
+                                            traj_budgets = trajectory_data_by_method[method].get('budget', all_budgets)
+                                            budget_list = traj_budgets.tolist() if hasattr(traj_budgets, 'tolist') else traj_budgets
+                                            return budget_list
+                                        else:
+                                            return all_budgets
+                                    
+                                    # Debug: Print budget information for each method
+                                    for method in args.plot_methods:
+                                        budget_list = get_budget_list_for_method(method)
+                                        print(f"📊 {method} using {len(budget_list)} budget points")
                                     
                                     # GA overall accuracy heatmap (symmetric around 0)
                                     if "gradient_ascent" in arrays_to_use:
-                                        p = _save_heatmap(arrays_to_use["gradient_ascent"], all_steps, budget_list, f"checkpoint_{step_tag}_ga_overall_accuracy", center=0, stats_data=heatmap_stats)
+                                        print(f"🔍 DEBUG: Generating GA overall accuracy heatmap...")
+                                        ga_budget_list = get_budget_list_for_method("gradient_ascent")
+                                        p = _save_heatmap(arrays_to_use["gradient_ascent"], all_steps, ga_budget_list, f"checkpoint_{step_tag}_ga_overall_accuracy", center=0, stats_data=heatmap_stats)
                                         if p and p.exists():
+                                            print(f"✅ DEBUG: GA overall accuracy heatmap saved to {p}")
                                             wandb.log({f"checkpoint_{training_progress}/ga_overall_accuracy": wandb.Image(str(p))})
+                                        else:
+                                            print(f"❌ DEBUG: GA overall accuracy heatmap generation failed (p={p})")
+                                    else:
+                                        print(f"❌ DEBUG: GA not found in arrays_to_use")
                                     # ES overall accuracy heatmap (symmetric around 0)
                                     if "evolutionary_search" in arrays_to_use:
-                                        p = _save_heatmap(arrays_to_use["evolutionary_search"], all_steps, budget_list, f"checkpoint_{step_tag}_es_overall_accuracy", center=0, stats_data=heatmap_stats)
+                                        print(f"🔍 DEBUG: Generating ES overall accuracy heatmap...")
+                                        es_budget_list = get_budget_list_for_method("evolutionary_search")
+                                        p = _save_heatmap(arrays_to_use["evolutionary_search"], all_steps, es_budget_list, f"checkpoint_{step_tag}_es_overall_accuracy", center=0, stats_data=heatmap_stats)
                                         if p and p.exists():
+                                            print(f"✅ DEBUG: ES overall accuracy heatmap saved to {p}")
                                             wandb.log({f"checkpoint_{training_progress}/es_overall_accuracy": wandb.Image(str(p))})
+                                        else:
+                                            print(f"❌ DEBUG: ES overall accuracy heatmap generation failed (p={p})")
+                                    else:
+                                        print(f"❌ DEBUG: ES not found in arrays_to_use")
                                     # GA pixel accuracy heatmap (symmetric around 0)
                                     if "gradient_ascent" in pixel_arrays_to_use:
-                                        p = _save_heatmap(pixel_arrays_to_use["gradient_ascent"], all_steps, budget_list, f"checkpoint_{step_tag}_ga_pixel_accuracy", center=0, stats_data=heatmap_stats)
+                                        print(f"🔍 DEBUG: Generating GA pixel accuracy heatmap...")
+                                        ga_budget_list = get_budget_list_for_method("gradient_ascent")
+                                        p = _save_heatmap(pixel_arrays_to_use["gradient_ascent"], all_steps, ga_budget_list, f"checkpoint_{step_tag}_ga_pixel_accuracy", center=0, stats_data=heatmap_stats)
                                         if p and p.exists():
+                                            print(f"✅ DEBUG: GA pixel accuracy heatmap saved to {p}")
                                             wandb.log({f"checkpoint_{training_progress}/ga_pixel_accuracy": wandb.Image(str(p))})
+                                        else:
+                                            print(f"❌ DEBUG: GA pixel accuracy heatmap generation failed (p={p})")
+                                    else:
+                                        print(f"❌ DEBUG: GA not found in pixel_arrays_to_use")
                                     # ES pixel accuracy heatmap (symmetric around 0)
                                     if "evolutionary_search" in pixel_arrays_to_use:
-                                        p = _save_heatmap(pixel_arrays_to_use["evolutionary_search"], all_steps, budget_list, f"checkpoint_{step_tag}_es_pixel_accuracy", center=0, stats_data=heatmap_stats)
+                                        print(f"🔍 DEBUG: Generating ES pixel accuracy heatmap...")
+                                        es_budget_list = get_budget_list_for_method("evolutionary_search")
+                                        p = _save_heatmap(pixel_arrays_to_use["evolutionary_search"], all_steps, es_budget_list, f"checkpoint_{step_tag}_es_pixel_accuracy", center=0, stats_data=heatmap_stats)
                                         if p and p.exists():
+                                            print(f"✅ DEBUG: ES pixel accuracy heatmap saved to {p}")
                                             wandb.log({f"checkpoint_{training_progress}/es_pixel_accuracy": wandb.Image(str(p))})
+                                        else:
+                                            print(f"❌ DEBUG: ES pixel accuracy heatmap generation failed (p={p})")
+                                    else:
+                                        print(f"❌ DEBUG: ES not found in pixel_arrays_to_use")
                                     # GA − ES overall accuracy diff (center at 0)
                                     if "gradient_ascent" in arrays_to_use and "evolutionary_search" in arrays_to_use:
-                                        diff_overall = arrays_to_use["gradient_ascent"] - arrays_to_use["evolutionary_search"]
-                                        p = _save_heatmap(diff_overall, all_steps, budget_list, f"checkpoint_{step_tag}_ga_minus_es_overall_accuracy", center=None, stats_data=heatmap_stats)
+                                        print(f"🔍 DEBUG: Generating GA-ES overall accuracy difference heatmap...")
+                                        ga_data = arrays_to_use["gradient_ascent"]
+                                        es_data = arrays_to_use["evolutionary_search"]
+                                        
+                                        # Check if arrays have compatible shapes for subtraction
+                                        if ga_data.shape == es_data.shape:
+                                            diff_overall = ga_data - es_data
+                                            # Use the budget list from the first method (GA) for consistency
+                                            ga_budget_list = get_budget_list_for_method("gradient_ascent")
+                                            p = _save_heatmap(diff_overall, all_steps, ga_budget_list, f"checkpoint_{step_tag}_ga_minus_es_overall_accuracy", center=0, stats_data=heatmap_stats)
+                                        else:
+                                            print(f"❌ DEBUG: Cannot subtract GA-ES arrays - GA shape: {ga_data.shape}, ES shape: {es_data.shape}")
+                                            p = None
                                         if p and p.exists():
+                                            print(f"✅ DEBUG: GA-ES overall accuracy difference heatmap saved to {p}")
                                             wandb.log({f"checkpoint_{training_progress}/ga_minus_es_overall_accuracy": wandb.Image(str(p))})
+                                        else:
+                                            print(f"❌ DEBUG: GA-ES overall accuracy difference heatmap generation failed (p={p})")
+                                    else:
+                                        print(f"❌ DEBUG: Cannot generate GA-ES difference - GA in arrays: {'gradient_ascent' in arrays_to_use}, ES in arrays: {'evolutionary_search' in arrays_to_use}")
                                     # GA − ES pixel accuracy diff (center at 0)
                                     if "gradient_ascent" in pixel_arrays_to_use and "evolutionary_search" in pixel_arrays_to_use:
-                                        diff_pixel = pixel_arrays_to_use["gradient_ascent"] - pixel_arrays_to_use["evolutionary_search"]
-                                        p = _save_heatmap(diff_pixel, all_steps, budget_list, f"checkpoint_{step_tag}_ga_minus_es_pixel_accuracy", center=None, stats_data=heatmap_stats)
+                                        print(f"🔍 DEBUG: Generating GA-ES pixel accuracy difference heatmap...")
+                                        ga_pixel_data = pixel_arrays_to_use["gradient_ascent"]
+                                        es_pixel_data = pixel_arrays_to_use["evolutionary_search"]
+                                        
+                                        # Check if arrays have compatible shapes for subtraction
+                                        if ga_pixel_data.shape == es_pixel_data.shape:
+                                            diff_pixel = ga_pixel_data - es_pixel_data
+                                            # Use the budget list from the first method (GA) for consistency
+                                            ga_budget_list = get_budget_list_for_method("gradient_ascent")
+                                            p = _save_heatmap(diff_pixel, all_steps, ga_budget_list, f"checkpoint_{step_tag}_ga_minus_es_pixel_accuracy", center=0, stats_data=heatmap_stats)
+                                        else:
+                                            print(f"❌ DEBUG: Cannot subtract GA-ES pixel arrays - GA shape: {ga_pixel_data.shape}, ES shape: {es_pixel_data.shape}")
+                                            p = None
                                         if p and p.exists():
+                                            print(f"✅ DEBUG: GA-ES pixel accuracy difference heatmap saved to {p}")
                                             wandb.log({f"checkpoint_{training_progress}/ga_minus_es_pixel_accuracy": wandb.Image(str(p))})
+                                        else:
+                                            print(f"❌ DEBUG: GA-ES pixel accuracy difference heatmap generation failed (p={p})")
+                                    else:
+                                        print(f"❌ DEBUG: Cannot generate GA-ES pixel difference - GA in pixel_arrays: {'gradient_ascent' in pixel_arrays_to_use}, ES in pixel_arrays: {'evolutionary_search' in pixel_arrays_to_use}")
                                     print("📊 Generated and uploaded per-checkpoint GA/ES heatmaps (overall/pixel and diffs)")
                                 except Exception as e:
                                     print(f"⚠️  Failed to generate per-checkpoint GA/ES heatmaps: {e}")
