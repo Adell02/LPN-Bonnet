@@ -65,11 +65,11 @@ training:
   # Distance margin for repulsion loss (default: 10.0)
   # Using a larger margin (e.g., 10) keeps the repulsion term active
   # since typical distances (~9) are already larger than the previous margin of 1.0
-  repulsion_margin: 20.0
+  repulsion_margin: 10.0
   # This coefficient controls the strength of contrastive loss
   # Lower values = more stable, higher values = more aggressive specialization
   # The system will dynamically adjust this coefficient based on specialization progress
-  contrastive_kl: 0.5  # specialization effects (increased from 1e-3)
+  contrastive_kl: 5  # specialization effects (increased from 1e-3)
   log_every_n_steps: 5
   eval_every_n_logs: 20       # null to disable
   eval_every_n_logs_phase_2: 20       # null to disable
