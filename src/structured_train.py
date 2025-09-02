@@ -301,7 +301,10 @@ class StructuredTrainer:
         
         # Phase A global step counter for WandB metrics
         self.phase_a_global_step = 0
-        
+
+        # Cache for Phase 2 evaluation data to ensure consistency across metrics
+        self._phase2_eval_cache = {}
+
         # Store original encoder params for individual training
         self.original_encoder_params = None
         self.original_decoder_params = None
@@ -2189,10 +2192,10 @@ class StructuredTrainer:
         
         try:
             logging.info(f"🔍 Phase 2: Creating T-SNE visualizations...")
-            
-            # Use the same specialized data function as Phase 1 but with a uniform distribution
-            grids, shapes, pattern_ids_all = self._create_specialized_training_data(
-                target_pattern=None, uniform=True
+
+            # Use a cached uniform dataset so evaluations are consistent across runs
+            grids, shapes, pattern_ids_all = self._get_phase2_eval_data(
+                uniform=True
             )
 
             # Compute encoder outputs for all samples
@@ -3270,7 +3273,32 @@ class StructuredTrainer:
                 f"     Generated {len(grids_list)} samples: {target_samples} target, {other_samples} others"
             )
         return grids, shapes, pattern_ids
-    
+
+    def _get_phase2_eval_data(self, target_pattern: Optional[int] = None, uniform: bool = False) -> tuple:
+        """Retrieve cached Phase 2 evaluation data or generate it if absent.
+
+        This avoids regenerating random samples every time evaluation metrics are
+        computed, keeping visualizations and metrics consistent across runs.
+
+        Args:
+            target_pattern: Specific pattern to generate data for. Only used when
+                ``uniform`` is ``False``.
+            uniform: If ``True``, generate a uniform distribution over all patterns.
+
+        Returns:
+            Cached tuple ``(grids, shapes, pattern_ids)``.
+        """
+        if not hasattr(self, "_phase2_eval_cache"):
+            self._phase2_eval_cache = {}
+
+        key = "uniform" if uniform else target_pattern
+        if key not in self._phase2_eval_cache:
+            self._phase2_eval_cache[key] = self._create_specialized_training_data(
+                target_pattern=target_pattern, uniform=uniform
+            )
+
+        return self._phase2_eval_cache[key]
+
     def _create_pattern_dataset(self, pattern_id: int, num_samples: int) -> tuple:
         """Create a dataset composed solely of a single pattern by loading from pre-existing datasets.
 
@@ -6002,11 +6030,11 @@ class StructuredTrainer:
             logging.info(f"🔍 Creating merged encoder certainty panel after Phase 1 (step {step})")
             logging.info(f"   - Using SAME computation approach as Phase 1: _create_specialized_training_data + visualize_struct_confidence_panel")
             logging.info(f"   - Merging all encoders into single comprehensive plots per pattern")
-            
+
             # Create evaluation data for all patterns using the SAME approach as Phase 1
             eval_data = {}
             for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._create_specialized_training_data(pattern_id)
+                eval_data[pattern_id] = self._get_phase2_eval_data(target_pattern=pattern_id)
             
             # Create a figure with subplots for each pattern (histogram + Gaussian function)
             fig, axes = plt.subplots(2, 3, figsize=(20, 12))
