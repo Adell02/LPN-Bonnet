@@ -45,13 +45,37 @@ from visualization import visualize_loss_difference_heatmap
 def get_checkpoints_from_run(run_name: str, project: str, max_checkpoints: int, strategy: str) -> List[str]:
     """Get checkpoint artifact paths from a W&B run."""
     api = wandb.Api()
-    run = api.run(f"{project}/{run_name}")
+    
+    # Try to find the run in the specified project first
+    try:
+        run = api.run(f"{project}/{run_name}")
+    except Exception as e:
+        print(f"Could not find run {run_name} in project {project}: {e}")
+        print("Trying to find run in other projects...")
+        
+        # Search for the run across all accessible projects
+        found_run = None
+        for proj in api.projects():
+            try:
+                potential_run = api.run(f"{proj.entity}/{proj.name}/{run_name}")
+                found_run = potential_run
+                print(f"Found run {run_name} in project {proj.entity}/{proj.name}")
+                break
+            except:
+                continue
+        
+        if found_run is None:
+            raise ValueError(f"Could not find run {run_name} in any accessible project")
+        run = found_run
     
     # Get all checkpoint artifacts
     artifacts = []
     for artifact in run.logged_artifacts():
         if "checkpoint" in artifact.name:
             artifacts.append(artifact)
+    
+    if not artifacts:
+        raise ValueError(f"No checkpoint artifacts found in run {run_name}")
     
     # Sort by creation time
     artifacts.sort(key=lambda x: x.created_at)
@@ -304,7 +328,7 @@ def main():
     
     # W&B configuration
     parser.add_argument("--run_name", type=str, required=True, help="Name of the W&B run")
-    parser.add_argument("--project", type=str, required=True, help="W&B project name")
+    parser.add_argument("--project", type=str, required=True, help="W&B project name for finding the run")
     parser.add_argument("--entity", type=str, default=None, help="W&B entity")
     
     # Dataset configuration
@@ -333,6 +357,9 @@ def main():
     parser.add_argument("--output_dir", type=str, default="results/heatmaps", help="Output directory for heatmaps")
     parser.add_argument("--wandb_project", type=str, default="LPN-eval-heatmap", help="W&B project for results")
     
+    # Test mode
+    parser.add_argument("--test_mode", action="store_true", help="Test mode: only run max budget test on first checkpoint")
+    
     args = parser.parse_args()
     
     # Create output directory
@@ -347,7 +374,7 @@ def main():
     )
     
     # Get checkpoints
-    print(f"Getting checkpoints from run {args.run_name}...")
+    print(f"Getting checkpoints from run {args.run_name} in project {args.project}...")
     checkpoint_paths = get_checkpoints_from_run(
         args.run_name, args.project, args.max_checkpoints, args.checkpoint_strategy
     )
@@ -361,7 +388,8 @@ def main():
         checkpoint_results = []
         
         # Evaluate each checkpoint
-        for i, checkpoint_path in enumerate(checkpoint_paths):
+        checkpoints_to_evaluate = checkpoint_paths[:1] if args.test_mode else checkpoint_paths
+        for i, checkpoint_path in enumerate(checkpoints_to_evaluate):
             checkpoint_name = checkpoint_path.split("/")[-1].split(":")[0]
             print(f"\nEvaluating checkpoint {i+1}/{len(checkpoint_paths)}: {checkpoint_name}")
             
@@ -398,33 +426,36 @@ def main():
             else:
                 print("ES max budget test failed")
             
-            # If max budget test works, run all budgets
+            # If max budget test works, run all budgets (unless in test mode)
             if ga_results or es_results:
-                print(f"Max budget test successful, running all budgets...")
-                
-                for budget in budgets:
-                    if budget == max_budget:
-                        continue  # Already tested
+                if args.test_mode:
+                    print(f"Test mode: Max budget test successful, skipping other budgets")
+                else:
+                    print(f"Max budget test successful, running all budgets...")
                     
-                    # Run GA
-                    success, metrics = run_evaluation_with_budget(
-                        checkpoint_path, "gradient_ascent", budget,
-                        args.ga_lr, args.es_mutation_std, args.es_mutation_decay,
-                        args.dataset_folder, args.dataset_length, args.dataset_batch_size,
-                        args.dataset_use_hf == "true", args.dataset_seed, temp_dir
-                    )
-                    if success:
-                        ga_results[budget] = metrics
-                    
-                    # Run ES
-                    success, metrics = run_evaluation_with_budget(
-                        checkpoint_path, "evolutionary_search", budget,
-                        args.ga_lr, args.es_mutation_std, args.es_mutation_decay,
-                        args.dataset_folder, args.dataset_length, args.dataset_batch_size,
-                        args.dataset_use_hf == "true", args.dataset_seed, temp_dir
-                    )
-                    if success:
-                        es_results[budget] = metrics
+                    for budget in budgets:
+                        if budget == max_budget:
+                            continue  # Already tested
+                        
+                        # Run GA
+                        success, metrics = run_evaluation_with_budget(
+                            checkpoint_path, "gradient_ascent", budget,
+                            args.ga_lr, args.es_mutation_std, args.es_mutation_decay,
+                            args.dataset_folder, args.dataset_length, args.dataset_batch_size,
+                            args.dataset_use_hf == "true", args.dataset_seed, temp_dir
+                        )
+                        if success:
+                            ga_results[budget] = metrics
+                        
+                        # Run ES
+                        success, metrics = run_evaluation_with_budget(
+                            checkpoint_path, "evolutionary_search", budget,
+                            args.ga_lr, args.es_mutation_std, args.es_mutation_decay,
+                            args.dataset_folder, args.dataset_length, args.dataset_batch_size,
+                            args.dataset_use_hf == "true", args.dataset_seed, temp_dir
+                        )
+                        if success:
+                            es_results[budget] = metrics
                 
                 checkpoint_results.append({
                     "checkpoint_name": checkpoint_name,
