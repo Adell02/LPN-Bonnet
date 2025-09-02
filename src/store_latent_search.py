@@ -673,6 +673,29 @@ def _apply_fitted_pca(points: np.ndarray, pca_transformer, target_dim: int = 2) 
     if pca_transformer is None:
         return points
     
+    # Check dimension compatibility
+    input_dim = points_flat.shape[1]
+    if hasattr(pca_transformer, 'n_features_in_'):  # sklearn PCA
+        expected_dim = pca_transformer.n_features_in_
+    elif hasattr(pca_transformer, 'mean'):  # manual PCA
+        expected_dim = pca_transformer['mean'].shape[0]
+    else:
+        expected_dim = None
+    
+    if expected_dim is not None and input_dim != expected_dim:
+        print(f"[PCA] Dimension mismatch: input={input_dim}, expected={expected_dim}. Skipping transformation.")
+        # Return points with target_dim as last dimension (pad or truncate as needed)
+        if input_dim >= target_dim:
+            # Truncate to target_dim
+            points_flat = points_flat[:, :target_dim]
+        else:
+            # Pad with zeros to target_dim
+            padding = np.zeros((points_flat.shape[0], target_dim - input_dim))
+            points_flat = np.concatenate([points_flat, padding], axis=1)
+        
+        new_shape = list(original_shape[:-1]) + [target_dim]
+        return points_flat.reshape(new_shape)
+    
     # Apply transformation
     if hasattr(pca_transformer, 'transform'):  # sklearn PCA
         points_transformed = pca_transformer.transform(points_flat)
