@@ -218,6 +218,51 @@ class StructuredLPN(nn.Module):
                 )
                 contrastive_loss = 0.0
 
+        # Compute enhanced uncertainty shaping loss
+        enhanced_uncertainty_loss = 0.0
+        enhanced_uncertainty_metrics = {}
+        if pattern_ids is not None and E > 0:
+            try:
+                # Get enhanced uncertainty shaping parameters from mode_kwargs
+                beta_target = mode_kwargs.get("beta_target", 0.5)
+                beta_other = mode_kwargs.get("beta_other", 1.5)
+                prior_var_target = mode_kwargs.get("prior_var_target", 0.25)
+                prior_var_other = mode_kwargs.get("prior_var_other", 2.0)
+                alpha_target = mode_kwargs.get("alpha_target", 1.0)
+                alpha_other = mode_kwargs.get("alpha_other", 0.5)
+                uncertainty_margin = mode_kwargs.get("uncertainty_margin", 1.0)
+                entropy_gamma = mode_kwargs.get("entropy_gamma", 0.1)
+                logvar_min = mode_kwargs.get("logvar_min", -10.0)
+                logvar_max = mode_kwargs.get("logvar_max", 5.0)
+                variance_floor_other = mode_kwargs.get("variance_floor_other", 0.5)
+                
+                enhanced_uncertainty_loss, enhanced_uncertainty_metrics = self._compute_enhanced_uncertainty_shaping(
+                    mus=mus,
+                    logvars=logvars,
+                    pattern_ids=pattern_ids,
+                    beta_target=beta_target,
+                    beta_other=beta_other,
+                    prior_var_target=prior_var_target,
+                    prior_var_other=prior_var_other,
+                    alpha_target=alpha_target,
+                    alpha_other=alpha_other,
+                    uncertainty_margin=uncertainty_margin,
+                    entropy_gamma=entropy_gamma,
+                    logvar_min=logvar_min,
+                    logvar_max=logvar_max,
+                    variance_floor_other=variance_floor_other,
+                )
+                
+                # Add enhanced uncertainty loss to total loss
+                loss += enhanced_uncertainty_loss
+                
+            except Exception as e:
+                logging.warning(
+                    f"Enhanced uncertainty shaping computation failed: {e}. Skipping enhanced uncertainty shaping."
+                )
+                enhanced_uncertainty_loss = 0.0
+                enhanced_uncertainty_metrics = {}
+
         # Add PoE-specific metrics
         metrics = dict(metrics)
         metrics.update(
@@ -244,6 +289,10 @@ class StructuredLPN(nn.Module):
                 contrastive_specialization_ratio=avg_var_other / (avg_var_target + 1e-8) if 'avg_var_target' in locals() and 'avg_var_other' in locals() else 1.0,
                 contrastive_specialization_score=jnp.log(avg_var_other / (avg_var_target + 1e-8) + 1e-8) if 'avg_var_target' in locals() and 'avg_var_other' in locals() else 0.0,
             )
+        
+        # Add enhanced uncertainty shaping metrics
+        if enhanced_uncertainty_metrics:
+            metrics.update(enhanced_uncertainty_metrics)
 
         return loss, metrics
 
@@ -625,6 +674,171 @@ class StructuredLPN(nn.Module):
         # avg_var_target: should be LOW (specialized, confident)
         # avg_var_other: should be HIGH (uncertain, diverse)
         return variance_loss, jnp.mean(avg_var_target), jnp.mean(avg_var_other)
+
+    def _compute_enhanced_uncertainty_shaping(
+        self,
+        mus: chex.Array,
+        logvars: chex.Array,
+        pattern_ids: chex.Array,
+        beta_target: float = 0.5,
+        beta_other: float = 1.5,
+        prior_var_target: float = 0.25,
+        prior_var_other: float = 2.0,
+        alpha_target: float = 1.0,
+        alpha_other: float = 0.5,
+        uncertainty_margin: float = 1.0,
+        entropy_gamma: float = 0.1,
+        logvar_min: float = -10.0,
+        logvar_max: float = 5.0,
+        variance_floor_other: float = 0.5,
+    ) -> tuple[chex.Array, dict]:
+        """
+        Enhanced uncertainty shaping with subset β, class-conditional priors, and per-sample penalties.
+        
+        This implements the structured approach to make encoders very confident per-sample on their
+        own pattern by addressing KL/prior mismatch and using targeted uncertainty penalties.
+        
+        Args:
+            mus: (E, B, N, H) - means from each encoder
+            logvars: (E, B, N, H) - log variances from each encoder  
+            pattern_ids: (B,) - pattern ID for each sample in batch (1, 2, or 3)
+            beta_target: β_T < 1 to make small σ² cheap for target patterns
+            beta_other: β_O ≥ 1 to maintain standard KL for other patterns
+            prior_var_target: s_T² < 1 for target patterns
+            prior_var_other: s_O² > 1 for other patterns
+            alpha_target: α_T for driving target certainty
+            alpha_other: α_O for inflating other uncertainty
+            uncertainty_margin: m - minimum variance threshold for other patterns
+            entropy_gamma: γ for entropy bonus on other patterns
+            logvar_min: Lower bound for log variance
+            logvar_max: Upper bound for log variance
+            variance_floor_other: Floor variance for other patterns
+            
+        Returns:
+            total_loss: scalar - combined enhanced uncertainty shaping loss
+            metrics: dict - detailed metrics for monitoring
+        """
+        E = mus.shape[0]  # Number of encoders
+        B = mus.shape[1]  # Batch size
+        N = mus.shape[2]  # Number of pairs
+        H = mus.shape[3]  # Latent dimension
+        
+        if E == 0:
+            return 0.0, {}
+            
+        # Validate pattern IDs
+        unique_patterns = jnp.unique(pattern_ids)
+        if len(unique_patterns) < 2:
+            logging.warning(f"Enhanced uncertainty shaping requires at least 2 patterns, got {len(unique_patterns)}")
+            return 0.0, {}
+        
+        # 1. Apply variance bounds
+        logvars_clipped = jnp.clip(logvars, logvar_min, logvar_max)
+        vars = jnp.exp(logvars_clipped)  # (E, B, N, H)
+        
+        # 2. Create masks for target vs other patterns
+        # Encoder 0 → Pattern 1, Encoder 1 → Pattern 2, Encoder 2 → Pattern 3
+        target_patterns = jnp.arange(1, E + 1, dtype=pattern_ids.dtype)  # [1, 2, 3]
+        is_target = jnp.where(pattern_ids[None, :] == target_patterns[:, None], 1.0, 0.0)  # (E, B)
+        is_other = 1.0 - is_target  # (E, B)
+        
+        # Expand masks to include pairs and latent dimensions: (E, B, N, H)
+        is_target_expanded = is_target[..., None, None]  # (E, B, 1, 1)
+        is_other_expanded = is_other[..., None, None]    # (E, B, 1, 1)
+        
+        # 3. Compute subset β KL with class-conditional priors
+        # KL(q||p) = 0.5 * sum(var_q + (mu_q - mu_p)^2/var_p - 1 - log(var_q/var_p))
+        # For target patterns: p = N(0, s_T²I), so var_p = s_T²
+        # For other patterns: p = N(0, s_O²I), so var_p = s_O²
+        
+        # Target pattern KL: q||N(0, s_T²I)
+        kl_target = 0.5 * (
+            vars / prior_var_target + 
+            (mus ** 2) / prior_var_target - 
+            1.0 - 
+            (logvars_clipped - jnp.log(prior_var_target))
+        )
+        
+        # Other pattern KL: q||N(0, s_O²I)  
+        kl_other = 0.5 * (
+            vars / prior_var_other + 
+            (mus ** 2) / prior_var_other - 
+            1.0 - 
+            (logvars_clipped - jnp.log(prior_var_other))
+        )
+        
+        # Apply subset β coefficients
+        kl_loss = jnp.mean(
+            beta_target * is_target_expanded * kl_target + 
+            beta_other * is_other_expanded * kl_other
+        )
+        
+        # 4. Per-sample, per-dimension uncertainty penalties
+        # Target: L_T = α_T * Σ_d σ_T² (drive certainty)
+        L_target = alpha_target * jnp.sum(is_target_expanded * vars, axis=(-2, -1))  # (E, B)
+        L_target = jnp.mean(L_target)  # Average over encoders and batch
+        
+        # Other: L_O = α_O * Σ_d softplus(m - σ_O²) (inflate uncertainty)
+        L_other = alpha_other * jnp.sum(
+            is_other_expanded * jax.nn.softplus(uncertainty_margin - vars), 
+            axis=(-2, -1)
+        )  # (E, B)
+        L_other = jnp.mean(L_other)  # Average over encoders and batch
+        
+        # 5. Entropy bonus on other patterns
+        # Maximize H[q(z|x_O)] = -γ * Σ_d log σ_O²
+        L_entropy_other = -entropy_gamma * jnp.sum(
+            is_other_expanded * logvars_clipped, 
+            axis=(-2, -1)
+        )  # (E, B)
+        L_entropy_other = jnp.mean(L_entropy_other)  # Average over encoders and batch
+        
+        # 6. Variance floor enforcement for other patterns
+        # Push other pattern variances toward ≥ variance_floor_other
+        vars_other = is_other_expanded * vars
+        floor_penalty = jnp.sum(
+            jax.nn.softplus(variance_floor_other - vars_other),
+            axis=(-2, -1)
+        )  # (E, B)
+        floor_penalty = jnp.mean(floor_penalty)  # Average over encoders and batch
+        
+        # 7. Combine all losses
+        total_loss = kl_loss + L_target + L_other + L_entropy_other + 0.1 * floor_penalty
+        
+        # 8. Compute metrics for monitoring
+        target_vars = jnp.where(is_target_expanded > 0, vars, 0.0)
+        other_vars = jnp.where(is_other_expanded > 0, vars, 0.0)
+        
+        avg_target_var = jnp.mean(target_vars)
+        avg_other_var = jnp.mean(other_vars)
+        
+        # Per-encoder specialization metrics
+        target_var_per_encoder = jnp.mean(
+            jnp.sum(is_target_expanded * vars, axis=(-2, -1)), 
+            axis=1
+        )  # (E,)
+        other_var_per_encoder = jnp.mean(
+            jnp.sum(is_other_expanded * vars, axis=(-2, -1)), 
+            axis=1
+        )  # (E,)
+        
+        specialization_ratio = target_var_per_encoder / (other_var_per_encoder + 1e-8)  # (E,)
+        
+        metrics = {
+            "enhanced_uncertainty/kl_loss": kl_loss,
+            "enhanced_uncertainty/L_target": L_target,
+            "enhanced_uncertainty/L_other": L_other,
+            "enhanced_uncertainty/L_entropy_other": L_entropy_other,
+            "enhanced_uncertainty/floor_penalty": floor_penalty,
+            "enhanced_uncertainty/total_loss": total_loss,
+            "enhanced_uncertainty/avg_target_var": avg_target_var,
+            "enhanced_uncertainty/avg_other_var": avg_other_var,
+            "enhanced_uncertainty/specialization_ratio": jnp.mean(specialization_ratio),
+            "enhanced_uncertainty/target_var_per_encoder": target_var_per_encoder,
+            "enhanced_uncertainty/other_var_per_encoder": other_var_per_encoder,
+        }
+        
+        return total_loss, metrics
 
 
 
