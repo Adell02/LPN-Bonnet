@@ -4240,6 +4240,10 @@ class StructuredTrainer:
                 )
                 if eval_every_n_steps_phase_2 and (step % eval_every_n_steps_phase_2 == 0):
                     try:
+                        logging.info(f"🔍 Phase 2: Running main evaluation at step {step}")
+                        # Run main evaluation (T-SNE, clustering metrics, etc.)
+                        self.evaluate(state, enc_params_list, self.phase2_offset + step)
+                        
                         logging.info(f"🔍 Phase 2: Running test evaluation at step {step}")
                         
                         # Test datasets evaluation for Phase 2
