@@ -70,7 +70,7 @@ training:
   # Lower values = more stable, higher values = more aggressive specialization
   # The system will dynamically adjust this coefficient based on specialization progress
   contrastive_kl: 10  # specialization effects (increased from 1e-3)
-  log_every_n_steps: 5
+  log_every_n_steps: 10
   eval_every_n_logs: 20       # null to disable
   eval_every_n_logs_phase_2: 20       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable

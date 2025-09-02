@@ -5063,14 +5063,39 @@ class StructuredTrainer:
                 pattern_mask = (pattern_ids_concat == target_pattern)
                 
                 if np.any(pattern_mask):
-                    # Get encoder points only (exclude context)
+                    # Get encoder points AND PoE context points for this pattern
                     encoder_mask = (source_ids_np < len(enc_params_list))
-                    combined_mask = pattern_mask & encoder_mask
+                    context_mask = (source_ids_np == len(enc_params_list))  # PoE context points
                     
-                    if np.any(combined_mask):
-                        encoder_latents = latents_concat[combined_mask]
-                        encoder_sources = source_ids_np[combined_mask]
-                        encoder_task_ids = task_ids_np[combined_mask]
+                    encoder_combined_mask = pattern_mask & encoder_mask
+                    context_combined_mask = pattern_mask & context_mask
+                    
+                    if np.any(encoder_combined_mask) or np.any(context_combined_mask):
+                        # Combine encoder and context latents
+                        all_latents = []
+                        all_sources = []
+                        all_task_ids = []
+                        
+                        if np.any(encoder_combined_mask):
+                            encoder_latents = latents_concat[encoder_combined_mask]
+                            encoder_sources = source_ids_np[encoder_combined_mask]
+                            encoder_task_ids = task_ids_np[encoder_combined_mask]
+                            all_latents.append(encoder_latents)
+                            all_sources.append(encoder_sources)
+                            all_task_ids.append(encoder_task_ids)
+                        
+                        if np.any(context_combined_mask):
+                            context_latents = latents_concat[context_combined_mask]
+                            context_sources = source_ids_np[context_combined_mask]
+                            context_task_ids = task_ids_np[context_combined_mask]
+                            all_latents.append(context_latents)
+                            all_sources.append(context_sources)
+                            all_task_ids.append(context_task_ids)
+                        
+                        # Concatenate all latents
+                        encoder_latents = np.concatenate(all_latents, axis=0)
+                        encoder_sources = np.concatenate(all_sources, axis=0)
+                        encoder_task_ids = np.concatenate(all_task_ids, axis=0)
                         
                         # Downsample encoder points for cleaner visualization
                         max_encoder_points = min(300, len(encoder_latents))
@@ -5096,18 +5121,19 @@ class StructuredTrainer:
                             encoder_sources = encoder_sources[encoder_indices]
                             encoder_task_ids = encoder_task_ids[encoder_indices]
                         
-                        # Create T-SNE for encoder-only latents (specific pattern)
+                        # Create T-SNE for encoder + PoE latents (specific pattern)
                         # Use pattern_id = target_pattern for all points (will show as same color)
                         encoder_patterns = np.full(len(encoder_latents), target_pattern, dtype=int)
                         
                         # Create custom title for this pattern-specific T-SNE
                         pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
-                        custom_title = f"t-SNE Visualisation of Latent Embeddings: Pattern {target_pattern}"
+                        custom_title = f"t-SNE: Pattern {target_pattern} ({pattern_names[target_pattern]}) - Encoders + PoE"
                         
                         # Create a custom T-SNE visualization for pattern-specific plots with source color coding
+                        # Now includes both encoders (0,1,2) and PoE context (3)
                         fig_tsne_encoders_single = self._create_pattern_specific_tsne(
                             latents=encoder_latents,
-                            source_ids=encoder_sources,    # 0,1,2 for different encoders
+                            source_ids=encoder_sources,    # 0,1,2 for encoders, 3 for PoE
                             task_ids=encoder_task_ids,
                             title=custom_title,
                             max_points=max_encoder_points,
@@ -5115,7 +5141,7 @@ class StructuredTrainer:
                         )
                         
                         fig_tsne_encoders_list.append(fig_tsne_encoders_single)
-                        logging.info(f"Generated encoder-only T-SNE (pattern {target_pattern}): {len(encoder_latents)} points")
+                        logging.info(f"Generated encoder+PoE T-SNE (pattern {target_pattern}): {len(encoder_latents)} points")
                     else:
                         fig_tsne_encoders_list.append(None)
                         logging.warning(f"No encoder points found for pattern {target_pattern}")
@@ -5429,7 +5455,7 @@ class StructuredTrainer:
             0: "Encoder 0",
             1: "Encoder 1", 
             2: "Encoder 2",
-            3: "Encoder 3"
+            3: "PoE Context"
         }
         
         # Plot points for each source - EXACTLY like visualize_tsne_sources
