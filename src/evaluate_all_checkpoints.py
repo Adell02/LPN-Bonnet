@@ -3292,9 +3292,13 @@ def main():
 
                                 # Generate per-checkpoint GA/ES single-method and difference heatmaps (overall & pixel)
                                 # Use full trajectory data for high-granularity heatmaps instead of just CSV data
+                                # Pre-initialize containers so they're always defined even if the try block fails early
+                                method_arrays_pixel: Dict[str, np.ndarray] = {}
+                                loss_arrays_high_granularity: Dict[str, np.ndarray] = {}
+
                                 try:
                                     # Generate high-granularity heatmaps using full trajectory data
-                                    
+
                                     # Extract full trajectory data for each method
                                     trajectory_data_by_method = {}
                                     for method in args.plot_methods:
@@ -3314,9 +3318,9 @@ def main():
                                     # Build high-granularity arrays from trajectory data
                                     method_arrays_high_granularity = {}
                                     method_arrays_pixel_high_granularity = {}
-                                    
+                                    loss_arrays_high_granularity = {}
+
                                     # Initialize fallback arrays in case they're needed
-                                    method_arrays_pixel: Dict[str, np.ndarray] = {}
                                     for method in args.plot_methods:
                                         method_arrays_pixel[method] = np.full((len(all_budgets), len(all_steps)), np.nan)
                                     
@@ -3332,6 +3336,7 @@ def main():
                                                 # Create high-granularity arrays
                                                 method_arrays_high_granularity[method] = np.full((len(traj_budgets), len(all_steps)), np.nan)
                                                 method_arrays_pixel_high_granularity[method] = np.full((len(traj_budgets), len(all_steps)), np.nan)
+                                                loss_arrays_high_granularity[method] = np.full((len(traj_budgets), len(all_steps)), np.nan)
                                                 
                                                 # Fill with trajectory data (only for current checkpoint step)
                                                 current_step_idx = all_steps.index(training_progress) if training_progress in all_steps else 0
@@ -3372,6 +3377,15 @@ def main():
                                                     elif len(data) < array_height:
                                                         data = np.pad(data, (0, array_height - len(data)), mode='constant', constant_values=np.nan)
                                                     method_arrays_pixel_high_granularity[method][:, current_step_idx] = data
+
+                                                # Raw loss data
+                                                if 'losses_mean' in traj_data:
+                                                    loss_data = traj_data['losses_mean']
+                                                    if len(loss_data) > array_height:
+                                                        loss_data = loss_data[:array_height]
+                                                    elif len(loss_data) < array_height:
+                                                        loss_data = np.pad(loss_data, (0, array_height - len(loss_data)), mode='constant', constant_values=np.nan)
+                                                    loss_arrays_high_granularity[method][:, current_step_idx] = loss_data
                                                 
                                                 # High-granularity array created
                                             else:
@@ -3422,6 +3436,9 @@ def main():
                                         # Use CSV data as fallback
                                         method_arrays_high_granularity = method_arrays
                                         method_arrays_pixel_high_granularity = method_arrays_pixel
+                                        # Use method_arrays as loss arrays if --loss was enabled
+                                        if args.loss:
+                                            loss_arrays_high_granularity = method_arrays
 
                                     # Helper to render heatmap with consistent color palette and statistical annotations
                                     def _save_heatmap(data: np.ndarray, steps_list: List[int], budgets_list: List[int], title: str, center: float | None, stats_data: Dict[str, Any] = None) -> Path | None:
@@ -3549,6 +3566,7 @@ def main():
                                     # Use high-granularity data for heatmaps if available, otherwise fallback to CSV data
                                     arrays_to_use = method_arrays_high_granularity if method_arrays_high_granularity else method_arrays
                                     pixel_arrays_to_use = method_arrays_pixel_high_granularity if method_arrays_pixel_high_granularity else method_arrays_pixel
+                                    loss_arrays_to_use = loss_arrays_high_granularity if loss_arrays_high_granularity else (method_arrays if args.loss else {})
                                     
                                     # Debug: Print data availability
                                     print(f"🔍 DEBUG: Heatmap data availability:")
@@ -3558,6 +3576,7 @@ def main():
                                     print(f"   method_arrays_pixel: {bool(method_arrays_pixel)}")
                                     print(f"   arrays_to_use keys: {list(arrays_to_use.keys()) if arrays_to_use else 'None'}")
                                     print(f"   pixel_arrays_to_use keys: {list(pixel_arrays_to_use.keys()) if pixel_arrays_to_use else 'None'}")
+                                    print(f"   loss_arrays_to_use keys: {list(loss_arrays_to_use.keys()) if loss_arrays_to_use else 'None'}")
                                     
                                     # Debug: Check data content
                                     for method in args.plot_methods:
@@ -3679,6 +3698,27 @@ def main():
                                             print(f"❌ DEBUG: GA-ES pixel accuracy difference heatmap generation failed (p={p})")
                                     else:
                                         print(f"❌ DEBUG: Cannot generate GA-ES pixel difference - GA in pixel_arrays: {'gradient_ascent' in pixel_arrays_to_use}, ES in pixel_arrays: {'evolutionary_search' in pixel_arrays_to_use}")
+
+                                    # GA − ES loss difference heatmap
+                                    if "gradient_ascent" in loss_arrays_to_use and "evolutionary_search" in loss_arrays_to_use:
+                                        print(f"🔍 DEBUG: Generating GA-ES loss difference heatmap...")
+                                        ga_loss = loss_arrays_to_use["gradient_ascent"]
+                                        es_loss = loss_arrays_to_use["evolutionary_search"]
+                                        if ga_loss.shape == es_loss.shape:
+                                            diff_loss = ga_loss - es_loss
+                                            ga_budget_list = get_budget_list_for_method("gradient_ascent")
+                                            p = _save_heatmap(diff_loss, all_steps, ga_budget_list, f"checkpoint_{step_tag}_ga_minus_es_loss", center=0, stats_data=heatmap_stats)
+                                        else:
+                                            print(f"❌ DEBUG: Cannot subtract GA-ES loss arrays - GA shape: {ga_loss.shape}, ES shape: {es_loss.shape}")
+                                            p = None
+                                        if p and p.exists():
+                                            print(f"✅ DEBUG: GA-ES loss difference heatmap saved to {p}")
+                                            wandb.log({f"checkpoint_{training_progress}/ga_minus_es_loss": wandb.Image(str(p))})
+                                        else:
+                                            print(f"❌ DEBUG: GA-ES loss difference heatmap generation failed (p={p})")
+                                    else:
+                                        print(f"❌ DEBUG: Cannot generate GA-ES loss difference - GA in loss_arrays: {'gradient_ascent' in loss_arrays_to_use}, ES in loss_arrays: {'evolutionary_search' in loss_arrays_to_use}")
+
                                     print("📊 Generated and uploaded per-checkpoint GA/ES heatmaps (overall/pixel and diffs)")
                                 except Exception as e:
                                     print(f"⚠️  Failed to generate per-checkpoint GA/ES heatmaps: {e}")
