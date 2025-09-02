@@ -3796,8 +3796,8 @@ class StructuredTrainer:
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
-        # Use decoder_expose_steps to control Phase 2 duration; Phase 1 uses encoder_expose_steps
-        num_steps = cfg.training.decoder_expose_steps if self.encoder_expose_steps == 0 else cfg.training.total_num_steps
+        # Training duration: Phase 1 uses encoder_expose_steps; Phase 2 uses decoder_expose_steps
+        num_steps = cfg.training.decoder_expose_steps if self.encoder_expose_steps == 0 else self.encoder_expose_steps
         log_every = cfg.training.log_every_n_steps
         self.enc_params_list = enc_params_list  # Store for train_n_steps
         
@@ -6625,8 +6625,12 @@ def run(cfg: omegaconf.DictConfig):
         trainer.resume_step_offset = 0
         
     state = trainer.train(state, enc_params_list)
-    # Final evaluation with the final step value
-    final_step = cfg.training.total_num_steps
+    # Final evaluation with a consistent step value at end of training
+    # Use Phase 2 global when encoders are frozen, else Phase 1
+    num_enc = len(cfg.structured.artifacts.models)
+    enc_steps = int(cfg.training.get("encoder_expose_steps", 0) or 0)
+    dec_steps = int(cfg.training.get("decoder_expose_steps", 0) or 0)
+    final_step = num_enc * enc_steps + dec_steps if enc_steps > 0 else dec_steps
     trainer.evaluate(state, enc_params_list, final_step)
     
     # Clean up matplotlib to prevent weakref warnings
