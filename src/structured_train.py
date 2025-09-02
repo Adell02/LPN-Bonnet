@@ -6460,10 +6460,10 @@ class StructuredTrainer:
             from scipy.stats import norm
             from models.structured_lpn import poe_diag_gaussians
 
-            # Prepare evaluation data for each pattern
+            # Prepare evaluation data for each pattern - use same method as merged_encoder_certainty_panel
             eval_data = {}
             for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._create_specialized_training_data(pattern_id)
+                eval_data[pattern_id] = self._get_phase2_eval_data(target_pattern=pattern_id)
 
             poster_fig, poster_axes = plt.subplots(2, 3, figsize=(20, 12))
             if len(poster_axes.shape) == 1:
@@ -6542,8 +6542,8 @@ class StructuredTrainer:
                         stacked_logvars = np.stack(all_encoder_logvars)
                         poe_alphas = np.ones(len(self.encoders)) / len(self.encoders)
                         poe_mu, poe_logvar = poe_diag_gaussians(
-                            stacked_mus[None, ...],
-                            stacked_logvars[None, ...],
+                            stacked_mus,        # Remove extra [None, ...] - use same as merged_encoder_certainty_panel
+                            stacked_logvars,    # Remove extra [None, ...] - use same as merged_encoder_certainty_panel
                             poe_alphas,
                         )
                         poe_mu_np = np.array(poe_mu).squeeze()
