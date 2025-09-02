@@ -168,7 +168,18 @@ def main() -> None:
     parser.add_argument("--run_name", required=True, help="W&B run name")
     parser.add_argument("--project", default="LPN-ARC", help="W&B project name")
     parser.add_argument("--entity", default="ga624-imperial-college-london", help="W&B entity")
-    parser.add_argument("--budget", type=int, default=500, help="Total evaluation budget")
+    parser.add_argument("--max_checkpoints", type=int, default=None, help="Limit number of checkpoints")
+    parser.add_argument(
+        "--checkpoint_strategy",
+        choices=["even", "first"],
+        default="even",
+        help="How to subsample checkpoints if max_checkpoints is set",
+    )
+    parser.add_argument("--budget_start", type=int, default=0, help="Starting budget step")
+    parser.add_argument("--budget_end", type=int, default=500, help="Final budget step")
+    parser.add_argument("--ga_lr", type=float, default=0.2, help="Gradient ascent learning rate")
+    parser.add_argument("--es_mutation_std", type=float, default=0.05, help="ES mutation std")
+    parser.add_argument("--es_mutation_decay", type=float, default=0.95, help="ES mutation decay")
     parser.add_argument("--json_challenges", type=str, default=None)
     parser.add_argument("--json_solutions", type=str, default=None)
     parser.add_argument("--dataset_folder", type=str, default=None)
@@ -183,6 +194,12 @@ def main() -> None:
     if not checkpoints:
         print("No checkpoints found.")
         return
+    if args.max_checkpoints and len(checkpoints) > args.max_checkpoints:
+        if args.checkpoint_strategy == "even":
+            idxs = np.linspace(0, len(checkpoints) - 1, args.max_checkpoints, dtype=int)
+            checkpoints = [checkpoints[i] for i in idxs]
+        else:
+            checkpoints = checkpoints[: args.max_checkpoints]
 
     run = wandb.init(project=args.project, entity=args.entity, name=f"compare_search_heatmap::{args.run_name}")
 
@@ -191,8 +208,8 @@ def main() -> None:
     ga_acc_all: List[np.ndarray] = []
     es_acc_all: List[np.ndarray] = []
 
-    # Use common budget grid for interpolation
-    common_budgets = np.linspace(0, args.budget, num=11)
+    # Use common budget grid for interpolation (all available budgets)
+    common_budgets = np.arange(args.budget_start, args.budget_end + 1)
 
     for idx, cp in enumerate(checkpoints, 1):
         artifact_path = f"{args.entity}/{args.project}/{cp['name']}"
@@ -201,13 +218,19 @@ def main() -> None:
         ga_data = run_method(
             artifact_path,
             "gradient_ascent",
-            {"num_steps": args.budget // 2, "lr": 0.5},
+            {"num_steps": args.budget_end, "lr": args.ga_lr},
             dataset_args,
         )
+        es_generations = max(1, args.budget_end // 50)
         es_data = run_method(
             artifact_path,
             "evolutionary_search",
-            {"population_size": 50, "num_generations": 10, "mutation_std": 0.5, "mutation_decay": 0.95},
+            {
+                "population_size": 50,
+                "num_generations": es_generations,
+                "mutation_std": args.es_mutation_std,
+                "mutation_decay": args.es_mutation_decay,
+            },
             dataset_args,
         )
 
@@ -217,11 +240,23 @@ def main() -> None:
         es_losses_all.append(es_losses_interp)
 
         if ga_data.accuracies is not None:
-            ga_acc_interp = np.interp(common_budgets[: len(ga_data.accuracies)], ga_data.budgets[: len(ga_data.accuracies)], ga_data.accuracies)
+            ga_acc_interp = np.interp(
+                common_budgets,
+                ga_data.budgets[: len(ga_data.accuracies)],
+                ga_data.accuracies,
+                left=np.nan,
+                right=np.nan,
+            )
         else:
             ga_acc_interp = np.full_like(common_budgets, np.nan)
         if es_data.accuracies is not None:
-            es_acc_interp = np.interp(common_budgets[: len(es_data.accuracies)], es_data.budgets[: len(es_data.accuracies)], es_data.accuracies)
+            es_acc_interp = np.interp(
+                common_budgets,
+                es_data.budgets[: len(es_data.accuracies)],
+                es_data.accuracies,
+                left=np.nan,
+                right=np.nan,
+            )
         else:
             es_acc_interp = np.full_like(common_budgets, np.nan)
         ga_acc_all.append(ga_acc_interp)
