@@ -1207,83 +1207,88 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         else:
             return v  # Losses: keep original sign (continuous custom background)
 
-    # figure
-    fig, ax = plt.subplots(1, 1, figsize=(16, 14))
-    title = f"Latent Search Trajectories: GA and ES (Z_dim = {original_dim})\nBoth methods start from mean latent"
-    ax.set_title(title, fontsize=20, fontweight='bold')
-    ax.set_xlabel("z1", fontsize=16); ax.set_ylabel("z2", fontsize=16)
-    ax.set_aspect("equal")  # With whitened PCA, this will look balanced
-    ax.set_xlim(*xlim); ax.set_ylim(*ylim)
-
-    # Initialize background variables to avoid UnboundLocalError
-    XX, YY, ZZ = None, None, None
-    bg_xmin, bg_xmax, bg_ymin, bg_ymax = None, None, None, None
-
-    # soft heatmap background by splatting losses if available
-    if have_field:
-        # KEY IMPROVEMENT: Create background using original high-dimensional points and their loss values
-        # Project the points to 2D while preserving the loss landscape structure
-        # This ensures each 2D point has its correct loss value, creating an accurate loss landscape
-        P_original = np.concatenate(bgP_original, axis=0)  # (N, D) where D is original dim
-        V_original = orient(np.concatenate(bgV_original, axis=0))  # (N,)         
-        if original_dim > 2 and pca_transformer is not None:
-            print(f"[plot] Creating background using {len(P_original)} {original_dim}D points projected to 2D")
-            # Project original high-dimensional points to 2D for background creation
-            P_2d = _apply_fitted_pca(P_original, pca_transformer, target_dim=2)
-            print(f"[plot] Background: {P_original.shape} -> {P_2d.shape}")
-        else:
-            print(f"[plot] Creating background using {len(P_original)} 2D points directly")
-            P_2d = P_original  # Already 2D
-            
-        # Create the background heatmap using the projected points with their original loss values
-        # Verify that background points are within the calculated bounds
-        bg_xmin, bg_xmax = P_2d[:, 0].min(), P_2d[:, 0].max()
-        bg_ymin, bg_ymax = P_2d[:, 1].min(), P_2d[:, 1].max()
-        print(f"[background] Background points bounds: x[{bg_xmin:.3f}, {bg_xmax:.3f}], y[{bg_ymin:.3f}, {bg_ymax:.3f}]")
-        print(f"[background] Plot bounds: xlim={xlim}, ylim={ylim}")
-        
-        # Check if background points extend beyond plot bounds
-        if bg_xmin < xlim[0] or bg_xmax > xlim[1] or bg_ymin < ylim[0] or bg_ymax > ylim[1]:
-            print(f"[background] ⚠️  WARNING: Background points extend beyond plot bounds!")
-            print(f"[background]   Background x: [{bg_xmin:.3f}, {bg_xmax:.3f}] vs Plot x: {xlim}")
-            print(f"[background]   Background y: [{bg_ymin:.3f}, {bg_ymax:.3f}] vs Plot y: {ylim}")
-        else:
-            print(f"[background] ✅ Background points fully within plot bounds")
-        
-        XX, YY, ZZ = _splat_background(
-            P_2d, V_original, xlim, ylim,
-                n=background_resolution, 
-                enable_smoothing=background_smoothing,
-                knn_k=background_knn,
-                bandwidth_scale=background_bandwidth_scale,
-                global_mix=background_global_mix
-            )
-        
-        # Display the background
-        im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.7)
-        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        
-        # Set appropriate colorbar label based on field type
-        if field_name.lower() == "loss":
-            cbar.set_label("Loss", fontsize=14)
-        elif field_name.lower() == "score":
-            cbar.set_label("Score", fontsize=14)
-        else:
-            cbar.set_label(field_name, fontsize=14)
-        
-        # Set unexplored areas to white by setting the background color
-        ax.set_facecolor("white")
+    # Skip trajectory plot if dataset_length > 1
+    if dataset_length and dataset_length > 1:
+        print(f"[plot] Skipping trajectory plot (dataset_length={dataset_length} > 1)")
+        trajectory_plot_path = None
     else:
-        ax.set_facecolor("white")
+        # figure
+        fig, ax = plt.subplots(1, 1, figsize=(16, 14))
+        title = f"Latent Search Trajectories: GA and ES (Z_dim = {original_dim})\nBoth methods start from mean latent"
+        ax.set_title(title, fontsize=20, fontweight='bold')
+        ax.set_xlabel("z1", fontsize=16); ax.set_ylabel("z2", fontsize=16)
+        ax.set_aspect("equal")  # With whitened PCA, this will look balanced
+        ax.set_xlim(*xlim); ax.set_ylim(*ylim)
 
-    # ES population: show all samples in orange with full alpha + translucent generation circles
-    if es.pop_pts is not None:
-        # Flatten ES population points for plotting
-        es_pop_pts_flat = es.pop_pts.reshape(-1, 2)
-        
-        # Plot ALL ES samples with custom color
-        ax.scatter(es_pop_pts_flat[:, 0], es_pop_pts_flat[:, 1], s=80, alpha=1.0,
-                   color="#DB74DB", linewidths=0, zorder=1, label="ES population (all samples)")
+        # Initialize background variables to avoid UnboundLocalError
+        XX, YY, ZZ = None, None, None
+        bg_xmin, bg_xmax, bg_ymin, bg_ymax = None, None, None, None
+
+        # soft heatmap background by splatting losses if available
+        if have_field:
+            # KEY IMPROVEMENT: Create background using original high-dimensional points and their loss values
+            # Project the points to 2D while preserving the loss landscape structure
+            # This ensures each 2D point has its correct loss value, creating an accurate loss landscape
+            P_original = np.concatenate(bgP_original, axis=0)  # (N, D) where D is original dim
+            V_original = orient(np.concatenate(bgV_original, axis=0))  # (N,)         
+            if original_dim > 2 and pca_transformer is not None:
+                print(f"[plot] Creating background using {len(P_original)} {original_dim}D points projected to 2D")
+                # Project original high-dimensional points to 2D for background creation
+                P_2d = _apply_fitted_pca(P_original, pca_transformer, target_dim=2)
+                print(f"[plot] Background: {P_original.shape} -> {P_2d.shape}")
+            else:
+                print(f"[plot] Creating background using {len(P_original)} 2D points directly")
+                P_2d = P_original  # Already 2D
+            
+            # Create the background heatmap using the projected points with their original loss values
+            # Verify that background points are within the calculated bounds
+            bg_xmin, bg_xmax = P_2d[:, 0].min(), P_2d[:, 0].max()
+            bg_ymin, bg_ymax = P_2d[:, 1].min(), P_2d[:, 1].max()
+            print(f"[background] Background points bounds: x[{bg_xmin:.3f}, {bg_xmax:.3f}], y[{bg_ymin:.3f}, {bg_ymax:.3f}]")
+            print(f"[background] Plot bounds: xlim={xlim}, ylim={ylim}")
+            
+            # Check if background points extend beyond plot bounds
+            if bg_xmin < xlim[0] or bg_xmax > xlim[1] or bg_ymin < ylim[0] or bg_ymax > ylim[1]:
+                print(f"[background] ⚠️  WARNING: Background points extend beyond plot bounds!")
+                print(f"[background]   Background x: [{bg_xmin:.3f}, {bg_xmax:.3f}] vs Plot x: {xlim}")
+                print(f"[background]   Background y: [{bg_ymin:.3f}, {bg_ymax:.3f}] vs Plot y: {ylim}")
+            else:
+                print(f"[background] ✅ Background points fully within plot bounds")
+            
+            XX, YY, ZZ = _splat_background(
+                P_2d, V_original, xlim, ylim,
+                    n=background_resolution, 
+                    enable_smoothing=background_smoothing,
+                    knn_k=background_knn,
+                    bandwidth_scale=background_bandwidth_scale,
+                    global_mix=background_global_mix
+                )
+            
+            # Display the background
+            im = ax.pcolormesh(XX, YY, ZZ, shading="auto", cmap=cmap, norm=norm, zorder=0, alpha=0.7)
+            cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            
+            # Set appropriate colorbar label based on field type
+            if field_name.lower() == "loss":
+                cbar.set_label("Loss", fontsize=14)
+            elif field_name.lower() == "score":
+                cbar.set_label("Score", fontsize=14)
+            else:
+                cbar.set_label(field_name, fontsize=14)
+            
+            # Set unexplored areas to white by setting the background color
+            ax.set_facecolor("white")
+        else:
+            ax.set_facecolor("white")
+
+        # ES population: show all samples in orange with full alpha + translucent generation circles
+        if es.pop_pts is not None:
+            # Flatten ES population points for plotting
+            es_pop_pts_flat = es.pop_pts.reshape(-1, 2)
+            
+            # Plot ALL ES samples with custom color
+            ax.scatter(es_pop_pts_flat[:, 0], es_pop_pts_flat[:, 1], s=80, alpha=1.0,
+                       color="#DB74DB", linewidths=0, zorder=1, label="ES population (all samples)")
         
         # Then add translucent circles to cluster samples from the same generation
         if es.gen_idx is not None or es.vals is not None:
@@ -1433,96 +1438,97 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
     else:
         print(f"[plot] GA plotting skipped: pts={ga.pts is not None}, len={len(ga.pts) if ga.pts is not None else 0}")
 
-    # Create comprehensive legend with all elements
-    legend_elements = []
+        # Create comprehensive legend with all elements
+        legend_elements = []
+        
+        # ES population (all samples with custom color)
+        if es.pop_pts is not None:
+            legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#DB74DB', 
+                                           markersize=15, alpha=1.0, label='ES population (all samples)'))
+        
+        # Generation clusters (general representation)
+        if es.pop_pts is not None and es.gen_idx is not None:
+            legend_elements.append(plt.Line2D([0], [0], marker='o', color='#FBB998', markerfacecolor='#FBB998', 
+                                           markersize=18, alpha=0.3, label='ES generation clusters'))
+        
+        # Trajectory paths
+        legend_elements.append(plt.Line2D([0], [0], color='#DB74DB', linewidth=5, label='ES trajectory (starts from mean latent)'))
+        legend_elements.append(plt.Line2D([0], [0], color='#FBB998', linewidth=5, label='GA trajectory (starts from mean latent)'))
+        
+        # Starting points info (no star markers)
+        # Both methods start from the same mean latent point
     
-    # ES population (all samples with custom color)
-    if es.pop_pts is not None:
-        legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#DB74DB', 
-                                       markersize=15, alpha=1.0, label='ES population (all samples)'))
-    
-    # Generation clusters (general representation)
-    if es.pop_pts is not None and es.gen_idx is not None:
-        legend_elements.append(plt.Line2D([0], [0], marker='o', color='#FBB998', markerfacecolor='#FBB998', 
-                                       markersize=18, alpha=0.3, label='ES generation clusters'))
-    
-    # Trajectory paths
-    legend_elements.append(plt.Line2D([0], [0], color='#DB74DB', linewidth=5, label='ES trajectory (starts from mean latent)'))
-    legend_elements.append(plt.Line2D([0], [0], color='#FBB998', linewidth=5, label='GA trajectory (starts from mean latent)'))
-    
-    # Starting points info (no star markers)
-    # Both methods start from the same mean latent point
-    
-    # Start/End markers for trajectory progression
-    legend_elements.append(plt.Line2D([0], [0], marker='o', color='k', markerfacecolor='w', 
-                                     markersize=15, markeredgewidth=2, label='Trajectory start'))
-    legend_elements.append(plt.Line2D([0], [0], marker='s', color='k', markerfacecolor='w', 
-                                     markersize=15, markeredgewidth=2, label='Trajectory end'))
-    
-    ax.legend(handles=legend_elements, loc="upper right", frameon=True, fontsize=14)
-    plt.tight_layout()
+        # Start/End markers for trajectory progression
+        legend_elements.append(plt.Line2D([0], [0], marker='o', color='k', markerfacecolor='w', 
+                                         markersize=15, markeredgewidth=2, label='Trajectory start'))
+        legend_elements.append(plt.Line2D([0], [0], marker='s', color='k', markerfacecolor='w', 
+                                         markersize=15, markeredgewidth=2, label='Trajectory end'))
+        
+        ax.legend(handles=legend_elements, loc="upper right", frameon=True, fontsize=14)
+        plt.tight_layout()
 
-    # FINAL VERIFICATION: Ensure all elements are within plot bounds
-    print(f"\n[verification] FINAL PLOT BOUNDS VERIFICATION:")
-    print(f"[verification] Plot xlim: {xlim}, ylim: {ylim}")
+        # FINAL VERIFICATION: Ensure all elements are within plot bounds
+        print(f"\n[verification] FINAL PLOT BOUNDS VERIFICATION:")
+        print(f"[verification] Plot xlim: {xlim}, ylim: {ylim}")
+        
+        # Check GA trajectory bounds
+        if ga.pts is not None:
+            ga_flat = ga.pts.reshape(-1, 2)
+            ga_xmin, ga_xmax = ga_flat[:, 0].min(), ga_flat[:, 0].max()
+            ga_ymin, ga_ymax = ga_flat[:, 1].min(), ga_flat[:, 1].max()
+            ga_visible = (ga_xmin >= xlim[0] and ga_xmax <= xlim[1] and ga_ymin >= ylim[0] and ga_ymax <= ylim[1])
+            print(f"[verification] GA trajectory: x[{ga_xmin:.3f}, {ga_xmax:.3f}], y[{ga_ymin:.3f}, {ga_ymax:.3f}] - {'✅ VISIBLE' if ga_visible else '❌ OUT OF BOUNDS'}")
+        
+        # Check ES trajectory bounds
+        if es.pts is not None:
+            es_flat = es.pts.reshape(-1, 2)
+            es_xmin, es_xmax = es_flat[:, 0].min(), es_flat[:, 0].max()
+            es_ymin, es_ymax = es_flat[:, 1].min(), es_flat[:, 1].max()
+            es_visible = (es_xmin >= xlim[0] and es_xmax <= xlim[1] and es_ymin >= ylim[0] and es_ymax <= ylim[1])
+            print(f"[verification] ES trajectory: x[{es_xmin:.3f}, {es_xmax:.3f}], y[{es_ymin:.3f}, {es_ymax:.3f}] - {'✅ VISIBLE' if es_visible else '❌ OUT OF BOUNDS'}")
+        
+        # Check ES population bounds
+        if es.pop_pts is not None:
+            es_pop_flat = es.pop_pts.reshape(-1, 2)
+            es_pop_xmin, es_pop_xmax = es_pop_flat[:, 0].min(), es_pop_flat[:, 0].max()
+            es_pop_ymin, es_pop_ymax = es_pop_flat[:, 1].min(), es_pop_flat[:, 1].max()
+            es_pop_visible = (es_pop_xmin >= xlim[0] and es_pop_xmax <= xlim[1] and es_pop_ymin >= ylim[0] and es_pop_ymax <= ylim[1])
+            print(f"[verification] ES population: x[{es_pop_xmin:.3f}, {es_pop_xmax:.3f}], y[{es_pop_ymin:.3f}, {es_pop_ymax:.3f}] - {'✅ VISIBLE' if es_pop_visible else '❌ OUT OF BOUNDS'}")
+        
+        # Check background bounds
+        if have_field and bg_xmin is not None:
+            bg_visible = (bg_xmin >= xlim[0] and bg_xmax <= xlim[1] and bg_ymin >= ylim[0] and bg_ymax <= ylim[1])
+            print(f"[verification] Background landscape: x[{bg_xmin:.3f}, {bg_xmax:.3f}], y[{bg_ymin:.3f}, {bg_ymax:.3f}] - {'✅ VISIBLE' if bg_visible else '❌ OUT OF BOUNDS'}")
+        elif have_field:
+            print(f"[verification] Background landscape: No background data available")
+            bg_visible = False
+        else:
+            print(f"[verification] Background landscape: No background field requested")
+            bg_visible = True  # No background to check
+        
+        # Overall coverage summary
+        all_visible = all([
+            ga.pts is None or ga_visible,
+            es.pts is None or es_visible,
+            es.pop_pts is None or es_pop_visible,
+            not have_field or bg_visible
+        ])
     
-    # Check GA trajectory bounds
-    if ga.pts is not None:
-        ga_flat = ga.pts.reshape(-1, 2)
-        ga_xmin, ga_xmax = ga_flat[:, 0].min(), ga_flat[:, 0].max()
-        ga_ymin, ga_ymax = ga_flat[:, 1].min(), ga_flat[:, 1].max()
-        ga_visible = (ga_xmin >= xlim[0] and ga_xmax <= xlim[1] and ga_ymin >= ylim[0] and ga_ymax <= ylim[1])
-        print(f"[verification] GA trajectory: x[{ga_xmin:.3f}, {ga_xmax:.3f}], y[{ga_ymin:.3f}, {ga_ymax:.3f}] - {'✅ VISIBLE' if ga_visible else '❌ OUT OF BOUNDS'}")
-    
-    # Check ES trajectory bounds
-    if es.pts is not None:
-        es_flat = es.pts.reshape(-1, 2)
-        es_xmin, es_xmax = es_flat[:, 0].min(), es_flat[:, 0].max()
-        es_ymin, es_ymax = es_flat[:, 1].min(), es_flat[:, 1].max()
-        es_visible = (es_xmin >= xlim[0] and es_xmax <= xlim[1] and es_ymin >= ylim[0] and es_ymax <= ylim[1])
-        print(f"[verification] ES trajectory: x[{es_xmin:.3f}, {es_xmax:.3f}], y[{es_ymin:.3f}, {es_ymax:.3f}] - {'✅ VISIBLE' if es_visible else '❌ OUT OF BOUNDS'}")
-    
-    # Check ES population bounds
-    if es.pop_pts is not None:
-        es_pop_flat = es.pop_pts.reshape(-1, 2)
-        es_pop_xmin, es_pop_xmax = es_pop_flat[:, 0].min(), es_pop_flat[:, 0].max()
-        es_pop_ymin, es_pop_ymax = es_pop_flat[:, 1].min(), es_pop_flat[:, 1].max()
-        es_pop_visible = (es_pop_xmin >= xlim[0] and es_pop_xmax <= xlim[1] and es_pop_ymin >= ylim[0] and es_pop_ymax <= ylim[1])
-        print(f"[verification] ES population: x[{es_pop_xmin:.3f}, {es_pop_xmax:.3f}], y[{es_pop_ymin:.3f}, {es_pop_ymax:.3f}] - {'✅ VISIBLE' if es_pop_visible else '❌ OUT OF BOUNDS'}")
-    
-    # Check background bounds
-    if have_field and bg_xmin is not None:
-        bg_visible = (bg_xmin >= xlim[0] and bg_xmax <= xlim[1] and bg_ymin >= ylim[0] and bg_ymax <= ylim[1])
-        print(f"[verification] Background landscape: x[{bg_xmin:.3f}, {bg_xmax:.3f}], y[{bg_ymin:.3f}, {bg_ymax:.3f}] - {'✅ VISIBLE' if bg_visible else '❌ OUT OF BOUNDS'}")
-    elif have_field:
-        print(f"[verification] Background landscape: No background data available")
-        bg_visible = False
-    else:
-        print(f"[verification] Background landscape: No background field requested")
-        bg_visible = True  # No background to check
-    
-    # Overall coverage summary
-    all_visible = all([
-        ga.pts is None or ga_visible,
-        es.pts is None or es_visible,
-        es.pop_pts is None or es_pop_visible,
-        not have_field or bg_visible
-    ])
-    
-    if all_visible:
-        print(f"[verification] 🎉 SUCCESS: All plot elements are fully visible within bounds!")
-    else:
-        print(f"[verification] ⚠️  WARNING: Some elements may extend beyond plot bounds!")
-    
-    print(f"[verification] Plot dimensions: {xlim[1] - xlim[0]:.3f} × {ylim[1] - ylim[0]:.3f}")
-    print(f"[verification] Aspect ratio: {(xlim[1] - xlim[0]) / (ylim[1] - ylim[0]):.3f}")
+        if all_visible:
+            print(f"[verification] 🎉 SUCCESS: All plot elements are fully visible within bounds!")
+        else:
+            print(f"[verification] ⚠️  WARNING: Some elements may extend beyond plot bounds!")
+        
+        print(f"[verification] Plot dimensions: {xlim[1] - xlim[0]:.3f} × {ylim[1] - ylim[0]:.3f}")
+        print(f"[verification] Aspect ratio: {(xlim[1] - xlim[0]) / (ylim[1] - ylim[0]):.3f}")
 
-    os.makedirs(out_dir, exist_ok=True)
-    png = os.path.join(out_dir, "search_trajectories.png")
-    svg = os.path.join(out_dir, "search_trajectories.svg")
-    fig.savefig(png, dpi=300)
-    fig.savefig(svg)
-    plt.close(fig)
+        os.makedirs(out_dir, exist_ok=True)
+        png = os.path.join(out_dir, "search_trajectories.png")
+        svg = os.path.join(out_dir, "search_trajectories.svg")
+        fig.savefig(png, dpi=300)
+        fig.savefig(svg)
+        plt.close(fig)
+        trajectory_plot_path = png
     
     # Generate loss curves plot
     loss_plot_path = plot_loss_curves(ga, es, out_dir, original_dim, 
@@ -1540,7 +1546,7 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
         else:
             print(f"[stats] Failed to create statistical histograms")
     
-    return png, loss_plot_path, stats_plot_path, original_dim
+    return trajectory_plot_path, loss_plot_path, stats_plot_path, original_dim
 
 
 def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2, 
