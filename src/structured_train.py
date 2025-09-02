@@ -52,7 +52,7 @@ from tqdm.auto import trange
 
 from models.transformer import EncoderTransformer, DecoderTransformer
 from models.utils import DecoderTransformerConfig, EncoderTransformerConfig
-from models.structured_lpn import StructuredLPN, average_params
+from models.structured_lpn import StructuredLPN, average_params, poe_diag_gaussians
 from data_utils import (
     load_datasets,
     shuffle_dataset_into_batches,
@@ -1603,23 +1603,20 @@ class StructuredTrainer:
         logging.info(f"       Creating T-SNE plot for Encoder {enc_idx}...")
         self._create_encoder_tsne(enc_idx, encoder_params, eval_data, current_global_step)
         
-        # Compute and log clustering metrics for Phase 1
-        logging.info(f"       Computing clustering metrics for Encoder {enc_idx}...")
+        # Compute and log clustering metrics using structured PoE latents
+        logging.info("       Computing structured clustering metrics...")
         try:
-            # Create clustering data for this encoder
-            clustering_data = self._create_encoder_clustering_data(enc_idx, encoder_params, eval_data)
+            clustering_data = self._create_structured_clustering_data(state, eval_data)
             if clustering_data:
-                # Compute clustering metrics
-                clustering_metrics = self._compute_phase1_clustering_metrics(clustering_data, enc_idx)
-                # Log clustering metrics to WandB with the correct step
+                clustering_metrics = self._compute_phase1_clustering_metrics(clustering_data)
                 for metric_name, metric_value in clustering_metrics.items():
-                    if metric_value is not None:  # Skip None values (e.g., silhouette scores when sklearn unavailable)
-                        wandb.log({f"phase_1/clustering/encoder_{enc_idx}/{metric_name}": metric_value}, step=current_global_step)
-                logging.info(f"       ✅ Clustering metrics computed and logged for Encoder {enc_idx}")
+                    if metric_value is not None:
+                        wandb.log({f"phase_1/clustering/structured/{metric_name}": metric_value}, step=current_global_step)
+                logging.info("       ✅ Structured clustering metrics computed and logged")
             else:
-                logging.warning(f"       ❌ Failed to create clustering data for Encoder {enc_idx}")
+                logging.warning("       ❌ Failed to create structured clustering data")
         except Exception as e:
-            logging.warning(f"       ❌ Clustering metrics computation failed for Encoder {enc_idx}: {e}")
+            logging.warning(f"       ❌ Structured clustering metrics computation failed: {e}")
         
         # Evaluate target pattern reconstruction quality
         logging.info(f"       Evaluating target pattern reconstruction for Encoder {enc_idx}...")
@@ -2055,18 +2052,6 @@ class StructuredTrainer:
             tsne_metrics = self._generate_phase2_tsne_visualizations(state, explicit_pattern_ids, num_steps)
             phase2_metrics.update(tsne_metrics)
             
-            # Generate clustering metrics ONCE
-            logging.info(f"🔍 Phase 2: Generating clustering metrics...")
-            clustering_data = self._create_comprehensive_clustering_data(state, explicit_pattern_ids)
-            if clustering_data:
-                clustering_metrics = self._compute_phase2_clustering_metrics(clustering_data)
-                distance_metrics = self._compute_phase2_distance_metrics(clustering_data)
-                phase2_metrics.update(clustering_metrics)
-                phase2_metrics.update(distance_metrics)
-                logging.info(f"✅ Phase 2: Clustering metrics computed successfully")
-            else:
-                logging.warning(f"⚠️  Phase 2: Failed to create clustering data")
-            
             # Generate certainty plots ONCE
             logging.info(f"🔍 Phase 2: Generating certainty plots...")
             try:
@@ -2168,24 +2153,7 @@ class StructuredTrainer:
             decoder_metrics = self._compute_decoder_training_metrics(avg_metrics)
             phase2_metrics.update(decoder_metrics)
             
-            # 4. CLUSTERING METRICS (encoder specialization and latent space analysis)
-            try:
-                logging.info(f"🔍 Phase 2: Computing clustering metrics...")
-                clustering_data = self._create_comprehensive_clustering_data(state, pattern_ids)
-                if clustering_data:
-                    clustering_metrics = self._compute_phase2_clustering_metrics(clustering_data)
-                    phase2_metrics.update(clustering_metrics)
-                    
-                    distance_metrics = self._compute_phase2_distance_metrics(clustering_data)
-                    phase2_metrics.update(distance_metrics)
-                    
-                    logging.info(f"✅ Phase 2: Clustering metrics computed and added to phase2_metrics")
-                else:
-                    logging.warning(f"⚠️  Phase 2: Failed to create clustering data")
-            except Exception as e:
-                logging.warning(f"⚠️  Phase 2: Clustering metrics computation failed: {e}")
-            
-            # 5. GENERATE PHASE 2 PLOTS
+            # 4. GENERATE PHASE 2 PLOTS
             phase2_plots = self._generate_phase2_plots(
                 all_encoder_outputs, pattern_ids, num_steps
             )
@@ -2305,34 +2273,6 @@ class StructuredTrainer:
                     logging.warning(f"❌ Phase 2 combined T-SNE generation failed")
             except Exception as e:
                 logging.warning(f"Phase 2 combined T-SNE generation failed: {e}")
-            
-            # Phase 2: COMPUTE COMPREHENSIVE CLUSTERING METRICS AND DISTANCE ANALYSIS
-            try:
-                logging.info(f"🔍 Phase 2: Computing clustering metrics and distance analysis...")
-                
-                # Create comprehensive evaluation data for clustering analysis
-                clustering_data = self._create_comprehensive_clustering_data(state, pattern_ids)
-                
-                if clustering_data is not None:
-                    # Compute clustering metrics (same as commit)
-                    clustering_metrics = self._compute_phase2_clustering_metrics(clustering_data)
-                    tsne_metrics.update(clustering_metrics)
-                    
-                    # Compute distance metrics between encoders
-                    distance_metrics = self._compute_phase2_distance_metrics(clustering_data)
-                    tsne_metrics.update(distance_metrics)
-                    
-                    # Compute encoder specialization quality metrics
-                    specialization_metrics = self._compute_phase2_specialization_quality(clustering_data)
-                    tsne_metrics.update(specialization_metrics)
-                    
-                    logging.info(f"✅ Phase 2: Comprehensive metrics computed and logged")
-                else:
-                    logging.warning(f"❌ Phase 2: Clustering data creation failed")
-                    
-            except Exception as e:
-                logging.warning(f"Phase 2 comprehensive metrics computation failed: {e}")
-                tsne_metrics["phase_2/comprehensive_metrics_error"] = str(e)
             
             logging.info(f"✅ Phase 2: T-SNE visualizations completed")
             
@@ -2677,84 +2617,82 @@ class StructuredTrainer:
         
         return specialization_metrics
     
-    def _create_encoder_clustering_data(self, enc_idx: int, encoder_params: dict, eval_data: dict) -> Optional[dict]:
-        """
-        Create clustering data for a single encoder during Phase 1.
-        
+    def _create_structured_clustering_data(self, state: TrainState, eval_data: dict) -> Optional[dict]:
+        """Create clustering data using all encoders with PoE aggregation.
+
+        This samples a **single context per task** and combines encoder latents
+        via Product of Experts to reflect the Structured LPN representation.
+
         Args:
-            enc_idx: Index of the encoder
-            encoder_params: Encoder parameters
+            state: Training state containing all encoder parameters
             eval_data: Evaluation data for all patterns
-            
+
         Returns:
-            Dictionary containing clustering data or None if creation fails
+            Dictionary containing clustering data or ``None`` if creation fails
         """
         try:
-            clustering_data = {}
-            
-            # Collect latents for this encoder across all patterns
+            enc_params_list = state.params["encoders"]
+            alphas = jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32)
+
             pattern_latents = {}
             pattern_ids_list = []
-            
+
             for pattern_id in [1, 2, 3]:
                 if pattern_id in eval_data:
-                    grids, shapes, pattern_ids = eval_data[pattern_id]
-                    
-                    # Get encoder outputs for this pattern
-                    mu, logvar = self.encoders[enc_idx].apply(
-                        {"params": encoder_params},
-                        grids,
-                        shapes,
-                        dropout_eval=False,
-                        mutable=False,
-                    )
-                    
-                    # Use mean of latents over pairs
-                    latents = mu.mean(axis=-2)  # (batch_size, latent_dim)
-                    
-                    # Store pattern data
-                    pattern_latents[pattern_id] = np.array(latents)
+                    grids, shapes, _ = eval_data[pattern_id]
+
+                    # Use only a single context per task
+                    grids = grids[:, :1]
+                    shapes = shapes[:, :1]
+
+                    mus = []
+                    logvars = []
+                    for enc_idx, encoder in enumerate(self.encoders):
+                        mu, logvar = encoder.apply(
+                            {"params": enc_params_list[enc_idx]},
+                            grids,
+                            shapes,
+                            dropout_eval=False,
+                            mutable=False,
+                        )
+                        mus.append(mu)
+                        logvars.append(logvar)
+
+                    mus_stack = jnp.stack(mus, axis=0)  # (E, B, 1, H)
+                    logvars_stack = jnp.stack(logvars, axis=0)
+
+                    poe_mu, _ = poe_diag_gaussians(mus_stack, logvars_stack, alphas)
+                    latents = np.array(poe_mu[:, 0])  # (B, H)
+
+                    pattern_latents[pattern_id] = latents
                     pattern_ids_list.extend([pattern_id] * len(latents))
-            
+
             if pattern_latents:
-                # Create combined data for cross-pattern analysis
-                all_latents_list = []
-                all_pattern_ids_list = []
-                
-                for pattern_id in [1, 2, 3]:
-                    if pattern_id in pattern_latents:
-                        all_latents_list.append(pattern_latents[pattern_id])
-                        all_pattern_ids_list.extend([pattern_id] * len(pattern_latents[pattern_id]))
-                
-                if all_latents_list:
-                    combined_data = {
-                        'latents': np.concatenate(all_latents_list, axis=0),
-                        'pattern_ids': np.array(all_pattern_ids_list)
-                    }
-                    
-                    clustering_data = {
-                        'pattern_data': pattern_latents,
-                        'combined_data': combined_data
-                    }
-                    
-                    logging.info(f"       ✅ Clustering data created for Encoder {enc_idx}: {len(combined_data['latents'])} total samples")
-                    return clustering_data
-            
-            logging.warning(f"       ❌ No valid clustering data created for Encoder {enc_idx}")
+                combined_latents = np.concatenate(list(pattern_latents.values()), axis=0)
+                combined_patterns = np.array(pattern_ids_list)
+                clustering_data = {
+                    "pattern_data": pattern_latents,
+                    "combined_data": {"latents": combined_latents, "pattern_ids": combined_patterns},
+                }
+                logging.info(
+                    f"       ✅ Structured clustering data created: {len(combined_latents)} total samples"
+                )
+                return clustering_data
+
+            logging.warning("       ❌ No valid structured clustering data created")
             return None
-            
+
         except Exception as e:
-            logging.warning(f"       ❌ Clustering data creation failed for Encoder {enc_idx}: {e}")
+            logging.warning(f"       ❌ Structured clustering data creation failed: {e}")
             return None
     
-    def _compute_phase1_clustering_metrics(self, clustering_data: dict, enc_idx: int) -> dict:
-        """
-        Compute clustering metrics for Phase 1 encoder evaluation.
-        
+    def _compute_phase1_clustering_metrics(self, clustering_data: dict, enc_idx: Optional[int] = None) -> dict:
+        """Compute clustering metrics for Phase 1 evaluation.
+
         Args:
-            clustering_data: Clustering data for the encoder
-            enc_idx: Index of the encoder
-            
+            clustering_data: Clustering data for evaluation
+            enc_idx: Optional encoder index; ``None`` for Structured LPN
+
         Returns:
             Dictionary containing clustering metrics
         """
@@ -2834,7 +2772,10 @@ class StructuredTrainer:
                             clustering_metrics[f"intra_pattern_{pattern_id}_mean_distance_to_centroid"] = mean_distance
                             clustering_metrics[f"intra_pattern_{pattern_id}_std_distance_to_centroid"] = std_distance
             
-            logging.info(f"       ✅ Phase 1 clustering metrics computed for Encoder {enc_idx}: {len(clustering_metrics)} metrics")
+            target = "Structured LPN" if enc_idx is None else f"Encoder {enc_idx}"
+            logging.info(
+                f"       ✅ Phase 1 clustering metrics computed for {target}: {len(clustering_metrics)} metrics"
+            )
             
         except Exception as e:
             logging.warning(f"       ❌ Phase 1 clustering metrics computation failed for Encoder {enc_idx}: {e}")
