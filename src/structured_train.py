@@ -2216,124 +2216,93 @@ class StructuredTrainer:
         
         try:
             logging.info(f"🔍 Phase 2: Creating T-SNE visualizations...")
-            
-            # Create evaluation data for each pattern (same as Phase 1)
-            eval_data = {}
-            for pattern_id in [1, 2, 3]:
-                try:
-                    # Generate pattern-specific data
-                    pattern_data = self._create_pattern_dataset(pattern_id, num_samples=32)
-                    grids, shapes, _ = pattern_data
-                    
-                    # Get encoder outputs for this pattern
-                    pattern_latents = []
-                    pattern_source_ids = []
-                    pattern_task_ids = []
-                    
-                    for enc_idx in range(len(self.encoders)):
-                        # Get encoder outputs
-                        mu, logvar = self.encoders[enc_idx].apply(
-                            {"params": state.params["encoders"][enc_idx]}, 
-                            grids, 
-                            shapes, 
-                            True, 
-                            mutable=False
-                        )
-                        
-                        # Use mean of latents over pairs
-                        latents = mu.mean(axis=-2)  # (batch_size, latent_dim)
-                        
-                        # Add to pattern data
-                        pattern_latents.append(latents)
-                        pattern_source_ids.extend([enc_idx] * len(latents))
-                        pattern_task_ids.extend(range(len(latents)))
-                    
-                    # Store pattern data
-                    eval_data[pattern_id] = {
-                        'latents': pattern_latents,
-                        'source_ids': pattern_source_ids,
-                        'task_ids': pattern_task_ids
-                    }
-                    
-                except Exception as e:
-                    logging.warning(f"Failed to create evaluation data for pattern {pattern_id}: {e}")
-                    continue
-            
+
+            # Use the same specialized data function as Phase 1 but with a uniform distribution
+            grids, shapes, pattern_ids_all = self._create_specialized_training_data(
+                target_pattern=None, uniform=True
+            )
+
+            # Compute encoder outputs for all samples
+            all_latents_list = []
+            all_source_ids = []
+            all_pattern_ids = []
+            all_task_ids = []
+
+            for enc_idx in range(len(self.encoders)):
+                mu, logvar = self.encoders[enc_idx].apply(
+                    {"params": state.params["encoders"][enc_idx]},
+                    grids,
+                    shapes,
+                    True,
+                    mutable=False,
+                )
+
+                latents = np.array(mu.mean(axis=-2))  # (num_samples, latent_dim)
+                all_latents_list.append(latents)
+                all_source_ids.extend([enc_idx] * len(latents))
+                all_pattern_ids.extend(np.array(pattern_ids_all))
+                all_task_ids.extend(range(len(latents)))
+
+            combined_latents = np.concatenate(all_latents_list, axis=0)
+            combined_source_ids = np.array(all_source_ids)
+            combined_pattern_ids = np.array(all_pattern_ids)
+            combined_task_ids = np.array(all_task_ids)
+
+            pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+
             # Generate T-SNE visualizations for each pattern
             for pattern_id in [1, 2, 3]:
-                if pattern_id in eval_data:
+                mask = combined_pattern_ids == pattern_id
+                if np.any(mask):
                     try:
-                        # Concatenate latents from all encoders for this pattern
-                        all_latents = np.concatenate(eval_data[pattern_id]['latents'], axis=0)
-                        all_source_ids = np.array(eval_data[pattern_id]['source_ids'])
-                        all_task_ids = np.array(eval_data[pattern_id]['task_ids'])
-                        
-                        # Create pattern-specific T-SNE
-                        pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
-                        pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
-                        
                         fig_tsne = self._create_pattern_specific_tsne(
-                            latents=all_latents,
-                            source_ids=all_source_ids,
-                            task_ids=all_task_ids,
-                            title=f"Phase 2: {pattern_name} - Encoder Latents (Step {num_steps})",
-                            max_points=300,
-                            random_state=42
+                            latents=combined_latents[mask],
+                            source_ids=combined_source_ids[mask],
+                            task_ids=combined_task_ids[mask],
+                            title=(
+                                f"Phase 2: {pattern_names.get(pattern_id, f'Pattern {pattern_id}')}"\
+                                f" - Encoder Latents (Step {num_steps})"
+                            ),
+                            max_points=None,
+                            random_state=42,
                         )
-                        
+
                         if fig_tsne is not None:
-                            # Log to WandB
                             tsne_metrics[f"phase_2/tsne_pattern_{pattern_id}"] = wandb.Image(fig_tsne)
-                            logging.info(f"✅ Phase 2 T-SNE generated for pattern {pattern_id} ({pattern_name})")
-                            
-                            # Close figure to free memory
+                            logging.info(
+                                f"✅ Phase 2 T-SNE generated for pattern {pattern_id}"
+                            )
                             plt.close(fig_tsne)
                         else:
-                            logging.warning(f"❌ Phase 2 T-SNE generation failed for pattern {pattern_id}")
-                            
+                            logging.warning(
+                                f"❌ Phase 2 T-SNE generation failed for pattern {pattern_id}"
+                            )
                     except Exception as e:
-                        logging.warning(f"Phase 2 T-SNE generation failed for pattern {pattern_id}: {e}")
-                        continue
-            
+                        logging.warning(
+                            f"Phase 2 T-SNE generation failed for pattern {pattern_id}: {e}"
+                        )
+                else:
+                    logging.warning(
+                        f"No samples found for pattern {pattern_id} in uniform dataset"
+                    )
+
             # Generate combined T-SNE with all patterns and encoders
             try:
-                # Concatenate all pattern data
-                all_latents_list = []
-                all_source_ids_list = []
-                all_pattern_ids_list = []
-                all_task_ids_list = []
-                
-                for pattern_id in [1, 2, 3]:
-                    if pattern_id in eval_data:
-                        all_latents_list.extend(eval_data[pattern_id]['latents'])
-                        all_source_ids_list.extend(eval_data[pattern_id]['source_ids'])
-                        all_pattern_ids_list.extend([pattern_id] * len(eval_data[pattern_id]['source_ids']))
-                        all_task_ids_list.extend(eval_data[pattern_id]['task_ids'])
-                
-                if all_latents_list:
-                    # Concatenate all data
-                    combined_latents = np.concatenate(all_latents_list, axis=0)
-                    combined_source_ids = np.array(all_source_ids_list)
-                    combined_pattern_ids = np.array(all_pattern_ids_list)
-                    combined_task_ids = np.array(all_task_ids_list)
-                    
-                    # Create combined T-SNE
-                    fig_combined = self._create_pattern_specific_tsne(
-                        latents=combined_latents,
-                        source_ids=combined_source_ids,
-                        task_ids=combined_task_ids,
-                        title=f"Phase 2: All Patterns - Encoder Latents (Step {num_steps})",
-                        max_points=500,
-                        random_state=42
-                    )
-                    
-                    if fig_combined is not None:
-                        tsne_metrics["phase_2/tsne_all_patterns"] = wandb.Image(fig_combined)
-                        logging.info(f"✅ Phase 2 combined T-SNE generated")
-                        plt.close(fig_combined)
-                    else:
-                        logging.warning(f"❌ Phase 2 combined T-SNE generation failed")
-                        
+                fig_combined = self._create_pattern_specific_tsne(
+                    latents=combined_latents,
+                    source_ids=combined_source_ids,
+                    task_ids=combined_task_ids,
+                    title=f"Phase 2: All Patterns - Encoder Latents (Step {num_steps})",
+                    max_points=None,
+                    random_state=42,
+                )
+
+                if fig_combined is not None:
+                    tsne_metrics["phase_2/tsne_all_patterns"] = wandb.Image(fig_combined)
+                    logging.info(f"✅ Phase 2 combined T-SNE generated")
+                    plt.close(fig_combined)
+                else:
+                    logging.warning(f"❌ Phase 2 combined T-SNE generation failed")
             except Exception as e:
                 logging.warning(f"Phase 2 combined T-SNE generation failed: {e}")
             
@@ -3278,52 +3247,82 @@ class StructuredTrainer:
         
         return organized_metrics
     
-    def _create_specialized_training_data(self, target_pattern: int) -> tuple:
+    def _create_specialized_training_data(
+        self,
+        target_pattern: Optional[int] = None,
+        total_samples: Optional[int] = None,
+        uniform: bool = False,
+    ) -> tuple:
         """
-        Create specialized training data for individual encoder training.
-        
+        Create specialized training data for individual encoder training or evaluation.
+
         Args:
-            target_pattern: Pattern this encoder should specialize in (1, 2, or 3)
-            
+            target_pattern: Pattern this encoder should specialize in (1, 2, or 3).
+            total_samples: Total number of samples to generate. Defaults to ``batch_size * 10``.
+            uniform: If ``True``, generate a uniform distribution over all patterns instead of
+                emphasizing ``target_pattern``.
+
         Returns:
-            Tuple of (grids, shapes, pattern_ids) for specialized training
+            Tuple of (grids, shapes, pattern_ids) for training or evaluation.
         """
-        logging.info(f"     Creating specialized data for pattern {target_pattern}")
-        
-        # Generate balanced data with emphasis on target pattern
-        total_samples = self.batch_size * 10  # Generate more samples for individual training
-        target_samples = int(total_samples * 0.7)  # 70% target pattern
-        other_samples = total_samples - target_samples
-        
-        grids_list = []
-        shapes_list = []
-        pattern_ids_list = []
-        
-        # Generate target pattern samples (reinforced)
-        # Pattern 1=O-tetromino, Pattern 2=T-tetromino, Pattern 3=L-tetromino
-        for _ in range(target_samples):
-            grids, shapes, _ = self._create_single_pattern_sample(target_pattern)
-            grids_list.append(grids)
-            shapes_list.append(shapes)
-            pattern_ids_list.append(target_pattern)
-        
-        # Generate other pattern samples (reduced certainty)
-        other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
-        samples_per_other = other_samples // len(other_patterns)
-        
-        for pattern_id in other_patterns:
-            for _ in range(samples_per_other):
-                grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
+        logging.info(
+            f"     Creating specialized data{' (uniform)' if uniform else ''} for pattern {target_pattern}"
+        )
+
+        # Determine total number of samples
+        if total_samples is None:
+            total_samples = self.batch_size * 10  # Generate more samples for individual training/eval
+
+        grids_list: list = []
+        shapes_list: list = []
+        pattern_ids_list: list = []
+
+        if uniform:
+            # Generate equal number of samples for each pattern
+            samples_per_pattern = total_samples // 3
+            for pattern_id in [1, 2, 3]:
+                for _ in range(samples_per_pattern):
+                    grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
+                    grids_list.append(grids)
+                    shapes_list.append(shapes)
+                    pattern_ids_list.append(pattern_id)
+        else:
+            if target_pattern is None:
+                raise ValueError("target_pattern must be specified when uniform=False")
+
+            # Generate balanced data with emphasis on target pattern
+            target_samples = int(total_samples * 0.7)  # 70% target pattern
+            other_samples = total_samples - target_samples
+
+            # Generate target pattern samples (reinforced)
+            for _ in range(target_samples):
+                grids, shapes, _ = self._create_single_pattern_sample(target_pattern)
                 grids_list.append(grids)
                 shapes_list.append(shapes)
-                pattern_ids_list.append(pattern_id)
-        
+                pattern_ids_list.append(target_pattern)
+
+            # Generate other pattern samples (reduced certainty)
+            other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
+            samples_per_other = other_samples // len(other_patterns)
+
+            for pattern_id in other_patterns:
+                for _ in range(samples_per_other):
+                    grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
+                    grids_list.append(grids)
+                    shapes_list.append(shapes)
+                    pattern_ids_list.append(pattern_id)
+
         # Stack and return
         grids = jnp.stack(grids_list, axis=0)
         shapes = jnp.stack(shapes_list, axis=0)
         pattern_ids = jnp.array(pattern_ids_list)
-        
-        logging.info(f"     Generated {len(grids_list)} samples: {target_samples} target, {other_samples} others")
+
+        if uniform:
+            logging.info(f"     Generated {len(grids_list)} samples (uniform distribution)")
+        else:
+            logging.info(
+                f"     Generated {len(grids_list)} samples: {target_samples} target, {other_samples} others"
+            )
         return grids, shapes, pattern_ids
     
     def _create_pattern_dataset(self, pattern_id: int, num_samples: int) -> tuple:
@@ -5114,10 +5113,16 @@ class StructuredTrainer:
                     # Ensure step is greater than or equal to current WandB step to avoid monotonicity issues
                     if step <= current_wandb_step:
                         adjusted_step = current_wandb_step + 1
-                        logging.info(f"⚠️  Step {step} is <= current WANDB step ({current_wandb_step}), using adjusted step {adjusted_step}")
-                        wandb.log(clustering_metrics, step=adjusted_step)
+                        logging.info(
+                            f"⚠️  Step {step} is <= current WANDB step ({current_wandb_step}), using adjusted step {adjusted_step}"
+                        )
+                        log_data = dict(clustering_metrics)
+                        log_data["step"] = adjusted_step
+                        wandb.log(log_data, step=adjusted_step)
                     else:
-                        wandb.log(clustering_metrics, step=step)
+                        log_data = dict(clustering_metrics)
+                        log_data["step"] = step
+                        wandb.log(log_data, step=step)
                     logging.info(f"Clustering metrics computed: {clustering_metrics}")
                     
                     # Log summary of clustering metrics for debugging
@@ -5134,8 +5139,12 @@ class StructuredTrainer:
                     # If no step provided, use a step value that's greater than current WandB step
                     current_wandb_step = wandb.run.step if hasattr(wandb.run, 'step') else 0
                     default_step = current_wandb_step + 1
-                    wandb.log(clustering_metrics, step=default_step)
-                    logging.warning(f"⚠️  Clustering metrics logged with default step={default_step} (step parameter was None)")
+                    log_data = dict(clustering_metrics)
+                    log_data["step"] = default_step
+                    wandb.log(log_data, step=default_step)
+                    logging.warning(
+                        f"⚠️  Clustering metrics logged with default step={default_step} (step parameter was None)"
+                    )
                     logging.info(f"Clustering metrics computed (default step): {clustering_metrics}")
                     
                     # Log summary of clustering metrics for debugging
@@ -5294,7 +5303,7 @@ class StructuredTrainer:
         source_ids: np.ndarray,
         task_ids: np.ndarray,
         title: str,
-        max_points: int = 300,
+        max_points: Optional[int] = 300,
         random_state: int = 42
     ) -> Optional[plt.Figure]:
         """
@@ -5311,7 +5320,7 @@ class StructuredTrainer:
             source_ids: [N] array of source IDs (0, 1, 2 for encoders)
             task_ids: [N] array of task IDs
             title: Title for the T-SNE plot
-            max_points: Maximum number of points to show
+            max_points: Maximum number of points to show. If ``None``, use all points.
             random_state: Random state for T-SNE
             
         Returns:
@@ -5326,7 +5335,7 @@ class StructuredTrainer:
             return None
         
         # Downsample if needed
-        if len(latents) > max_points:
+        if max_points is not None and len(latents) > max_points:
             indices = np.random.RandomState(random_state).choice(
                 len(latents), size=max_points, replace=False
             )
