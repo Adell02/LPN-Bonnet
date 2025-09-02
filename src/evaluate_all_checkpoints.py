@@ -154,7 +154,248 @@ import wandb
 from visualization import visualize_optimization_comparison
 
 # Import functions from store_latent_search for trajectory analysis
-from store_latent_search import _extract_vals, _extract_best_per_gen, _extract_pop, Trace, plot_and_save, create_statistical_histograms, upload_to_wandb
+from store_latent_search import _extract_vals, _extract_best_per_gen, _extract_pop, Trace
+
+def compute_statistical_analysis_per_budget(ga_npz_path: str, es_npz_path: str, dataset_length: int) -> Dict[str, Any]:
+    """
+    Compute statistical analysis comparing GA vs ES performance per budget point.
+    Returns a dictionary with p-values, test statistics, and effect sizes for each budget.
+    
+    Args:
+        ga_npz_path: Path to GA trajectory NPZ file
+        es_npz_path: Path to ES trajectory NPZ file  
+        dataset_length: Number of samples evaluated
+        
+    Returns:
+        Dictionary with statistical analysis results per budget point
+    """
+    import numpy as np
+    from scipy.stats import ttest_rel, wilcoxon
+    
+    if dataset_length <= 1:
+        print(f"[stats] Skipping per-budget statistical analysis: dataset_length={dataset_length} (need > 1)")
+        return {}
+    
+    print(f"[stats] Computing per-budget statistical analysis for {dataset_length} samples...")
+    
+    # Load GA per-sample data
+    ga_per_sample_data = {}
+    ga_budget = None
+    if os.path.exists(ga_npz_path):
+        try:
+            with np.load(ga_npz_path) as npz:
+                # Load budget information
+                if "ga_budget" in npz:
+                    ga_budget = np.array(npz["ga_budget"]).reshape(-1)
+                    print(f"[stats] GA budget loaded: {ga_budget.shape}, range: [{ga_budget.min()}, {ga_budget.max()}]")
+                
+                # Load per-sample loss trajectories (N, T) where N=samples, T=time steps
+                if "ga_losses_per_sample" in npz:
+                    ga_per_sample_data['losses'] = np.array(npz["ga_losses_per_sample"])  # (N, T)
+                    print(f"[stats] GA losses per sample: {ga_per_sample_data['losses'].shape}")
+                
+                # Load per-sample accuracy trajectories if available
+                if "ga_accuracy_per_sample_per_step" in npz:
+                    ga_per_sample_data['accuracy'] = np.array(npz["ga_accuracy_per_sample_per_step"])  # (N, T)
+                    print(f"[stats] GA accuracy per sample per step: {ga_per_sample_data['accuracy'].shape}")
+                elif "ga_accuracy_per_sample" in npz:
+                    # If only final accuracy, replicate across all steps
+                    final_acc = np.array(npz["ga_accuracy_per_sample"]).reshape(-1, 1)  # (N, 1)
+                    if ga_per_sample_data.get('losses') is not None:
+                        T = ga_per_sample_data['losses'].shape[1]
+                        ga_per_sample_data['accuracy'] = np.tile(final_acc, (1, T))  # (N, T)
+                        print(f"[stats] GA accuracy replicated across {T} steps: {ga_per_sample_data['accuracy'].shape}")
+                
+                # Load other metrics similarly
+                for metric in ['shape_correctness', 'pixel_correctness']:
+                    key = f"ga_{metric}_per_sample_per_step"
+                    if key in npz:
+                        ga_per_sample_data[metric] = np.array(npz[key])
+                        print(f"[stats] GA {metric} per sample per step: {ga_per_sample_data[metric].shape}")
+                    elif f"ga_{metric}_per_sample" in npz:
+                        final_metric = np.array(npz[f"ga_{metric}_per_sample"]).reshape(-1, 1)
+                        if ga_per_sample_data.get('losses') is not None:
+                            T = ga_per_sample_data['losses'].shape[1]
+                            ga_per_sample_data[metric] = np.tile(final_metric, (1, T))
+                            print(f"[stats] GA {metric} replicated across {T} steps: {ga_per_sample_data[metric].shape}")
+        except Exception as e:
+            print(f"[stats] Failed to load GA per-sample data: {e}")
+    
+    # Load ES per-sample data
+    es_per_sample_data = {}
+    es_budget = None
+    if os.path.exists(es_npz_path):
+        try:
+            with np.load(es_npz_path) as npz:
+                # Load budget information
+                if "es_budget" in npz:
+                    es_budget = np.array(npz["es_budget"]).reshape(-1)
+                    print(f"[stats] ES budget loaded: {es_budget.shape}, range: [{es_budget.min()}, {es_budget.max()}]")
+                
+                # Load per-sample loss trajectories (N, G) where N=samples, G=generations
+                if "es_generation_losses_per_sample" in npz:
+                    es_per_sample_data['losses'] = np.array(npz["es_generation_losses_per_sample"])  # (N, G)
+                    print(f"[stats] ES losses per sample: {es_per_sample_data['losses'].shape}")
+                
+                # Load per-sample accuracy trajectories if available
+                if "per_sample_accuracy_per_generation" in npz:
+                    es_per_sample_data['accuracy'] = np.array(npz["per_sample_accuracy_per_generation"])  # (N, G)
+                    print(f"[stats] ES accuracy per sample per generation: {es_per_sample_data['accuracy'].shape}")
+                elif "per_sample_accuracy" in npz:
+                    # If only final accuracy, replicate across all generations
+                    final_acc = np.array(npz["per_sample_accuracy"]).reshape(-1, 1)  # (N, 1)
+                    if es_per_sample_data.get('losses') is not None:
+                        G = es_per_sample_data['losses'].shape[1]
+                        es_per_sample_data['accuracy'] = np.tile(final_acc, (1, G))  # (N, G)
+                        print(f"[stats] ES accuracy replicated across {G} generations: {es_per_sample_data['accuracy'].shape}")
+                
+                # Load other metrics similarly
+                for metric in ['shape_correctness', 'pixel_correctness']:
+                    key = f"per_sample_{metric}_per_generation"
+                    if key in npz:
+                        es_per_sample_data[metric] = np.array(npz[key])
+                        print(f"[stats] ES {metric} per sample per generation: {es_per_sample_data[metric].shape}")
+                    elif f"per_sample_{metric}" in npz:
+                        final_metric = np.array(npz[f"per_sample_{metric}"]).reshape(-1, 1)
+                        if es_per_sample_data.get('losses') is not None:
+                            G = es_per_sample_data['losses'].shape[1]
+                            es_per_sample_data[metric] = np.tile(final_metric, (1, G))
+                            print(f"[stats] ES {metric} replicated across {G} generations: {es_per_sample_data[metric].shape}")
+        except Exception as e:
+            print(f"[stats] Failed to load ES per-sample data: {e}")
+    
+    # Helper function to check if array is binary
+    def _is_binary_array(arr: np.ndarray) -> bool:
+        u = np.unique(arr)
+        return set(u.tolist()).issubset({0, 1})
+    
+    # Perform statistical tests per budget point
+    results = {}
+    metrics_for_test = ['accuracy', 'shape_correctness', 'pixel_correctness', 'losses']
+    
+    for metric in metrics_for_test:
+        ga_data = ga_per_sample_data.get(metric, None)
+        es_data = es_per_sample_data.get(metric, None)
+        
+        if ga_data is None or es_data is None:
+            print(f"[stats] Skipping {metric}: missing data (GA: {ga_data is not None}, ES: {es_data is not None})")
+            continue
+        
+        # Ensure same number of samples
+        n_samples = min(ga_data.shape[0], es_data.shape[0])
+        if n_samples < 2:
+            print(f"[stats] Skipping {metric}: insufficient samples ({n_samples})")
+            continue
+        
+        ga_data = ga_data[:n_samples]
+        es_data = es_data[:n_samples]
+        
+        # Get the minimum number of time points to compare
+        n_time_points = min(ga_data.shape[1], es_data.shape[1])
+        if n_time_points < 2:
+            print(f"[stats] Skipping {metric}: insufficient time points ({n_time_points})")
+            continue
+        
+        print(f"[stats] Computing per-budget statistics for {metric}: {n_samples} samples × {n_time_points} time points")
+        
+        # Get budget values for this metric
+        if metric == 'losses':
+            ga_budget_vals = ga_budget if ga_budget is not None else np.arange(n_time_points)
+            es_budget_vals = es_budget if es_budget is not None else np.arange(n_time_points)
+        else:
+            # For other metrics, use the same budget as losses if available
+            ga_budget_vals = ga_budget if ga_budget is not None else np.arange(n_time_points)
+            es_budget_vals = es_budget if es_budget is not None else np.arange(n_time_points)
+        
+        # Ensure budget arrays match the data dimensions
+        if len(ga_budget_vals) != n_time_points:
+            ga_budget_vals = np.arange(n_time_points)
+        if len(es_budget_vals) != n_time_points:
+            es_budget_vals = np.arange(n_time_points)
+        
+        # Compute statistics for each time point
+        for t in range(n_time_points):
+            ga_t = ga_data[:, t]  # (N,)
+            es_t = es_data[:, t]  # (N,)
+            
+            # Skip if all values are the same (no variance)
+            if np.std(ga_t) == 0 and np.std(es_t) == 0:
+                continue
+            
+            # Get the actual budget value for this time point
+            budget_val = int((ga_budget_vals[t] + es_budget_vals[t]) / 2)  # Average if different
+            
+            diff = ga_t - es_t
+            
+            # Paired effect size: Cohen's dz = mean(diff)/std(diff)
+            diff_mean = float(np.mean(diff))
+            diff_std = float(np.std(diff, ddof=1)) if n_samples > 1 else np.nan
+            dz = float(diff_mean / diff_std) if diff_std > 0 else np.nan
+            
+            # 95% CI for paired difference
+            se = diff_std / np.sqrt(n_samples) if np.isfinite(diff_std) else np.nan
+            ci_low = diff_mean - 1.96 * se if np.isfinite(se) else np.nan
+            ci_high = diff_mean + 1.96 * se if np.isfinite(se) else np.nan
+            
+            # Choose appropriate test
+            if metric == 'accuracy' and _is_binary_array(ga_t) and _is_binary_array(es_t):
+                # McNemar's test for paired binary outcomes
+                try:
+                    from statsmodels.stats.contingency_tables import mcnemar
+                    b = int(np.sum((ga_t == 1) & (es_t == 0)))
+                    c = int(np.sum((ga_t == 0) & (es_t == 1)))
+                    table = np.array([[0, b], [c, 0]])
+                    res = mcnemar(table, exact=False, correction=True)
+                    results[f"{metric}_budget_{budget_val}_test"] = "mcnemar"
+                    results[f"{metric}_budget_{budget_val}_statistic"] = float(res.statistic)
+                    results[f"{metric}_budget_{budget_val}_pvalue"] = float(res.pvalue)
+                    results[f"{metric}_budget_{budget_val}_mean_diff"] = diff_mean
+                    results[f"{metric}_budget_{budget_val}_cohens_dz"] = dz
+                    results[f"{metric}_budget_{budget_val}_ci_low"] = ci_low
+                    results[f"{metric}_budget_{budget_val}_ci_high"] = ci_high
+                    results[f"{metric}_budget_{budget_val}_discordant_ga1_es0"] = b
+                    results[f"{metric}_budget_{budget_val}_discordant_ga0_es1"] = c
+                except Exception as e:
+                    print(f"[stats] McNemar failed for {metric} at budget {t}: {e}")
+                    # Fallback to paired t-test
+                    try:
+                        stat, p_val = ttest_rel(ga_t, es_t)
+                        results[f"{metric}_budget_{budget_val}_test"] = "ttest_rel_fallback"
+                        results[f"{metric}_budget_{budget_val}_statistic"] = float(stat)
+                        results[f"{metric}_budget_{budget_val}_pvalue"] = float(p_val)
+                        results[f"{metric}_budget_{budget_val}_mean_diff"] = diff_mean
+                        results[f"{metric}_budget_{budget_val}_cohens_dz"] = dz
+                        results[f"{metric}_budget_{budget_val}_ci_low"] = ci_low
+                        results[f"{metric}_budget_{budget_val}_ci_high"] = ci_high
+                    except Exception as e:
+                        print(f"[stats] Paired t-test fallback failed for {metric} at budget {t}: {e}")
+            else:
+                # Continuous/near-continuous: paired t-test, Wilcoxon fallback
+                try:
+                    stat, p_val = ttest_rel(ga_t, es_t)
+                    results[f"{metric}_budget_{budget_val}_test"] = "ttest_rel"
+                    results[f"{metric}_budget_{budget_val}_statistic"] = float(stat)
+                    results[f"{metric}_budget_{budget_val}_pvalue"] = float(p_val)
+                    results[f"{metric}_budget_{budget_val}_mean_diff"] = diff_mean
+                    results[f"{metric}_budget_{budget_val}_cohens_dz"] = dz
+                    results[f"{metric}_budget_{budget_val}_ci_low"] = ci_low
+                    results[f"{metric}_budget_{budget_val}_ci_high"] = ci_high
+                except Exception as e:
+                    print(f"[stats] Paired t-test failed for {metric} at budget {t}: {e}")
+                    try:
+                        stat, p_val = wilcoxon(diff)
+                        results[f"{metric}_budget_{budget_val}_test"] = "wilcoxon"
+                        results[f"{metric}_budget_{budget_val}_statistic"] = float(stat)
+                        results[f"{metric}_budget_{budget_val}_pvalue"] = float(p_val)
+                        results[f"{metric}_budget_{budget_val}_mean_diff"] = diff_mean
+                        results[f"{metric}_budget_{budget_val}_cohens_dz"] = dz
+                        results[f"{metric}_budget_{budget_val}_ci_low"] = ci_low
+                        results[f"{metric}_budget_{budget_val}_ci_high"] = ci_high
+                    except Exception as e:
+                        print(f"[stats] Wilcoxon failed for {metric} at budget {t}: {e}")
+    
+    print(f"[stats] Computed per-budget statistical analysis with {len(results)} metrics")
+    return results
 
 def compute_statistical_analysis(ga_npz_path: str, es_npz_path: str, dataset_length: int) -> Dict[str, Any]:
     """
@@ -2169,7 +2410,7 @@ def main():
                         f_csv.flush()  # Ensure data is written to disk immediately
                         print(f"📝 CSV: Written row for evolutionary_search budget {es_cfg['budget']} -> loss: {metrics.get('total_final_loss', 'N/A')}")
 
-                # Perform statistical analysis and generate plots if both GA and ES were evaluated
+                # Perform statistical analysis if both GA and ES were evaluated
                 if ("gradient_ascent" in args.plot_methods and "evolutionary_search" in args.plot_methods and 
                     args.dataset_length and args.dataset_length > 1):
                     
@@ -2178,41 +2419,7 @@ def main():
                     ga_trajectory_path = f"temp_trajectories/gradient_ascent_{checkpoint_name}.npz"
                     es_trajectory_path = f"temp_trajectories/evolutionary_search_{checkpoint_name}.npz"
                     
-                    # Create output directory for plots
-                    plot_out_dir = f"plots/checkpoint_{step}_{checkpoint_name}"
-                    os.makedirs(plot_out_dir, exist_ok=True)
-                    
-                    # Generate trajectory plots with heatmaps
-                    try:
-                        print(f"🎨 Generating trajectory plots for checkpoint {step}...")
-                        trajectory_plot, loss_plot, stats_plot, latent_dim = plot_and_save(
-                            ga_trajectory_path, 
-                            es_trajectory_path, 
-                            plot_out_dir,
-                            field_name="loss",
-                            background_resolution=400,
-                            background_smoothing=False,
-                            background_knn=5,
-                            background_bandwidth_scale=1.25,
-                            background_global_mix=0.05,
-                            ga_steps=ga_budgets[0] if ga_budgets else None,
-                            es_population=es_configs[0]["population_size"] if es_configs else None,
-                            es_generations=es_configs[0]["num_generations"] if es_configs else None,
-                            dataset_length=args.dataset_length
-                        )
-                        
-                        if trajectory_plot:
-                            print(f"✅ Generated trajectory plot: {trajectory_plot}")
-                        if loss_plot:
-                            print(f"✅ Generated loss curves plot: {loss_plot}")
-                        if stats_plot:
-                            print(f"✅ Generated statistical histograms: {stats_plot}")
-                            
-                    except Exception as e:
-                        print(f"⚠️  Failed to generate trajectory plots for checkpoint {step}: {e}")
-                        trajectory_plot, loss_plot, stats_plot = None, None, None
-                    
-                    # Compute statistical analysis
+                    # Compute statistical analysis (final values)
                     try:
                         stats_results = compute_statistical_analysis(
                             ga_trajectory_path, 
@@ -2245,48 +2452,81 @@ def main():
                                             log_data[f"statistical_analysis/{metric}/checkpoint_{step}/budget_{budget}/ci_high"] = stats_results[f"{metric}_ci_high"]
                                 
                                 wandb.log(log_data)
-                                print(f"📊 Logged statistical analysis results for checkpoint {step} to W&B")
+                                print(f"📊 Logged final statistical analysis results for checkpoint {step} to W&B")
                             except Exception as e:
-                                print(f"⚠️  Failed to log statistical analysis to W&B: {e}")
+                                print(f"⚠️  Failed to log final statistical analysis to W&B: {e}")
                         else:
-                            print(f"⚠️  No statistical analysis results computed for checkpoint {step}")
+                            print(f"⚠️  No final statistical analysis results computed for checkpoint {step}")
                     except Exception as e:
-                        print(f"⚠️  Failed to compute statistical analysis for checkpoint {step}: {e}")
+                        print(f"⚠️  Failed to compute final statistical analysis for checkpoint {step}: {e}")
                     
-                    # Upload plots to W&B
+                    # Compute per-budget statistical analysis
                     try:
-                        if trajectory_plot or loss_plot or stats_plot:
-                            print(f"📤 Uploading plots to W&B for checkpoint {step}...")
-                            
-                            # Create configuration for W&B upload
-                            cfg = {
-                                'run_name': args.run_name,
-                                'checkpoint_name': checkpoint_name,
-                                'checkpoint_step': step,
-                                'dataset_length': args.dataset_length,
-                                'ga_budgets': ga_budgets,
-                                'es_configs': es_configs,
-                                'latent_dim': latent_dim if 'latent_dim' in locals() else 2
-                            }
-                            
-                            # Upload to W&B
-                            upload_to_wandb(
-                                project=args.wandb_project if hasattr(args, 'wandb_project') else 'lpn-evaluation',
-                                entity=args.wandb_entity if hasattr(args, 'wandb_entity') else None,
-                                cfg=cfg,
-                                ga_npz=ga_trajectory_path,
-                                es_npz=es_trajectory_path,
-                                trajectory_plot=trajectory_plot,
-                                loss_plot=loss_plot,
-                                stats_plot=stats_plot,
-                                group_name=f"checkpoint_{step}_{checkpoint_name}",
-                                existing_run=None
-                            )
-                            print(f"✅ Uploaded plots to W&B for checkpoint {step}")
+                        per_budget_stats = compute_statistical_analysis_per_budget(
+                            ga_trajectory_path, 
+                            es_trajectory_path, 
+                            args.dataset_length
+                        )
+                        
+                        if per_budget_stats:
+                            # Log per-budget statistical analysis results to W&B with budget as x-axis tracker
+                            try:
+                                # Group statistics by metric and stat_type for time series logging
+                                metric_groups = {}
+                                
+                                for key, value in per_budget_stats.items():
+                                    # Parse the key to extract metric and budget info
+                                    if "_budget_" in key:
+                                        parts = key.split("_budget_")
+                                        if len(parts) == 2:
+                                            metric_part = parts[0]
+                                            budget_part = int(parts[1].split("_")[0])
+                                            stat_type = "_".join(parts[1].split("_")[1:])
+                                            
+                                            # Create metric group key
+                                            group_key = f"{metric_part}_{stat_type}"
+                                            if group_key not in metric_groups:
+                                                metric_groups[group_key] = []
+                                            
+                                            metric_groups[group_key].append((budget_part, value))
+                                
+                                # Log each metric group as a time series with budget as x-axis
+                                for group_key, budget_value_pairs in metric_groups.items():
+                                    # Sort by budget for proper time series
+                                    budget_value_pairs.sort(key=lambda x: x[0])
+                                    
+                                    # Create time series data
+                                    budgets = [pair[0] for pair in budget_value_pairs]
+                                    values = [pair[1] for pair in budget_value_pairs]
+                                    
+                                    # Log as time series with budget as x-axis
+                                    for budget, value in budget_value_pairs:
+                                        wandb.log({
+                                            f"per_budget_statistical_analysis/{group_key}/checkpoint_{step}": value,
+                                            "budget": budget
+                                        })
+                                
+                                # Also log the traditional format for backward compatibility
+                                log_data = {}
+                                for key, value in per_budget_stats.items():
+                                    if "_budget_" in key:
+                                        parts = key.split("_budget_")
+                                        if len(parts) == 2:
+                                            metric_part = parts[0]
+                                            budget_part = parts[1].split("_")[0]
+                                            stat_type = "_".join(parts[1].split("_")[1:])
+                                            
+                                            # Log with budget on x-axis as requested
+                                            log_data[f"per_budget_statistical_analysis/{metric_part}/checkpoint_{step}/budget_{budget_part}/{stat_type}"] = value
+                                
+                                wandb.log(log_data)
+                                print(f"📊 Logged per-budget statistical analysis results for checkpoint {step} to W&B ({len(per_budget_stats)} metrics) with budget as x-axis tracker")
+                            except Exception as e:
+                                print(f"⚠️  Failed to log per-budget statistical analysis to W&B: {e}")
                         else:
-                            print(f"⚠️  No plots to upload for checkpoint {step}")
+                            print(f"⚠️  No per-budget statistical analysis results computed for checkpoint {step}")
                     except Exception as e:
-                        print(f"⚠️  Failed to upload plots to W&B for checkpoint {step}: {e}")
+                        print(f"⚠️  Failed to compute per-budget statistical analysis for checkpoint {step}: {e}")
 
                 # Progress update after each checkpoint
                 total_evals = results["successful_evals"] + results["failed_evals"]
@@ -2691,12 +2931,15 @@ def main():
                                                 if m in method_to_step_to_budget_pixel:
                                                     method_arrays_pixel[m][k, j] = method_to_step_to_budget_pixel[m].get(s_, {}).get(b_, np.nan)
 
-                                    # Helper to render heatmap with symmetric colorbar
-                                    def _save_heatmap(data: np.ndarray, steps_list: List[int], budgets_list: List[int], title: str, center: float | None) -> Path | None:
+                                    # Helper to render heatmap with consistent color palette and statistical annotations
+                                    def _save_heatmap(data: np.ndarray, steps_list: List[int], budgets_list: List[int], title: str, center: float | None, stats_data: Dict[str, Any] = None) -> Path | None:
                                         try:
                                             if data is None or np.all(np.isnan(data)):
                                                 return None
-                                            fig_h, ax_h = plt.subplots(figsize=(10, 6))
+                                            
+                                            # Use the same color palette as the reference (cool colormap)
+                                            fig_h, ax_h = plt.subplots(figsize=(12, 8))
+                                            
                                             if center is not None:
                                                 dmin = np.nanmin(data)
                                                 dmax = np.nanmax(data)
@@ -2705,6 +2948,7 @@ def main():
                                             else:
                                                 vmax_abs = float(np.nanmax(np.abs(data))) if not np.all(np.isnan(data)) else 1.0
                                                 vmin, vmax = -vmax_abs, vmax_abs
+                                            
                                             im = ax_h.imshow(
                                                 data,
                                                 aspect="auto",
@@ -2712,12 +2956,68 @@ def main():
                                                 extent=[min(steps_list), max(steps_list), min(budgets_list), max(budgets_list)],
                                                 vmin=vmin,
                                                 vmax=vmax,
-                                                cmap="coolwarm",
+                                                cmap="cool",  # Use same colormap as reference
                                             )
-                                            ax_h.set_xlabel("Training Step")
-                                            ax_h.set_ylabel("Budget")
-                                            ax_h.set_title(title)
-                                            fig_h.colorbar(im, ax=ax_h)
+                                            
+                                            ax_h.set_xlabel("Training Step", fontsize=12)
+                                            ax_h.set_ylabel("Budget", fontsize=12)
+                                            ax_h.set_title(title, fontsize=14)
+                                            
+                                            # Add colorbar
+                                            cbar = fig_h.colorbar(im, ax=ax_h)
+                                            cbar.ax.tick_params(length=3, pad=3)
+                                            
+                                            # Add statistical annotations if available
+                                            if stats_data:
+                                                # Create text box for statistical values
+                                                stats_text = []
+                                                
+                                                # Extract relevant statistics based on the title
+                                                if "ga_minus_es" in title:
+                                                    # For difference plots, show comparison statistics
+                                                    for metric in ['accuracy', 'pixel_correctness']:
+                                                        if metric in title:
+                                                            if f"{metric}_pvalue" in stats_data:
+                                                                p_val = stats_data[f"{metric}_pvalue"]
+                                                                stat_val = stats_data.get(f"{metric}_statistic", "N/A")
+                                                                test_type = stats_data.get(f"{metric}_test", "N/A")
+                                                                
+                                                                stats_text.append(f"{metric.upper()}:")
+                                                                stats_text.append(f"  p = {p_val:.4f}")
+                                                                if "mcnemar" in test_type.lower():
+                                                                    stats_text.append(f"  χ² = {stat_val:.4f}")
+                                                                elif "ttest" in test_type.lower():
+                                                                    stats_text.append(f"  t = {stat_val:.4f}")
+                                                                elif "wilcoxon" in test_type.lower():
+                                                                    stats_text.append(f"  W = {stat_val:.4f}")
+                                                                stats_text.append("")
+                                                else:
+                                                    # For individual method plots, show method-specific stats
+                                                    method = "GA" if "ga_" in title else "ES"
+                                                    for metric in ['accuracy', 'pixel_correctness']:
+                                                        if metric in title:
+                                                            if f"{metric}_pvalue" in stats_data:
+                                                                p_val = stats_data[f"{metric}_pvalue"]
+                                                                stat_val = stats_data.get(f"{metric}_statistic", "N/A")
+                                                                test_type = stats_data.get(f"{metric}_test", "N/A")
+                                                                
+                                                                stats_text.append(f"{method} {metric.upper()}:")
+                                                                stats_text.append(f"  p = {p_val:.4f}")
+                                                                if "mcnemar" in test_type.lower():
+                                                                    stats_text.append(f"  χ² = {stat_val:.4f}")
+                                                                elif "ttest" in test_type.lower():
+                                                                    stats_text.append(f"  t = {stat_val:.4f}")
+                                                                elif "wilcoxon" in test_type.lower():
+                                                                    stats_text.append(f"  W = {stat_val:.4f}")
+                                                                stats_text.append("")
+                                                
+                                                if stats_text:
+                                                    # Add text box with statistical values
+                                                    stats_str = "\n".join(stats_text)
+                                                    props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
+                                                    ax_h.text(0.02, 0.98, stats_str, transform=ax_h.transAxes, fontsize=9,
+                                                            verticalalignment='top', bbox=props)
+                                            
                                             out_dir_local = Path("results")
                                             out_dir_local.mkdir(parents=True, exist_ok=True)
                                             safe_title = re.sub(r"[^a-zA-Z0-9_\-]+", "_", title)
@@ -2729,36 +3029,61 @@ def main():
                                             return None
 
                                     step_tag = training_progress
-                                    # GA overall accuracy heatmap (center=0.5)
+                                    
+                                    # Compute statistical analysis for heatmap annotations if dataset_length > 1
+                                    heatmap_stats = {}
+                                    if args.dataset_length and args.dataset_length > 1:
+                                        try:
+                                            # Try to find the most recent trajectory files for statistical analysis
+                                            latest_checkpoint = None
+                                            for checkpoint in checkpoints:
+                                                if checkpoint["step"] <= training_progress:
+                                                    latest_checkpoint = checkpoint
+                                            
+                                            if latest_checkpoint:
+                                                ga_trajectory_path = f"temp_trajectories/gradient_ascent_{latest_checkpoint['name']}.npz"
+                                                es_trajectory_path = f"temp_trajectories/evolutionary_search_{latest_checkpoint['name']}.npz"
+                                                
+                                                if os.path.exists(ga_trajectory_path) and os.path.exists(es_trajectory_path):
+                                                    heatmap_stats = compute_statistical_analysis(
+                                                        ga_trajectory_path, 
+                                                        es_trajectory_path, 
+                                                        args.dataset_length
+                                                    )
+                                                    print(f"📊 Computed statistical analysis for heatmap annotations: {len(heatmap_stats)} metrics")
+                                        except Exception as e:
+                                            print(f"⚠️  Failed to compute statistical analysis for heatmap annotations: {e}")
+                                    
+                                    # GA overall accuracy heatmap (symmetric around 0)
                                     if "gradient_ascent" in method_arrays:
-                                        p = _save_heatmap(method_arrays["gradient_ascent"], all_steps, all_budgets, f"checkpoint_{step_tag}_ga_overall_accuracy", center=0.5)
+                                        p = _save_heatmap(method_arrays["gradient_ascent"], all_steps, all_budgets, f"checkpoint_{step_tag}_ga_overall_accuracy", center=0, stats_data=heatmap_stats)
                                         if p and p.exists():
                                             wandb.log({f"checkpoint_{training_progress}/ga_overall_accuracy": wandb.Image(str(p))})
-                                    # ES overall accuracy heatmap (center=0.5)
+                                    # ES overall accuracy heatmap (symmetric around 0)
                                     if "evolutionary_search" in method_arrays:
-                                        p = _save_heatmap(method_arrays["evolutionary_search"], all_steps, all_budgets, f"checkpoint_{step_tag}_es_overall_accuracy", center=0.5)
+                                        p = _save_heatmap(method_arrays["evolutionary_search"], all_steps, all_budgets, f"checkpoint_{step_tag}_es_overall_accuracy", center=0, stats_data=heatmap_stats)
                                         if p and p.exists():
                                             wandb.log({f"checkpoint_{training_progress}/es_overall_accuracy": wandb.Image(str(p))})
-                                    # GA pixel accuracy heatmap (center=0.5)
+                                    # GA pixel accuracy heatmap (symmetric around 0)
                                     if "gradient_ascent" in method_arrays_pixel:
-                                        p = _save_heatmap(method_arrays_pixel["gradient_ascent"], all_steps, all_budgets, f"checkpoint_{step_tag}_ga_pixel_accuracy", center=0.5)
+                                        p = _save_heatmap(method_arrays_pixel["gradient_ascent"], all_steps, all_budgets, f"checkpoint_{step_tag}_ga_pixel_accuracy", center=0, stats_data=heatmap_stats)
                                         if p and p.exists():
                                             wandb.log({f"checkpoint_{training_progress}/ga_pixel_accuracy": wandb.Image(str(p))})
-                                    # ES pixel accuracy heatmap (center=0.5)
+                                    # ES pixel accuracy heatmap (symmetric around 0)
                                     if "evolutionary_search" in method_arrays_pixel:
-                                        p = _save_heatmap(method_arrays_pixel["evolutionary_search"], all_steps, all_budgets, f"checkpoint_{step_tag}_es_pixel_accuracy", center=0.5)
+                                        p = _save_heatmap(method_arrays_pixel["evolutionary_search"], all_steps, all_budgets, f"checkpoint_{step_tag}_es_pixel_accuracy", center=0, stats_data=heatmap_stats)
                                         if p and p.exists():
                                             wandb.log({f"checkpoint_{training_progress}/es_pixel_accuracy": wandb.Image(str(p))})
                                     # GA − ES overall accuracy diff (center at 0)
                                     if "gradient_ascent" in method_arrays and "evolutionary_search" in method_arrays:
                                         diff_overall = method_arrays["gradient_ascent"] - method_arrays["evolutionary_search"]
-                                        p = _save_heatmap(diff_overall, all_steps, all_budgets, f"checkpoint_{step_tag}_ga_minus_es_overall_accuracy", center=None)
+                                        p = _save_heatmap(diff_overall, all_steps, all_budgets, f"checkpoint_{step_tag}_ga_minus_es_overall_accuracy", center=None, stats_data=heatmap_stats)
                                         if p and p.exists():
                                             wandb.log({f"checkpoint_{training_progress}/ga_minus_es_overall_accuracy": wandb.Image(str(p))})
                                     # GA − ES pixel accuracy diff (center at 0)
                                     if "gradient_ascent" in method_arrays_pixel and "evolutionary_search" in method_arrays_pixel:
                                         diff_pixel = method_arrays_pixel["gradient_ascent"] - method_arrays_pixel["evolutionary_search"]
-                                        p = _save_heatmap(diff_pixel, all_steps, all_budgets, f"checkpoint_{step_tag}_ga_minus_es_pixel_accuracy", center=None)
+                                        p = _save_heatmap(diff_pixel, all_steps, all_budgets, f"checkpoint_{step_tag}_ga_minus_es_pixel_accuracy", center=None, stats_data=heatmap_stats)
                                         if p and p.exists():
                                             wandb.log({f"checkpoint_{training_progress}/ga_minus_es_pixel_accuracy": wandb.Image(str(p))})
                                     print("📊 Generated and uploaded per-checkpoint GA/ES heatmaps (overall/pixel and diffs)")

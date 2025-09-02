@@ -1184,34 +1184,21 @@ def plot_and_save(ga_npz_path: str, es_npz_path: str, out_dir: str, field_name: 
             if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
                 vmin, vmax = 0.0, 1.0
     else:
-        # For losses: use symmetric range around 0 for heatmap visualization
+        # For losses: use original range (continuous viridis background, no abs, no white gaps)
         if len(all_for_norm) > 0:
             vv = np.concatenate(all_for_norm)
-            vmin_actual, vmax_actual = float(np.nanmin(vv)), float(np.nanmax(vv))
-            if not np.isfinite(vmin_actual) or not np.isfinite(vmax_actual) or vmin_actual == vmax_actual:
-                vmin, vmax = -1.0, 1.0
-            else:
-                # Create symmetric range around 0
-                max_abs = max(abs(vmin_actual), abs(vmax_actual))
-                vmin, vmax = -max_abs, max_abs
+            vmin, vmax = float(np.nanmin(vv)), float(np.nanmax(vv))
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+                vmin, vmax = 0.0, 1.0
         else:
-            vmin, vmax = -1.0, 1.0
+            vmin, vmax = 0.0, 1.0
     
     print(f"[plot] Loss normalization: vmin={vmin:.4f}, vmax={vmax:.4f}")
     norm = colors.Normalize(vmin=vmin, vmax=vmax)
-    
-    # Use symmetric diverging colormap for heatmap visualization
-    if field_name.lower() == "score":
-        # For scores: use custom colormap from the specified palette
-        from matplotlib.colors import LinearSegmentedColormap
-        custom_colors = ['#FBB998', '#DB74DB', '#5361E5', '#96DCF8']
-        cmap = LinearSegmentedColormap.from_list('custom_palette', custom_colors, N=256)
-    else:
-        # For losses: use symmetric diverging colormap centered at 0
-        from matplotlib.colors import LinearSegmentedColormap
-        # Create a diverging colormap: blue (negative) -> white (zero) -> red (positive)
-        colors_list = ['#1f77b4', '#87ceeb', '#ffffff', '#ffb6c1', '#ff6b6b']
-        cmap = LinearSegmentedColormap.from_list('symmetric_diverging', colors_list, N=256)
+    # Use custom colormap from the specified palette
+    from matplotlib.colors import LinearSegmentedColormap
+    custom_colors = ['#FBB998', '#DB74DB', '#5361E5', '#96DCF8']
+    cmap = LinearSegmentedColormap.from_list('custom_palette', custom_colors, N=256)
     
     def orient(v: np.ndarray) -> np.ndarray:
         """Orient values for visualization: keep original values for losses (no abs)."""
