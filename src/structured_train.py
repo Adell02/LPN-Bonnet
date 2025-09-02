@@ -6737,7 +6737,7 @@ class StructuredTrainer:
             
             # Process each pattern
             for pattern_id in [1, 2, 3]:
-                grids, shapes = eval_data[pattern_id]
+                grids, shapes, pattern_ids = eval_data[pattern_id]
                 
                 # Get encoder outputs for this pattern
                 encoder_mus = []
