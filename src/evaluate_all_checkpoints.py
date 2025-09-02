@@ -143,7 +143,7 @@ import csv
 import sys
 import argparse
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 import json
 import time
 
@@ -156,23 +156,30 @@ from visualization import visualize_optimization_comparison
 # Import functions from store_latent_search for trajectory analysis
 from store_latent_search import _extract_vals, _extract_best_per_gen, _extract_pop, Trace
 
-def extract_losses_and_accuracies_per_budget(ga_npz_path: str, es_npz_path: str, dataset_length: int) -> Dict[str, Any]:
+def extract_losses_and_accuracies_per_budget(
+    ga_npz_path: Optional[str],
+    es_npz_path: Optional[str],
+    dataset_length: int,
+) -> Dict[str, Any]:
     """
-    Extract losses and accuracies per budget point for both GA and ES methods.
-    Similar to store_latent_search.py logic but focused on data extraction.
-    
+    Extract losses and accuracies per budget point for GA and ES methods.
+
+    Either ``ga_npz_path`` or ``es_npz_path`` may be ``None`` – in that case the
+    corresponding method's data is simply omitted rather than raising an error.
+
     Args:
-        ga_npz_path: Path to GA trajectory NPZ file
-        es_npz_path: Path to ES trajectory NPZ file  
+        ga_npz_path: Optional path to GA trajectory NPZ file
+        es_npz_path: Optional path to ES trajectory NPZ file
         dataset_length: Number of samples evaluated
-        
+
     Returns:
-        Dictionary with extracted losses and accuracies per budget for both methods
+        Dictionary with extracted losses and accuracies per budget for both
+        methods (only those available will be populated)
     """
     import numpy as np
-    
+
     print(f"[extract] Extracting losses and accuracies per budget for {dataset_length} samples...")
-    
+
     def safe_array_to_scalar(arr: np.ndarray, default=None):
         """Safely convert array to scalar, handling various array shapes"""
         if arr is None:
@@ -182,15 +189,15 @@ def extract_losses_and_accuracies_per_budget(ga_npz_path: str, es_npz_path: str,
         if arr.size == 1:
             return float(arr.flat[0])
         return arr
-    
-    def _extract_method_data(npz_path: str, method_name: str) -> Dict[str, Any]:
+
+    def _extract_method_data(npz_path: Optional[str], method_name: str) -> Dict[str, Any]:
         """Extract data for a single method (GA or ES)"""
         data = {}
-        
-        if not os.path.exists(npz_path):
+
+        if not npz_path or not os.path.exists(npz_path):
             print(f"[extract] {method_name}: NPZ file not found: {npz_path}")
             return data
-            
+
         try:
             with np.load(npz_path, allow_pickle=True) as f:
                 print(f"[extract] {method_name}: Available keys: {list(f.keys())}")
@@ -714,35 +721,45 @@ def compute_statistical_analysis(ga_npz_path: str, es_npz_path: str, dataset_len
     print(f"[stats] Computed statistical analysis with {len(results)} metrics")
     return results
 
-def generate_budget_based_plots(ga_npz_path: str, es_npz_path: str, out_dir: str, 
-                               dataset_length: int, checkpoint_name: str, checkpoint_step: int) -> Dict[str, str]:
+def generate_budget_based_plots(
+    ga_npz_path: Optional[str],
+    es_npz_path: Optional[str],
+    out_dir: Union[str, Path],
+    dataset_length: int,
+    checkpoint_name: str,
+    checkpoint_step: int,
+) -> Dict[str, str]:
     """
     Generate budget-based plots similar to store_latent_search.py.
-    Creates loss vs budget and accuracy vs budget plots.
-    
+    Creates loss vs budget and accuracy vs budget plots for whichever methods
+    have trajectory data available.
+
     Args:
-        ga_npz_path: Path to GA trajectory NPZ file
-        es_npz_path: Path to ES trajectory NPZ file
+        ga_npz_path: Optional path to GA trajectory NPZ file
+        es_npz_path: Optional path to ES trajectory NPZ file
         out_dir: Output directory for plots
         dataset_length: Number of samples evaluated
         checkpoint_name: Name of the checkpoint
         checkpoint_step: Step number of the checkpoint
-        
+
     Returns:
         Dictionary with paths to generated plot files
     """
     import matplotlib.pyplot as plt
     import numpy as np
-    
+    from pathlib import Path
+
+    out_dir = Path(out_dir)
+
     print(f"[plots] Generating budget-based plots for {dataset_length} samples...")
-    
+
     # Extract data using the extraction function
     extracted_data = extract_losses_and_accuracies_per_budget(ga_npz_path, es_npz_path, dataset_length)
     ga_data = extracted_data['ga']
     es_data = extracted_data['es']
-    
-    plot_paths = {}
-    
+
+    plot_paths: Dict[str, str] = {}
+
     # Create loss vs budget plot
     try:
         fig, ax = plt.subplots(1, 1, figsize=(12, 8))
@@ -751,44 +768,48 @@ def generate_budget_based_plots(ga_npz_path: str, es_npz_path: str, out_dir: str
         ax.set_xlabel("Budget (evaluations)")
         ax.set_ylabel("Loss (lower is better)")
         ax.grid(True, alpha=0.3)
-        
+
+        plotted = False
+
         # Plot GA data
         if 'losses_mean' in ga_data and 'budget' in ga_data:
             ga_budget = ga_data['budget']
             ga_mean = ga_data['losses_mean']
             ga_se = ga_data.get('losses_se', np.zeros_like(ga_mean))
-            
-            ax.fill_between(ga_budget, ga_mean - ga_se, ga_mean + ga_se, 
+
+            ax.fill_between(ga_budget, ga_mean - ga_se, ga_mean + ga_se,
                            color="#FBB998", alpha=0.25, label="GA standard error")
-            ax.plot(ga_budget, ga_mean, color="#FBB998", linewidth=3.0, 
+            ax.plot(ga_budget, ga_mean, color="#FBB998", linewidth=3.0,
                    marker='o', markersize=4, label="GA mean")
             print(f"[plots] GA: {len(ga_budget)} budget points, loss range: [{ga_mean.min():.4f}, {ga_mean.max():.4f}]")
-        
+            plotted = True
+
         # Plot ES data
         if 'losses_mean' in es_data and 'budget' in es_data:
             es_budget = es_data['budget']
             es_mean = es_data['losses_mean']
             es_se = es_data.get('losses_se', np.zeros_like(es_mean))
-            
-            ax.fill_between(es_budget, es_mean - es_se, es_mean + es_se, 
+
+            ax.fill_between(es_budget, es_mean - es_se, es_mean + es_se,
                            color="#5361E5", alpha=0.25, label="ES standard error")
-            ax.plot(es_budget, es_mean, color="#5361E5", linewidth=3.0, 
+            ax.plot(es_budget, es_mean, color="#5361E5", linewidth=3.0,
                    marker='s', markersize=4, label="ES mean")
             print(f"[plots] ES: {len(es_budget)} budget points, loss range: [{es_mean.min():.4f}, {es_mean.max():.4f}]")
-        
-        ax.legend()
-        ax.set_xlim(left=0)
-        
-        # Save plot
-        loss_plot_path = os.path.join(out_dir, f"loss_vs_budget_{checkpoint_name}_step{checkpoint_step}.png")
-        plt.savefig(loss_plot_path, dpi=150, bbox_inches='tight')
+            plotted = True
+
+        if plotted:
+            ax.legend()
+            ax.set_xlim(left=0)
+
+            loss_plot_path = out_dir / f"loss_vs_budget_{checkpoint_name}_step{checkpoint_step}.png"
+            plt.savefig(loss_plot_path, dpi=150, bbox_inches='tight')
+            plot_paths['loss_vs_budget'] = str(loss_plot_path)
+            print(f"[plots] Loss vs budget plot saved: {loss_plot_path}")
         plt.close()
-        plot_paths['loss_vs_budget'] = loss_plot_path
-        print(f"[plots] Loss vs budget plot saved: {loss_plot_path}")
-        
+
     except Exception as e:
         print(f"[plots] Error creating loss vs budget plot: {e}")
-    
+
     # Create accuracy vs budget plot
     try:
         fig, ax = plt.subplots(1, 1, figsize=(12, 8))
@@ -797,45 +818,47 @@ def generate_budget_based_plots(ga_npz_path: str, es_npz_path: str, out_dir: str
         ax.set_xlabel("Budget (evaluations)")
         ax.set_ylabel("Accuracy (higher is better)")
         ax.grid(True, alpha=0.3)
-        
+
+        has_accuracy_data = False
+
         # Plot GA accuracy data
         if 'accuracy_mean' in ga_data and 'budget' in ga_data:
             ga_budget = ga_data['budget']
             ga_acc_mean = ga_data['accuracy_mean']
             ga_acc_se = ga_data.get('accuracy_se', np.zeros_like(ga_acc_mean))
-            
-            ax.fill_between(ga_budget, ga_acc_mean - ga_acc_se, ga_acc_mean + ga_acc_se, 
+
+            ax.fill_between(ga_budget, ga_acc_mean - ga_acc_se, ga_acc_mean + ga_acc_se,
                            color="#FBB998", alpha=0.25, label="GA accuracy standard error")
-            ax.plot(ga_budget, ga_acc_mean, color="#FBB998", linewidth=3.0, 
+            ax.plot(ga_budget, ga_acc_mean, color="#FBB998", linewidth=3.0,
                    marker='o', markersize=4, label="GA accuracy mean")
-            print(f"[plots] GA accuracy: {len(ga_budget)} budget points, range: [{ga_acc_mean.min():.4f}, {ga_acc_mean.max():.4f}]")
-        
+            has_accuracy_data = True
+
         # Plot ES accuracy data
         if 'accuracy_mean' in es_data and 'budget' in es_data:
             es_budget = es_data['budget']
             es_acc_mean = es_data['accuracy_mean']
             es_acc_se = es_data.get('accuracy_se', np.zeros_like(es_acc_mean))
-            
-            ax.fill_between(es_budget, es_acc_mean - es_acc_se, es_acc_mean + es_acc_se, 
+
+            ax.fill_between(es_budget, es_acc_mean - es_acc_se, es_acc_mean + es_acc_se,
                            color="#5361E5", alpha=0.25, label="ES accuracy standard error")
-            ax.plot(es_budget, es_acc_mean, color="#5361E5", linewidth=3.0, 
+            ax.plot(es_budget, es_acc_mean, color="#5361E5", linewidth=3.0,
                    marker='s', markersize=4, label="ES accuracy mean")
-            print(f"[plots] ES accuracy: {len(es_budget)} budget points, range: [{es_acc_mean.min():.4f}, {es_acc_mean.max():.4f}]")
-        
-        ax.legend()
-        ax.set_xlim(left=0)
-        ax.set_ylim(0, 1.05)  # Accuracy is typically 0-1
-        
-        # Save plot
-        acc_plot_path = os.path.join(out_dir, f"accuracy_vs_budget_{checkpoint_name}_step{checkpoint_step}.png")
-        plt.savefig(acc_plot_path, dpi=150, bbox_inches='tight')
+            has_accuracy_data = True
+
+        if has_accuracy_data:
+            ax.legend()
+            ax.set_xlim(left=0)
+            ax.set_ylim(0, 1.05)
+
+            acc_plot_path = out_dir / f"accuracy_vs_budget_{checkpoint_name}_step{checkpoint_step}.png"
+            plt.savefig(acc_plot_path, dpi=150, bbox_inches='tight')
+            plot_paths['accuracy_vs_budget'] = str(acc_plot_path)
+            print(f"[plots] Accuracy vs budget plot saved: {acc_plot_path}")
         plt.close()
-        plot_paths['accuracy_vs_budget'] = acc_plot_path
-        print(f"[plots] Accuracy vs budget plot saved: {acc_plot_path}")
-        
+
     except Exception as e:
         print(f"[plots] Error creating accuracy vs budget plot: {e}")
-    
+
     return plot_paths
 
 
@@ -2003,10 +2026,20 @@ def main():
     # Generate shared budgets
     shared_budgets = generate_budgets(BUDGET_CONFIG)
     
-    # Apply high-granularity mode: only use highest budget for detailed trajectory extraction
-    if args.high_granularity or args.max_budget_only:
+    # Apply optional budget reduction
+    # ``--high_granularity`` no longer forces single-budget evaluation; it merely
+    # enables detailed trajectory extraction.  ``--max_budget_only`` explicitly
+    # restricts evaluation to the highest budget.
+    if args.max_budget_only:
         shared_budgets = [max(shared_budgets)] if shared_budgets else [args.budget_end]
-        print(f"🔬 High-granularity mode: using only highest budget {shared_budgets[0]} for detailed trajectory extraction")
+        print(
+            f"🔬 Evaluating only highest budget {shared_budgets[0]} (--max_budget_only)"
+        )
+    elif args.high_granularity:
+        print(
+            "🔬 High-granularity mode enabled: evaluating full budget range with detailed"
+            " trajectory extraction"
+        )
     
     # Use the same target compute budgets for all methods
     ga_budgets = shared_budgets    # GA compute budget = 2 * num_steps
@@ -3825,19 +3858,22 @@ def main():
                                                     ga_npz_path = ga_trajectory_path
                                                 if os.path.exists(es_trajectory_path):
                                                     es_npz_path = es_trajectory_path
-                                                
-                                                if ga_npz_path and es_npz_path:
+
+                                                if ga_npz_path or es_npz_path:
                                                     budget_plots = generate_budget_based_plots(
                                                         ga_npz_path=ga_npz_path,
                                                         es_npz_path=es_npz_path,
                                                         out_dir=out_dir,
                                                         dataset_length=args.dataset_length,
                                                         checkpoint_name=checkpoint["name"],
-                                                        checkpoint_step=step
+                                                        checkpoint_step=step,
                                                     )
-                                                    print(f"📊 Generated budget-based plots: {list(budget_plots.keys())}")
+                                                    if budget_plots:
+                                                        print(f"📊 Generated budget-based plots: {list(budget_plots.keys())}")
+                                                    else:
+                                                        print("⚠️  No budget-based plots generated")
                                                 else:
-                                                    print("⚠️  Missing GA or ES NPZ files for budget-based plotting")
+                                                    print("⚠️  Missing GA and ES NPZ files for budget-based plotting")
                                             except Exception as e:
                                                 print(f"⚠️  Failed to generate budget-based plots: {e}")
 
@@ -4233,18 +4269,21 @@ def main():
                                         if os.path.exists(es_trajectory_path):
                                             es_npz_path = es_trajectory_path
                                     
-                                    if ga_npz_path and es_npz_path:
+                                    if ga_npz_path or es_npz_path:
                                         final_budget_plots = generate_budget_based_plots(
                                             ga_npz_path=ga_npz_path,
                                             es_npz_path=es_npz_path,
                                             out_dir=out_dir,
                                             dataset_length=args.dataset_length,
                                             checkpoint_name="final_summary",
-                                            checkpoint_step=max_progress
+                                            checkpoint_step=max_progress,
                                         )
-                                        print(f"📊 Generated final budget-based plots: {list(final_budget_plots.keys())}")
+                                        if final_budget_plots:
+                                            print(f"📊 Generated final budget-based plots: {list(final_budget_plots.keys())}")
+                                        else:
+                                            print("⚠️  No final budget-based plots generated")
                                     else:
-                                        print("⚠️  Missing GA or ES NPZ files for final budget-based plotting")
+                                        print("⚠️  Missing GA and ES NPZ files for final budget-based plotting")
                                 except Exception as e:
                                     print(f"⚠️  Failed to generate final budget-based plots: {e}")
 
