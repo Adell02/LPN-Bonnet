@@ -3354,16 +3354,24 @@ class StructuredTrainer:
             dataset_path = os.path.join("src/datasets", dataset_folder)
             grids = np.load(os.path.join(dataset_path, "grids.npy")).astype(np.uint8)
             shapes = np.load(os.path.join(dataset_path, "shapes.npy")).astype(np.uint8)
-            
+
             # Ensure we have enough samples
             available_samples = len(grids)
-            if available_samples < num_samples:
-                logging.warning(f"      Dataset {dataset_folder} only has {available_samples} samples, using all available")
-                num_samples = available_samples
-            
-            # Take the first num_samples from the dataset
-            grids = grids[:num_samples]
-            shapes = shapes[:num_samples]
+            rng = np.random.default_rng(self.cfg.training.seed)
+            if available_samples >= num_samples:
+                # Sample without replacement when enough data is available
+                indices = rng.choice(available_samples, size=num_samples, replace=False)
+                grids = grids[indices]
+                shapes = shapes[indices]
+            else:
+                # Sample with replacement to match the requested batch size
+                logging.warning(
+                    f"      Dataset {dataset_folder} only has {available_samples} samples, sampling with replacement to reach {num_samples}"
+                )
+                indices = rng.choice(available_samples, size=num_samples, replace=True)
+                grids = grids[indices]
+                shapes = shapes[indices]
+
             pattern_ids = np.full(num_samples, pattern_id, dtype=np.uint8)
             
             logging.info(f"      Loaded {num_samples} samples from {dataset_folder}: {grids.shape}, {shapes.shape}")
