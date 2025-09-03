@@ -4985,63 +4985,76 @@ class StructuredTrainer:
                 task_ids=task_ids_np,
             )
             
-            # 1. ADDITIONAL T-SNE: Show only contexts (PoE outputs) from specialized encoders
-            # Pattern 1 from Encoder 0, Pattern 2 from Encoder 1, Pattern 3 from Encoder 2
+            # 1. ADDITIONAL T-SNE: Show latent samples to demonstrate uncertainty (equivalent to train.py fig_latents_samples)
+            # Since structured_train doesn't have latents_samples, we'll create multiple samples from encoders
             if len(enc_params_list) > 0:
-                specialized_context_samples = []
-                specialized_context_program_ids = []
-                specialized_context_task_ids = []
+                # Create multiple samples by using different encoder outputs as "samples"
+                # This shows how different encoders represent the same patterns (uncertainty)
+                encoder_samples = []
+                encoder_sample_program_ids = []
+                encoder_sample_task_ids = []
                 
-                # For each pattern, collect only the context (PoE) outputs from the specialized encoder
+                # For each pattern, collect encoder outputs as samples
                 for pattern_id in [1, 2, 3]:
-                    specialized_encoder_id = pattern_id - 1  # Pattern 1 -> Encoder 0, Pattern 2 -> Encoder 1, Pattern 3 -> Encoder 2
-                    
                     pattern_mask = (pattern_ids_concat == pattern_id)
                     if np.any(pattern_mask):
-                        # Get context points only (PoE outputs)
-                        context_mask = (source_ids_np == len(enc_params_list))  # PoE context points
-                        combined_mask = pattern_mask & context_mask
+                        # Get encoder points only (exclude context)
+                        encoder_mask = (source_ids_np < len(enc_params_list))
+                        combined_mask = pattern_mask & encoder_mask
                         
                         if np.any(combined_mask):
-                            context_latents = latents_concat[combined_mask]
-                            context_task_ids = task_ids_np[combined_mask]
+                            encoder_latents = latents_concat[combined_mask]
+                            encoder_sources = source_ids_np[combined_mask]
+                            encoder_task_ids = task_ids_np[combined_mask]
                             
                             # Downsample for cleaner visualization
-                            max_context_points = min(100, len(context_latents))
-                            if len(context_latents) > max_context_points:
-                                sampled_indices = np.random.RandomState(42).choice(
-                                    len(context_latents), size=max_context_points, replace=False
-                                )
-                                context_latents = context_latents[sampled_indices]
-                                context_task_ids = context_task_ids[sampled_indices]
+                            max_encoder_points = min(200, len(encoder_latents))
+                            if len(encoder_latents) > max_encoder_points:
+                                # Stratified sampling to maintain encoder distribution
+                                encoder_indices = []
+                                for enc_id in range(len(enc_params_list)):
+                                    enc_mask = encoder_sources == enc_id
+                                    enc_indices = np.where(enc_mask)[0]
+                                    if len(enc_indices) > 0:
+                                        max_per_encoder = max_encoder_points // len(enc_params_list)
+                                        if len(enc_indices) > max_per_encoder:
+                                            sampled_indices = np.random.RandomState(42).choice(
+                                                enc_indices, size=max_per_encoder, replace=False
+                                            )
+                                        else:
+                                            sampled_indices = enc_indices
+                                        encoder_indices.extend(sampled_indices)
+                                
+                                # Apply sampling
+                                encoder_latents = encoder_latents[encoder_indices]
+                                encoder_sources = encoder_sources[encoder_indices]
+                                encoder_task_ids = encoder_task_ids[encoder_indices]
                             
-                            # Add context outputs as samples for this pattern
-                            specialized_context_samples.append(context_latents)
-                            specialized_context_program_ids.extend([pattern_id] * len(context_latents))
-                            specialized_context_task_ids.extend(context_task_ids)
-                            
-                            logging.info(f"Pattern {pattern_id} (Encoder {specialized_encoder_id}): {len(context_latents)} context samples")
+                            # Add encoder outputs as samples for this pattern
+                            encoder_samples.append(encoder_latents)
+                            encoder_sample_program_ids.extend([pattern_id] * len(encoder_latents))
+                            encoder_sample_task_ids.extend(encoder_task_ids)
                 
-                if specialized_context_samples:
-                    # Concatenate all specialized context samples
-                    all_context_samples = np.concatenate(specialized_context_samples, axis=0)
-                    all_context_program_ids = np.array(specialized_context_program_ids)
-                    all_context_task_ids = np.array(specialized_context_task_ids)
+                if encoder_samples:
+                    # Concatenate all encoder samples
+                    all_encoder_samples = np.concatenate(encoder_samples, axis=0)
+                    all_encoder_program_ids = np.array(encoder_sample_program_ids)
+                    all_encoder_task_ids = np.array(encoder_sample_task_ids)
                     
-                    # Create T-SNE for specialized context samples
+                    # Create T-SNE for encoder samples (showing uncertainty across encoders)
                     fig_tsne_samples = visualize_tsne_sources(
-                        latents=all_context_samples,
-                        program_ids=all_context_program_ids,  # Pattern types (1, 2, 3) for colors
-                        source_ids=np.zeros(len(all_context_samples), dtype=int),  # All same source (context samples)
-                        max_points=min(2000, len(all_context_samples)),
+                        latents=all_encoder_samples,
+                        program_ids=all_encoder_program_ids,  # Pattern types (1, 2, 3) for colors
+                        source_ids=np.zeros(len(all_encoder_samples), dtype=int),  # All same source (encoder samples)
+                        max_points=min(2000, len(all_encoder_samples)),
                         random_state=42,
-                        task_ids=all_context_task_ids,
+                        task_ids=all_encoder_task_ids,
                     )
                     
-                    logging.info(f"Generated specialized context samples T-SNE: {len(all_context_samples)} points")
+                    logging.info(f"Generated encoder samples T-SNE: {len(all_encoder_samples)} points")
                 else:
                     fig_tsne_samples = None
-                    logging.warning("No specialized context samples found for samples T-SNE")
+                    logging.warning("No encoder samples found for samples T-SNE")
             else:
                 fig_tsne_samples = None
                 logging.warning("No encoders available for samples T-SNE")
@@ -5356,19 +5369,18 @@ class StructuredTrainer:
             import traceback
             logging.error(f"Traceback: {traceback.format_exc()}")
 
+        # Free figures to save memory
+        plt.close(fig_heatmap)
+        plt.close(fig_gen)
+        plt.close(fig_tsne)
+        if fig_tsne_samples is not None:
+            plt.close(fig_tsne_samples)
+        if fig_tsne_encoders is not None:
+            plt.close(fig_tsne_encoders)
+
         # Release large intermediates
         del all_latents, latents_concat, source_ids_np, pattern_ids_concat
-        
-        # Return all expected values according to function signature
-        return (
-            metrics,                    # dict[str, float]
-            fig_gen,                    # Optional[plt.Figure] - generation figure
-            fig_heatmap,                # plt.Figure - heatmap figure  
-            fig_tsne,                   # Optional[plt.Figure] - latents figure
-            fig_tsne_samples,           # Optional[plt.Figure] - latents_samples figure
-            None,                       # Optional[plt.Figure] - search_progress figure (not implemented)
-            fig_tsne_encoders_list      # list[Optional[plt.Figure]] - pattern-specific T-SNE plots
-        )
+        return metrics
 
     def _create_pattern_specific_tsne(
         self,

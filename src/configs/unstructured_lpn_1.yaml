@@ -16,7 +16,7 @@ training:
   online_data_augmentation: False
   task_generator:
     class: STRUCT_PATTERN
-    pattern: 0    # was 1 → use 0 for mixed
+    pattern: 1
     num_rows: 5
     num_cols: 5
     num_pairs: 4
