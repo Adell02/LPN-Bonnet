@@ -300,14 +300,21 @@ def run_evaluation_with_budget(
         return False, {}
 
 
-def create_trajectory_plots(
+def create_heatmaps(
     checkpoint_results: List[Dict[str, Any]],
     max_budget: int,
     output_dir: str
 ) -> List[str]:
-    """Create trajectory plots showing loss evolution over budget for each checkpoint."""
+    """Create 2D heatmaps from checkpoint results aggregated across checkpoints and budgets."""
     
-    plot_files = []
+    heatmap_files = []
+    
+    # Aggregate data across all checkpoints to create proper 2D heatmaps
+    all_checkpoints = []
+    all_ga_losses = []
+    all_es_losses = []
+    all_ga_budgets = []
+    all_es_budgets = []
     
     for i, checkpoint_data in enumerate(checkpoint_results):
         checkpoint_name = checkpoint_data["checkpoint_name"]
@@ -330,47 +337,64 @@ def create_trajectory_plots(
             es_budget = es_results[max_budget].get("budget", np.arange(len(es_losses)) * 4)
             print(f"ES losses shape: {es_losses.shape}, budget shape: {es_budget.shape}")
         
-        # Create trajectory plot
-        fig, ax = plt.subplots(figsize=(12, 8))
+        # Store data for aggregation
+        all_checkpoints.append(checkpoint_name)
+        if ga_losses is not None:
+            all_ga_losses.append(ga_losses)
+            all_ga_budgets.append(ga_budget)
+        if es_losses is not None:
+            all_es_losses.append(es_losses)
+            all_es_budgets.append(es_budget)
+    
+    # Create individual heatmaps for each checkpoint
+    for i, checkpoint_name in enumerate(all_checkpoints):
+        # GA individual heatmap
+        if i < len(all_ga_losses) and len(all_ga_losses[i]) > 0:
+            ga_losses = all_ga_losses[i]
+            ga_budget = all_ga_budgets[i]
+            
+            # Create 2D matrix: [checkpoint_idx, budget_steps]
+            # For individual checkpoint, we have 1 checkpoint and multiple budget steps
+            ga_loss_matrix = ga_losses.reshape(1, -1)  # [1, num_budget_steps]
+            checkpoint_indices = np.array([i])  # [1] - single checkpoint
+            
+            fig = visualize_loss_difference_heatmap(
+                checkpoint_indices, ga_budget, ga_loss_matrix,
+                method_A_name="GA", method_B_name="GA"
+            )
+            ga_file = os.path.join(output_dir, f"ga_individual_{checkpoint_name}.png")
+            fig.savefig(ga_file, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            heatmap_files.append(ga_file)
         
-        # Plot GA trajectory
-        if ga_losses is not None and len(ga_losses) > 0:
-            ax.plot(ga_budget, ga_losses, 'o-', color='#FBB998', linewidth=2, markersize=6, 
-                   label=f'GA (steps: {len(ga_losses)})', alpha=0.8)
-        
-        # Plot ES trajectory
-        if es_losses is not None and len(es_losses) > 0:
-            ax.plot(es_budget, es_losses, 's-', color='#DB74DB', linewidth=2, markersize=6, 
-                   label=f'ES (generations: {len(es_losses)})', alpha=0.8)
-        
-        # Customize plot
-        ax.set_xlabel('Search Budget (Evaluations)', fontsize=12)
-        ax.set_ylabel('Loss', fontsize=12)
-        ax.set_title(f'Optimization Trajectories - Checkpoint {checkpoint_name}', fontsize=14, fontweight='bold')
-        ax.legend(fontsize=11)
-        ax.grid(True, alpha=0.3)
-        
-        # Add final loss values as text
-        if ga_losses is not None and len(ga_losses) > 0:
-            final_ga_loss = ga_losses[-1]
-            ax.text(0.02, 0.98, f'GA Final Loss: {final_ga_loss:.4f}', 
-                   transform=ax.transAxes, fontsize=10, verticalalignment='top',
-                   bbox=dict(boxstyle='round,pad=0.3', facecolor='#FBB998', alpha=0.7))
-        
-        if es_losses is not None and len(es_losses) > 0:
-            final_es_loss = es_losses[-1]
-            ax.text(0.02, 0.88, f'ES Final Loss: {final_es_loss:.4f}', 
-                   transform=ax.transAxes, fontsize=10, verticalalignment='top',
-                   bbox=dict(boxstyle='round,pad=0.3', facecolor='#DB74DB', alpha=0.7))
-        
-        # Save plot
-        plot_file = os.path.join(output_dir, f"trajectory_{checkpoint_name}.png")
-        fig.savefig(plot_file, dpi=150, bbox_inches='tight')
-        plt.close(fig)
-        plot_files.append(plot_file)
-        
-        # Create differential plot (ES - GA)
-        if ga_losses is not None and es_losses is not None:
+        # ES individual heatmap
+        if i < len(all_es_losses) and len(all_es_losses[i]) > 0:
+            es_losses = all_es_losses[i]
+            es_budget = all_es_budgets[i]
+            
+            # Create 2D matrix: [checkpoint_idx, budget_steps]
+            es_loss_matrix = es_losses.reshape(1, -1)  # [1, num_budget_steps]
+            checkpoint_indices = np.array([i])  # [1] - single checkpoint
+            
+            fig = visualize_loss_difference_heatmap(
+                checkpoint_indices, es_budget, es_loss_matrix,
+                method_A_name="ES", method_B_name="ES"
+            )
+            es_file = os.path.join(output_dir, f"es_individual_{checkpoint_name}.png")
+            fig.savefig(es_file, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            heatmap_files.append(es_file)
+    
+    # Create differential heatmap (ES - GA) for each checkpoint
+    for i, checkpoint_name in enumerate(all_checkpoints):
+        if (i < len(all_ga_losses) and i < len(all_es_losses) and 
+            len(all_ga_losses[i]) > 0 and len(all_es_losses[i]) > 0):
+            
+            ga_losses = all_ga_losses[i]
+            es_losses = all_es_losses[i]
+            ga_budget = all_ga_budgets[i]
+            es_budget = all_es_budgets[i]
+            
             # Align the loss trajectories to the same length
             min_len = min(len(ga_losses), len(es_losses))
             
@@ -386,34 +410,66 @@ def create_trajectory_plots(
             # Use the average budget trajectory
             avg_budget = (ga_budget_aligned + es_budget_aligned) / 2
             
-            # Create differential plot
-            fig, ax = plt.subplots(figsize=(12, 8))
-            ax.plot(avg_budget, loss_diff, 'o-', color='#5361E5', linewidth=2, markersize=6, 
-                   label='ES - GA', alpha=0.8)
-            ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, label='Equal Performance')
+            # Create 2D matrix: [checkpoint_idx, budget_steps]
+            loss_diff_matrix = loss_diff.reshape(1, -1)  # [1, num_budget_steps]
+            checkpoint_indices = np.array([i])  # [1] - single checkpoint
             
-            # Customize plot
-            ax.set_xlabel('Search Budget (Evaluations)', fontsize=12)
-            ax.set_ylabel('Loss Difference (ES - GA)', fontsize=12)
-            ax.set_title(f'Performance Difference - Checkpoint {checkpoint_name}', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
-            
-            # Add interpretation text
-            ax.text(0.02, 0.98, 'Positive: ES better (lower loss)', 
-                   transform=ax.transAxes, fontsize=10, verticalalignment='top',
-                   bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.7))
-            ax.text(0.02, 0.88, 'Negative: GA better (lower loss)', 
-                   transform=ax.transAxes, fontsize=10, verticalalignment='top',
-                   bbox=dict(boxstyle='round,pad=0.3', facecolor='lightcoral', alpha=0.7))
-            
-            # Save differential plot
+            fig = visualize_loss_difference_heatmap(
+                checkpoint_indices, avg_budget, loss_diff_matrix,
+                method_A_name="GA", method_B_name="ES"
+            )
             diff_file = os.path.join(output_dir, f"differential_{checkpoint_name}.png")
             fig.savefig(diff_file, dpi=150, bbox_inches='tight')
             plt.close(fig)
-            plot_files.append(diff_file)
+            heatmap_files.append(diff_file)
     
-    return plot_files
+    # Create summary heatmap across all checkpoints if we have multiple checkpoints
+    if len(all_checkpoints) > 1:
+        # Aggregate all GA losses into a 2D matrix: [checkpoints, budget_steps]
+        if all_ga_losses:
+            # Find the maximum budget steps across all checkpoints
+            max_ga_steps = max(len(ga_losses) for ga_losses in all_ga_losses)
+            ga_summary_matrix = np.full((len(all_checkpoints), max_ga_steps), np.nan)
+            
+            for i, ga_losses in enumerate(all_ga_losses):
+                ga_summary_matrix[i, :len(ga_losses)] = ga_losses
+            
+            # Use the budget from the first checkpoint (assuming they're similar)
+            ga_budget_summary = all_ga_budgets[0] if all_ga_budgets else np.arange(max_ga_steps)
+            checkpoint_indices = np.arange(len(all_checkpoints))
+            
+            fig = visualize_loss_difference_heatmap(
+                checkpoint_indices, ga_budget_summary, ga_summary_matrix,
+                method_A_name="GA", method_B_name="GA"
+            )
+            ga_summary_file = os.path.join(output_dir, "ga_summary_all_checkpoints.png")
+            fig.savefig(ga_summary_file, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            heatmap_files.append(ga_summary_file)
+        
+        # Aggregate all ES losses into a 2D matrix: [checkpoints, budget_steps]
+        if all_es_losses:
+            # Find the maximum budget steps across all checkpoints
+            max_es_steps = max(len(es_losses) for es_losses in all_es_losses)
+            es_summary_matrix = np.full((len(all_checkpoints), max_es_steps), np.nan)
+            
+            for i, es_losses in enumerate(all_es_losses):
+                es_summary_matrix[i, :len(es_losses)] = es_losses
+            
+            # Use the budget from the first checkpoint (assuming they're similar)
+            es_budget_summary = all_es_budgets[0] if all_es_budgets else np.arange(max_es_steps)
+            checkpoint_indices = np.arange(len(all_checkpoints))
+            
+            fig = visualize_loss_difference_heatmap(
+                checkpoint_indices, es_budget_summary, es_summary_matrix,
+                method_A_name="ES", method_B_name="ES"
+            )
+            es_summary_file = os.path.join(output_dir, "es_summary_all_checkpoints.png")
+            fig.savefig(es_summary_file, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            heatmap_files.append(es_summary_file)
+    
+    return heatmap_files
 
 
 def main():
@@ -531,30 +587,30 @@ def main():
                     "es_results": es_results
                 })
                 
-                # Create trajectory plots for this checkpoint
-                print(f"Creating trajectory plots for checkpoint {checkpoint_name}...")
-                plot_files = create_trajectory_plots(
+                # Create heatmaps for this checkpoint
+                print(f"Creating heatmaps for checkpoint {checkpoint_name}...")
+                heatmap_files = create_heatmaps(
                     [checkpoint_results[-1]], max_budget, args.output_dir
                 )
                 
                 # Upload to W&B
-                for plot_file in plot_files:
+                for heatmap_file in heatmap_files:
                     wandb.log({
-                        f"trajectory_{checkpoint_name}": wandb.Image(plot_file)
+                        f"heatmap_{checkpoint_name}": wandb.Image(heatmap_file)
                     })
                 
-                print(f"Uploaded {len(plot_files)} trajectory plots to W&B")
+                print(f"Uploaded {len(heatmap_files)} heatmaps to W&B")
             else:
                 print(f"Skipping checkpoint {checkpoint_name} due to both methods failing")
     
-    # Create final summary trajectory plots
+    # Create final summary heatmaps
     if checkpoint_results:
-        print("Creating summary trajectory plots...")
-        summary_plots = create_trajectory_plots(checkpoint_results, max_budget, args.output_dir)
+        print("Creating summary heatmaps...")
+        summary_heatmaps = create_heatmaps(checkpoint_results, max_budget, args.output_dir)
         
-        for plot_file in summary_plots:
+        for heatmap_file in summary_heatmaps:
             wandb.log({
-                "summary_trajectory": wandb.Image(plot_file)
+                "summary_heatmap": wandb.Image(heatmap_file)
             })
     
     print(f"Completed evaluation of {len(checkpoint_results)} checkpoints")

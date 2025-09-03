@@ -1221,7 +1221,7 @@ class StructuredTrainer:
                     for dataset_dict in self.test_datasets:
                         try:
                             start = time.time()
-                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples_pca, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
                                 updated_state, dataset_dict, step=0
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -1231,7 +1231,7 @@ class StructuredTrainer:
                                 (fig_grids, "generation"),
                                 (fig_heatmap, "pixel_accuracy"),
                                 (fig_latents, "latents"),
-                                (fig_latents_samples_pca, "latents_samples_pca"),
+                                (fig_latents_samples, "latents_samples"),
                                 (fig_search_progress, "search_progress"),
                                 (fig_tsne_samples, "latents_samples"),
                             ]:
@@ -1401,36 +1401,12 @@ class StructuredTrainer:
                     base_coeff = self.cfg.training.get("contrastive_kl", 1e-3)
                     current_specialization_ratio = avg_target_var / (avg_other_var + 1e-8)
                     
-                    # ENHANCED: More sophisticated dynamic coefficient adjustment
-                    if current_specialization_ratio > 2.0:
-                        # Very poor specialization - be aggressive
-                        dynamic_coeff = base_coeff * 20.0
-                    elif current_specialization_ratio > 1.5:
-                        # Poor specialization - moderate aggression
+                    if current_specialization_ratio > 1.0:
                         dynamic_coeff = base_coeff * 10.0
-                    elif current_specialization_ratio > 1.0:
-                        # Some specialization - light boost
+                    elif current_specialization_ratio > 0.8:
                         dynamic_coeff = base_coeff * 5.0
-                    elif current_specialization_ratio > 0.5:
-                        # Good specialization - maintain
-                        dynamic_coeff = base_coeff * 2.0
-                    elif current_specialization_ratio > 0.2:
-                        # Very good specialization - gentle
-                        dynamic_coeff = base_coeff * 1.0
                     else:
-                        # Excellent specialization - minimal
-                        dynamic_coeff = base_coeff * 0.5
-                    
-                    # Log specialization progress for monitoring
-                    logging.info(f"🎯 Encoder {enc_idx} specialization: ratio={current_specialization_ratio:.3f} -> coeff={dynamic_coeff:.1f}")
-                    
-                    # Store specialization metrics for WandB
-                    specialization_metrics = {
-                        f'encoder_{enc_idx}/specialization_ratio': current_specialization_ratio,
-                        f'encoder_{enc_idx}/dynamic_coeff': dynamic_coeff,
-                        f'encoder_{enc_idx}/target_var': avg_target_var,
-                        f'encoder_{enc_idx}/other_var': avg_other_var,
-                    }
+                        dynamic_coeff = base_coeff
                     
                     contrastive_loss = avg_target_var + dynamic_coeff * (1.0 / (avg_other_var + 1e-8))
                     
@@ -2299,67 +2275,21 @@ class StructuredTrainer:
             combined_pattern_ids = np.array(all_pattern_ids)
             combined_task_ids = np.array(all_task_ids)
 
-            # ENHANCED PoE Analysis: Show how PoE pulls latents towards most confident encoder
+            # Append PoE latents as source_id=3 (precision-weighted combination across encoders)
             try:
                 if len(per_encoder_mu_list) > 0 and len(per_encoder_var_list) > 0:
                     mu_enc  = np.stack(per_encoder_mu_list, axis=0)     # [E,N,D]
                     var_enc = np.stack(per_encoder_var_list, axis=0)    # [E,N,D]
-                    
-                    # Compute PoE with uniform weights (current approach)
                     precision = 1.0 / np.clip(var_enc, 1e-12, None)     # [E,N,D]
                     precision_sum = np.sum(precision, axis=0)           # [N,D]
                     poe_var  = 1.0 / np.clip(precision_sum, 1e-12, None)
                     poe_mean = poe_var * np.sum(precision * mu_enc, axis=0)  # [N,D]
-                    
-                    # ENHANCED: Use learnable PoE weights instead of uniform
-                    # For now, use adaptive weights based on encoder confidence
-                    # TODO: Make these learnable parameters in the model
-                    encoder_confidences = 1.0 / np.mean(var_enc, axis=(1, 2))  # [E] - average confidence per encoder
-                    alphas = encoder_confidences / np.sum(encoder_confidences)  # Normalized confidence weights
-                    poe_weights = precision / (precision_sum[None, :, :] + 1e-12)  # [E,N,D] - actual PoE weights per sample
-                    
-                    logging.info(f"🎯 Adaptive PoE weights: {[f'{w:.3f}' for w in alphas]}")
-                    
-                    # Analyze which encoder dominates for each pattern
-                    pattern_analysis = {}
-                    for pattern_id in [1, 2, 3]:
-                        pattern_mask = np.array(pattern_ids_all) == pattern_id
-                        if np.any(pattern_mask):
-                            pattern_weights = poe_weights[:, pattern_mask, :]  # [E, num_pattern_samples, D]
-                            avg_weights_per_encoder = np.mean(pattern_weights, axis=(1, 2))  # [E] - average weight per encoder
-                            dominant_encoder = np.argmax(avg_weights_per_encoder)
-                            max_weight = np.max(avg_weights_per_encoder)
-                            
-                            pattern_analysis[pattern_id] = {
-                                'dominant_encoder': dominant_encoder,
-                                'max_weight': max_weight,
-                                'encoder_weights': avg_weights_per_encoder
-                            }
-                            
-                            logging.info(f"🎯 Pattern {pattern_id}: Encoder {dominant_encoder} dominates PoE (weight={max_weight:.3f})")
-                            logging.info(f"   All encoder weights: {[f'{w:.3f}' for w in avg_weights_per_encoder]}")
 
                     combined_latents = np.concatenate([combined_latents, poe_mean], axis=0)
                     combined_source_ids = np.concatenate([combined_source_ids, np.full((poe_mean.shape[0],), 3, dtype=combined_source_ids.dtype)])
                     combined_pattern_ids = np.concatenate([combined_pattern_ids, np.array(pattern_ids_all)])
                     combined_task_ids = np.concatenate([combined_task_ids, np.arange(poe_mean.shape[0])])
-                    
-                    # Store PoE analysis for metrics and WandB logging
-                    tsne_metrics['poe_analysis'] = pattern_analysis
-                    
-                    # Log PoE metrics for WandB
-                    for pattern_id, analysis in pattern_analysis.items():
-                        tsne_metrics[f'poe/pattern_{pattern_id}_dominant_encoder'] = analysis['dominant_encoder']
-                        tsne_metrics[f'poe/pattern_{pattern_id}_max_weight'] = analysis['max_weight']
-                        for enc_idx, weight in enumerate(analysis['encoder_weights']):
-                            tsne_metrics[f'poe/pattern_{pattern_id}_encoder_{enc_idx}_weight'] = weight
-                    
-                    # Overall PoE quality metric
-                    avg_dominance = np.mean([analysis['max_weight'] for analysis in pattern_analysis.values()])
-                    tsne_metrics['poe/avg_dominance'] = avg_dominance
-                    
-                    logging.info(f"✅ Enhanced PoE analysis: Avg dominance={avg_dominance:.3f}")
-                    logging.info("   Shows which encoder dominates for each pattern")
+                    logging.info("Appended PoE latents (source_id=3) for pattern-specific T-SNE")
             except Exception as _poe_e:
                 logging.warning(f"Failed to compute/append PoE latents: {_poe_e}")
 
@@ -4065,7 +3995,7 @@ class StructuredTrainer:
                     for dataset_dict in self.test_datasets:
                         try:
                             start = time.time()
-                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples_pca, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
                                 state, dataset_dict, step=step
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -4075,7 +4005,7 @@ class StructuredTrainer:
                                 (fig_grids, "generation"),
                                 (fig_heatmap, "pixel_accuracy"),
                                 (fig_latents, "latents"),
-                                (fig_latents_samples_pca, "latents_samples_pca"),
+                                (fig_latents_samples, "latents_samples"),
                                 (fig_search_progress, "search_progress"),
                                 (fig_tsne_samples, "latents_samples"),
                             ]:
@@ -4270,7 +4200,7 @@ class StructuredTrainer:
                             for dataset_dict in self.test_datasets:
                                 try:
                                     start = time.time()
-                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples_pca, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
                                         state, dataset_dict, step=self.phase2_offset + step
                                     )
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -4280,7 +4210,7 @@ class StructuredTrainer:
                                         (fig_grids, "generation"),
                                         (fig_heatmap, "pixel_accuracy"),
                                         (fig_latents, "latents"),
-                                        (fig_latents_samples_pca, "latents_samples_pca"),
+                                        (fig_latents_samples, "latents_samples"),
                                         (fig_search_progress, "search_progress"),
                                         (fig_tsne_samples, "latents_samples"),
                                     ]:
@@ -4351,7 +4281,7 @@ class StructuredTrainer:
                             for dataset_dict in self.test_datasets:
                                 try:
                                     start = time.time()
-                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples_pca, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
                                         state, dataset_dict, step=step
                                     )
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -4361,7 +4291,7 @@ class StructuredTrainer:
                                         (fig_grids, "generation"),
                                         (fig_heatmap, "pixel_accuracy"),
                                         (fig_latents, "latents"),
-                                        (fig_latents_samples_pca, "latents_samples_pca"),
+                                        (fig_latents_samples, "latents_samples"),
                                         (fig_search_progress, "search_progress"),
                                         (fig_tsne_samples, "latents_samples"),
                                     ]:
@@ -4419,7 +4349,7 @@ class StructuredTrainer:
                     for dataset_dict in self.test_datasets:
                         try:
                             start = time.time()
-                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples_pca, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
                                 state, dataset_dict, step=self.phase2_offset + step
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
@@ -4429,7 +4359,7 @@ class StructuredTrainer:
                                 (fig_grids, "generation"),
                                 (fig_heatmap, "pixel_accuracy"),
                                 (fig_latents, "latents"),
-                                (fig_latents_samples_pca, "latents_samples_pca"),
+                                (fig_latents_samples, "latents_samples"),
                                 (fig_search_progress, "search_progress"),
                                 (fig_tsne_samples, "latents_samples"),
                             ]:
@@ -5113,25 +5043,12 @@ class StructuredTrainer:
                         task_ids=all_encoder_task_ids,
                     )
                     
-                    # Create PCA for encoder samples (showing uncertainty across encoders)
-                    fig_pca_samples = self._create_pca_sources_visualization(
-                        latents=all_encoder_samples,
-                        program_ids=all_encoder_program_ids,  # Pattern types (1, 2, 3) for colors
-                        source_ids=np.zeros(len(all_encoder_samples), dtype=int),  # All same source (encoder samples)
-                        max_points=min(2000, len(all_encoder_samples)),
-                        random_state=42,
-                        task_ids=all_encoder_task_ids,
-                    )
-                    
                     logging.info(f"Generated encoder samples T-SNE: {len(all_encoder_samples)} points")
-                    logging.info(f"Generated encoder samples PCA: {len(all_encoder_samples)} points")
                 else:
                     fig_tsne_samples = None
-                    fig_pca_samples = None
                     logging.warning("No encoder samples found for samples T-SNE")
             else:
                 fig_tsne_samples = None
-                fig_pca_samples = None
                 logging.warning("No encoders available for samples T-SNE")
             
             # 2. ADDITIONAL T-SNE: Show just the 3 encoders latents for EACH pattern
@@ -5826,7 +5743,7 @@ class StructuredTrainer:
         inference_mode: str = "mean",
         inference_kwargs: dict = None,
         step: int = None,
-    ) -> tuple[dict[str, float], Optional[plt.Figure], plt.Figure, Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure], list[Optional[plt.Figure]]]:
+    ) -> tuple[dict[str, float], Optional[plt.Figure], plt.Figure, Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure], list[Optional[plt.Figure]]]:
         """
         Test dataset submission method for structured training (similar to train.py).
         Generates outputs using leave-one-out approach and computes metrics.
@@ -5836,7 +5753,7 @@ class StructuredTrainer:
             - A figure containing the visualization of the generated grids.
             - A figure containing the visualization of the pixel accuracy heatmap.
             - A figure containing the visualization of the latents (T-SNE).
-            - A figure containing the visualization of the latents samples (PCA projection).
+            - A figure containing the visualization of the latents samples (None for structured training).
             - A figure containing the visualization of the search progress (None if not applicable).
             - A figure containing the visualization of the context-only T-SNE.
             - A list of figures containing the visualization of the encoder-only T-SNE for each pattern.
@@ -6076,7 +5993,6 @@ class StructuredTrainer:
         # T-SNE visualization - Show encoders + context with different markers
         fig_latents = None
         fig_search_progress = None
-        fig_pca_samples = None
         
         if "context" in info and program_ids is not None:
             context = info["context"]
@@ -6454,7 +6370,7 @@ class StructuredTrainer:
         except Exception as e:
             logging.warning(f"Matplotlib cleanup failed in test_dataset_submission: {e}")
         
-        return metrics, fig_gen, fig_heatmap, fig_latents, fig_pca_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list
+        return metrics, fig_gen, fig_heatmap, fig_latents, None, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list
 
     def _create_merged_encoder_certainty_panel(self, state: TrainState, step: int) -> Optional[plt.Figure]:
         """
@@ -6480,11 +6396,10 @@ class StructuredTrainer:
             logging.info(f"   - Using SAME computation approach as Phase 1: _create_specialized_training_data + visualize_struct_confidence_panel")
             logging.info(f"   - Merging all encoders into single comprehensive plots per pattern")
             
-            # Create evaluation data for all patterns using the SAME approach as Phase 1
+            # Create evaluation data for all patterns
             eval_data = {}
-            num_eval_samples = 100  # Same as Phase 1 for consistency
             for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
+                eval_data[pattern_id] = self._get_phase2_eval_data(target_pattern=pattern_id)
             
             # Create a figure with subplots for each pattern (histogram + Gaussian function)
             fig, axes = plt.subplots(2, 3, figsize=(20, 12))
@@ -6777,11 +6692,10 @@ class StructuredTrainer:
             import matplotlib.pyplot as plt
             import numpy as np
             
-            # Get evaluation data for each pattern using the SAME approach as Phase 1
+            # Get evaluation data for each pattern
             eval_data = {}
-            num_eval_samples = 100  # Same as Phase 1 for consistency
             for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
+                eval_data[pattern_id] = self._get_phase2_eval_data(target_pattern=pattern_id)
             
             # Get encoder parameters
             enc_params_list = state.params["encoders"]
@@ -6794,7 +6708,7 @@ class StructuredTrainer:
             
             # Process each pattern
             for pattern_id in [1, 2, 3]:
-                grids, shapes, pattern_ids = eval_data[pattern_id]
+                grids, shapes = eval_data[pattern_id]
                 
                 # Get encoder outputs for this pattern
                 encoder_mus = []
@@ -6924,11 +6838,10 @@ class StructuredTrainer:
             from scipy.stats import norm
             from models.structured_lpn import poe_diag_gaussians
 
-            # Prepare evaluation data for each pattern using the SAME approach as Phase 1
+            # Prepare evaluation data for each pattern - use same method as merged_encoder_certainty_panel
             eval_data = {}
-            num_eval_samples = 100  # Same as Phase 1 for consistency
             for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_eval_samples)
+                eval_data[pattern_id] = self._get_phase2_eval_data(target_pattern=pattern_id)
 
             poster_fig, poster_axes = plt.subplots(2, 3, figsize=(20, 12))
             if len(poster_axes.shape) == 1:
