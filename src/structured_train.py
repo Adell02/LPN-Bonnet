@@ -6406,29 +6406,29 @@ class StructuredTrainer:
                 sample_index = int(idxs[0])
                 sample_grids = grids_u[sample_index]
                 sample_shapes = shapes_u[sample_index]
-                    
-                    # Collect encoder outputs for ALL encoders on this sample (same computation as Phase 1)
-                    all_encoder_mus = []
-                    all_encoder_logvars = []
-                    encoder_labels = []
-                    
-                    for enc_idx in range(len(self.encoders)):
-                        encoder_params = state.params["encoders"][enc_idx]
-                            
-                        # Forward pass through this encoder (same as Phase 1)
-                        mu, logvar = self.encoders[enc_idx].apply(
-                            {"params": encoder_params},
-                            sample_grids[None, ...],  # Add batch dimension back
-                            sample_shapes[None, ...],  # Add batch dimension back
-                            dropout_eval=False,
-                            mutable=False,
-                        )
-                        
-                        all_encoder_mus.append(np.array(mu))
-                        all_encoder_logvars.append(np.array(logvar))
-                        encoder_labels.append(f"Encoder {enc_idx}")
-                    
-                    # Create merged histograms and Gaussian functions using the SAME data as Phase 1
+
+                # Collect encoder outputs for ALL encoders on this sample (same computation as Phase 1)
+                all_encoder_mus = []
+                all_encoder_logvars = []
+                encoder_labels = []
+
+                for enc_idx in range(len(self.encoders)):
+                    encoder_params = state.params["encoders"][enc_idx]
+
+                    # Forward pass through this encoder (same as Phase 1)
+                    mu, logvar = self.encoders[enc_idx].apply(
+                        {"params": encoder_params},
+                        sample_grids[None, ...],  # Add batch dimension back
+                        sample_shapes[None, ...],  # Add batch dimension back
+                        dropout_eval=False,
+                        mutable=False,
+                    )
+
+                    all_encoder_mus.append(np.array(mu))
+                    all_encoder_logvars.append(np.array(logvar))
+                    encoder_labels.append(f"Encoder {enc_idx}")
+
+                # Create merged histograms and Gaussian functions using the SAME data as Phase 1
                     pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
                     pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
                     
