@@ -128,7 +128,7 @@ def run_evaluation_with_budget(
         cmd = [
             sys.executable, "src/evaluate_checkpoint.py",
             "-w", artifact_path,
-            "-d", f"src/datasets/{dataset_folder}",
+            "-d", dataset_folder,
             "--dataset-length", str(dataset_length),
             "--dataset-batch-size", str(dataset_batch_size),
             "--dataset-use-hf", str(dataset_use_hf).lower(),
@@ -147,7 +147,7 @@ def run_evaluation_with_budget(
         cmd = [
             sys.executable, "src/evaluate_checkpoint.py",
             "-w", artifact_path,
-            "-d", f"src/datasets/{dataset_folder}",
+            "-d", dataset_folder,
             "--dataset-length", str(dataset_length),
             "--dataset-batch-size", str(dataset_batch_size),
             "--dataset-use-hf", str(dataset_use_hf).lower(),
