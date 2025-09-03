@@ -6380,10 +6380,9 @@ class StructuredTrainer:
             logging.info(f"   - Using SAME computation approach as Phase 1: _create_specialized_training_data + visualize_struct_confidence_panel")
             logging.info(f"   - Merging all encoders into single comprehensive plots per pattern")
             
-            # Create evaluation data for all patterns using the SAME approach as Phase 1
-            eval_data = {}
-            for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._get_phase2_eval_data(target_pattern=pattern_id)
+            # Create evaluation data using a UNIFORM distribution across all patterns
+            # Then, for each pattern, pick a representative sample from this uniform set
+            grids_u, shapes_u, pattern_ids_u = self._get_phase2_eval_data(uniform=True)
             
             # Create a figure with subplots for each pattern (histogram + Gaussian function)
             fig, axes = plt.subplots(2, 3, figsize=(20, 12))
@@ -6398,14 +6397,15 @@ class StructuredTrainer:
                 # Bottom row: Gaussian functions
                 ax_gauss = axes[1, pattern_idx]
                 
-                if pattern_id in eval_data:
-                    grids, shapes, pattern_ids = eval_data[pattern_id]
-                    
-                    # Select a consistent sample for this pattern (same as Phase 1 approach)
-                    # Use the same sample selection logic as _generate_phase_a_certainty_plots
-                    sample_index = (pattern_id - 1) % len(grids)  # Consistent sample across all encoders
-                    sample_grids = grids[sample_index]
-                    sample_shapes = shapes[sample_index]
+                # Select a sample belonging to this pattern from the UNIFORM set
+                idxs = np.where(np.array(pattern_ids_u) == pattern_id)[0]
+                if idxs.size == 0:
+                    logging.warning(f"No samples found for pattern {pattern_id} in uniform set; skipping")
+                    continue
+                # Pick the first occurrence for determinism
+                sample_index = int(idxs[0])
+                sample_grids = grids_u[sample_index]
+                sample_shapes = shapes_u[sample_index]
                     
                     # Collect encoder outputs for ALL encoders on this sample (same computation as Phase 1)
                     all_encoder_mus = []
