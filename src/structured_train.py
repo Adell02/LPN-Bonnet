@@ -1112,7 +1112,7 @@ class StructuredTrainer:
                     *test_batch,
                     dropout_eval=False,
                     mode=cfg.training.inference_mode,
-                poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32),
+                    poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32),
                     encoder_params_list=state.params["encoders"],
                     decoder_params=state.params["decoder"],
                     rngs={"dropout": key, "latents": key},
