@@ -61,11 +61,11 @@ training:
   pairwise_kl_coeff: null
   decoder_expose_steps: 1
   encoder_expose_steps: 10  # number of initial gradient steps encoders are trainable
-  repulsion_kl: 0
+  repulsion_kl: 0.5
   # Distance margin for repulsion loss (default: 10.0)
   # Using a larger margin (e.g., 10) keeps the repulsion term active
   # since typical distances (~9) are already larger than the previous margin of 1.0
-  repulsion_margin: 20.0
+  repulsion_margin: 0.5
   # This coefficient controls the strength of contrastive loss
   # Lower values = more stable, higher values = more aggressive specialization
   # The system will dynamically adjust this coefficient based on specialization progress

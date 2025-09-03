@@ -6460,6 +6460,15 @@ class StructuredTrainer:
                     all_means = np.concatenate(all_encoder_means)
                     x_min, x_max = np.min(all_means), np.max(all_means)
                     x_range = x_max - x_min
+                    if not np.isfinite(x_min) or not np.isfinite(x_max):
+                        logging.warning("       ⚠️  Non-finite encoder means detected; skipping histogram for this pattern")
+                        continue
+                    if x_range == 0.0:
+                        # Avoid empty/degenerate hist by widening a tiny epsilon
+                        eps = 1e-3
+                        x_min -= eps
+                        x_max += eps
+                        x_range = x_max - x_min
                     bins = np.linspace(x_min, x_max, 31)  # 31 edges = 30 bins
                     
                     for enc_idx, (means, label, color) in enumerate(zip(all_encoder_means, encoder_labels, colors)):
@@ -6503,6 +6512,8 @@ class StructuredTrainer:
                     all_vals = np.concatenate(all_encoder_means)
                     x_min, x_max = np.min(all_vals), np.max(all_vals)
                     x_range = x_max - x_min
+                    if x_range == 0.0:
+                        x_range = 1.0
                     x_plot = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, 1000)
                     
                     # Compute POE (Product of Experts) Gaussian
@@ -6570,6 +6581,8 @@ class StructuredTrainer:
                         else:
                             poe_mean = np.mean(poe_mu_np)
                             poe_std = np.mean(np.sqrt(np.exp(poe_logvar_np)))
+                            if not np.isfinite(poe_std) or poe_std <= 0:
+                                poe_std = 1e-3
                             logging.debug(
                                 f"       ✅ POE statistics computed: mean={poe_mean:.6f}, std={poe_std:.6f}"
                             )
