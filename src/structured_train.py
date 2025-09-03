@@ -1189,6 +1189,12 @@ class StructuredTrainer:
         
         self.phase1_completed = True
         
+        # CRITICAL FIX: Clear Phase 2 evaluation cache after Phase 1 completion
+        # This ensures that fresh data is generated with specialized encoder parameters
+        if hasattr(self, '_phase2_eval_cache'):
+            self._phase2_eval_cache.clear()
+            logging.info("🧹 Cleared Phase 2 evaluation cache to use specialized encoder parameters")
+        
         # Calculate Phase A evaluation statistics
         eval_every_n_steps = self.cfg.training.get("eval_every_n_logs", 20) * self.cfg.training.get("log_every_n_steps", 5)
         total_phase_a_evals = 0
