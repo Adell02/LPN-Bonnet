@@ -4491,12 +4491,11 @@ class StructuredTrainer:
         current_enc_params_list = state.params["encoders"]
         logging.info(f"Evaluation using current encoder weights from training state (step {getattr(state, 'step', 'unknown')})")
         
-        # CRITICAL FIX: Use the same data generation method as confidence panel for consistency
-        # The issue is that T-SNE uses make_dataset() while confidence panel uses _create_pattern_dataset_synthetic()
-        # These generate fundamentally different data even for the same pattern ID
-        if hasattr(self, "eval_grids") and self.phase1_completed:
-            logging.info("🔄 Using synthetic data generation for T-SNE evaluation (same as confidence panel)")
-            # Generate fresh balanced data using the SAME method as confidence panel
+        # CRITICAL FIX: Use IDENTICAL samples for all evaluations to ensure consistency
+        # Generate data once and cache it to ensure Phase 1 and Phase 2 see the same samples
+        if not hasattr(self, "_cached_eval_data") or self._cached_eval_data is None:
+            logging.info("🔄 Generating and caching identical evaluation samples for consistency")
+            # Generate balanced data using synthetic method (same as confidence panel)
             total_eval_length = 96  # Total evaluation samples
             samples_per_pattern = total_eval_length // 3  # 32 samples per pattern
             
@@ -4507,18 +4506,32 @@ class StructuredTrainer:
                 grids_all.append(g)
                 shapes_all.append(s)
             
-            # Use synthetic data instead of make_dataset() data
-            self.eval_grids = jnp.concatenate(grids_all, axis=0)
-            self.eval_shapes = jnp.concatenate(shapes_all, axis=0)
-            
-            # Create explicit pattern IDs that match the concatenation order
-            self.eval_pattern_ids = jnp.concatenate([
-                jnp.full((samples_per_pattern,), 1),  # Pattern 1 (first 32 samples)
-                jnp.full((samples_per_pattern,), 2),  # Pattern 2 (next 32 samples)
-                jnp.full((samples_per_pattern,), 3),  # Pattern 3 (last 32 samples)
-            ], axis=0)
-            
-            logging.info(f"🔄 Generated synthetic evaluation data: {self.eval_grids.shape[0]} samples")
+            # Cache the generated data
+            self._cached_eval_data = {
+                'grids': jnp.concatenate(grids_all, axis=0),
+                'shapes': jnp.concatenate(shapes_all, axis=0),
+                'pattern_ids': jnp.concatenate([
+                    jnp.full((samples_per_pattern,), 1),  # Pattern 1 (first 32 samples)
+                    jnp.full((samples_per_pattern,), 2),  # Pattern 2 (next 32 samples)
+                    jnp.full((samples_per_pattern,), 3),  # Pattern 3 (last 32 samples)
+                ], axis=0)
+            }
+            logging.info(f"✅ Cached identical evaluation data: {self._cached_eval_data['grids'].shape[0]} samples")
+        
+        # Use cached data for all evaluations
+        self.eval_grids = self._cached_eval_data['grids']
+        self.eval_shapes = self._cached_eval_data['shapes']
+        self.eval_pattern_ids = self._cached_eval_data['pattern_ids']
+        logging.info("🔄 Using cached identical samples for consistent evaluation")
+        
+        # VALIDATION: Log sample consistency for debugging
+        logging.info(f"✅ Evaluation data consistency check:")
+        logging.info(f"   - Grids shape: {self.eval_grids.shape}")
+        logging.info(f"   - Shapes shape: {self.eval_shapes.shape}")
+        logging.info(f"   - Pattern IDs: {np.unique(self.eval_pattern_ids)}")
+        logging.info(f"   - Samples per pattern: {[np.sum(self.eval_pattern_ids == pid) for pid in [1, 2, 3]]}")
+        logging.info(f"   - Phase: {'Phase 1' if not self.phase1_completed else 'Phase 2'}")
+        logging.info(f"   - Step: {step}")
         
         if not hasattr(self, "eval_grids"):
             return {}
