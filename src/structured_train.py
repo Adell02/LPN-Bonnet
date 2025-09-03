@@ -4566,7 +4566,8 @@ class StructuredTrainer:
                 logging.info(f"PoE alphas: {len(info[key])} batches")
                 for i, batch_alphas in enumerate(info[key]):
                     if batch_alphas is not None:
-                        logging.info(f"  Batch {i}: shape={batch_alphas.shape}, type={type(batch_alphas)}")
+                        batch_alphas_np = np.array(batch_alphas)
+                        logging.info(f"  Batch {i}: shape={batch_alphas_np.shape}, values={batch_alphas_np}")
                     else:
                         logging.info(f"  Batch {i}: None")
             else:

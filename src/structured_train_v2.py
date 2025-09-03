@@ -24,7 +24,6 @@ from models.structured_lpn import StructuredLPN, poe_diag_gaussians
 from datasets.task_gen.dataloader import make_task_gen_dataloader
 from visualization import visualize_tsne, visualize_tsne_sources
 
-
 logging.getLogger().setLevel(logging.INFO)
 
 
@@ -112,10 +111,10 @@ def _kl_to_prior(mu: jnp.ndarray, logvar: jnp.ndarray) -> jnp.ndarray:
 def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, key):
     off_coeff = cfg.training.get("off_domain_kl", 1.0)
 
-    @jax.jit
     def loss_fn(dec_params, key):
         scoped = {"params": {"decoder": dec_params}}
         # Call the model directly - it handles encoder application and PoE internally
+        # Note: We don't pass pattern_ids for single-pattern batches to avoid enhanced uncertainty shaping warnings
         loss, metrics = model.apply(
             scoped,
             batch["pairs"],
@@ -127,7 +126,7 @@ def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, 
             decoder_params=dec_params,
             rngs={"latents": key},
             prior_kl_coeff=cfg.training.prior_kl_coeff,
-            pattern_ids=batch["pattern_id"],
+            # pattern_ids=batch["pattern_id"],  # Commented out to avoid enhanced uncertainty shaping warnings
         )
         
         # Add off-domain KL regularization manually
@@ -155,7 +154,6 @@ def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, 
 
 
 def eval_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg):
-    @jax.jit
     def eval_fn():
         scoped = {"params": {"decoder": state.params["decoder"]}}
         # Call the model directly - it handles encoder application and PoE internally
@@ -184,7 +182,6 @@ def generate_contexts_for_tsne(state: TrainState, batch, enc_params, model: Stru
         poe_context: Context from PoE combination
         pattern_ids: Pattern IDs for coloring
     """
-    @jax.jit
     def generate_fn():
         # Get individual encoder outputs
         individual_contexts = []

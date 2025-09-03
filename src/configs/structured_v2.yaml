@@ -58,7 +58,6 @@ training:
   use_hf: true
   online_data_augmentation: false
   inference_mode: "mean"  # mean/all/random_search/gradient_ascent/evolutionary_search
-  disable_enhanced_uncertainty: true  # Disable enhanced uncertainty shaping to avoid JAX concretization errors
   inference_kwargs: {}
   prior_kl_coeff: null
   pairwise_kl_coeff: null

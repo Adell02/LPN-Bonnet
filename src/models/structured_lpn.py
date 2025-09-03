@@ -331,31 +331,79 @@ class StructuredLPN(nn.Module):
         mus, logvars = self._stack_encoder_outputs(enc_outputs)
         E = mus.shape[0]
         
-        # DYNAMIC POE ALPHAS: Compute based on encoder with lowest variance
+        # DYNAMIC POE ALPHAS: Compute per context (per group of 4 input-output pairs)
         if poe_alphas is None or (hasattr(poe_alphas, "size") and int(poe_alphas.size) == 0):
-            # Compute average variance for each encoder across all context samples
-            encoder_variances = []
-            for i in range(E):
-                # Average variance across all pairs and latent dimensions
-                avg_var = jnp.mean(jnp.exp(logvars[i]))  # exp(logvar) = variance
-                encoder_variances.append(avg_var)
+            # mus shape: (E, batch_size, num_pairs, latent_dim)
+            # logvars shape: (E, batch_size, num_pairs, latent_dim)
+            batch_size = mus.shape[1]
+            num_pairs = mus.shape[2]
             
-            # Find encoder with lowest variance (most confident)
-            encoder_variances = jnp.array(encoder_variances)
-            min_var_idx = jnp.argmin(encoder_variances)
+            # Compute variance for each encoder, for each context (batch item)
+            # Shape: (batch_size, E) - variance per context per encoder
+            context_encoder_variances = []
+            for batch_idx in range(batch_size):
+                encoder_variances_for_context = []
+                for enc_idx in range(E):
+                    # Compute average variance for this encoder on this context (across all pairs)
+                    context_logvar = logvars[enc_idx, batch_idx, :, :]  # (num_pairs, latent_dim)
+                    context_var = jnp.mean(jnp.exp(context_logvar))  # Average variance for this context
+                    encoder_variances_for_context.append(context_var)
+                context_encoder_variances.append(encoder_variances_for_context)
             
-            # Create dynamic alphas: 95% weight to most confident encoder, 5% distributed among others
-            poe_alphas = jnp.ones((E,), dtype=mus.dtype) * 0.05 / max(E - 1, 1)  # 5% distributed
-            poe_alphas = poe_alphas.at[min_var_idx].set(0.95)  # 95% to most confident encoder
+            context_encoder_variances = jnp.array(context_encoder_variances)  # (batch_size, E)
             
-            # Debug logging
-            jax.debug.print("Dynamic PoE alphas: {alphas}, min_var_idx: {idx}, variances: {vars}", 
-                           alphas=poe_alphas, idx=min_var_idx, vars=encoder_variances)
-        
-        mu_poe, logvar_poe = poe_diag_gaussians(mus, logvars, poe_alphas)
-        
-        # Store alphas for histogram tracking
-        poe_alphas_for_histogram = poe_alphas
+            # Find most confident encoder for each context
+            min_var_indices = jnp.argmin(context_encoder_variances, axis=1)  # (batch_size,)
+            
+            # Create dynamic alphas for each context
+            # Shape: (batch_size, E) - alphas per context per encoder
+            poe_alphas = jnp.ones((batch_size, E), dtype=mus.dtype) * 0.05 / max(E - 1, 1)
+            
+            # Set 95% weight to most confident encoder for each context
+            for batch_idx in range(batch_size):
+                most_confident_enc = min_var_indices[batch_idx]
+                poe_alphas = poe_alphas.at[batch_idx, most_confident_enc].set(0.95)
+            
+            # Debug logging for first few contexts
+            import logging
+            for batch_idx in range(min(3, batch_size)):  # Log first 3 contexts
+                context_vars = context_encoder_variances[batch_idx]
+                context_alphas = poe_alphas[batch_idx]
+                min_var_idx = min_var_indices[batch_idx]
+                logging.info(f"🔍 CONTEXT {batch_idx}: alphas={context_alphas}, min_var_idx={min_var_idx}, variances={context_vars}")
+            
+            # Store the per-context alphas for later use
+            per_context_alphas = poe_alphas  # (batch_size, E)
+            
+            # For poe_diag_gaussians, we need to compute PoE per context
+            # Since poe_diag_gaussians expects (E,) alphas, we'll compute PoE for each context separately
+            mu_poe_list = []
+            logvar_poe_list = []
+            
+            for batch_idx in range(batch_size):
+                # Get alphas for this context
+                context_alphas = per_context_alphas[batch_idx]  # (E,)
+                
+                # Get mus and logvars for this context
+                context_mus = mus[:, batch_idx, :, :]  # (E, num_pairs, latent_dim)
+                context_logvars = logvars[:, batch_idx, :, :]  # (E, num_pairs, latent_dim)
+                
+                # Compute PoE for this context
+                context_mu_poe, context_logvar_poe = poe_diag_gaussians(context_mus, context_logvars, context_alphas)
+                
+                mu_poe_list.append(context_mu_poe)
+                logvar_poe_list.append(context_logvar_poe)
+            
+            # Stack results back to original shape
+            mu_poe = jnp.stack(mu_poe_list, axis=0)  # (batch_size, num_pairs, latent_dim)
+            logvar_poe = jnp.stack(logvar_poe_list, axis=0)  # (batch_size, num_pairs, latent_dim)
+            
+            # Store the per-context alphas for histogram tracking
+            poe_alphas_for_histogram = per_context_alphas
+        else:
+            # Use provided alphas (fallback to original behavior)
+            mu_poe, logvar_poe = poe_diag_gaussians(mus, logvars, poe_alphas)
+            poe_alphas_for_histogram = poe_alphas
 
         # 2) sample if variational
         assert key is not None, "'key' is required for stochastic generation"
