@@ -341,21 +341,36 @@ class StructuredLPN(nn.Module):
         # Generate single sample for generation (like regular LPN)
         latents = mu_poe + jnp.exp(0.5 * logvar_poe) * jax.random.normal(key_lat, mu_poe.shape)
 
+        # Store individual encoder latents for comparison (before any mode-specific processing)
+        individual_encoder_latents = []
+        key_individual = key_lat
+        for i, (mu_i, logvar_i) in enumerate(enc_outputs):
+            key_individual, key_lat_i = jax.random.split(key_individual)
+            enc_latent = mu_i + jnp.exp(0.5 * logvar_i) * jax.random.normal(key_lat_i, mu_i.shape)
+            individual_encoder_latents.append(enc_latent)
+
         # 3) optionally replace latents
         if mode_kwargs.get("remove_encoder_latents", False):
             key, key_init = jax.random.split(key)
             latents = jax.random.normal(key_init, latents.shape)
 
         info = {}
+        # Store individual encoder latents for comparison
+        info["individual_encoder_latents"] = individual_encoder_latents
+        
         # 4) select context like in LPN, using core helpers
         if mode == "mean":
             first_context = latents.mean(axis=-2)
             second_context = first_context
-            info = {"context": first_context}
+            info["context"] = first_context
+            # Also store the raw PoE latents for comparison
+            info["poe_latents"] = latents
         elif mode == "first":
             first_context = latents[..., 0, :]
             second_context = first_context
             info = {"context": first_context}
+            # Also store the raw PoE latents for comparison
+            info["poe_latents"] = latents
         elif mode == "random_search":
             assert key is not None
             for arg in ["num_samples", "scale"]:
@@ -365,6 +380,8 @@ class StructuredLPN(nn.Module):
                 latents, pairs, grid_shapes, k, **mode_kwargs
             )
             info = {"context": first_context}
+            # Also store the raw PoE latents for comparison
+            info["poe_latents"] = latents
         elif mode == "gradient_ascent":
             for arg in ["num_steps", "lr"]:
                 assert arg in mode_kwargs
@@ -373,6 +390,8 @@ class StructuredLPN(nn.Module):
                 latents, pairs, grid_shapes, k, **mode_kwargs
             )
             info = {"context": first_context}
+            # Also store the raw PoE latents for comparison
+            info["poe_latents"] = latents
         elif mode == "evolutionary_search":
             for arg in ["population_size", "num_generations", "mutation_std"]:
                 assert arg in mode_kwargs
@@ -381,6 +400,8 @@ class StructuredLPN(nn.Module):
                 latents, pairs, grid_shapes, k, **mode_kwargs
             )
             info = {"context": first_context}
+            # Also store the raw PoE latents for comparison
+            info["poe_latents"] = latents
         else:
             raise ValueError(f"Unsupported mode: {mode}")
 

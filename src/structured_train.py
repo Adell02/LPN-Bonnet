@@ -295,6 +295,9 @@ class StructuredTrainer:
         if self.batch_size % self.gradient_accumulation_steps != 0:
             raise ValueError("batch_size must be divisible by gradient_accumulation_steps")
         
+        # Debug logging control
+        self.debug_logging = cfg.training.get("debug_logging", False)
+        
         # NEW: Two-phase training approach
         self.encoder_expose_steps = int(cfg.training.get("encoder_expose_steps", 0) or 0)
         self.phase1_completed = False  # Track if individual encoder specialization is done
@@ -526,6 +529,11 @@ class StructuredTrainer:
                 "inference_mode": inference_mode,
                 "inference_kwargs": inference_kwargs,
             })
+    
+    def _debug_log(self, message: str) -> None:
+        """Log debug message only if debug logging is enabled."""
+        if self.debug_logging:
+            logging.info(message)
 
     def init_state(self, key: chex.PRNGKey, enc_params_list: list[dict], avg_decoder_params: dict) -> TrainState:
         # Use appropriate initialization data based on whether we have fixed dataset or task generator
@@ -3574,14 +3582,6 @@ class StructuredTrainer:
         Returns:
             Repulsion loss value
         """
-        # DEBUG: Log repulsion loss computation
-        logging.info(f"🔍 REPULSION LOSS COMPUTATION DEBUG:")
-        logging.info(f"   - current_encoder_idx: {current_encoder_idx}")
-        logging.info(f"   - target_latents_store keys: {list(target_latents_store.keys()) if target_latents_store else 'None'}")
-        # Convert JAX tensor shape to Python tuple for safe logging
-        current_shape = tuple(current_latents.shape) if hasattr(current_latents, 'shape') else 'No shape'
-        logging.info(f"   - current_latents shape: {current_shape}")
-        logging.info(f"   - margin: {margin}")
         
         # Adaptive margin: if margin is too small, compute a reasonable one based on data
         if margin < 5.0:
@@ -3609,9 +3609,6 @@ class StructuredTrainer:
         
         if not target_latents_store or current_encoder_idx == 0:
             # No previous encoders to repulse from
-            logging.info(f"   - REPULSION SKIPPED: No previous encoders to repulse from")
-            logging.info(f"     * target_latents_store: {target_latents_store}")
-            logging.info(f"     * current_encoder_idx: {current_encoder_idx}")
             return 0.0
         
         repulsion_loss = 0.0
@@ -3619,31 +3616,18 @@ class StructuredTrainer:
         
         # Iterate through all previous encoders
         for prev_enc_idx in range(current_encoder_idx):
-            logging.info(f"   - Checking previous encoder {prev_enc_idx}")
             if prev_enc_idx in target_latents_store:
                 prev_targets = target_latents_store[prev_enc_idx]
-                logging.info(f"     * Found targets for encoder {prev_enc_idx}, keys: {list(prev_targets.keys()) if prev_targets else 'None'}")
                 
                 # For each pattern, compute repulsion from previous encoder's targets
                 for pattern_id, target_latents in prev_targets.items():
-                    # Convert JAX tensor shape to Python tuple for safe logging
-                    target_shape = tuple(target_latents.shape) if hasattr(target_latents, 'shape') else 'No shape'
-                    logging.info(f"       - Pattern {pattern_id}: target_latents type={type(target_latents)}, shape={target_shape}")
-                    
                     if target_latents is not None and len(target_latents) > 0:
                         # Ensure target latents have the same batch size
                         target_len = int(target_latents.shape[0]) if hasattr(target_latents, 'shape') else len(target_latents)
                         current_len = int(current_latents.shape[0]) if hasattr(current_latents, 'shape') else len(current_latents)
                         if target_len == current_len:
-                            logging.info(f"         * Batch sizes match: {target_len} == {current_len}")
-                            
                             # Compute L2 distance between current and target latents
                             distances = jnp.linalg.norm(current_latents - target_latents, axis=1)
-                            jax.debug.print(
-                                "         * Distances shape: {shape}, mean: {mean}",
-                                             shape=distances.shape,
-                                mean=jnp.mean(distances),
-                            )
                             
                             # Repulsion loss: penalize when distance < margin
                             # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2^2)
@@ -3656,22 +3640,10 @@ class StructuredTrainer:
                             # Use the maximum of both approaches
                             final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)  # Scale soft term down
                             
-                            jax.debug.print("         * Repulsion term: {rt}", rt=repulsion_term)
-                            jax.debug.print(
-                                "         * Soft repulsion term: {srt}",
-                                srt=soft_repulsion_term,
-                            )
-                            jax.debug.print(
-                                "         * Final repulsion term: {frt}",
-                                frt=final_repulsion_term,
-                            )
-                            
                             repulsion_loss += final_repulsion_term
                             num_repulsion_terms += 1
                         else:
-                            logging.warning(f"         * Batch size mismatch: {target_len} != {current_len}")
-                            logging.warning("         * Attempting to resize target latents to match current batch size")
-
+                            # Handle batch size mismatch by resizing
                             try:
                                 if target_len > current_len:
                                     # Truncate excess target latents
@@ -3689,57 +3661,19 @@ class StructuredTrainer:
                                     )
 
                                 distances = jnp.linalg.norm(current_latents - resized_target_latents, axis=1)
-                                jax.debug.print(
-                                    "         * Resized distances shape: {shape}, mean: {mean}",
-                                                shape=distances.shape,
-                                    mean=jnp.mean(distances),
-                                )
-                                
                                 repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
                                 soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))
                                 final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)
                                 
-                                jax.debug.print(
-                                    "         * Resized repulsion term: {rt}",
-                                    rt=repulsion_term,
-                                )
-                                jax.debug.print(
-                                    "         * Resized soft repulsion term: {srt}",
-                                    srt=soft_repulsion_term,
-                                )
-                                jax.debug.print(
-                                    "         * Resized final repulsion term: {frt}",
-                                    frt=final_repulsion_term,
-                                )
-                                
                                 repulsion_loss += final_repulsion_term
                                 num_repulsion_terms += 1
-                            except Exception as resize_error:
-                                logging.warning(
-                                    f"         * Failed to resize target latents: {resize_error}"
-                                )
-                                logging.warning(
-                                    "         * Skipping this repulsion term"
-                                )
-                    else:
-                        logging.warning(f"         * Invalid target_latents: {target_latents}")
-            else:
-                logging.info(f"     * No targets found for encoder {prev_enc_idx}")
+                            except Exception:
+                                # Skip this repulsion term if resizing fails
+                                pass
         
         # Average over all repulsion terms
         if num_repulsion_terms > 0:
             repulsion_loss = repulsion_loss / num_repulsion_terms
-            jax.debug.print(
-                "   - Final repulsion loss: {loss} (from {n} terms)",
-                loss=repulsion_loss,
-                n=num_repulsion_terms,
-            )
-            logging.info(
-                f"   ✅ REPULSION LOSS COMPUTATION SUCCESSFUL: {repulsion_loss} from {num_repulsion_terms} terms"
-            )
-        else:
-            jax.debug.print("   - No repulsion terms computed, returning 0.0")
-            logging.warning(f"   ⚠️  REPULSION LOSS COMPUTATION FAILED - no valid terms")
         
         return repulsion_loss
     
@@ -3755,12 +3689,10 @@ class StructuredTrainer:
         Returns:
             Dictionary mapping pattern_id to target latent representations
         """
-        logging.info(f"🔍 EXTRACTING TARGET LATENTS for Encoder {encoder_idx}")
         target_latents = {}
         
         # Use the same batch size as training to avoid mismatch
         num_samples = self.batch_size  # Use batch_size instead of fixed 32
-        logging.info(f"   - Using batch_size={num_samples} for target latents (matching training)")
         
         # Create evaluation data for each pattern
         for pattern_id in [1, 2, 3]:
@@ -3768,7 +3700,6 @@ class StructuredTrainer:
                 # Generate pattern-specific data
                 pattern_data = self._create_pattern_dataset(pattern_id, num_samples=num_samples)
                 grids, shapes, _ = pattern_data
-                logging.info(f"   - Pattern {pattern_id}: grids shape={grids.shape}, shapes shape={shapes.shape}")
                 
                 # Get encoder outputs
                 mu, logvar = self.encoders[encoder_idx].apply(
@@ -3779,19 +3710,14 @@ class StructuredTrainer:
                     mutable=False
                 )
                 
-                logging.info(f"   - Pattern {pattern_id}: mu shape={mu.shape}, logvar shape={logvar.shape}")
-                
                 # Use mean of latents as target (or could use multiple samples)
                 target_lat = mu.mean(axis=-2)  # Mean over pairs
                 target_latents[pattern_id] = jnp.array(target_lat)
-                
-                logging.info(f"   - Pattern {pattern_id}: target_lat shape={target_lat.shape}, mean={float(jnp.mean(target_lat)):.6f}")
                 
             except Exception as e:
                 logging.warning(f"Failed to extract target latents for Encoder {encoder_idx}, Pattern {pattern_id}: {e}")
                 target_latents[pattern_id] = None
         
-        logging.info(f"   - Final target_latents keys: {list(target_latents.keys())}")
         return target_latents
 
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
@@ -4615,6 +4541,15 @@ class StructuredTrainer:
                 contexts = [inf[key] for inf in all_info]
                 info[key] = jnp.concatenate(contexts, axis=0)
                 logging.info(f"Context shape after concatenation: {info[key].shape}")
+            elif key == "poe_latents":
+                # Concatenate PoE latents
+                poe_latents = [inf[key] for inf in all_info]
+                info[key] = jnp.concatenate(poe_latents, axis=0)
+                logging.info(f"PoE latents shape after concatenation: {info[key].shape}")
+            elif key == "individual_encoder_latents":
+                # Store individual encoder latents (list of lists)
+                info[key] = [inf[key] for inf in all_info]
+                logging.info(f"Individual encoder latents: {len(info[key])} batches, {len(info[key][0])} encoders per batch")
             else:
                 # For other info, just take the first batch
                 info[key] = all_info[0][key]
@@ -4985,6 +4920,63 @@ class StructuredTrainer:
                 task_ids=task_ids_np,
             )
             
+            # NEW: PoE Latents T-SNE - Show the actual PoE latents from generate_output
+            fig_poe_tsne = None
+            if "poe_latents" in info and info["poe_latents"] is not None:
+                poe_latents = np.array(info["poe_latents"])
+                logging.info(f"PoE T-SNE - Found PoE latents with shape: {poe_latents.shape}")
+                
+                # Reshape PoE latents to 2D if needed
+                if poe_latents.ndim > 2:
+                    poe_latents = poe_latents.reshape(-1, poe_latents.shape[-1])
+                
+                # Ensure consistent latent dimension
+                if poe_latents.shape[-1] != 32:
+                    if poe_latents.shape[-1] < 32:
+                        padding = np.zeros((poe_latents.shape[0], 32 - poe_latents.shape[-1]))
+                        poe_latents = np.concatenate([poe_latents, padding], axis=1)
+                    else:
+                        poe_latents = poe_latents[:, :32]
+                
+                # Create pattern IDs for PoE latents (same as context)
+                poe_pattern_ids = pattern_ids_concat[source_ids_np == len(enc_params_list)]  # Context pattern IDs
+                poe_task_ids = task_ids_np[source_ids_np == len(enc_params_list)]  # Context task IDs
+                
+                # Ensure we have the right number of pattern/task IDs
+                if len(poe_pattern_ids) != len(poe_latents):
+                    # If mismatch, repeat the pattern IDs to match PoE latents length
+                    repeat_factor = len(poe_latents) // len(poe_pattern_ids)
+                    remainder = len(poe_latents) % len(poe_pattern_ids)
+                    poe_pattern_ids = np.tile(poe_pattern_ids, repeat_factor)
+                    if remainder > 0:
+                        poe_pattern_ids = np.concatenate([poe_pattern_ids, poe_pattern_ids[:remainder]])
+                    poe_task_ids = np.tile(poe_task_ids, repeat_factor)
+                    if remainder > 0:
+                        poe_task_ids = np.concatenate([poe_task_ids, poe_task_ids[:remainder]])
+                
+                # Create PoE source IDs (all marked as PoE)
+                poe_source_ids = np.full(len(poe_latents), len(enc_params_list), dtype=int)
+                
+                # Downsample if needed
+                if len(poe_latents) > max_points:
+                    indices = np.random.choice(len(poe_latents), max_points, replace=False)
+                    poe_latents = poe_latents[indices]
+                    poe_pattern_ids = poe_pattern_ids[indices]
+                    poe_task_ids = poe_task_ids[indices]
+                    poe_source_ids = poe_source_ids[indices]
+                
+                fig_poe_tsne = visualize_tsne_sources(
+                    latents=poe_latents,
+                    program_ids=poe_pattern_ids,
+                    source_ids=poe_source_ids,
+                    max_points=max_points,
+                    random_state=42,
+                    task_ids=poe_task_ids,
+                )
+                logging.info(f"Generated PoE T-SNE with {len(poe_latents)} points")
+            else:
+                logging.warning("PoE T-SNE - No 'poe_latents' found in info")
+            
             # 1. ADDITIONAL T-SNE: Show latent samples to demonstrate uncertainty (equivalent to train.py fig_latents_samples)
             # Since structured_train doesn't have latents_samples, we'll create multiple samples from encoders
             if len(enc_params_list) > 0:
@@ -5254,6 +5246,7 @@ class StructuredTrainer:
             f"test/{test_name}/generation": wandb.Image(fig_gen),
             f"test/{test_name}/latents": wandb.Image(fig_tsne),
             f"test/{test_name}/latents_samples": wandb.Image(fig_tsne_samples) if fig_tsne_samples is not None else None,
+            f"test/{test_name}/latents_poe": wandb.Image(fig_poe_tsne) if fig_poe_tsne is not None else None,
             **metrics,
         }
         
@@ -5377,6 +5370,8 @@ class StructuredTrainer:
             plt.close(fig_tsne_samples)
         if fig_tsne_encoders is not None:
             plt.close(fig_tsne_encoders)
+        if fig_poe_tsne is not None:
+            plt.close(fig_poe_tsne)
 
         # Release large intermediates
         del all_latents, latents_concat, source_ids_np, pattern_ids_concat
