@@ -2034,10 +2034,21 @@ class StructuredTrainer:
                     avg_metrics, all_encoder_outputs, explicit_pattern_ids, num_steps
                 )
 
-                # Generate T-SNE visualizations ONCE
-                logging.info(f"🔍 Phase 2: Generating T-SNE visualizations...")
+                # Generate PCA visualizations ONCE
+                logging.info(f"🔍 Phase 2: Generating PCA visualizations...")
                 tsne_metrics = self._generate_phase2_tsne_visualizations(state, explicit_pattern_ids, num_steps)
                 phase2_metrics.update(tsne_metrics)
+
+                # New: One-per-pattern PCA with encoders/PoE and variance sizing
+                try:
+                    fig_one_per_pattern_pca = self._create_one_per_pattern_pca(state)
+                    if fig_one_per_pattern_pca is not None:
+                        phase2_metrics["phase_2/pca_one_per_pattern"] = wandb.Image(fig_one_per_pattern_pca)
+                        import matplotlib.pyplot as _plt
+                        _plt.close(fig_one_per_pattern_pca)
+                        logging.info("✅ Phase 2: One-per-pattern PCA generated")
+                except Exception as e:
+                    logging.warning(f"⚠️  Phase 2: One-per-pattern PCA generation failed: {e}")
                 
                 # Generate certainty plots ONCE
                 logging.info(f"🔍 Phase 2: Generating certainty plots...")
@@ -2303,6 +2314,134 @@ class StructuredTrainer:
             tsne_metrics["phase_2/tsne_error"] = str(e)
         
         return tsne_metrics
+
+    def _create_one_per_pattern_pca(self, state: TrainState) -> Optional[plt.Figure]:
+        """
+        Create a PCA plot using one task (set) from each pattern.
+        Points include each encoder's latent and PoE context for that task.
+        Marker size encodes mean variance per point.
+        """
+        try:
+            from sklearn.decomposition import PCA
+            import matplotlib.pyplot as plt
+            from matplotlib.lines import Line2D
+        except ImportError:
+            logging.warning("sklearn or matplotlib not available for PCA visualization")
+            return None
+
+        try:
+            latents_list = []
+            variances_list = []
+            source_ids_list = []  # 0..E-1 encoders, 3 for PoE
+            pattern_ids_list = []  # 1,2,3
+
+            # For PoE aggregation
+            per_pattern_enc_mu = []  # list per pattern: [E, D]
+            per_pattern_enc_var = [] # list per pattern: [E, D]
+
+            for pattern_id in [1, 2, 3]:
+                grids, shapes, _ = self._create_specialized_training_data(pattern_id)
+                if grids is None or len(grids) == 0:
+                    logging.warning(f"PCA one-per-pattern: no data for pattern {pattern_id}")
+                    continue
+                # Choose first task (set)
+                sample_grids = grids[0]
+                sample_shapes = shapes[0]
+
+                enc_mu_vecs = []
+                enc_var_vecs = []
+                for enc_idx in range(len(self.encoders)):
+                    mu, logvar = self.encoders[enc_idx].apply(
+                        {"params": state.params["encoders"][enc_idx]},
+                        sample_grids[None, ...],
+                        sample_shapes[None, ...],
+                        dropout_eval=False,
+                        mutable=False,
+                    )
+                    # mean over pair dimension (axis=-2) -> [N=1, D]
+                    mu_mean = np.array(mu).mean(axis=-2)[0]
+                    var_mean = np.array(np.exp(logvar)).mean(axis=-2)[0]
+
+                    latents_list.append(mu_mean)
+                    variances_list.append(float(np.mean(var_mean)))
+                    source_ids_list.append(enc_idx)
+                    pattern_ids_list.append(pattern_id)
+
+                    enc_mu_vecs.append(mu_mean)
+                    enc_var_vecs.append(var_mean)
+
+                if enc_mu_vecs and enc_var_vecs:
+                    enc_mu_arr = np.stack(enc_mu_vecs, axis=0)   # [E, D]
+                    enc_var_arr = np.stack(enc_var_vecs, axis=0) # [E, D]
+                    precision = 1.0 / np.clip(enc_var_arr, 1e-12, None)
+                    precision_sum = np.sum(precision, axis=0)
+                    poe_var = 1.0 / np.clip(precision_sum, 1e-12, None)
+                    poe_mean = poe_var * np.sum(precision * enc_mu_arr, axis=0)
+
+                    latents_list.append(poe_mean)
+                    variances_list.append(float(np.mean(poe_var)))
+                    source_ids_list.append(3)  # PoE
+                    pattern_ids_list.append(pattern_id)
+
+            if len(latents_list) < 2:
+                logging.warning("PCA one-per-pattern: insufficient points")
+                return None
+
+            X = np.stack(latents_list, axis=0)
+            variances_arr = np.asarray(variances_list, dtype=float)
+            source_ids_arr = np.asarray(source_ids_list)
+            pattern_ids_arr = np.asarray(pattern_ids_list)
+
+            # PCA to 2D
+            pca = PCA(n_components=2, random_state=42)
+            X2 = pca.fit_transform(X)
+
+            # Marker size uses raw mean variances directly (no artificial boost or offset)
+            sizes = variances_arr
+
+            # Colors for patterns; markers for sources
+            pattern_colors = {1: '#FBB998', 2: '#DB74DB', 3: '#5361E5'}
+            source_markers = {0: 'o', 1: 's', 2: '^', 3: 'D'}
+            source_labels = {0: 'Encoder 0', 1: 'Encoder 1', 2: 'Encoder 2', 3: 'PoE Context'}
+
+            fig, ax = plt.subplots(figsize=(12, 9))
+            for src in sorted(np.unique(source_ids_arr)):
+                for pid in [1, 2, 3]:
+                    mask = (source_ids_arr == src) & (pattern_ids_arr == pid)
+                    if np.any(mask):
+                        ax.scatter(
+                            X2[mask, 0], X2[mask, 1],
+                            c=[pattern_colors.get(pid, '#AAAAAA')],
+                            marker=source_markers.get(src, 'o'),
+                            s=sizes[mask], alpha=0.75, edgecolors='none',
+                            label=None,
+                        )
+
+            ax.set_title('PCA: One task per pattern (color=pattern, marker=source, size~variance)')
+            ax.set_xlabel('PC 1')
+            ax.set_ylabel('PC 2')
+
+            # Legends: patterns (colors) and sources (markers)
+            pattern_handles = [
+                Line2D([0], [0], marker='o', linestyle='None', color='none',
+                       markerfacecolor=pattern_colors.get(pid, '#AAAAAA'), markeredgecolor='none', markersize=10,
+                       label=f'Pattern {pid}')
+                for pid in [1, 2, 3]
+            ]
+            source_handles = [
+                Line2D([0], [0], marker=source_markers.get(src, 'o'), linestyle='None', color='black',
+                       markerfacecolor='white', markeredgecolor='black', markersize=10,
+                       label=source_labels.get(src, f'Source {src}'))
+                for src in sorted(np.unique(source_ids_arr))
+            ]
+            handles = pattern_handles + source_handles
+            ax.legend(handles=handles, bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.0)
+
+            plt.tight_layout()
+            return fig
+        except Exception as e:
+            logging.warning(f"PCA one-per-pattern plot failed: {e}")
+            return None
     
     def _create_comprehensive_clustering_data(self, state: TrainState, pattern_ids: chex.Array) -> Optional[dict]:
         """
