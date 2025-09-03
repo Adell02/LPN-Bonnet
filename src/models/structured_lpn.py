@@ -374,6 +374,8 @@ class StructuredLPN(nn.Module):
             
             # Store the per-context alphas for later use
             per_context_alphas = poe_alphas  # (batch_size, E)
+            per_context_variances = context_encoder_variances  # (batch_size, E)
+            per_context_winners = min_var_indices  # (batch_size,)
             
             # For poe_diag_gaussians, we need to compute PoE per context
             # Since poe_diag_gaussians expects (E,) alphas, we'll compute PoE for each context separately
@@ -404,6 +406,16 @@ class StructuredLPN(nn.Module):
             # Use provided alphas (fallback to original behavior)
             mu_poe, logvar_poe = poe_diag_gaussians(mus, logvars, poe_alphas)
             poe_alphas_for_histogram = poe_alphas
+            # Also compute simple per-context variances for parity logs
+            # Reduce over pairs and dims per context for each encoder
+            vars_all = jnp.exp(logvars)  # (E, B, N, H)
+            per_context_variances = jnp.mean(vars_all, axis=(-2, -1)).transpose(1, 0)  # (B, E)
+            # Winners by provided alphas if they are per-encoder (E,) else argmin variance
+            if poe_alphas.ndim == 1:
+                winner_idx = int(jnp.argmax(poe_alphas))
+                per_context_winners = jnp.full((mus.shape[1],), winner_idx)
+            else:
+                per_context_winners = jnp.argmax(poe_alphas, axis=1)
 
         # 2) sample if variational
         assert key is not None, "'key' is required for stochastic generation"
@@ -430,6 +442,23 @@ class StructuredLPN(nn.Module):
         info["individual_encoder_latents"] = individual_encoder_latents
         # Store PoE alphas for histogram tracking
         info["poe_alphas"] = poe_alphas_for_histogram
+        # Store parity probes: per-context encoder variances and alpha winners (for logging/metrics)
+        try:
+            if 'per_context_variances' in locals():
+                info["encoder_context_variances"] = per_context_variances  # (B, E)
+            else:
+                # Compute if dynamic path and not set yet
+                vars_all = jnp.exp(logvars)  # (E, B, N, H)
+                info["encoder_context_variances"] = jnp.mean(vars_all, axis=(-2, -1)).transpose(1, 0)
+            if 'per_context_winners' in locals():
+                info["alpha_winner_indices"] = per_context_winners  # (B,)
+            else:
+                # Fallback from alphas
+                pa = poe_alphas_for_histogram
+                if hasattr(pa, 'ndim') and int(pa.ndim) == 2:
+                    info["alpha_winner_indices"] = jnp.argmax(pa, axis=1)
+        except Exception:
+            pass
         
         # 4) select context like in LPN, using core helpers
         if mode == "mean":

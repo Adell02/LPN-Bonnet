@@ -3747,6 +3747,22 @@ class StructuredTrainer:
             logging.info(f"   - Expected T-SNE evaluations per encoder: {num_tsne_evals_per_encoder}")
             logging.info(f"   - Total expected T-SNE evaluations: {num_tsne_evals_per_encoder * len(enc_params_list)}")
             
+            # Also create a merged encoder certainty panel at the beginning of Phase 1
+            try:
+                logging.info("🔍 Creating merged encoder certainty panel at Phase 1 START...")
+                merged_panel_start = self._create_merged_encoder_certainty_panel(state, step=0)
+                if merged_panel_start is not None:
+                    # Log early so we can compare start vs end of Phase 1
+                    wandb.log({
+                        "phase_1_start/merged_encoder_certainty_panel": wandb.Image(merged_panel_start)
+                    }, step=max(1, self.phase_a_global_step))
+                    plt.close(merged_panel_start)
+                    logging.info("       ✅ Merged encoder certainty panel (start) logged to WandB")
+                else:
+                    logging.warning("       ❌ Failed to create merged encoder certainty panel at start")
+            except Exception as e:
+                logging.warning(f"       ❌ Error during Phase 1 START certainty panel generation: {e}")
+
             # Phase 1: Individual encoder specialization
             state = self._specialize_individual_encoders(state, enc_params_list)
             
