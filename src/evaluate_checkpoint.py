@@ -427,14 +427,29 @@ def evaluate_custom_dataset(
     print(f"Evaluating the model on the {dataset_folder.rstrip().split('/')[-1]} dataset...")
 
     # Load data
-    grids, shapes, _ = load_datasets([dataset_folder], use_hf=dataset_use_hf)[0]
+    try:
+        grids, shapes, _ = load_datasets([dataset_folder], use_hf=dataset_use_hf)[0]
+        print(f"Loaded dataset: grids.shape={grids.shape}, shapes.shape={shapes.shape}")
+    except Exception as e:
+        print(f"Error loading dataset: {e}")
+        return {"error": f"Failed to load dataset: {e}"}
+    
     if dataset_length is not None:
         key = jax.random.PRNGKey(dataset_seed)
         indices = jax.random.permutation(key, len(grids))[:dataset_length]
         grids, shapes = grids[indices], shapes[indices]
+        print(f"After sampling: grids.shape={grids.shape}, shapes.shape={shapes.shape}")
+    
     # Drop the last batch if it's smaller than the batch size
     num_batches = grids.shape[0] // dataset_batch_size
+    print(f"Dataset batch info: total_samples={grids.shape[0]}, batch_size={dataset_batch_size}, num_batches={num_batches}")
+    
+    if num_batches == 0:
+        print(f"Error: No batches can be formed with {grids.shape[0]} samples and batch_size={dataset_batch_size}")
+        return {"error": f"No batches can be formed with {grids.shape[0]} samples and batch_size={dataset_batch_size}"}
+    
     grids, shapes = grids[: num_batches * dataset_batch_size], shapes[: num_batches * dataset_batch_size]
+    print(f"Final dataset: grids.shape={grids.shape}, shapes.shape={shapes.shape}")
 
     leave_one_out_grids = make_leave_one_out(grids, axis=-4)
     leave_one_out_shapes = make_leave_one_out(shapes, axis=-3)
@@ -469,17 +484,33 @@ def evaluate_custom_dataset(
         ),
         axis_name="num_devices",
     )
-    metrics_list = [
-        pmap_dataset_generate_output_batch(
-            train_state.params,
-            leave_one_out_grids[:, i],
-            leave_one_out_shapes[:, i],
-            grids[:, i],
-            shapes[:, i],
-            keys[:, i],
-        )
-        for i in trange(grids.shape[1], desc="Generating solutions")
-    ]
+    print(f"Starting evaluation loop with {grids.shape[1]} batches...")
+    metrics_list = []
+    for i in trange(grids.shape[1], desc="Generating solutions"):
+        try:
+            result = pmap_dataset_generate_output_batch(
+                train_state.params,
+                leave_one_out_grids[:, i],
+                leave_one_out_shapes[:, i],
+                grids[:, i],
+                shapes[:, i],
+                keys[:, i],
+            )
+            metrics_list.append(result)
+            print(f"Batch {i}: Success")
+        except Exception as e:
+            print(f"Batch {i}: Failed with error: {e}")
+            import traceback
+            traceback.print_exc()
+            # Add a dummy result to keep the list consistent
+            metrics_list.append({
+                "correct_shapes": jnp.nan,
+                "pixel_correctness": jnp.nan,
+                "accuracy": jnp.nan,
+                "total_final_loss": jnp.nan,
+            })
+    
+    print(f"Evaluation completed: {len(metrics_list)} batches processed")
     # Aggregate the metrics over the devices and the batches (robust to None values)
     metrics = {}
     if len(metrics_list) == 0:
