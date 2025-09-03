@@ -170,10 +170,15 @@ def run_evaluation_with_budget(
             print(f"Running {method} with budget {budget} (population: {pop}, generations: {gens})...")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         
-        if result.returncode != 0:
-            print(f"Error running {method} with budget {budget}:")
+        # Always print the output for debugging
+        print(f"Subprocess return code: {result.returncode}")
+        if result.stdout:
             print("STDOUT:", result.stdout)
+        if result.stderr:
             print("STDERR:", result.stderr)
+        
+        if result.returncode != 0:
+            print(f"Error running {method} with budget {budget}")
             return False, {}
         
         # Parse output to extract final metrics
@@ -195,8 +200,15 @@ def run_evaluation_with_budget(
                     pass
         
         # Load trajectory data and extract intermediate metrics
-        latents_file = os.path.join(temp_dir, f"{method}_latents_{budget}.npz")
+        if method == "gradient_ascent":
+            latents_file = os.path.join(temp_dir, f"ga_latents_{budget}.npz")
+        else:
+            latents_file = os.path.join(temp_dir, f"es_latents_{budget}.npz")
         print(f"Looking for trajectory file: {latents_file}")
+        
+        # Debug: list all files in temp directory
+        print(f"Files in temp directory: {os.listdir(temp_dir)}")
+        
         if os.path.exists(latents_file):
             try:
                 data = np.load(latents_file)
