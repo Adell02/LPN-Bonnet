@@ -2810,7 +2810,13 @@ class StructuredTrainer:
         run_name = self.make_safe_run_name(wandb.run.name)
         artifact = wandb.Artifact(f"{run_name}--checkpoint", type="model", metadata=dict(wandb.run.config))
         artifact.add_file(ckpt_path)
-        num_steps = state.step.item()
+        # Handle both JAX array and integer step values
+        logging.info(f"Checkpoint save - state.step type: {type(state.step)}, value: {state.step}")
+        if hasattr(state.step, 'item'):
+            num_steps = state.step.item()
+        else:
+            num_steps = int(state.step)
+        logging.info(f"Checkpoint save - num_steps: {num_steps}")
         wandb.run.log_artifact(artifact, name="checkpoint", aliases=["latest", f"num_steps_{num_steps}"])
 
     @classmethod
