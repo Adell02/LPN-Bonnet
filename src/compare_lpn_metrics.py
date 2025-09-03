@@ -139,7 +139,7 @@ def compute_clustering_metrics(model, state_dict, grids, shapes, pattern_ids, mo
     repeated_pattern_ids = np.repeat(pattern_ids, 4)  # 4 pairs per sample
     
     # Compute clustering metrics
-    from visualization import compute_adjusted_rand_index, compute_modularity_q
+    from structured_train import compute_adjusted_rand_index, compute_modularity_q
     
     ari_scores = []
     q_modularity_scores = []
@@ -183,19 +183,19 @@ def compute_effect_size(group1, group2):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compare LPN metrics")
+    parser = argparse.ArgumentParser(description="Compare LPN metrics with cumulative checkpoint aggregation")
     parser.add_argument("--regular_artifact", required=True, help="Regular LPN artifact name")
     parser.add_argument("--structured_artifact", required=True, help="Structured LPN artifact name")
     parser.add_argument("--entity", default="ga624-imperial-college-london", help="W&B entity")
     parser.add_argument("--project", default="LPN-ARC", help="W&B project")
     parser.add_argument("--num_samples", type=int, default=96, help="Number of samples for evaluation")
     parser.add_argument("--output_file", default="lpn_comparison_results.csv", help="Output CSV file")
+    parser.add_argument("--checkpoints", nargs="+", type=int, default=[0, 1, 2, 3, 4], 
+                       help="List of checkpoint steps to process (default: [0, 1, 2, 3, 4])")
+    parser.add_argument("--cumulative", action="store_true", default=True,
+                       help="Use cumulative aggregation (each checkpoint includes all previous checkpoints)")
     
     args = parser.parse_args()
-    
-    # Download artifacts
-    regular_state_path = download_wandb_artifact(args.entity, args.project, args.regular_artifact)
-    structured_state_path = download_wandb_artifact(args.entity, args.project, args.structured_artifact)
     
     # Create pattern mix dataset
     grids, shapes, pattern_ids = create_pattern_mix_dataset(args.num_samples)
@@ -218,58 +218,124 @@ def main():
     regular_model = LPN(model_config)
     structured_model = StructuredLPN(model_config)
     
-    # Load model states
-    regular_state = load_model_state(regular_state_path, regular_model)
-    structured_state = load_model_state(structured_state_path, structured_model)
+    # Process each checkpoint with cumulative aggregation
+    all_results = []
     
-    # Compute metrics
-    regular_metrics = compute_clustering_metrics(regular_model, regular_state, grids, shapes, pattern_ids, "regular")
-    structured_metrics = compute_clustering_metrics(structured_model, structured_state, grids, shapes, pattern_ids, "structured")
+    for checkpoint_idx, checkpoint_step in enumerate(args.checkpoints):
+        logger.info(f"Processing checkpoint {checkpoint_idx + 1}/{len(args.checkpoints)}: step {checkpoint_step}")
+        
+        # Download artifacts for this checkpoint
+        regular_artifact_name = f"{args.regular_artifact}_checkpoint_{checkpoint_step}"
+        structured_artifact_name = f"{args.structured_artifact}_checkpoint_{checkpoint_step}"
+        
+        try:
+            regular_state_path = download_wandb_artifact(args.entity, args.project, regular_artifact_name)
+            structured_state_path = download_wandb_artifact(args.entity, args.project, structured_artifact_name)
+        except Exception as e:
+            logger.warning(f"Could not download artifacts for checkpoint {checkpoint_step}: {e}")
+            continue
+        
+        # Load model states
+        regular_state = load_model_state(regular_state_path, regular_model)
+        structured_state = load_model_state(structured_state_path, structured_model)
+        
+        # Compute metrics for this checkpoint
+        regular_metrics = compute_clustering_metrics(regular_model, regular_state, grids, shapes, pattern_ids, "regular")
+        structured_metrics = compute_clustering_metrics(structured_model, structured_state, grids, shapes, pattern_ids, "structured")
+        
+        # Store results with checkpoint information
+        checkpoint_results = {
+            "checkpoint_step": checkpoint_step,
+            "checkpoint_idx": checkpoint_idx,
+            "regular_metrics": regular_metrics,
+            "structured_metrics": structured_metrics
+        }
+        all_results.append(checkpoint_results)
     
-    # Statistical analysis
+    if not all_results:
+        logger.error("No checkpoints were successfully processed!")
+        return
+    
+    # Cumulative aggregation and statistical analysis
     results = []
     
-    # ARI comparison
-    regular_ari = np.array(regular_metrics["ari_scores"])
-    structured_ari = np.array(structured_metrics["ari_scores"])
-    
-    if len(regular_ari) > 0 and len(structured_ari) > 0:
-        # Paired t-test (since same dataset)
-        t_stat_ari, p_val_ari = ttest_rel(regular_ari, structured_ari)
-        cohens_d_ari = compute_effect_size(structured_ari, regular_ari)
+    # Process each checkpoint with cumulative data
+    for checkpoint_idx, checkpoint_data in enumerate(all_results):
+        checkpoint_step = checkpoint_data["checkpoint_step"]
         
-        results.append({
-            "metric": "ARI",
-            "regular_mean": np.mean(regular_ari),
-            "regular_std": np.std(regular_ari),
-            "structured_mean": np.mean(structured_ari),
-            "structured_std": np.std(structured_ari),
-            "t_statistic": t_stat_ari,
-            "p_value": p_val_ari,
-            "cohens_d": cohens_d_ari,
-            "effect_size": "large" if abs(cohens_d_ari) > 0.8 else "medium" if abs(cohens_d_ari) > 0.5 else "small"
-        })
-    
-    # Q-modularity comparison
-    regular_q = np.array(regular_metrics["q_modularity_scores"])
-    structured_q = np.array(structured_metrics["q_modularity_scores"])
-    
-    if len(regular_q) > 0 and len(structured_q) > 0:
-        # Paired t-test (since same dataset)
-        t_stat_q, p_val_q = ttest_rel(regular_q, structured_q)
-        cohens_d_q = compute_effect_size(structured_q, regular_q)
+        if args.cumulative:
+            # For cumulative aggregation, include data from all previous checkpoints
+            logger.info(f"Computing cumulative metrics for checkpoint {checkpoint_step} (including checkpoints 0-{checkpoint_idx})")
+            
+            # Aggregate data from all checkpoints up to current one
+            cumulative_regular_ari = []
+            cumulative_regular_q = []
+            cumulative_structured_ari = []
+            cumulative_structured_q = []
+            
+            for i in range(checkpoint_idx + 1):
+                prev_checkpoint = all_results[i]
+                cumulative_regular_ari.extend(prev_checkpoint["regular_metrics"]["ari_scores"])
+                cumulative_regular_q.extend(prev_checkpoint["regular_metrics"]["q_modularity_scores"])
+                cumulative_structured_ari.extend(prev_checkpoint["structured_metrics"]["ari_scores"])
+                cumulative_structured_q.extend(prev_checkpoint["structured_metrics"]["q_modularity_scores"])
+        else:
+            # For non-cumulative, use only current checkpoint data
+            logger.info(f"Computing metrics for checkpoint {checkpoint_step} only")
+            cumulative_regular_ari = checkpoint_data["regular_metrics"]["ari_scores"]
+            cumulative_regular_q = checkpoint_data["regular_metrics"]["q_modularity_scores"]
+            cumulative_structured_ari = checkpoint_data["structured_metrics"]["ari_scores"]
+            cumulative_structured_q = checkpoint_data["structured_metrics"]["q_modularity_scores"]
         
-        results.append({
-            "metric": "Q_modularity",
-            "regular_mean": np.mean(regular_q),
-            "regular_std": np.std(regular_q),
-            "structured_mean": np.mean(structured_q),
-            "structured_std": np.std(structured_q),
-            "t_statistic": t_stat_q,
-            "p_value": p_val_q,
-            "cohens_d": cohens_d_q,
-            "effect_size": "large" if abs(cohens_d_q) > 0.8 else "medium" if abs(cohens_d_q) > 0.5 else "small"
-        })
+        # Convert to numpy arrays
+        regular_ari = np.array(cumulative_regular_ari)
+        structured_ari = np.array(cumulative_structured_ari)
+        regular_q = np.array(cumulative_regular_q)
+        structured_q = np.array(cumulative_structured_q)
+        
+        # ARI comparison
+        if len(regular_ari) > 0 and len(structured_ari) > 0:
+            # Paired t-test (since same dataset)
+            t_stat_ari, p_val_ari = ttest_rel(regular_ari, structured_ari)
+            cohens_d_ari = compute_effect_size(structured_ari, regular_ari)
+            
+            results.append({
+                "checkpoint_step": checkpoint_step,
+                "checkpoint_idx": checkpoint_idx,
+                "aggregation_type": "cumulative" if args.cumulative else "individual",
+                "checkpoints_included": f"0-{checkpoint_idx}" if args.cumulative else f"{checkpoint_idx}",
+                "metric": "ARI",
+                "regular_mean": np.mean(regular_ari),
+                "regular_std": np.std(regular_ari),
+                "structured_mean": np.mean(structured_ari),
+                "structured_std": np.std(structured_ari),
+                "t_statistic": t_stat_ari,
+                "p_value": p_val_ari,
+                "cohens_d": cohens_d_ari,
+                "effect_size": "large" if abs(cohens_d_ari) > 0.8 else "medium" if abs(cohens_d_ari) > 0.5 else "small"
+            })
+        
+        # Q-modularity comparison
+        if len(regular_q) > 0 and len(structured_q) > 0:
+            # Paired t-test (since same dataset)
+            t_stat_q, p_val_q = ttest_rel(regular_q, structured_q)
+            cohens_d_q = compute_effect_size(structured_q, regular_q)
+            
+            results.append({
+                "checkpoint_step": checkpoint_step,
+                "checkpoint_idx": checkpoint_idx,
+                "aggregation_type": "cumulative" if args.cumulative else "individual",
+                "checkpoints_included": f"0-{checkpoint_idx}" if args.cumulative else f"{checkpoint_idx}",
+                "metric": "Q_modularity",
+                "regular_mean": np.mean(regular_q),
+                "regular_std": np.std(regular_q),
+                "structured_mean": np.mean(structured_q),
+                "structured_std": np.std(structured_q),
+                "t_statistic": t_stat_q,
+                "p_value": p_val_q,
+                "cohens_d": cohens_d_q,
+                "effect_size": "large" if abs(cohens_d_q) > 0.8 else "medium" if abs(cohens_d_q) > 0.5 else "small"
+            })
     
     # Save results
     df = pd.DataFrame(results)
@@ -277,23 +343,36 @@ def main():
     
     # Print summary
     print("\n" + "="*80)
-    print("STATISTICAL COMPARISON RESULTS")
+    print("STATISTICAL COMPARISON RESULTS - CUMULATIVE AGGREGATION")
     print("="*80)
+    print(f"Aggregation Type: {'Cumulative' if args.cumulative else 'Individual'}")
+    print(f"Checkpoints Processed: {args.checkpoints}")
+    print(f"Total Results: {len(results)} comparisons")
     
-    for _, row in df.iterrows():
-        print(f"\n{row['metric']} Comparison:")
-        print(f"  Regular LPN:    {row['regular_mean']:.4f} ± {row['regular_std']:.4f}")
-        print(f"  Structured LPN: {row['structured_mean']:.4f} ± {row['structured_std']:.4f}")
-        print(f"  t-statistic:    {row['t_statistic']:.4f}")
-        print(f"  p-value:        {row['p_value']:.4f}")
-        print(f"  Cohen's d:      {row['cohens_d']:.4f} ({row['effect_size']} effect)")
-        
-        if row['p_value'] < 0.05:
-            print(f"  Result:         SIGNIFICANT difference (p < 0.05)")
-        else:
-            print(f"  Result:         No significant difference (p ≥ 0.05)")
+    # Group results by checkpoint for better readability
+    for checkpoint_step in args.checkpoints:
+        checkpoint_results = df[df['checkpoint_step'] == checkpoint_step]
+        if len(checkpoint_results) > 0:
+            print(f"\n{'='*60}")
+            print(f"CHECKPOINT {checkpoint_step} RESULTS")
+            print(f"Checkpoints Included: {checkpoint_results.iloc[0]['checkpoints_included']}")
+            print(f"{'='*60}")
+            
+            for _, row in checkpoint_results.iterrows():
+                print(f"\n{row['metric']} Comparison:")
+                print(f"  Regular LPN:    {row['regular_mean']:.4f} ± {row['regular_std']:.4f}")
+                print(f"  Structured LPN: {row['structured_mean']:.4f} ± {row['structured_std']:.4f}")
+                print(f"  t-statistic:    {row['t_statistic']:.4f}")
+                print(f"  p-value:        {row['p_value']:.4f}")
+                print(f"  Cohen's d:      {row['cohens_d']:.4f} ({row['effect_size']} effect)")
+                
+                if row['p_value'] < 0.05:
+                    print(f"  Result:         SIGNIFICANT difference (p < 0.05)")
+                else:
+                    print(f"  Result:         No significant difference (p ≥ 0.05)")
     
-    print(f"\nResults saved to: {args.output_file}")
+    print(f"\n{'='*80}")
+    print(f"Results saved to: {args.output_file}")
     print("="*80)
 
 

@@ -74,59 +74,61 @@ def generate_arc_examples():
     arc_files = [f for f in os.listdir(arc_dir) if f.endswith('.json')]
     re_arc_files = [f for f in os.listdir(re_arc_dir) if f.endswith('.json')]
     
-    # Select 1 random task from each (to get 4 pairs from each)
-    selected_arc = random.sample(arc_files, min(1, len(arc_files)))
-    selected_re_arc = random.sample(re_arc_files, min(1, len(re_arc_files)))
+    # Select 5 random tasks from each (to get 5 files)
+    selected_arc = random.sample(arc_files, min(5, len(arc_files)))
+    selected_re_arc = random.sample(re_arc_files, min(5, len(re_arc_files)))
     
     print(f"Selected ARC examples: {selected_arc}")
     print(f"Selected RE-ARC examples: {selected_re_arc}")
     
-    # Create figure - 2 rows, 8 columns (8 input-output pairs: 4 ARC + 4 RE-ARC)
-    fig, axes = plt.subplots(2, 8, figsize=(20, 5))
-    fig.suptitle('ARC and RE-ARC Examples (30x30 grid, 10-color palette)', fontsize=16, fontweight='bold')
-    
-    # Plot ARC examples (1 task, 4 examples = 4 pairs)
-    task_file = selected_arc[0]
-    task_path = os.path.join(arc_dir, task_file)
-    task = load_arc_task(task_path)
-    
-    for j, example in enumerate(task['train'][:4]):  # First 4 training examples
-        # Input (top row)
-        input_grid = grid_to_array(example['input'])
-        plot_grid(axes[0, j], input_grid, f'ARC {task_file[:8]} Train {j+1}')
+    # Generate 5 separate files
+    for i in range(5):
+        # Create figure - 2 rows, 8 columns (8 input-output pairs: 4 ARC + 4 RE-ARC)
+        fig, axes = plt.subplots(2, 8, figsize=(20, 5))
+        fig.suptitle(f'ARC and RE-ARC Examples - Key {i+1} (30x30 grid, 10-color palette)', fontsize=16, fontweight='bold')
         
-        # Output (bottom row)
-        output_grid = grid_to_array(example['output'])
-        plot_grid(axes[1, j], output_grid, '')
-    
-    # Plot RE-ARC examples (1 task, 4 examples = 4 pairs)
-    task_file = selected_re_arc[0]
-    task_path = os.path.join(re_arc_dir, task_file)
-    task = load_arc_task(task_path)
-    
-    for j, example in enumerate(task[:4]):  # First 4 examples
-        # Input (top row)
-        input_grid = grid_to_array(example['input'])
-        plot_grid(axes[0, j+4], input_grid, f'RE-ARC {task_file[:8]} Example {j+1}')
+        # Plot ARC examples (1 task, 4 examples = 4 pairs)
+        task_file = selected_arc[i]
+        task_path = os.path.join(arc_dir, task_file)
+        task = load_arc_task(task_path)
         
-        # Output (bottom row)
-        output_grid = grid_to_array(example['output'])
-        plot_grid(axes[1, j+4], output_grid, '')
-    
-    # Add color legend
-    legend_elements = [patches.Patch(color=ARC_COLORS[i], label=f'{i}') for i in range(10)]
-    fig.legend(handles=legend_elements, title='Color Palette', 
-               loc='center', bbox_to_anchor=(0.5, 0.02), ncol=10)
-    
-    plt.tight_layout()
-    plt.subplots_adjust(bottom=0.1)
-    
-    # Save the plot
-    output_path = '/rds/general/user/ga624/home/lpn/arc_rearc_examples.png'
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"Plot saved to: {output_path}")
-    
-    plt.show()
+        for j, example in enumerate(task['train'][:4]):  # First 4 training examples
+            # Input (top row)
+            input_grid = grid_to_array(example['input'])
+            plot_grid(axes[0, j], input_grid, f'ARC {task_file[:8]} Train {j+1}')
+            
+            # Output (bottom row)
+            output_grid = grid_to_array(example['output'])
+            plot_grid(axes[1, j], output_grid, '')
+        
+        # Plot RE-ARC examples (1 task, 4 examples = 4 pairs)
+        task_file = selected_re_arc[i]
+        task_path = os.path.join(re_arc_dir, task_file)
+        task = load_arc_task(task_path)
+        
+        for j, example in enumerate(task[:4]):  # First 4 examples
+            # Input (top row)
+            input_grid = grid_to_array(example['input'])
+            plot_grid(axes[0, j+4], input_grid, f'RE-ARC {task_file[:8]} Example {j+1}')
+            
+            # Output (bottom row)
+            output_grid = grid_to_array(example['output'])
+            plot_grid(axes[1, j+4], output_grid, '')
+        
+        # Add color legend
+        legend_elements = [patches.Patch(color=ARC_COLORS[k], label=f'{k}') for k in range(10)]
+        fig.legend(handles=legend_elements, title='Color Palette', 
+                   loc='center', bbox_to_anchor=(0.5, 0.02), ncol=10)
+        
+        plt.tight_layout()
+        plt.subplots_adjust(bottom=0.1)
+        
+        # Save the plot
+        output_path = f'/rds/general/user/ga624/home/lpn/arc_rearc_examples_key_{i+1}.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"Plot {i+1} saved to: {output_path}")
+        
+        plt.close()  # Close the figure to free memory
 
 def analyze_task_complexity():
     """Analyze the complexity of selected tasks."""

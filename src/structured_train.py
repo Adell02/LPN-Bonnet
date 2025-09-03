@@ -1161,7 +1161,7 @@ class StructuredTrainer:
                         try:
                             start = time.time()
                             test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_context, fig_tsne_encoders_list = self.test_dataset_submission(
-                                state, dataset_dict
+                                state, dataset_dict, generate_tsne=False
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                             
@@ -1321,15 +1321,19 @@ class StructuredTrainer:
                 if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
                     try:
                         logging.info(f"Saving checkpoint at step {step}")
-                        from flax.serialization import msgpack_serialize, to_state_dict
-                        with open("state.msgpack", "wb") as outfile:
-                            outfile.write(msgpack_serialize(to_state_dict(state)))
-                        wandb.save("state.msgpack")
+                        # Get state from first device for checkpointing
+                        from jax.tree_util import tree_map
+                        single_device_state = tree_map(lambda x: x[0], state)
+                        self.save_checkpoint("state.msgpack", single_device_state)
                     except Exception as e:
                         logging.warning(f"Checkpoint save failed: {e}")
 
                 # Evaluation - More frequent during encoder exposure period
-                eval_interval = 5 if self.encoder_expose_steps > 0 else cfg.training.get("eval_every_n_logs", 0)
+                # Ensure evaluation continues during frozen phase with reasonable frequency
+                if self.encoder_expose_steps > 0:
+                    eval_interval = 5  # More frequent during encoder training
+                else:
+                    eval_interval = cfg.training.get("eval_every_n_logs", 20)  # Less frequent but still active during frozen phase
                 if eval_interval and (step // log_every) % eval_interval == 0:
                     try:
                         logging.info(f"Running evaluation at step {step}")
@@ -1341,7 +1345,7 @@ class StructuredTrainer:
                                 try:
                                     start = time.time()
                                     test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_context, fig_tsne_encoders_list = self.test_dataset_submission(
-                                        state, dataset_dict
+                                        state, dataset_dict, generate_tsne=False
                                     )
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                                     
@@ -1391,6 +1395,16 @@ class StructuredTrainer:
             epoch += 1
         
         pbar.close()
+        
+        # Save final checkpoint
+        try:
+            logging.info(f"Saving final checkpoint at step {step}")
+            from jax.tree_util import tree_map
+            single_device_state = tree_map(lambda x: x[0], state)
+            self.save_checkpoint("state.msgpack", single_device_state)
+        except Exception as e:
+            logging.warning(f"Final checkpoint save failed: {e}")
+        
         return state
 
     def evaluate(self, state: TrainState, enc_params_list: list[dict] = None) -> dict:
@@ -1786,17 +1800,22 @@ class StructuredTrainer:
             pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
             task_ids_np = np.concatenate(task_ids_list, axis=0)
             
-            # Log T-SNE structure: each pattern should have multiple sets with 4 points each (3 encoders + 1 context)
-            total_points = latents_concat.shape[0]
-            total_patterns = 3  # O, T, L tetrominos
-            points_per_pattern = total_points // total_patterns
-            logging.info(f"T-SNE structure: {total_points} total points, {total_patterns} patterns, {points_per_pattern} points per pattern")
-            logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
-            logging.info(f"Generating 3 T-SNE visualizations: main (encoders+context), context-only, encoders-only (pattern 1)")
+            # T-SNE generation (disabled by default to focus on accuracy metrics)
+            if generate_tsne:
+                # Log T-SNE structure: each pattern should have multiple sets with 4 points each (3 encoders + 1 context)
+                total_points = latents_concat.shape[0]
+                total_patterns = 3  # O, T, L tetrominos
+                points_per_pattern = total_points // total_patterns
+                logging.info(f"T-SNE structure: {total_points} total points, {total_patterns} patterns, {points_per_pattern} points per pattern")
+                logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
+                logging.info(f"Generating 3 T-SNE visualizations: main (encoders+context), context-only, encoders-only (pattern 1)")
+            else:
+                logging.info("T-SNE generation disabled - focusing on accuracy metrics and reconstructions")
             
-            # Generate multiple T-SNEs with different perplexities (no downsampling) via custom helper
-            perplexities = [2, 5, 10, 20, 30, 40]
-            for perplexity in perplexities:
+            if generate_tsne:
+                # Generate multiple T-SNEs with different perplexities (no downsampling) via custom helper
+                perplexities = [2, 5, 10, 20, 30, 40]
+                for perplexity in perplexities:
                 fig_tsne = self._create_tsne_sources_with_perplexity(
                 latents=latents_concat,
                 program_ids=pattern_ids_concat,  # Pattern types (1, 2, 3) for colors
@@ -1930,8 +1949,13 @@ class StructuredTrainer:
                     fig_tsne_encoders_list.append(None)
                     logging.warning(f"No points found for pattern {target_pattern}")
             
-            # For backward compatibility, keep the first pattern T-SNE as the main one
-            fig_tsne_encoders = fig_tsne_encoders_list[0] if fig_tsne_encoders_list else None
+                # For backward compatibility, keep the first pattern T-SNE as the main one
+                fig_tsne_encoders = fig_tsne_encoders_list[0] if fig_tsne_encoders_list else None
+            else:
+                # T-SNE generation disabled - set all T-SNE figures to None
+                fig_tsne_context = None
+                fig_tsne_encoders_list = [None, None, None]  # One for each pattern
+                fig_tsne_encoders = None
             
             # COMPUTE CLUSTERING METRICS AND UPLOAD TO WANDB
             try:
@@ -2322,6 +2346,7 @@ class StructuredTrainer:
         num_tasks_to_show: int = 5,
         inference_mode: str = "mean",
         inference_kwargs: dict = None,
+        generate_tsne: bool = False,  # Disable T-SNE by default to focus on accuracy metrics
     ) -> tuple[dict[str, float], Optional[plt.Figure], plt.Figure, Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure], list[Optional[plt.Figure]]]:
         """
         Test dataset submission method for structured training (similar to train.py).
@@ -2602,18 +2627,22 @@ class StructuredTrainer:
                     pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
                     task_ids_np = np.concatenate(task_ids_list, axis=0)
                     
-                    # Log T-SNE structure for test datasets
-                    total_points = latents_concat.shape[0]
-                    unique_patterns = np.unique(pattern_ids_concat)
-                    pattern_counts = {int(p): int((pattern_ids_concat == p).sum()) for p in unique_patterns}
-                    logging.info(
-                        f"Test T-SNE structure: {total_points} total points, {len(unique_patterns)} patterns, counts per pattern: {pattern_counts}"
-                    )
-                    logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
-                    logging.info(f"Test: Generating 3 T-SNE visualizations: main (encoders+context), context-only, encoders-only (single pattern)")
+                    if generate_tsne:
+                        # Log T-SNE structure for test datasets
+                        total_points = latents_concat.shape[0]
+                        unique_patterns = np.unique(pattern_ids_concat)
+                        pattern_counts = {int(p): int((pattern_ids_concat == p).sum()) for p in unique_patterns}
+                        logging.info(
+                            f"Test T-SNE structure: {total_points} total points, {len(unique_patterns)} patterns, counts per pattern: {pattern_counts}"
+                        )
+                        logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
+                        logging.info(f"Test: Generating 3 T-SNE visualizations: main (encoders+context), context-only, encoders-only (single pattern)")
+                    else:
+                        logging.info("Test T-SNE generation disabled - focusing on accuracy metrics and reconstructions")
                     
-                    # Use visualize_tsne_sources for different markers
-                    fig_latents = visualize_tsne_sources(
+                    if generate_tsne:
+                        # Use visualize_tsne_sources for different markers
+                        fig_latents = visualize_tsne_sources(
                         latents=latents_concat,
                         program_ids=pattern_ids_concat,
                         source_ids=source_ids_np,
@@ -2703,8 +2732,14 @@ class StructuredTrainer:
                             fig_tsne_encoders_list.append(None)
                             logging.warning(f"Test: No points found for pattern {target_pattern}")
                     
-                    # For backward compatibility, keep the first pattern T-SNE as the main one
-                    fig_tsne_encoders = fig_tsne_encoders_list[0] if fig_tsne_encoders_list else None
+                        # For backward compatibility, keep the first pattern T-SNE as the main one
+                        fig_tsne_encoders = fig_tsne_encoders_list[0] if fig_tsne_encoders_list else None
+                    else:
+                        # Test T-SNE generation disabled - set all T-SNE figures to None
+                        fig_latents = None
+                        fig_tsne_context = None
+                        fig_tsne_encoders_list = [None, None, None]  # One for each pattern
+                        fig_tsne_encoders = None
                     
                     # COMPUTE CLUSTERING METRICS FOR TEST DATASETS
                     try:
@@ -2748,6 +2783,32 @@ class StructuredTrainer:
                         logging.warning(f"Test clustering metrics computation failed: {e}")
         
         return metrics, fig_gen, fig_heatmap, fig_latents, None, fig_search_progress, fig_tsne_context, fig_tsne_encoders_list
+
+    def save_checkpoint(self, ckpt_path: str, state: TrainState) -> None:
+        """Save checkpoint and upload as wandb artifact (same as train.py)."""
+        from flax.serialization import msgpack_serialize, to_state_dict
+        with open(ckpt_path, "wb") as outfile:
+            outfile.write(msgpack_serialize(to_state_dict(state)))
+        run_name = self.make_safe_run_name(wandb.run.name)
+        artifact = wandb.Artifact(f"{run_name}--checkpoint", type="model", metadata=dict(wandb.run.config))
+        artifact.add_file(ckpt_path)
+        num_steps = state.step.item()
+        wandb.run.log_artifact(artifact, name="checkpoint", aliases=["latest", f"num_steps_{num_steps}"])
+
+    @classmethod
+    def make_safe_run_name(cls, run_name: str) -> str:
+        """Make run name safe for artifact naming (same as train.py)."""
+        return (
+            run_name.replace(",", ".")
+            .replace(":", "")
+            .replace(" ", "")
+            .replace("(", "_")
+            .replace(")", "_")
+            .replace("[", "_")
+            .replace("]", "_")
+            .replace("+", "_")
+            .replace("=", "_")
+        )
 
 
 @hydra.main(config_path="configs", version_base=None, config_name="structured")

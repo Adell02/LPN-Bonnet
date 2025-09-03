@@ -965,6 +965,10 @@ def main():
     parser.add_argument("--loss", action="store_true",
                        help="Plot loss differences instead of accuracies (requires two methods in plot_methods)")
     
+    # Cumulative aggregation
+    parser.add_argument("--cumulative", action="store_true", default=False,
+                       help="Use cumulative data aggregation (each checkpoint includes all previous checkpoints)")
+    
     # Budget configuration options
     parser.add_argument("--budget_start", type=int, default=1, 
                        help="Starting budget value (default: 1)")
@@ -1628,16 +1632,78 @@ def main():
             
             # Generate and upload comparison plot for this step
             try:
-                # Use cumulative data aggregation: each checkpoint includes all previous checkpoints
-                print(f"🔄 Aggregating cumulative data up to checkpoint {step} (including all previous checkpoints)")
-                
-                # Get cumulative data arrays
-                method_arrays = aggregate_cumulative_data(
-                    csv_file_path=out_csv,
-                    current_checkpoint_step=step,
-                    plot_methods=args.plot_methods,
-                    shared_budgets=shared_budgets
-                )
+                if args.cumulative:
+                    # Use cumulative data aggregation: each checkpoint includes all previous checkpoints
+                    print(f"🔄 Aggregating cumulative data up to checkpoint {step} (including all previous checkpoints)")
+                    
+                    # Get cumulative data arrays
+                    method_arrays = aggregate_cumulative_data(
+                        csv_file_path=out_csv,
+                        current_checkpoint_step=step,
+                        plot_methods=args.plot_methods,
+                        shared_budgets=shared_budgets
+                    )
+                else:
+                    # Use individual checkpoint data only
+                    print(f"🔄 Using individual checkpoint data for checkpoint {step}")
+                    
+                    # Accumulate data from CSV for selected methods only (individual checkpoint)
+                    method_to_step_to_budget: Dict[str, Dict[int, Dict[int, float]]] = {}
+                    for method in args.plot_methods:
+                        method_to_step_to_budget[method] = {}
+                    
+                    if out_csv.exists():
+                        with out_csv.open("r") as f:
+                            reader = csv.DictReader(f)
+                            for row in reader:
+                                try:
+                                    row_step = int(row["checkpoint_step"]) if row["checkpoint_step"] else None
+                                    if row_step is None or row_step != step:
+                                        continue
+                                    method = row["method"]
+                                    budget = int(row["budget"]) if row["budget"] else None
+                                    if budget is None:
+                                        continue
+                                    try:
+                                        if args.loss and len(args.plot_methods) == 2:
+                                            # Use loss for loss difference plotting
+                                            loss_val = float(row["total_final_loss"]) if row["total_final_loss"] not in ("", None) else np.nan
+                                            acc_val = loss_val
+                                        else:
+                                            # Use accuracy for regular plotting
+                                            acc_val = float(row["overall_accuracy"]) if row["overall_accuracy"] not in ("", None) else np.nan
+                                    except Exception:
+                                        acc_val = np.nan
+                                    
+                                    method_to_step_to_budget[method].setdefault(row_step, {})[budget] = acc_val
+                                except Exception:
+                                    continue
+                    
+                    # Check if we have data for any selected methods
+                    has_data = any(len(method_data) > 0 for method_data in method_to_step_to_budget.values())
+                    
+                    if has_data:
+                        # Collect all steps and budgets from selected methods
+                        all_steps = set()
+                        for method_data in method_to_step_to_budget.values():
+                            all_steps.update(method_data.keys())
+                        all_steps = sorted(all_steps)
+                        all_budgets = sorted(shared_budgets)
+                        
+                        if all_steps and all_budgets:
+                            # Create data arrays for selected methods
+                            method_arrays = {}
+                            for method in args.plot_methods:
+                                method_arrays[method] = np.full((len(all_budgets), len(all_steps)), np.nan)
+                            
+                            # Fill data arrays
+                            for j, s in enumerate(all_steps):
+                                for k, b in enumerate(all_budgets):
+                                    for method in args.plot_methods:
+                                        if method in method_to_step_to_budget:
+                                            method_arrays[method][k, j] = method_to_step_to_budget[method].get(s, {}).get(b, np.nan)
+                    else:
+                        method_arrays = {}
                 
                 # Check if we have any data
                 has_data = any(not np.all(np.isnan(method_data)) for method_data in method_arrays.values())
@@ -1693,15 +1759,27 @@ def main():
                             plot_type = "Accuracy Comparison"
                             plot_description = "Higher values = better performance"
                         
-                        fig.suptitle(
-                            f"{plot_type} - Cumulative Data (Checkpoints 0-{step})\n"
-                            f"{plot_description}\n"
-                            f"Current Training Progress: {training_progress}/{denom} ({pct}%)\n"
-                            f"Checkpoint {i}/{len(checkpoints)} | Total Steps: {len(all_steps)}, Budgets: {len(all_budgets)}",
-                            fontsize=14, y=0.98
-                        )
+                        if args.cumulative:
+                            fig.suptitle(
+                                f"{plot_type} - Cumulative Data (Checkpoints 0-{step})\n"
+                                f"{plot_description}\n"
+                                f"Current Training Progress: {training_progress}/{denom} ({pct}%)\n"
+                                f"Checkpoint {i}/{len(checkpoints)} | Total Steps: {len(all_steps)}, Budgets: {len(all_budgets)}",
+                                fontsize=14, y=0.98
+                            )
+                        else:
+                            fig.suptitle(
+                                f"{plot_type} - Individual Checkpoint {step}\n"
+                                f"{plot_description}\n"
+                                f"Current Training Progress: {training_progress}/{denom} ({pct}%)\n"
+                                f"Checkpoint {i}/{len(checkpoints)} | Total Steps: {len(all_steps)}, Budgets: {len(all_budgets)}",
+                                fontsize=14, y=0.98
+                            )
                         
-                        step_plot_path = out_dir / f"optim_comparison_cumulative_checkpoints_0_to_{step}_progress_{training_progress}.png"
+                        if args.cumulative:
+                            step_plot_path = out_dir / f"optim_comparison_cumulative_checkpoints_0_to_{step}_progress_{training_progress}.png"
+                        else:
+                            step_plot_path = out_dir / f"optim_comparison_individual_checkpoint_{step}_progress_{training_progress}.png"
                         fig.savefig(step_plot_path, dpi=200, bbox_inches='tight')
                         plt.close(fig)
                         
@@ -1850,14 +1928,26 @@ def main():
         steps_sorted = sorted(set(steps_list))
         actual_budgets = shared_budgets
         
-        # Use cumulative data aggregation for final summary plots
-        print(f"🔄 Creating final cumulative summary plots with data from all checkpoints")
-        method_arrays = aggregate_cumulative_data(
-            csv_file_path=out_csv,
-            current_checkpoint_step=max(steps_sorted) if steps_sorted else 0,
-            plot_methods=args.plot_methods,
-            shared_budgets=shared_budgets
-        )
+        # Create final summary plots
+        if args.cumulative:
+            print(f"🔄 Creating final cumulative summary plots with data from all checkpoints")
+            method_arrays = aggregate_cumulative_data(
+                csv_file_path=out_csv,
+                current_checkpoint_step=max(steps_sorted) if steps_sorted else 0,
+                plot_methods=args.plot_methods,
+                shared_budgets=shared_budgets
+            )
+        else:
+            print(f"🔄 Creating final individual summary plots")
+            # Use the existing method_maps data for individual plots
+            method_arrays = {}
+            for method in args.plot_methods:
+                method_arrays[method] = np.full((len(actual_budgets), len(steps_sorted)), np.nan)
+                
+            for j, s in enumerate(steps_sorted):
+                for k, b in enumerate(actual_budgets):
+                    for method in args.plot_methods:
+                        method_arrays[method][k, j] = method_maps[method].get(s, {}).get(b, np.nan)
 
         # Create plot with selected methods
         if len(args.plot_methods) == 2:
