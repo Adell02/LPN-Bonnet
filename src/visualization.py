@@ -8,7 +8,7 @@ from matplotlib.colors import ListedColormap, Normalize
 from matplotlib.lines import Line2D
 import jax.numpy as jnp
 import jax
-from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
 import seaborn as sns
 from PIL import Image
 
@@ -242,34 +242,34 @@ def visualize_heatmap(data, proportion):
 
 def visualize_tsne(latents, program_ids, perplexity=2, max_iter=1000, random_state=42):
     """
-    Create a t-SNE visualization of latent embeddings, colored by program IDs with distinct colors,
-    a legend, and numbered points.
+    Create a PCA visualization of latent embeddings, colored by program IDs with distinct colors,
+    a legend, and numbered points. Signature kept identical for compatibility.
 
     Args:
     latents (jnp.array): Array of latent embeddings with shape (B, latent_embedding_size)
     program_ids (jnp.array or list): Integer values for each latent, used for coloring
-    perplexity (int or float): Perplexity parameter for t-SNE (default: 30)
-    max_iter (int): Number of iterations for t-SNE (default: 1000)
-    random_state (int): Random state for reproducibility (default: 42)
+    perplexity (int or float): Unused (kept for backward compatibility)
+    max_iter (int): Unused (kept for backward compatibility)
+    random_state (int): Random state for reproducibility (used to seed PCA)
 
     Returns:
-    fig (matplotlib.figure.Figure): Figure object containing the t-SNE plot
+    fig (matplotlib.figure.Figure): Figure object containing the PCA plot
     """
     # Convert JAX array to NumPy array
     latents_np = np.array(latents).astype(float)
 
-    # Ensure perplexity is a scalar float
-    perplexity = float(perplexity)
+    # Ensure random_state is an int
+    random_state = int(random_state)
 
-    # Perform t-SNE
-    tsne = TSNE(n_components=2, perplexity=perplexity, max_iter=max_iter, random_state=random_state)
+    # Perform PCA
+    pca = PCA(n_components=2, random_state=random_state)
     try:
         if np.all(latents_np == latents_np[0]):
-            # If all latents are the same, t-SNE will fail
+            # If all latents are the same, PCA is degenerate
             return None
-        embeddings_2d = tsne.fit_transform(latents_np)
+        embeddings_2d = pca.fit_transform(latents_np)
     except Exception as e:
-        print(f"Error during t-SNE: {e}")
+        print(f"Error during PCA: {e}")
         print(f"Shape of latents: {latents_np.shape}")
         print(f"Data type of latents: {latents_np.dtype}")
         return None
@@ -297,9 +297,9 @@ def visualize_tsne(latents, program_ids, perplexity=2, max_iter=1000, random_sta
         for point in points:
             ax.annotate(str(id), point, xytext=(3, 3), textcoords="offset points", fontsize=8, alpha=0.8)
 
-    ax.set_title("t-SNE Visualization of Latent Embeddings")
-    ax.set_xlabel("t-SNE 1")
-    ax.set_ylabel("t-SNE 2")
+    ax.set_title("PCA Visualization of Latent Embeddings")
+    ax.set_xlabel("PC 1")
+    ax.set_ylabel("PC 2")
 
     # Add legend
     ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.0)
@@ -318,7 +318,7 @@ def visualize_tsne_sources(
     random_state: int = 42,
     task_ids: jnp.ndarray | None = None,
 ):
-    """t-SNE with task color (arc_cmap) and source encoded as marker.
+    """PCA with task color (arc_cmap) and source encoded as marker.
 
     Args:
         latents: [N, D]
@@ -388,22 +388,22 @@ def visualize_tsne_sources(
             src_np = src_np[sel_indices]
             tid_np = tid_np[sel_indices]
             
-            print(f"T-SNE downsampled: {len(sel_indices)} points from {N} total, maintaining {len(selected_tasks)} complete tasks")
+            print(f"PCA downsampled: {len(sel_indices)} points from {N} total, maintaining {len(selected_tasks)} complete tasks")
         else:
             idx = rng.choice(N, size=max_points, replace=False)
             lat_np = lat_np[idx]
             prog_np = prog_np[idx]
             src_np = src_np[idx]
             tid_np = None
-            print(f"T-SNE downsampled: {max_points} points from {N} total (no task grouping)")
+            print(f"PCA downsampled: {max_points} points from {N} total (no task grouping)")
 
     try:
         if np.all(lat_np == lat_np[0]):
             return None
-        tsne = TSNE(n_components=2, perplexity=2, max_iter=1000, random_state=random_state)
-        emb = tsne.fit_transform(lat_np)
+        pca = PCA(n_components=2, random_state=int(random_state))
+        emb = pca.fit_transform(lat_np)
     except Exception as e:
-        print(f"Error during t-SNE (sources): {e}")
+        print(f"Error during PCA (sources): {e}")
         return None
 
     # Create the plot - EXACTLY like train.py style
@@ -482,9 +482,9 @@ def visualize_tsne_sources(
             )
 
     # EXACTLY same title, labels, and style as train.py
-    ax.set_title("t-SNE Visualization of Latent Embeddings")
-    ax.set_xlabel("t-SNE 1")
-    ax.set_ylabel("t-SNE 2")
+    ax.set_title("PCA Visualization of Latent Embeddings")
+    ax.set_xlabel("PC 1")
+    ax.set_ylabel("PC 2")
 
     # Build a clean legend with colors (patterns) and shapes (sources)
     from matplotlib.lines import Line2D

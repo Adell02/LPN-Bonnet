@@ -5510,7 +5510,7 @@ class StructuredTrainer:
         random_state: int = 42
     ) -> Optional[plt.Figure]:
         """
-        Create a custom T-SNE visualization for pattern-specific plots with source color coding.
+        Create a custom PCA visualization for pattern-specific plots with source color coding.
         
         This method creates T-SNE plots that match EXACTLY the style of visualize_tsne_sources:
         - Same color palette, size, shapes, legend title, title style, axes style
@@ -5530,11 +5530,11 @@ class StructuredTrainer:
             matplotlib Figure with the T-SNE visualization
         """
         try:
-            from sklearn.manifold import TSNE
+            from sklearn.decomposition import PCA
             import matplotlib.pyplot as plt
             from matplotlib.lines import Line2D
         except ImportError:
-            logging.warning("sklearn or matplotlib not available for T-SNE visualization")
+            logging.warning("sklearn or matplotlib not available for PCA visualization")
             return None
         
         # Downsample if needed
@@ -5546,15 +5546,9 @@ class StructuredTrainer:
             source_ids = source_ids[indices]
             task_ids = task_ids[indices]
         
-        # Perform T-SNE - EXACTLY like visualize_tsne_sources, but with dynamic perplexity
-        n_points = len(latents)
-        # Choose a reasonable perplexity in [5, 30] and strictly < n_points
-        # Heuristic: ~ one third of points, clamped
-        suggested = max(5, n_points // 3)
-        perplexity = max(2, min(30, suggested, n_points - 1))
-        logging.info(f"T-SNE: using perplexity={perplexity} for n_points={n_points}")
-        tsne = TSNE(n_components=2, perplexity=perplexity, max_iter=1000, random_state=random_state)
-        latents_2d = tsne.fit_transform(latents)
+        # Perform PCA
+        pca = PCA(n_components=2, random_state=int(random_state))
+        latents_2d = pca.fit_transform(latents)
         
         # Create figure - EXACTLY like visualize_tsne_sources
         fig, ax = plt.subplots(figsize=(15, 12))
@@ -5602,8 +5596,8 @@ class StructuredTrainer:
         
         # Set title and labels - EXACTLY like visualize_tsne_sources
         ax.set_title(title, fontsize=16, fontweight='bold')
-        ax.set_xlabel("t-SNE 1", fontsize=12)
-        ax.set_ylabel("t-SNE 2", fontsize=12)
+        ax.set_xlabel("PC 1", fontsize=12)
+        ax.set_ylabel("PC 2", fontsize=12)
         
         # Build legend - EXACTLY like visualize_tsne_sources
         shape_handles = []
