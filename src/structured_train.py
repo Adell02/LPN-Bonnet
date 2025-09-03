@@ -4545,6 +4545,18 @@ class StructuredTrainer:
                 poe_latents_samples = [inf[key] for inf in all_info]
                 info[key] = jnp.concatenate(poe_latents_samples, axis=0)
                 logging.info(f"PoE latents samples shape after concatenation: {info[key].shape}")
+                # Assert expected per-pair dimension if these are per-pair PoE latents
+                try:
+                    if info[key].ndim >= 3:
+                        per_axis = int(info[key].shape[1])
+                        if per_axis != 4:
+                            logging.warning(
+                                f"PoE latents samples second axis={per_axis} (expected 4 if per-pair). Interpreting as per-encoder latents."
+                            )
+                        else:
+                            assert per_axis == 4, "PoE latents samples expected 4 per context (pairs)"
+                except Exception as e:
+                    logging.warning(f"PoE latents samples assertion skipped: {e}")
             elif key == "poe_latents":
                 # Concatenate PoE latents (legacy)
                 poe_latents = [inf[key] for inf in all_info]
@@ -4967,6 +4979,13 @@ class StructuredTrainer:
                     poe_task_ids = np.tile(poe_task_ids, repeat_factor)
                     if remainder > 0:
                         poe_task_ids = np.concatenate([poe_task_ids, poe_task_ids[:remainder]])
+
+                # Label count sanity check for PoE t-SNE
+                try:
+                    unique, counts = np.unique(poe_pattern_ids, return_counts=True)
+                    logging.info(f"PoE T-SNE pattern distribution: {dict(zip(unique.tolist(), counts.tolist()))}")
+                except Exception:
+                    pass
                 
                 # Create PoE source IDs (all marked as PoE)
                 poe_source_ids = np.full(len(poe_latents), len(enc_params_list), dtype=int)
