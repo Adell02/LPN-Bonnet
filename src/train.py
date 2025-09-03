@@ -745,7 +745,7 @@ class Trainer:
 
         if program_ids is not None:
             repeated_program_ids = jnp.repeat(program_ids, pairs_per_problem)
-            fig_latents = visualize_tsne(program_context, repeated_program_ids)
+            fig_latents = visualize_tsne(program_context, repeated_program_ids, title="Regular LPN: t-SNE Visualization of Program Context")
             # Community metrics (optional if sklearn present)
             try:
                 prog_np = np.asarray(repeated_program_ids)

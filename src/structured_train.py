@@ -2620,6 +2620,7 @@ class StructuredTrainer:
                         max_points=500,
                         random_state=42,
                         task_ids=task_ids_np,
+                        title="Structured LPN: t-SNE Visualization of Encoders and Context",
                     )
                     
                     # 1. ADDITIONAL T-SNE: Show just the context latents (with samples from the 3 patterns)

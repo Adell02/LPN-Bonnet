@@ -422,6 +422,60 @@ def log_evaluation_summary(checkpoint_name: str, checkpoint_step: int,
     return summary
 
 
+def aggregate_cumulative_data(csv_file_path: Path, current_checkpoint_step: int, 
+                            plot_methods: List[str], shared_budgets: List[int]) -> Dict[str, np.ndarray]:
+    """
+    Aggregate data cumulatively: each checkpoint includes data from all previous checkpoints.
+    
+    Args:
+        csv_file_path: Path to the CSV file containing all results
+        current_checkpoint_step: The current checkpoint step being processed
+        plot_methods: List of methods to include in aggregation
+        shared_budgets: List of budget values
+        
+    Returns:
+        Dictionary with method names as keys and aggregated data arrays as values
+    """
+    method_arrays = {}
+    for method in plot_methods:
+        method_arrays[method] = np.full((len(shared_budgets), current_checkpoint_step + 1), np.nan)
+    
+    if not csv_file_path.exists():
+        return method_arrays
+    
+    # Read all data from CSV
+    with csv_file_path.open("r") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                row_step = int(row["checkpoint_step"]) if row["checkpoint_step"] else None
+                if row_step is None or row_step > current_checkpoint_step:
+                    continue
+                    
+                method = row["method"]
+                if method not in plot_methods:
+                    continue
+                    
+                budget = int(row["budget"]) if row["budget"] else None
+                if budget is None:
+                    continue
+                    
+                # Get accuracy value
+                acc_val = float(row["overall_accuracy"]) if row["overall_accuracy"] not in ("", None) else np.nan
+                
+                # Find budget index
+                try:
+                    budget_idx = shared_budgets.index(budget)
+                    method_arrays[method][budget_idx, row_step] = acc_val
+                except ValueError:
+                    continue
+                    
+            except (ValueError, KeyError) as e:
+                continue
+    
+    return method_arrays
+
+
 def generate_checkpoint_figure(checkpoint_name: str, checkpoint_step: int, training_progress: int, 
                               total_checkpoints: int, results_data: List[Dict[str, Any]], 
                               shared_budgets: List[int], plot_methods: List[str]) -> str:
@@ -1574,61 +1628,28 @@ def main():
             
             # Generate and upload comparison plot for this step
             try:
-                # Accumulate data from CSV for selected methods only
-                method_to_step_to_budget: Dict[str, Dict[int, Dict[int, float]]] = {}
-                for method in args.plot_methods:
-                    method_to_step_to_budget[method] = {}
+                # Use cumulative data aggregation: each checkpoint includes all previous checkpoints
+                print(f"🔄 Aggregating cumulative data up to checkpoint {step} (including all previous checkpoints)")
                 
-                if out_csv.exists():
-                    with out_csv.open("r") as f:
-                        reader = csv.DictReader(f)
-                        for row in reader:
-                            try:
-                                row_step = int(row["checkpoint_step"]) if row["checkpoint_step"] else None
-                                if row_step is None:
-                                    continue
-                                method = row["method"]
-                                budget = int(row["budget"]) if row["budget"] else None
-                                if budget is None:
-                                    continue
-                                try:
-                                    if args.loss and len(args.plot_methods) == 2:
-                                        # Use loss for loss difference plotting
-                                        loss_val = float(row["total_final_loss"]) if row["total_final_loss"] not in ("", None) else np.nan
-                                        acc_val = loss_val
-                                    else:
-                                        # Use accuracy for regular plotting
-                                        acc_val = float(row["overall_accuracy"]) if row["overall_accuracy"] not in ("", None) else np.nan
-                                except Exception:
-                                    acc_val = np.nan
-                                
-                                method_to_step_to_budget[method].setdefault(row_step, {})[budget] = acc_val
-                            except Exception:
-                                continue
+                # Get cumulative data arrays
+                method_arrays = aggregate_cumulative_data(
+                    csv_file_path=out_csv,
+                    current_checkpoint_step=step,
+                    plot_methods=args.plot_methods,
+                    shared_budgets=shared_budgets
+                )
                 
-                # Check if we have data for any selected methods
-                has_data = any(len(method_data) > 0 for method_data in method_to_step_to_budget.values())
+                # Check if we have any data
+                has_data = any(not np.all(np.isnan(method_data)) for method_data in method_arrays.values())
                 
                 if has_data:
-                    # Collect all steps and budgets from selected methods
-                    all_steps = set()
-                    for method_data in method_to_step_to_budget.values():
-                        all_steps.update(method_data.keys())
-                    all_steps = sorted(all_steps)
+                    # For cumulative aggregation, steps are 0 to current_checkpoint_step
+                    all_steps = list(range(step + 1))  # 0, 1, 2, ..., step
                     all_budgets = sorted(shared_budgets)
                     
                     if all_steps and all_budgets:
-                        # Create data arrays for selected methods
-                        method_arrays = {}
-                        for method in args.plot_methods:
-                            method_arrays[method] = np.full((len(all_budgets), len(all_steps)), np.nan)
-                        
-                        # Fill data arrays
-                        for j, s in enumerate(all_steps):
-                            for k, b in enumerate(all_budgets):
-                                for method in args.plot_methods:
-                                    if method in method_to_step_to_budget:
-                                        method_arrays[method][k, j] = method_to_step_to_budget[method].get(s, {}).get(b, np.nan)
+                        # method_arrays already contains cumulative data from aggregate_cumulative_data
+                        # No need to recreate or refill - it's already properly structured
                         
                         # Create plot with selected methods
                         if len(args.plot_methods) == 2:
@@ -1641,7 +1662,7 @@ def main():
                                     budgets=np.array(all_budgets),
                                     acc_A=loss_diff,  # This will be the loss difference
                                     acc_B=np.full_like(loss_diff, np.nan),  # Not used for difference plot
-                                    method_A_name=f"Loss Diff ({args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()})",
+                                    method_A_name=f"Cumulative Loss Diff ({args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()})",
                                     method_B_name="",
                                 )
                             else:
@@ -1651,8 +1672,8 @@ def main():
                                     budgets=np.array(all_budgets),
                                     acc_A=method_arrays[args.plot_methods[0]],
                                     acc_B=method_arrays[args.plot_methods[1]],
-                                    method_A_name=args.plot_methods[0].replace("_", " ").title(),
-                                    method_B_name=args.plot_methods[1].replace("_", " ").title(),
+                                    method_A_name=f"Cumulative {args.plot_methods[0].replace('_', ' ').title()}",
+                                    method_B_name=f"Cumulative {args.plot_methods[1].replace('_', ' ').title()}",
                                 )
                         else:
                             # Single method or more than 2 methods - create simple heatmap for first method
@@ -1661,7 +1682,7 @@ def main():
                                 budgets=np.array(all_budgets),
                                 acc_A=method_arrays[args.plot_methods[0]],
                                 acc_B=np.full_like(method_arrays[args.plot_methods[0]], np.nan),
-                                method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                                method_A_name=f"Cumulative {args.plot_methods[0].replace('_', ' ').title()}",
                                 method_B_name="",
                             )
                         
@@ -1673,14 +1694,14 @@ def main():
                             plot_description = "Higher values = better performance"
                         
                         fig.suptitle(
-                            f"{plot_type} - Accumulated Data\n"
+                            f"{plot_type} - Cumulative Data (Checkpoints 0-{step})\n"
                             f"{plot_description}\n"
                             f"Current Training Progress: {training_progress}/{denom} ({pct}%)\n"
                             f"Checkpoint {i}/{len(checkpoints)} | Total Steps: {len(all_steps)}, Budgets: {len(all_budgets)}",
                             fontsize=14, y=0.98
                         )
                         
-                        step_plot_path = out_dir / f"optim_comparison_accumulated_progress_{training_progress}.png"
+                        step_plot_path = out_dir / f"optim_comparison_cumulative_checkpoints_0_to_{step}_progress_{training_progress}.png"
                         fig.savefig(step_plot_path, dpi=200, bbox_inches='tight')
                         plt.close(fig)
                         
@@ -1829,15 +1850,14 @@ def main():
         steps_sorted = sorted(set(steps_list))
         actual_budgets = shared_budgets
         
-        # Create data arrays for selected methods
-        method_arrays = {}
-        for method in args.plot_methods:
-            method_arrays[method] = np.full((len(actual_budgets), len(steps_sorted)), np.nan)
-            
-        for j, s in enumerate(steps_sorted):
-            for k, b in enumerate(actual_budgets):
-                for method in args.plot_methods:
-                    method_arrays[method][k, j] = method_maps[method].get(s, {}).get(b, np.nan)
+        # Use cumulative data aggregation for final summary plots
+        print(f"🔄 Creating final cumulative summary plots with data from all checkpoints")
+        method_arrays = aggregate_cumulative_data(
+            csv_file_path=out_csv,
+            current_checkpoint_step=max(steps_sorted) if steps_sorted else 0,
+            plot_methods=args.plot_methods,
+            shared_budgets=shared_budgets
+        )
 
         # Create plot with selected methods
         if len(args.plot_methods) == 2:
@@ -1850,7 +1870,7 @@ def main():
                     budgets=np.array(actual_budgets),
                     acc_A=loss_diff,  # This will be the loss difference
                     acc_B=np.full_like(loss_diff, np.nan),  # Not used for difference plot
-                    method_A_name=f"Loss Diff ({args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()})",
+                    method_A_name=f"Cumulative Loss Diff ({args.plot_methods[1].replace('_', ' ').title()} - {args.plot_methods[0].replace('_', ' ').title()})",
                     method_B_name="",
                 )
             else:
@@ -1860,8 +1880,8 @@ def main():
                     budgets=np.array(actual_budgets),
                     acc_A=method_arrays[args.plot_methods[0]],
                     acc_B=method_arrays[args.plot_methods[1]],
-                    method_A_name=args.plot_methods[0].replace("_", " ").title(),
-                    method_B_name=args.plot_methods[1].replace("_", " ").title(),
+                    method_A_name=f"Cumulative {args.plot_methods[0].replace('_', ' ').title()}",
+                    method_B_name=f"Cumulative {args.plot_methods[1].replace('_', ' ').title()}",
                 )
         else:
             # Single method or more than 2 methods - create simple heatmap for first method
@@ -1870,7 +1890,7 @@ def main():
                 budgets=np.array(actual_budgets),
                 acc_A=method_arrays[args.plot_methods[0]],
                 acc_B=np.full_like(method_arrays[args.plot_methods[0]], np.nan),
-                method_A_name=args.plot_methods[0].replace("_", " ").title(),
+                method_A_name=f"Cumulative {args.plot_methods[0].replace('_', ' ').title()}",
                 method_B_name="",
             )
         

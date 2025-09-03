@@ -240,7 +240,7 @@ def visualize_heatmap(data, proportion):
     return fig
 
 
-def visualize_tsne(latents, program_ids, perplexity=2, max_iter=1000, random_state=42):
+def visualize_tsne(latents, program_ids, perplexity=2, max_iter=1000, random_state=42, title="t-SNE Visualization of Latent Embeddings"):
     """
     Create a t-SNE visualization of latent embeddings, colored by program IDs with distinct colors,
     a legend, and numbered points.
@@ -251,6 +251,7 @@ def visualize_tsne(latents, program_ids, perplexity=2, max_iter=1000, random_sta
     perplexity (int or float): Perplexity parameter for t-SNE (default: 30)
     max_iter (int): Number of iterations for t-SNE (default: 1000)
     random_state (int): Random state for reproducibility (default: 42)
+    title (str): Title for the plot (default: "t-SNE Visualization of Latent Embeddings")
 
     Returns:
     fig (matplotlib.figure.Figure): Figure object containing the t-SNE plot
@@ -295,7 +296,7 @@ def visualize_tsne(latents, program_ids, perplexity=2, max_iter=1000, random_sta
 
 
 
-    ax.set_title("t-SNE Visualization of Latent Embeddings")
+    ax.set_title(title)
     ax.set_xlabel("t-SNE 1")
     ax.set_ylabel("t-SNE 2")
 
@@ -315,6 +316,7 @@ def visualize_tsne_sources(
     max_points: int = 2000,
     random_state: int = 42,
     task_ids: jnp.ndarray | None = None,
+    title: str = "t-SNE Visualization of Latent Embeddings",
 ):
     """t-SNE with task color (arc_cmap) and source encoded as marker.
 
@@ -324,6 +326,7 @@ def visualize_tsne_sources(
         source_ids: [N] integers (0..E-1 encoders, E for PoE)
         max_points: cap points for memory
         task_ids: [N] optional task/group id so we can keep all sources (quads) together
+        title: Title for the plot (default: "t-SNE Visualization of Latent Embeddings")
     Returns:
         fig
     """
@@ -480,7 +483,7 @@ def visualize_tsne_sources(
             )
 
     # EXACTLY same title, labels, and style as train.py
-    ax.set_title("t-SNE Visualization of Latent Embeddings")
+    ax.set_title(title)
     ax.set_xlabel("t-SNE 1")
     ax.set_ylabel("t-SNE 2")
 
