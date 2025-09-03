@@ -677,7 +677,16 @@ def visualize_optimization_comparison(
 
     # all ticks
     ax.set_xticks(steps)
-    ax.set_yticks(budgets)
+    
+    # Limit Y-axis ticks to maximum of 10
+    if budgets.size > 10:
+        # Select evenly spaced budget ticks
+        budget_indices = np.linspace(0, budgets.size-1, 10, dtype=int)
+        selected_budgets = budgets[budget_indices]
+        ax.set_yticks(selected_budgets)
+    else:
+        ax.set_yticks(budgets)
+    
     if steps.size > 12:
         for t in ax.get_xticklabels():
             t.set_rotation(45)
@@ -937,7 +946,16 @@ def visualize_loss_difference_heatmap(
 
     # Set ticks
     ax.set_xticks(steps)
-    ax.set_yticks(budgets)
+    
+    # Limit Y-axis ticks to maximum of 10
+    if budgets.size > 10:
+        # Select evenly spaced budget ticks
+        budget_indices = np.linspace(0, budgets.size-1, 10, dtype=int)
+        selected_budgets = budgets[budget_indices]
+        ax.set_yticks(selected_budgets)
+    else:
+        ax.set_yticks(budgets)
+    
     if steps.size > 12:
         for t in ax.get_xticklabels():
             t.set_rotation(45)
