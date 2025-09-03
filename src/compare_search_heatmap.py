@@ -125,12 +125,14 @@ def run_evaluation_with_budget(
     # Calculate method-specific parameters (same as store_latent_search.py)
     if method == "gradient_ascent":
         ga_steps = int(np.ceil(budget / 2))  # Each step = 2 evaluations (forward + backward)
+        # Ensure batch size doesn't exceed dataset length
+        effective_batch_size = min(dataset_batch_size, dataset_length)
         cmd = [
             sys.executable, "src/evaluate_checkpoint.py",
             "-w", artifact_path,
             "-d", dataset_folder,
             "--dataset-length", str(dataset_length),
-            "--dataset-batch-size", str(dataset_batch_size),
+            "--dataset-batch-size", str(effective_batch_size),
             "--dataset-use-hf", str(dataset_use_hf).lower(),
             "--dataset-seed", str(dataset_seed),
             "-i", "gradient_ascent",
@@ -144,12 +146,14 @@ def run_evaluation_with_budget(
         pop = int(np.sqrt(budget))
         gens = budget // pop
         
+        # Ensure batch size doesn't exceed dataset length
+        effective_batch_size = min(dataset_batch_size, dataset_length)
         cmd = [
             sys.executable, "src/evaluate_checkpoint.py",
             "-w", artifact_path,
             "-d", dataset_folder,
             "--dataset-length", str(dataset_length),
-            "--dataset-batch-size", str(dataset_batch_size),
+            "--dataset-batch-size", str(effective_batch_size),
             "--dataset-use-hf", str(dataset_use_hf).lower(),
             "--dataset-seed", str(dataset_seed),
             "-i", "evolutionary_search",
@@ -166,8 +170,10 @@ def run_evaluation_with_budget(
     try:
         if method == "gradient_ascent":
             print(f"Running {method} with budget {budget} (steps: {ga_steps})...")
+            print(f"Using effective batch size: {effective_batch_size} (dataset_length: {dataset_length}, requested_batch_size: {dataset_batch_size})")
         else:
             print(f"Running {method} with budget {budget} (population: {pop}, generations: {gens})...")
+            print(f"Using effective batch size: {effective_batch_size} (dataset_length: {dataset_length}, requested_batch_size: {dataset_batch_size})")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         
         # Always print the output for debugging
