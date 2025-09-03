@@ -1107,7 +1107,7 @@ class StructuredTrainer:
             
             # CRITICAL: Validate encoder variance outputs before training
             self._validate_encoder_variance_outputs(state, test_batch)
-                test_loss, test_metrics = self.model.apply(
+            test_loss, test_metrics = self.model.apply(
                     {"params": state.params["decoder"]},
                     *test_batch,
                     dropout_eval=False,
@@ -1119,8 +1119,8 @@ class StructuredTrainer:
                     prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
                     pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
                     repulsion_kl_coeff=cfg.training.get("repulsion_kl"),
-                contrastive_kl_coeff=cfg.training.get("contrastive_kl"),  # ADD CONTRASTIVE LOSS
-                pattern_ids=test_pattern_ids,  # ADD PATTERN IDS FOR CONTRASTIVE LOSS
+                    contrastive_kl_coeff=cfg.training.get("contrastive_kl"),  # ADD CONTRASTIVE LOSS
+                    pattern_ids=test_pattern_ids,  # ADD PATTERN IDS FOR CONTRASTIVE LOSS
                     **(cfg.training.get("inference_kwargs") or {}),
                 )
             logging.info(f"Forward pass test successful: loss={float(test_loss):.4f}")
