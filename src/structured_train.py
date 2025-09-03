@@ -2280,16 +2280,32 @@ class StructuredTrainer:
                 if len(per_encoder_mu_list) > 0 and len(per_encoder_var_list) > 0:
                     mu_enc  = np.stack(per_encoder_mu_list, axis=0)     # [E,N,D]
                     var_enc = np.stack(per_encoder_var_list, axis=0)    # [E,N,D]
+                    
+                    # ENHANCED: Inflate PoE weight of encoder with lowest mean variance across the quad
+                    # Compute mean variance per encoder across all samples
+                    mean_var_per_encoder = np.mean(var_enc, axis=(1, 2))  # [E] - average variance per encoder
+                    lowest_var_encoder = np.argmin(mean_var_per_encoder)
+                    
+                    # Create inflated precision weights
                     precision = 1.0 / np.clip(var_enc, 1e-12, None)     # [E,N,D]
+                    
+                    # Inflate the precision of the lowest variance encoder by a factor
+                    inflation_factor = 10.0  # Make the most confident encoder much more influential
+                    precision[lowest_var_encoder] *= inflation_factor
+                    
                     precision_sum = np.sum(precision, axis=0)           # [N,D]
                     poe_var  = 1.0 / np.clip(precision_sum, 1e-12, None)
                     poe_mean = poe_var * np.sum(precision * mu_enc, axis=0)  # [N,D]
+                    
+                    # Log the PoE weight inflation
+                    logging.info(f"🎯 PoE weight inflation: Encoder {lowest_var_encoder} (var={mean_var_per_encoder[lowest_var_encoder]:.4f}) inflated by {inflation_factor}x")
+                    logging.info(f"   All encoder variances: {[f'{v:.4f}' for v in mean_var_per_encoder]}")
 
                     combined_latents = np.concatenate([combined_latents, poe_mean], axis=0)
                     combined_source_ids = np.concatenate([combined_source_ids, np.full((poe_mean.shape[0],), 3, dtype=combined_source_ids.dtype)])
                     combined_pattern_ids = np.concatenate([combined_pattern_ids, np.array(pattern_ids_all)])
                     combined_task_ids = np.concatenate([combined_task_ids, np.arange(poe_mean.shape[0])])
-                    logging.info("Appended PoE latents (source_id=3) for pattern-specific T-SNE")
+                    logging.info("Appended PoE latents (source_id=3) with inflated weights for pattern-specific T-SNE")
             except Exception as _poe_e:
                 logging.warning(f"Failed to compute/append PoE latents: {_poe_e}")
 
@@ -2738,7 +2754,9 @@ class StructuredTrainer:
                     mus_stack = jnp.stack(mus, axis=0)  # (E, B, 1, H)
                     logvars_stack = jnp.stack(logvars, axis=0)
 
-                    poe_mu, _ = poe_diag_gaussians(mus_stack, logvars_stack, alphas)
+                    # ENHANCED: Inflate PoE weights based on encoder confidence (lowest variance)
+                    inflated_alphas = self._compute_inflated_poe_weights(logvars_stack, alphas)
+                    poe_mu, _ = poe_diag_gaussians(mus_stack, logvars_stack, inflated_alphas)
                     latents = np.array(poe_mu[:, 0])  # (B, H)
 
                     pattern_latents[pattern_id] = latents
@@ -3566,6 +3584,28 @@ class StructuredTrainer:
             fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
             return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
         
+    def _compute_inflated_poe_weights(self, logvars_stack: chex.Array, base_alphas: chex.Array, inflation_factor: float = 10.0) -> chex.Array:
+        """Compute inflated PoE weights based on encoder confidence (lowest variance gets higher weight)."""
+        # Compute mean variance per encoder across all dimensions
+        mean_var_per_encoder = jnp.mean(jnp.exp(logvars_stack), axis=tuple(range(1, logvars_stack.ndim)))
+        lowest_var_encoder = jnp.argmin(mean_var_per_encoder)
+        
+        # Create inflated alphas
+        inflated_alphas = base_alphas.copy()
+        inflated_alphas = inflated_alphas.at[lowest_var_encoder].multiply(inflation_factor)
+        
+        # Renormalize to maintain sum <= 1
+        total_weight = jnp.sum(inflated_alphas)
+        if total_weight > 1.0:
+            inflated_alphas = inflated_alphas / total_weight
+        
+        # Log the inflation for debugging
+        logging.debug(f"🎯 PoE weight inflation: Encoder {lowest_var_encoder} (var={mean_var_per_encoder[lowest_var_encoder]:.4f}) inflated by {inflation_factor}x")
+        logging.debug(f"   Base alphas: {[f'{a:.3f}' for a in base_alphas]}")
+        logging.debug(f"   Inflated alphas: {[f'{a:.3f}' for a in inflated_alphas]}")
+        
+        return inflated_alphas
+
     def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 10.0) -> float:
         """
         Compute repulsion loss to push current encoder away from previous encoders' latent targets.
@@ -6194,7 +6234,10 @@ class StructuredTrainer:
 
                         mus_stack = jnp.stack(enc_mus, axis=0)
                         logvars_stack = jnp.stack(enc_logvars, axis=0)
-                        poe_mu, _ = poe_diag_gaussians(mus_stack, logvars_stack, alphas)
+                        
+                        # ENHANCED: Inflate PoE weights based on encoder confidence (lowest variance)
+                        inflated_alphas = self._compute_inflated_poe_weights(logvars_stack, alphas)
+                        poe_mu, _ = poe_diag_gaussians(mus_stack, logvars_stack, inflated_alphas)
                         poe_mu_np = np.array(poe_mu).mean(axis=1)  # Average across contexts
 
                         poe_latents_list.append(poe_mu_np)
@@ -6532,10 +6575,12 @@ class StructuredTrainer:
                             f"stacked_logvars={stacked_logvars.shape}, alphas={poe_alphas.shape}"
                         )
 
+                        # ENHANCED: Inflate PoE weights based on encoder confidence (lowest variance)
+                        inflated_alphas = self._compute_inflated_poe_weights(stacked_logvars, poe_alphas)
                         poe_mu, poe_logvar = poe_diag_gaussians(
                             stacked_mus,
                             stacked_logvars,
-                            poe_alphas,
+                            inflated_alphas,
                         )
 
                         # Debug: Log output shapes
@@ -6919,10 +6964,13 @@ class StructuredTrainer:
                         stacked_mus = np.stack(all_encoder_mus)
                         stacked_logvars = np.stack(all_encoder_logvars)
                         poe_alphas = np.ones(len(self.encoders)) / len(self.encoders)
+                        
+                        # ENHANCED: Inflate PoE weights based on encoder confidence (lowest variance)
+                        inflated_alphas = self._compute_inflated_poe_weights(stacked_logvars, poe_alphas)
                         poe_mu, poe_logvar = poe_diag_gaussians(
                             stacked_mus,
                             stacked_logvars,
-                            poe_alphas,
+                            inflated_alphas,
                         )
                         poe_mu_np = np.array(poe_mu).squeeze()
                         poe_logvar_np = np.array(poe_logvar).squeeze()
