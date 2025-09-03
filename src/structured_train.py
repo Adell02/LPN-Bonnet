@@ -6413,20 +6413,26 @@ class StructuredTrainer:
                 encoder_labels = []
 
                 for enc_idx in range(len(self.encoders)):
-                    encoder_params = state.params["encoders"][enc_idx]
+                    try:
+                        encoder_params = state.params["encoders"][enc_idx]
+                        # Forward pass through this encoder (same as Phase 1)
+                        mu, logvar = self.encoders[enc_idx].apply(
+                            {"params": encoder_params},
+                            sample_grids[None, ...],  # Add batch dimension back
+                            sample_shapes[None, ...],  # Add batch dimension back
+                            dropout_eval=False,
+                            mutable=False,
+                        )
+                        all_encoder_mus.append(np.array(mu))
+                        all_encoder_logvars.append(np.array(logvar))
+                        encoder_labels.append(f"Encoder {enc_idx}")
+                    except Exception as e:
+                        logging.warning(f"       ⚠️  Skipping encoder {enc_idx} for pattern {pattern_id}: {e}")
 
-                    # Forward pass through this encoder (same as Phase 1)
-                    mu, logvar = self.encoders[enc_idx].apply(
-                        {"params": encoder_params},
-                        sample_grids[None, ...],  # Add batch dimension back
-                        sample_shapes[None, ...],  # Add batch dimension back
-                        dropout_eval=False,
-                        mutable=False,
-                    )
-
-                    all_encoder_mus.append(np.array(mu))
-                    all_encoder_logvars.append(np.array(logvar))
-                    encoder_labels.append(f"Encoder {enc_idx}")
+                num_enc_collected = len(all_encoder_mus)
+                if num_enc_collected == 0:
+                    logging.warning(f"       ⚠️  No encoder outputs collected for pattern {pattern_id}; skipping section")
+                    continue
 
                 # Create merged histograms and Gaussian functions using the SAME data as Phase 1
                     pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
@@ -6435,7 +6441,7 @@ class StructuredTrainer:
                     # Convert encoder outputs to mean and std arrays
                     all_encoder_means = []
                     all_encoder_stds = []
-                    for enc_idx in range(len(self.encoders)):
+                    for enc_idx in range(num_enc_collected):
                         mu_np = np.array(all_encoder_mus[enc_idx])
                         logvar_np = np.array(all_encoder_logvars[enc_idx])
                         all_encoder_means.append(mu_np.flatten())
@@ -6443,7 +6449,8 @@ class StructuredTrainer:
                     
                     # Create merged histogram for this pattern (top row)
                     # Use different colors for each encoder
-                    colors = ['#FBB998', '#DB74DB', '#5361E5']  # Orange, Pink, Blue
+                    base_colors = ['#FBB998', '#DB74DB', '#5361E5', '#2ca02c', '#9467bd', '#8c564b']
+                    colors = base_colors[:num_enc_collected]
                     
                     # Find the encoder with smallest mean std to highlight
                     mean_stds = [np.mean(stds) for stds in all_encoder_stds]
