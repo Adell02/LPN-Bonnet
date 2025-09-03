@@ -1198,16 +1198,18 @@ class StructuredTrainer:
         if self.cfg.training.get("eval_every_n_logs"):
             try:
                 logging.info(f"🔍 Phase 2: Running initial evaluation after Phase 1 completion")
-                self.evaluate(updated_state, enc_params_list, step=0)
+                initial_eval_data = self.evaluate(updated_state, enc_params_list, step=0)
                 
                 # Initial test datasets evaluation for Phase 2
                 if hasattr(self, 'test_datasets') and self.test_datasets:
                     for dataset_dict in self.test_datasets:
                         try:
                             start = time.time()
-                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, _ = self.test_dataset_submission(
                                 updated_state, dataset_dict, step=0
                             )
+                            # Use t-SNEs from main evaluation instead of test_dataset_submission to ensure consistent data source
+                            fig_tsne_encoders_list = getattr(self, '_last_eval_tsne_encoders_list', [None, None, None])
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                             
                             # Upload all figures
@@ -1330,28 +1332,11 @@ class StructuredTrainer:
                 other_var = jnp.exp(logvar[other_mask])
                 avg_other_var = jnp.mean(other_var)
                 
-                # FIXED: Contrastive loss: minimize target variance, maximize other variance
-                # We want: target_var << other_var (target pattern gets high confidence, others get low confidence)
-                
-                # Dynamic coefficient adjustment based on specialization progress
-                base_coeff = self.cfg.training.get("contrastive_kl", 1e-3)
-                current_specialization_ratio = avg_target_var / (avg_other_var + 1e-8)
-                
-                # If specialization is poor, increase coefficient
-                if current_specialization_ratio > 1.0:
-                    # Target variance is HIGHER than other variance (bad!)
-                    dynamic_coeff = base_coeff * 10.0  # Increase coefficient aggressively
-                    logging.debug(f"       Poor specialization detected (ratio: {current_specialization_ratio:.3f}), increasing coefficient to {dynamic_coeff:.6f}")
-                elif current_specialization_ratio > 0.8:
-                    # Target variance is only slightly lower than other variance
-                    dynamic_coeff = base_coeff * 5.0  # Increase coefficient moderately
-                    logging.debug(f"       Weak specialization detected (ratio: {current_specialization_ratio:.3f}), increasing coefficient to {dynamic_coeff:.6f}")
-                else:
-                    # Good specialization, use base coefficient
-                    dynamic_coeff = base_coeff
-                    logging.debug(f"       Good specialization (ratio: {current_specialization_ratio:.3f}), using base coefficient {dynamic_coeff:.6f}")
-                
-                contrastive_loss = avg_target_var + dynamic_coeff * (1.0 / (avg_other_var + 1e-8))
+                # Context-level hinge loss aligned with inference:
+                # L = max(0, margin - (other_var_ctx - target_var_ctx))
+                contrastive_margin = self.cfg.training.get("contrastive_margin", 0.5)
+                gap_ctx = (avg_other_var - avg_target_var)
+                contrastive_loss = jnp.maximum(0.0, contrastive_margin - gap_ctx)
                 
                 # Add regularization to prevent extreme values
                 reg_loss = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
@@ -1374,25 +1359,12 @@ class StructuredTrainer:
                     target_var = jnp.exp(logvar[target_mask])
                     other_var = jnp.exp(logvar[other_mask])
                     
-                    # Compute contrastive loss: minimize target variance, maximize other variance
+                    # Context-level stats per training sample already reduced over pairs and dims via mean
                     avg_target_var = jnp.mean(target_var)
                     avg_other_var = jnp.mean(other_var)
-                    
-                    # Loss: target_var + coefficient * (1/other_var) 
-                    # This drives target_var DOWN and other_var UP
-                    
-                    # Use the same dynamic coefficient logic
-                    base_coeff = self.cfg.training.get("contrastive_kl", 1e-3)
-                    current_specialization_ratio = avg_target_var / (avg_other_var + 1e-8)
-                    
-                    if current_specialization_ratio > 1.0:
-                        dynamic_coeff = base_coeff * 10.0
-                    elif current_specialization_ratio > 0.8:
-                        dynamic_coeff = base_coeff * 5.0
-                    else:
-                        dynamic_coeff = base_coeff
-                    
-                    contrastive_loss = avg_target_var + dynamic_coeff * (1.0 / (avg_other_var + 1e-8))
+                    contrastive_margin = self.cfg.training.get("contrastive_margin", 0.5)
+                    gap_ctx = (avg_other_var - avg_target_var)
+                    contrastive_loss = jnp.maximum(0.0, contrastive_margin - gap_ctx)
                     
                     # Add regularization
                     reg_loss = 0.01 * (jnp.mean(target_var ** 2) + jnp.mean(other_var ** 2))
@@ -1401,8 +1373,8 @@ class StructuredTrainer:
                     # This ensures repulsion affects parameter updates, not just logging
                     repulsion_loss = 0.0
                     if target_latents_store and self.cfg.training.get("repulsion_kl", 0) > 0:
-                        # Compute repulsion from previous encoders' targets
-                        # Use mean over pairs for consistency with the outer computation
+                        # Compute repulsion from previous encoders' targets using context means
+                        # mu shape: (batch, pairs, dim); take mean over pairs
                         current_latents = mu.mean(axis=-2)
                         repulsion_loss = self._compute_repulsion_loss(
                             current_latents=current_latents,
@@ -3973,9 +3945,11 @@ class StructuredTrainer:
                     for dataset_dict in self.test_datasets:
                         try:
                             start = time.time()
-                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, _ = self.test_dataset_submission(
                                 state, dataset_dict, step=step
                             )
+                            # Use t-SNEs from main evaluation instead of test_dataset_submission to ensure consistent data source
+                            fig_tsne_encoders_list = getattr(self, '_last_eval_tsne_encoders_list', [None, None, None])
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                             
                             # Upload all figures
@@ -4178,9 +4152,11 @@ class StructuredTrainer:
                             for dataset_dict in self.test_datasets:
                                 try:
                                     start = time.time()
-                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, _ = self.test_dataset_submission(
                                         state, dataset_dict, step=self.phase2_offset + step
                                     )
+                                    # Use t-SNEs from main evaluation instead of test_dataset_submission to ensure consistent data source
+                                    fig_tsne_encoders_list = getattr(self, '_last_eval_tsne_encoders_list', [None, None, None])
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                                     
                                     # Upload all figures
@@ -4259,9 +4235,11 @@ class StructuredTrainer:
                             for dataset_dict in self.test_datasets:
                                 try:
                                     start = time.time()
-                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                                    test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, _ = self.test_dataset_submission(
                                         state, dataset_dict, step=step
                                     )
+                                    # Use t-SNEs from main evaluation instead of test_dataset_submission to ensure consistent data source
+                                    fig_tsne_encoders_list = getattr(self, '_last_eval_tsne_encoders_list', [None, None, None])
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                                     
                                     # Upload all figures
@@ -4327,9 +4305,11 @@ class StructuredTrainer:
                     for dataset_dict in self.test_datasets:
                         try:
                             start = time.time()
-                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, fig_tsne_encoders_list = self.test_dataset_submission(
+                            test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_samples, _ = self.test_dataset_submission(
                                 state, dataset_dict, step=self.phase2_offset + step
                             )
+                            # Use t-SNEs from main evaluation instead of test_dataset_submission to ensure consistent data source
+                            fig_tsne_encoders_list = getattr(self, '_last_eval_tsne_encoders_list', [None, None, None])
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                             
                             # Upload all figures
@@ -5403,7 +5383,23 @@ class StructuredTrainer:
                 avg_enc_mus = [np.mean(em, axis=0) for em in enc_mus]  # [latent_dim] per encoder
                 avg_enc_logvars = [np.mean(lv, axis=0) for lv in enc_logvars]  # [latent_dim] per encoder
                 
-                alphas_np = np.asarray(alphas)
+                # Robust alphas handling: allow None, 0-D, or wrong-shaped inputs
+                if alphas is None:
+                    alphas_np = np.ones(len(avg_enc_mus), dtype=np.float32) / float(len(avg_enc_mus))
+                else:
+                    alphas_np = np.asarray(alphas)
+                    if alphas_np.ndim == 0:
+                        # Scalar -> expand to uniform over encoders
+                        alphas_np = np.ones(len(avg_enc_mus), dtype=np.float32) / float(len(avg_enc_mus))
+                    elif alphas_np.ndim > 1:
+                        # Take last dimension if accidentally batched
+                        alphas_np = np.asarray(alphas_np).reshape(-1)[0:len(avg_enc_mus)]
+                # Normalize just in case
+                sum_alphas = float(np.sum(alphas_np))
+                if sum_alphas <= 0.0:
+                    alphas_np = np.ones(len(avg_enc_mus), dtype=np.float32) / float(len(avg_enc_mus))
+                else:
+                    alphas_np = alphas_np / sum_alphas
                 precisions = [np.exp(-lv) for lv in avg_enc_logvars]  # [latent_dim] per encoder
                 poe_precision = np.zeros_like(precisions[0])
                 for a, p in zip(alphas_np, precisions):
@@ -5465,6 +5461,9 @@ class StructuredTrainer:
         if fig_alpha_histogram is not None:
             plt.close(fig_alpha_histogram)
 
+        # Store t-SNE figures for use by other methods (e.g., test_dataset_submission)
+        self._last_eval_tsne_encoders_list = fig_tsne_encoders_list
+        
         # Release large intermediates
         del all_latents, latents_concat, source_ids_np, pattern_ids_concat
         return metrics

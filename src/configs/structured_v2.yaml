@@ -47,7 +47,7 @@ structured:
 training:
   seed: 0
   mixed_precision: false
-  batch_size: 128
+  batch_size: 32
   gradient_accumulation_steps: 1
   learning_rate: 1e-3
   linear_warmup_steps: 99
@@ -81,7 +81,7 @@ training:
   # Option B: balanced structured tetromino patterns (O, T, L) - now using task generator
   struct_patterns_balanced: true
   struct_num_pairs: 4          # 4 pairs per task (input + output)
-  num_workers: 4               # Number of workers for data generation
+  num_workers: 2               # Number of workers for data generation
   pattern_per_task: true
   # Training: 1024 total samples (341 per pattern: O, T, L tetrominos)
   # Evaluation: 96 total samples (32 per pattern: O, T, L tetrominos)

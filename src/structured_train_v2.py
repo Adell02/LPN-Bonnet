@@ -19,8 +19,13 @@ import omegaconf
 import wandb
 from flax.training.train_state import TrainState
 
-# Optimize JAX compilation
-os.environ["XLA_FLAGS"] = "--xla_gpu_enable_fast_min_max=true --xla_gpu_enable_async_all_gather=true"
+# Optimize JAX compilation and memory usage
+os.environ["XLA_FLAGS"] = "--xla_gpu_enable_fast_min_max=true --xla_gpu_enable_async_all_gather=false"
+os.environ["JAX_PLATFORM_NAME"] = "gpu"
+
+# Configure JAX memory allocation
+jax.config.update("jax_default_prng_impl", "rbg")
+jax.config.update("jax_enable_x64", False)
 
 from models.transformer import EncoderTransformer, DecoderTransformer
 from models.utils import EncoderTransformerConfig, DecoderTransformerConfig
@@ -129,11 +134,11 @@ def _kl_to_prior(mu: jnp.ndarray, logvar: jnp.ndarray) -> jnp.ndarray:
     return 0.5 * jnp.mean(jnp.exp(logvar) + mu ** 2 - 1.0 - logvar)
 
 
-@jax.jit
 def train_step(state: TrainState, batch, model: StructuredLPN, cfg, key):
     """Single training step with off-domain KL regularization."""
     off_coeff = cfg.training.get("off_domain_kl", 1.0)
 
+    @jax.jit
     def loss_fn(full_params, key):
         scoped = {"params": full_params}
         # Call the model directly - it handles encoder application and PoE internally
@@ -179,23 +184,26 @@ def train_step(state: TrainState, batch, model: StructuredLPN, cfg, key):
     return state, metrics
 
 
-@jax.jit
 def eval_step(state: TrainState, batch, model: StructuredLPN, cfg):
     """Single evaluation step."""
-    scoped = {"params": state.params}
-    loss, metrics = model.apply(
-        scoped,
-        batch["pairs"],
-        batch["shapes"],
-        dropout_eval=True,
-        mode=cfg.training.inference_mode,
-        poe_alphas=jnp.array(cfg.structured.alphas),
-        encoder_params_list=state.params["encoders"],
-        decoder_params=state.params["decoder"],
-        rngs={"latents": jax.random.PRNGKey(0)},
-        prior_kl_coeff=cfg.training.prior_kl_coeff,
-    )
-    return loss, metrics
+    @jax.jit
+    def eval_fn(full_params):
+        scoped = {"params": full_params}
+        loss, metrics = model.apply(
+            scoped,
+            batch["pairs"],
+            batch["shapes"],
+            dropout_eval=True,
+            mode=cfg.training.inference_mode,
+            poe_alphas=jnp.array(cfg.structured.alphas),
+            encoder_params_list=full_params["encoders"],
+            decoder_params=full_params["decoder"],
+            rngs={"latents": jax.random.PRNGKey(0)},
+            prior_kl_coeff=cfg.training.prior_kl_coeff,
+        )
+        return loss, metrics
+    
+    return eval_fn(state.params)
 
 
 def generate_contexts_for_tsne(state: TrainState, batch, model: StructuredLPN, cfg, key):
@@ -246,6 +254,9 @@ def generate_contexts_for_tsne(state: TrainState, batch, model: StructuredLPN, c
 
 @hydra.main(config_path="configs", config_name="structured", version_base=None)
 def main(cfg: omegaconf.DictConfig):
+    # Clear JAX cache to free memory
+    jax.clear_caches()
+    
     # Initialize wandb
     wandb.init(
         entity=cfg.wandb.entity,
@@ -351,7 +362,7 @@ def main(cfg: omegaconf.DictConfig):
         eval_key = jax.random.PRNGKey(42)
         for pattern in [1, 2, 3]:
             eval_loader = make_task_gen_dataloader(
-                batch_size=min(32, cfg.training.batch_size),
+                batch_size=min(16, cfg.training.batch_size),
                 log_every_n_steps=cfg.training.log_every_n_steps,
                 num_workers=cfg.training.num_workers,
                 task_generator_class="STRUCT_PATTERN",
