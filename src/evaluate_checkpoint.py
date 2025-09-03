@@ -482,13 +482,22 @@ def evaluate_custom_dataset(
     ]
     # Aggregate the metrics over the devices and the batches (robust to None values)
     metrics = {}
-    for k in metrics_list[0].keys():
-        vals = [m[k] for m in metrics_list if m.get(k) is not None]
-        if len(vals) == 0:
-            # No valid values; set to NaN to keep key presence without crashing
-            metrics[k] = jnp.nan
-        else:
-            metrics[k] = jnp.stack(vals).mean()
+    if len(metrics_list) == 0:
+        print("Warning: No metrics generated - evaluation failed")
+        metrics = {
+            "correct_shapes": jnp.nan,
+            "pixel_correctness": jnp.nan,
+            "accuracy": jnp.nan,
+            "total_final_loss": jnp.nan,
+        }
+    else:
+        for k in metrics_list[0].keys():
+            vals = [m[k] for m in metrics_list if m.get(k) is not None]
+            if len(vals) == 0:
+                # No valid values; set to NaN to keep key presence without crashing
+                metrics[k] = jnp.nan
+            else:
+                metrics[k] = jnp.stack(vals).mean()
 
     # If storing latents, also collect per-sample metrics across the whole evaluated dataset
     per_sample_shape_acc = None

@@ -4420,6 +4420,36 @@ class StructuredTrainer:
         # Use current encoder weights from state.params, not the original artifact weights
         current_enc_params_list = state.params["encoders"]
         logging.info(f"Evaluation using current encoder weights from training state (step {getattr(state, 'step', 'unknown')})")
+        
+        # CRITICAL FIX: Use the same data generation method as confidence panel for consistency
+        # The issue is that T-SNE uses make_dataset() while confidence panel uses _create_pattern_dataset_synthetic()
+        # These generate fundamentally different data even for the same pattern ID
+        if hasattr(self, "eval_grids") and self.phase1_completed:
+            logging.info("🔄 Using synthetic data generation for T-SNE evaluation (same as confidence panel)")
+            # Generate fresh balanced data using the SAME method as confidence panel
+            total_eval_length = 96  # Total evaluation samples
+            samples_per_pattern = total_eval_length // 3  # 32 samples per pattern
+            
+            grids_all, shapes_all = [], []
+            for pid in (1, 2, 3):  # Generate from all 3 patterns (O, T, L tetrominos)
+                # Use the SAME synthetic data generation as confidence panel
+                g, s, _ = self._create_pattern_dataset_synthetic(pid, samples_per_pattern)
+                grids_all.append(g)
+                shapes_all.append(s)
+            
+            # Use synthetic data instead of make_dataset() data
+            self.eval_grids = jnp.concatenate(grids_all, axis=0)
+            self.eval_shapes = jnp.concatenate(shapes_all, axis=0)
+            
+            # Create explicit pattern IDs that match the concatenation order
+            self.eval_pattern_ids = jnp.concatenate([
+                jnp.full((samples_per_pattern,), 1),  # Pattern 1 (first 32 samples)
+                jnp.full((samples_per_pattern,), 2),  # Pattern 2 (next 32 samples)
+                jnp.full((samples_per_pattern,), 3),  # Pattern 3 (last 32 samples)
+            ], axis=0)
+            
+            logging.info(f"🔄 Generated synthetic evaluation data: {self.eval_grids.shape[0]} samples")
+        
         if not hasattr(self, "eval_grids"):
             return {}
         cfg = self.cfg
