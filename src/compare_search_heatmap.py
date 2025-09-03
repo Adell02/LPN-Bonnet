@@ -195,42 +195,50 @@ def run_evaluation_with_budget(
         
         # Load trajectory data and extract intermediate metrics
         latents_file = os.path.join(temp_dir, f"{method}_latents_{budget}.npz")
+        print(f"Looking for trajectory file: {latents_file}")
         if os.path.exists(latents_file):
             try:
                 data = np.load(latents_file)
+                print(f"Loaded trajectory data with keys: {list(data.keys())}")
                 
                 # Extract intermediate losses (same logic as store_latent_search.py)
                 if method == "gradient_ascent":
                     # For GA, look for losses_per_sample or trajectory_losses
-                    if f"ga_losses_per_sample" in data:
+                    if "ga_losses_per_sample" in data:
                         losses_per_sample = np.array(data["ga_losses_per_sample"])
+                        print(f"Found ga_losses_per_sample with shape: {losses_per_sample.shape}")
                         if losses_per_sample.ndim >= 2:
                             # Take mean across samples to get trajectory values
                             trajectory_losses = np.mean(losses_per_sample, axis=0)
                             metrics["losses"] = trajectory_losses
                             print(f"Extracted GA trajectory losses: {trajectory_losses.shape}")
-                    elif f"ga_trajectory_losses" in data:
+                    elif "ga_trajectory_losses" in data:
                         metrics["losses"] = np.array(data["ga_trajectory_losses"])
                         print(f"Extracted GA trajectory losses: {metrics['losses'].shape}")
-                    elif f"ga_log_probs" in data:
+                    elif "ga_log_probs" in data:
                         # Convert log_probs to losses
                         log_probs = np.array(data["ga_log_probs"])
+                        print(f"Found ga_log_probs with shape: {log_probs.shape}")
                         if log_probs.ndim == 4:  # (B, C, T, S)
                             simple_scores = log_probs.mean(axis=(0, 1))
                             metrics["losses"] = -simple_scores
                             print(f"Extracted GA losses from log_probs: {metrics['losses'].shape}")
+                    else:
+                        print("No GA trajectory data found in expected keys")
                 
                 elif method == "evolutionary_search":
                     # For ES, look for generation_losses or best_losses_per_generation
-                    if f"es_generation_losses" in data:
+                    if "es_generation_losses" in data:
                         metrics["losses"] = np.array(data["es_generation_losses"]).reshape(-1)
                         print(f"Extracted ES generation losses: {metrics['losses'].shape}")
-                    elif f"es_best_losses_per_generation" in data:
+                    elif "es_best_losses_per_generation" in data:
                         metrics["losses"] = np.array(data["es_best_losses_per_generation"]).reshape(-1)
                         print(f"Extracted ES best losses per generation: {metrics['losses'].shape}")
-                    elif f"es_all_losses" in data:
+                    elif "es_all_losses" in data:
                         metrics["losses"] = np.array(data["es_all_losses"]).reshape(-1)
                         print(f"Extracted ES all losses: {metrics['losses'].shape}")
+                    else:
+                        print("No ES trajectory data found in expected keys")
                 
                 # Extract accuracies if available
                 if f"{method}_accuracies" in data:
@@ -255,6 +263,8 @@ def run_evaluation_with_budget(
                 
             except Exception as e:
                 print(f"Warning: Could not load trajectory data: {e}")
+        else:
+            print(f"Trajectory file not found: {latents_file}")
         
         return True, metrics
         
@@ -426,7 +436,8 @@ def main():
         # Evaluate each checkpoint
         checkpoints_to_evaluate = checkpoint_paths[:1] if args.test_mode else checkpoint_paths
         for i, checkpoint_path in enumerate(checkpoints_to_evaluate):
-            checkpoint_name = checkpoint_path.split("/")[-1].split(":")[0]
+            # Extract checkpoint name from the full path
+            checkpoint_name = checkpoint_path.split("/")[-1]
             print(f"\nEvaluating checkpoint {i+1}/{len(checkpoint_paths)}: {checkpoint_name}")
             
             ga_results = {}
