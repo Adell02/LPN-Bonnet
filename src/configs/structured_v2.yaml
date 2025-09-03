@@ -58,6 +58,7 @@ training:
   use_hf: true
   online_data_augmentation: false
   inference_mode: "mean"  # mean/all/random_search/gradient_ascent/evolutionary_search
+  disable_enhanced_uncertainty: true  # Disable enhanced uncertainty shaping to avoid JAX concretization errors
   inference_kwargs: {}
   prior_kl_coeff: null
   pairwise_kl_coeff: null
@@ -73,7 +74,7 @@ training:
   # The system will dynamically adjust this coefficient based on specialization progress
   contrastive_kl: 5  # specialization effects (increased from 1e-3)
   log_every_n_steps: 10
-  eval_every_n_logs: 10       # null to disable
+  eval_every_n_logs: null       # null to disable
   eval_every_n_logs_phase_2: 20       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable
   resume_from_checkpoint: null

@@ -13,7 +13,6 @@ from typing import List
 import hydra
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
 import optax
 import omegaconf
 import wandb
@@ -144,8 +143,8 @@ def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, 
             metrics[f"kl_prior/enc{i+1}"] = kl_i
             # Check if this encoder is off-domain for any sample in the batch
             is_off_domain = jnp.any(batch["pattern_id"] != i + 1)  # pattern_ids are 1-indexed
-            if is_off_domain:
-                kl_reg += kl_i
+            # Use JAX conditional instead of Python if
+            kl_reg += jnp.where(is_off_domain, kl_i, 0.0)
         loss += off_coeff * kl_reg
         metrics["off_domain_kl"] = kl_reg
         return loss, metrics
@@ -305,6 +304,9 @@ def main(cfg: omegaconf.DictConfig):
     # T-SNE Evaluation: Generate contexts from individual encoders and PoE
     if cfg.training.eval_every_n_logs:
         logging.info("Generating T-SNE visualizations...")
+        
+        # Import matplotlib only when needed to avoid multiprocessing issues
+        import matplotlib.pyplot as plt
         
         # Collect contexts from all patterns
         all_individual_contexts = [[] for _ in range(len(enc_params))]  # One list per encoder

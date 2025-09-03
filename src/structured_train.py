@@ -4563,7 +4563,12 @@ class StructuredTrainer:
             elif key == "poe_alphas":
                 # Store PoE alphas for histogram tracking
                 info[key] = [inf[key] for inf in all_info]
-                logging.info(f"PoE alphas: {len(info[key])} batches, shape per batch: {info[key][0].shape}")
+                logging.info(f"PoE alphas: {len(info[key])} batches")
+                for i, batch_alphas in enumerate(info[key]):
+                    if batch_alphas is not None:
+                        logging.info(f"  Batch {i}: shape={batch_alphas.shape}, type={type(batch_alphas)}")
+                    else:
+                        logging.info(f"  Batch {i}: None")
             else:
                 # For other info, just take the first batch
                 info[key] = all_info[0][key]
@@ -5606,9 +5611,18 @@ class StructuredTrainer:
             for batch_alphas in poe_alphas_list:
                 if batch_alphas is not None:
                     batch_alphas_np = np.array(batch_alphas)
-                    if batch_alphas_np.ndim > 1:
-                        # If batch_alphas has shape (batch_size, num_encoders), flatten
+                    logging.info(f"Batch alphas shape: {batch_alphas_np.shape}, ndim: {batch_alphas_np.ndim}")
+                    
+                    if batch_alphas_np.ndim == 0:
+                        # Scalar - convert to 1D array
+                        batch_alphas_np = batch_alphas_np.reshape(1, -1)
+                    elif batch_alphas_np.ndim == 1:
+                        # 1D array - assume it's (num_encoders,) and reshape to (1, num_encoders)
+                        batch_alphas_np = batch_alphas_np.reshape(1, -1)
+                    elif batch_alphas_np.ndim > 2:
+                        # Higher dimensional - flatten all but last dimension
                         batch_alphas_np = batch_alphas_np.reshape(-1, batch_alphas_np.shape[-1])
+                    
                     all_alphas.append(batch_alphas_np)
             
             if not all_alphas:
@@ -5617,8 +5631,26 @@ class StructuredTrainer:
             
             # Concatenate all alphas
             all_alphas = np.concatenate(all_alphas, axis=0)  # Shape: (total_samples, num_encoders)
+            logging.info(f"Final all_alphas shape: {all_alphas.shape}")
+            
+            # Handle case where we might have 1D array
+            if all_alphas.ndim == 1:
+                # If we have a 1D array, assume it's for a single encoder
+                all_alphas = all_alphas.reshape(-1, 1)
+            
             num_encoders = all_alphas.shape[1]
             total_samples = all_alphas.shape[0]
+            
+            logging.info(f"Creating histogram for {num_encoders} encoders with {total_samples} samples")
+            
+            # Validate data
+            if num_encoders == 0:
+                logging.warning("No encoders found in alpha data")
+                return None
+            
+            if total_samples == 0:
+                logging.warning("No samples found in alpha data")
+                return None
             
             # Create figure with subplots for each encoder
             fig, axes = plt.subplots(1, num_encoders, figsize=(5 * num_encoders, 6))
