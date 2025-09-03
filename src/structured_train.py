@@ -346,7 +346,7 @@ class StructuredTrainer:
                 self.task_generator = False
             else:
                 raise ValueError("No training data specified: set training.train_datasets or enable struct_patterns_balanced")
-
+        
         # Simple single eval dataset support (optional)
         self.eval_conf = cfg.eval.get("dataset")
         if self.eval_conf and self.eval_conf.get("folder"):
@@ -1040,7 +1040,7 @@ class StructuredTrainer:
         logging.info(f"Repulsion KL coefficient: {cfg.training.get('repulsion_kl', 'disabled')}")
         logging.info(f"Contrastive KL coefficient: {cfg.training.get('contrastive_kl', 'disabled')}")
         logging.info(f"Training with {len(cfg.structured.artifacts.models)} encoders for pattern specialization")
-        
+
         # Test forward pass first to catch any issues early
         logging.info("Testing forward pass...")
         try:
@@ -1108,22 +1108,22 @@ class StructuredTrainer:
             # CRITICAL: Validate encoder variance outputs before training
             self._validate_encoder_variance_outputs(state, test_batch)
             
-            test_loss, test_metrics = self.model.apply(
-                {"params": state.params["decoder"]},
-                *test_batch,
-                dropout_eval=False,
-                mode=cfg.training.inference_mode,
+                test_loss, test_metrics = self.model.apply(
+                    {"params": state.params["decoder"]},
+                    *test_batch,
+                    dropout_eval=False,
+                    mode=cfg.training.inference_mode,
                 poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32),
-                encoder_params_list=state.params["encoders"],
-                decoder_params=state.params["decoder"],
-                rngs={"dropout": key, "latents": key},
-                prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
-                pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
-                repulsion_kl_coeff=cfg.training.get("repulsion_kl"),
+                    encoder_params_list=state.params["encoders"],
+                    decoder_params=state.params["decoder"],
+                    rngs={"dropout": key, "latents": key},
+                    prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
+                    pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
+                    repulsion_kl_coeff=cfg.training.get("repulsion_kl"),
                 contrastive_kl_coeff=cfg.training.get("contrastive_kl"),  # ADD CONTRASTIVE LOSS
                 pattern_ids=test_pattern_ids,  # ADD PATTERN IDS FOR CONTRASTIVE LOSS
-                **(cfg.training.get("inference_kwargs") or {}),
-            )
+                    **(cfg.training.get("inference_kwargs") or {}),
+                )
             logging.info(f"Forward pass test successful: loss={float(test_loss):.4f}")
         except Exception as e:
             logging.error(f"Forward pass test failed: {e}")
@@ -1269,34 +1269,34 @@ class StructuredTrainer:
                     grids, shapes = batches
                     explicit_pattern_ids = self._extract_true_pattern_ids_from_data(grids[0], shapes[0])
                     logging.info(f"⚠️  Using EXTRACTED pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
-                
+            
                 # Log pattern distribution for current batch
-                batch_size = grids.shape[1] if hasattr(grids, 'shape') and len(grids.shape) > 1 else len(grids)
+            batch_size = grids.shape[1] if hasattr(grids, 'shape') and len(grids.shape) > 1 else len(grids)
                 samples_per_pattern = batch_size // 3
-                logging.debug(f"Processing balanced batch with {batch_size} samples")
+            logging.debug(f"Processing balanced batch with {batch_size} samples")
                 logging.debug(f"Pattern distribution: {samples_per_pattern} samples per pattern (O, T, L tetrominos)")
                 logging.debug(f"Pattern structure: [O-tetromino x{samples_per_pattern}, T-tetromino x{samples_per_pattern}, L-tetromino x{samples_per_pattern}]")
                 
                 # Pass explicit pattern IDs to training
                 batches_with_patterns = (grids, shapes, explicit_pattern_ids)
                 state, metrics = self.train_n_steps(state, batches_with_patterns, train_key)
-                end = time.time()
-                
-                pbar.update(log_every)
-                step += log_every
+            end = time.time()
+            
+            pbar.update(log_every)
+            step += log_every
                 
                 # Log encoder status after step update
-                if step % 100 == 0:
-                    encoder_status = "TRAINABLE" if self.encoder_expose_steps > 0 else "FROZEN"
+            if step % 100 == 0:
+                encoder_status = "TRAINABLE" if self.encoder_expose_steps > 0 else "FROZEN"
                     logging.info(f"Step {step}/{num_steps}: Encoders {encoder_status} (exposure: {self.encoder_expose_steps} steps remaining)")
-                throughput = log_every * self.batch_size / (end - start)
-                metrics.update({
-                    "timing/train_time": end - start,
-                    "timing/train_num_samples_per_second": throughput
-                })
+            throughput = log_every * self.batch_size / (end - start)
+            metrics.update({
+                "timing/train_time": end - start,
+                "timing/train_num_samples_per_second": throughput
+            })
                 
                 # Add contrastive loss to Charts section for better visualization
-                if "contrastive_loss" in metrics:
+            if "contrastive_loss" in metrics:
                     # STABILIZATION: Monitor contrastive loss magnitude and clip if needed
                     try:
                         contrastive_loss_val = float(np.array(metrics["contrastive_loss"]))
@@ -1305,7 +1305,7 @@ class StructuredTrainer:
                         # Safety check: if contrastive loss is exploding, log warning
                         if abs(contrastive_loss_val) > 100.0:
                             logging.warning(f"Contrastive loss is very large: {contrastive_loss_val:.2f}. Consider reducing contrastive_kl coefficient.")
-                    except Exception as e:
+                                except Exception as e:
                         logging.warning(f"Could not monitor contrastive loss magnitude: {e}")
                     
                     metrics["Charts/contrastive_loss"] = metrics["contrastive_loss"]
@@ -1795,43 +1795,8 @@ class StructuredTrainer:
             logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
             logging.info(f"Generating 3 T-SNE visualizations: main (encoders+context), context-only, encoders-only (pattern 1)")
             
-            # Downsample points for t-SNE to be memory efficient
-            max_points = int(cfg.eval.get("tsne_max_points", 500))
-            if latents_concat.shape[0] > max_points:
-                # Simple random sampling while preserving pattern distribution
-                # Since we have 3 patterns, ensure we keep some from each
-                points_per_pattern = total_points // total_patterns
-                max_points_per_pattern = max_points // total_patterns
-                
-                if max_points_per_pattern > 0:
-                    # Sample from each pattern
-                    point_indices = []
-                    for pattern_idx in range(total_patterns):
-                        # Find all points for this pattern
-                        pattern_mask = pattern_ids_concat == (pattern_idx + 1)
-                        pattern_point_indices = np.where(pattern_mask)[0]
-                        
-                        # Sample from this pattern
-                        if len(pattern_point_indices) > max_points_per_pattern:
-                            sampled_indices = np.random.RandomState(42).choice(
-                                pattern_point_indices, 
-                                size=max_points_per_pattern, 
-                                replace=False
-                            )
-                        else:
-                            sampled_indices = pattern_point_indices
-                        
-                        point_indices.extend(sampled_indices)
-                    
-                    # Apply sampling
-                    latents_concat = latents_concat[point_indices]
-                    source_ids_np = source_ids_np[point_indices]
-                    pattern_ids_concat = pattern_ids_concat[point_indices]
-                    task_ids_np = task_ids_np[point_indices]
-                    
-                    logging.info(f"T-SNE downsampled: {len(point_indices)} points, maintaining pattern distribution")
-                else:
-                    logging.warning(f"T-SNE max_points too small to sample from all patterns")
+            # Do not downsample t-SNE inputs; use all points
+            max_points = latents_concat.shape[0]
             
             # Use visualize_tsne_sources to show different markers for encoders vs context
             fig_tsne = visualize_tsne_sources(
@@ -1850,29 +1815,8 @@ class StructuredTrainer:
                 context_patterns = pattern_ids_concat[context_mask]
                 context_task_ids = task_ids_np[context_mask]
                 
-                # Downsample context points for cleaner visualization
-                max_context_points = min(500, len(context_latents))
-                if len(context_latents) > max_context_points:
-                    # Stratified sampling to maintain pattern distribution
-                    context_indices = []
-                    for pattern_id in [1, 2, 3]:
-                        pattern_mask = context_patterns == pattern_id
-                        pattern_indices = np.where(pattern_mask)[0]
-                        if len(pattern_indices) > 0:
-                            # Sample up to max_context_points // 3 from each pattern
-                            max_per_pattern = max_context_points // 3
-                            if len(pattern_indices) > max_per_pattern:
-                                sampled_indices = np.random.RandomState(42).choice(
-                                    pattern_indices, size=max_per_pattern, replace=False
-                                )
-                            else:
-                                sampled_indices = pattern_indices
-                            context_indices.extend(sampled_indices)
-                    
-                    # Apply sampling
-                    context_latents = context_latents[context_indices]
-                    context_patterns = context_patterns[context_indices]
-                    context_task_ids = context_task_ids[context_indices]
+                # Do not downsample context-only t-SNE
+                max_context_points = len(context_latents)
                 
                 # Create T-SNE for context-only latents
                 # Use source_id = 0 for all points (will show as same marker type)
@@ -1888,7 +1832,7 @@ class StructuredTrainer:
                 )
                 
                 logging.info(f"Generated context-only T-SNE: {len(context_latents)} points")
-            else:
+                    else:
                 fig_tsne_context = None
                 logging.warning("No context points found for context-only T-SNE")
             
@@ -1899,39 +1843,18 @@ class StructuredTrainer:
             for target_pattern in [1, 2, 3]:
                 pattern_mask = (pattern_ids_concat == target_pattern)
                 
-                if np.any(pattern_mask):
-                    # Get encoder points only (exclude context)
-                    encoder_mask = (source_ids_np < len(enc_params_list))
-                    combined_mask = pattern_mask & encoder_mask
-                    
-                    if np.any(combined_mask):
-                        encoder_latents = latents_concat[combined_mask]
-                        encoder_sources = source_ids_np[combined_mask]
-                        encoder_task_ids = task_ids_np[combined_mask]
+                    if np.any(pattern_mask):
+                        # Get encoder points only (exclude context)
+                        encoder_mask = (source_ids_np < len(enc_params_list))
+                        combined_mask = pattern_mask & encoder_mask
                         
-                        # Downsample encoder points for cleaner visualization
-                        max_encoder_points = min(300, len(encoder_latents))
-                        if len(encoder_latents) > max_encoder_points:
-                            # Stratified sampling to maintain encoder distribution
-                            encoder_indices = []
-                            for enc_id in range(len(enc_params_list)):
-                                enc_mask = encoder_sources == enc_id
-                                enc_indices = np.where(enc_mask)[0]
-                                if len(enc_indices) > 0:
-                                    # Sample up to max_encoder_points // num_encoders from each encoder
-                                    max_per_encoder = max_encoder_points // len(enc_params_list)
-                                    if len(enc_indices) > max_per_encoder:
-                                        sampled_indices = np.random.RandomState(42).choice(
-                                            enc_indices, size=max_per_encoder, replace=False
-                                        )
-                                    else:
-                                        sampled_indices = enc_indices
-                                    encoder_indices.extend(sampled_indices)
+                        if np.any(combined_mask):
+                            encoder_latents = latents_concat[combined_mask]
+                            encoder_sources = source_ids_np[combined_mask]
+                            encoder_task_ids = task_ids_np[combined_mask]
                             
-                            # Apply sampling
-                            encoder_latents = encoder_latents[encoder_indices]
-                            encoder_sources = encoder_sources[encoder_indices]
-                            encoder_task_ids = encoder_task_ids[encoder_indices]
+                        # Do not downsample encoder-only t-SNE
+                        max_encoder_points = len(encoder_latents)
                         
                         # Create T-SNE for encoder-only latents (specific pattern)
                         # Use pattern_id = target_pattern for all points (will show as same color)
@@ -1999,7 +1922,7 @@ class StructuredTrainer:
                 
                 # Log clustering metrics to WandB
                 wandb.log(clustering_metrics, step=step if 'step' in locals() else None)
-                logging.info(f"Clustering metrics computed: {clustering_metrics}")
+                    logging.info(f"Clustering metrics computed: {clustering_metrics}")
                 
             except Exception as e:
                 logging.warning(f"Clustering metrics computation failed: {e}")
@@ -2073,7 +1996,7 @@ class StructuredTrainer:
                 avg_enc_mus = [np.mean(em, axis=0) for em in enc_mus]  # [latent_dim] per encoder
                 avg_enc_logvars = [np.mean(lv, axis=0) for lv in enc_logvars]  # [latent_dim] per encoder
                 
-                alphas_np = np.asarray(alphas)
+                    alphas_np = np.asarray(alphas)
                 precisions = [np.exp(-lv) for lv in avg_enc_logvars]  # [latent_dim] per encoder
                 poe_precision = np.zeros_like(precisions[0])
                 for a, p in zip(alphas_np, precisions):
@@ -2118,7 +2041,7 @@ class StructuredTrainer:
             plt.close(fig_tsne_context)
         if fig_tsne_encoders is not None:
             plt.close(fig_tsne_encoders)
-
+        
         # Release large intermediates
         del all_latents, latents_concat, source_ids_np, pattern_ids_concat
         return metrics
@@ -2160,14 +2083,8 @@ class StructuredTrainer:
             logging.warning("sklearn or matplotlib not available for T-SNE visualization")
             return None
         
-        # Downsample if needed
-        if len(latents) > max_points:
-            indices = np.random.RandomState(random_state).choice(
-                len(latents), size=max_points, replace=False
-            )
-            latents = latents[indices]
-            source_ids = source_ids[indices]
-            task_ids = task_ids[indices]
+        # Do not downsample in pattern-specific t-SNE
+        max_points = len(latents)
         
         # Perform T-SNE - EXACTLY like visualize_tsne_sources
         tsne = TSNE(n_components=2, perplexity=2, max_iter=1000, random_state=random_state)
@@ -2457,7 +2374,7 @@ class StructuredTrainer:
 
                 task_id_sequence = np.arange(dataset_grids.shape[0], dtype=int)
                 task_ids_list = []
-
+                
                 # Add encoder outputs (unique source_id per encoder)
                 for enc_idx, enc_params in enumerate(current_enc_params_list):
                     try:
