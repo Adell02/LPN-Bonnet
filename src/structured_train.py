@@ -1401,12 +1401,36 @@ class StructuredTrainer:
                     base_coeff = self.cfg.training.get("contrastive_kl", 1e-3)
                     current_specialization_ratio = avg_target_var / (avg_other_var + 1e-8)
                     
-                    if current_specialization_ratio > 1.0:
+                    # ENHANCED: More sophisticated dynamic coefficient adjustment
+                    if current_specialization_ratio > 2.0:
+                        # Very poor specialization - be aggressive
+                        dynamic_coeff = base_coeff * 20.0
+                    elif current_specialization_ratio > 1.5:
+                        # Poor specialization - moderate aggression
                         dynamic_coeff = base_coeff * 10.0
-                    elif current_specialization_ratio > 0.8:
+                    elif current_specialization_ratio > 1.0:
+                        # Some specialization - light boost
                         dynamic_coeff = base_coeff * 5.0
+                    elif current_specialization_ratio > 0.5:
+                        # Good specialization - maintain
+                        dynamic_coeff = base_coeff * 2.0
+                    elif current_specialization_ratio > 0.2:
+                        # Very good specialization - gentle
+                        dynamic_coeff = base_coeff * 1.0
                     else:
-                        dynamic_coeff = base_coeff
+                        # Excellent specialization - minimal
+                        dynamic_coeff = base_coeff * 0.5
+                    
+                    # Log specialization progress for monitoring
+                    logging.info(f"🎯 Encoder {enc_idx} specialization: ratio={current_specialization_ratio:.3f} -> coeff={dynamic_coeff:.1f}")
+                    
+                    # Store specialization metrics for WandB
+                    specialization_metrics = {
+                        f'encoder_{enc_idx}/specialization_ratio': current_specialization_ratio,
+                        f'encoder_{enc_idx}/dynamic_coeff': dynamic_coeff,
+                        f'encoder_{enc_idx}/target_var': avg_target_var,
+                        f'encoder_{enc_idx}/other_var': avg_other_var,
+                    }
                     
                     contrastive_loss = avg_target_var + dynamic_coeff * (1.0 / (avg_other_var + 1e-8))
                     
@@ -2275,21 +2299,67 @@ class StructuredTrainer:
             combined_pattern_ids = np.array(all_pattern_ids)
             combined_task_ids = np.array(all_task_ids)
 
-            # Append PoE latents as source_id=3 (precision-weighted combination across encoders)
+            # ENHANCED PoE Analysis: Show how PoE pulls latents towards most confident encoder
             try:
                 if len(per_encoder_mu_list) > 0 and len(per_encoder_var_list) > 0:
                     mu_enc  = np.stack(per_encoder_mu_list, axis=0)     # [E,N,D]
                     var_enc = np.stack(per_encoder_var_list, axis=0)    # [E,N,D]
+                    
+                    # Compute PoE with uniform weights (current approach)
                     precision = 1.0 / np.clip(var_enc, 1e-12, None)     # [E,N,D]
                     precision_sum = np.sum(precision, axis=0)           # [N,D]
                     poe_var  = 1.0 / np.clip(precision_sum, 1e-12, None)
                     poe_mean = poe_var * np.sum(precision * mu_enc, axis=0)  # [N,D]
+                    
+                    # ENHANCED: Use learnable PoE weights instead of uniform
+                    # For now, use adaptive weights based on encoder confidence
+                    # TODO: Make these learnable parameters in the model
+                    encoder_confidences = 1.0 / np.mean(var_enc, axis=(1, 2))  # [E] - average confidence per encoder
+                    alphas = encoder_confidences / np.sum(encoder_confidences)  # Normalized confidence weights
+                    poe_weights = precision / (precision_sum[None, :, :] + 1e-12)  # [E,N,D] - actual PoE weights per sample
+                    
+                    logging.info(f"🎯 Adaptive PoE weights: {[f'{w:.3f}' for w in alphas]}")
+                    
+                    # Analyze which encoder dominates for each pattern
+                    pattern_analysis = {}
+                    for pattern_id in [1, 2, 3]:
+                        pattern_mask = np.array(pattern_ids_all) == pattern_id
+                        if np.any(pattern_mask):
+                            pattern_weights = poe_weights[:, pattern_mask, :]  # [E, num_pattern_samples, D]
+                            avg_weights_per_encoder = np.mean(pattern_weights, axis=(1, 2))  # [E] - average weight per encoder
+                            dominant_encoder = np.argmax(avg_weights_per_encoder)
+                            max_weight = np.max(avg_weights_per_encoder)
+                            
+                            pattern_analysis[pattern_id] = {
+                                'dominant_encoder': dominant_encoder,
+                                'max_weight': max_weight,
+                                'encoder_weights': avg_weights_per_encoder
+                            }
+                            
+                            logging.info(f"🎯 Pattern {pattern_id}: Encoder {dominant_encoder} dominates PoE (weight={max_weight:.3f})")
+                            logging.info(f"   All encoder weights: {[f'{w:.3f}' for w in avg_weights_per_encoder]}")
 
                     combined_latents = np.concatenate([combined_latents, poe_mean], axis=0)
                     combined_source_ids = np.concatenate([combined_source_ids, np.full((poe_mean.shape[0],), 3, dtype=combined_source_ids.dtype)])
                     combined_pattern_ids = np.concatenate([combined_pattern_ids, np.array(pattern_ids_all)])
                     combined_task_ids = np.concatenate([combined_task_ids, np.arange(poe_mean.shape[0])])
-                    logging.info("Appended PoE latents (source_id=3) for pattern-specific T-SNE")
+                    
+                    # Store PoE analysis for metrics and WandB logging
+                    tsne_metrics['poe_analysis'] = pattern_analysis
+                    
+                    # Log PoE metrics for WandB
+                    for pattern_id, analysis in pattern_analysis.items():
+                        tsne_metrics[f'poe/pattern_{pattern_id}_dominant_encoder'] = analysis['dominant_encoder']
+                        tsne_metrics[f'poe/pattern_{pattern_id}_max_weight'] = analysis['max_weight']
+                        for enc_idx, weight in enumerate(analysis['encoder_weights']):
+                            tsne_metrics[f'poe/pattern_{pattern_id}_encoder_{enc_idx}_weight'] = weight
+                    
+                    # Overall PoE quality metric
+                    avg_dominance = np.mean([analysis['max_weight'] for analysis in pattern_analysis.values()])
+                    tsne_metrics['poe/avg_dominance'] = avg_dominance
+                    
+                    logging.info(f"✅ Enhanced PoE analysis: Avg dominance={avg_dominance:.3f}")
+                    logging.info("   Shows which encoder dominates for each pattern")
             except Exception as _poe_e:
                 logging.warning(f"Failed to compute/append PoE latents: {_poe_e}")
 

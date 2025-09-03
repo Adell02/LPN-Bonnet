@@ -300,14 +300,14 @@ def run_evaluation_with_budget(
         return False, {}
 
 
-def create_heatmaps(
+def create_trajectory_plots(
     checkpoint_results: List[Dict[str, Any]],
     max_budget: int,
     output_dir: str
 ) -> List[str]:
-    """Create individual and differential heatmaps from checkpoint results."""
+    """Create trajectory plots showing loss evolution over budget for each checkpoint."""
     
-    heatmap_files = []
+    plot_files = []
     
     for i, checkpoint_data in enumerate(checkpoint_results):
         checkpoint_name = checkpoint_data["checkpoint_name"]
@@ -330,74 +330,90 @@ def create_heatmaps(
             es_budget = es_results[max_budget].get("budget", np.arange(len(es_losses)) * 4)
             print(f"ES losses shape: {es_losses.shape}, budget shape: {es_budget.shape}")
         
-        # Create individual heatmaps
+        # Create trajectory plot
+        fig, ax = plt.subplots(figsize=(12, 8))
+        
+        # Plot GA trajectory
         if ga_losses is not None and len(ga_losses) > 0:
-            # GA individual heatmap - show trajectory over actual budget steps
-            # For individual heatmap, we show the trajectory as a single row
-            ga_loss_matrix = ga_losses.reshape(1, -1)
-            
-            fig = visualize_loss_difference_heatmap(
-                ga_budget, ga_budget, ga_loss_matrix,
-                method_A_name="GA", method_B_name="GA"
-            )
-            ga_file = os.path.join(output_dir, f"ga_individual_{checkpoint_name}.png")
-            fig.savefig(ga_file, dpi=150, bbox_inches='tight')
-            plt.close(fig)
-            heatmap_files.append(ga_file)
+            ax.plot(ga_budget, ga_losses, 'o-', color='#FBB998', linewidth=2, markersize=6, 
+                   label=f'GA (steps: {len(ga_losses)})', alpha=0.8)
+        
+        # Plot ES trajectory
+        if es_losses is not None and len(es_losses) > 0:
+            ax.plot(es_budget, es_losses, 's-', color='#DB74DB', linewidth=2, markersize=6, 
+                   label=f'ES (generations: {len(es_losses)})', alpha=0.8)
+        
+        # Customize plot
+        ax.set_xlabel('Search Budget (Evaluations)', fontsize=12)
+        ax.set_ylabel('Loss', fontsize=12)
+        ax.set_title(f'Optimization Trajectories - Checkpoint {checkpoint_name}', fontsize=14, fontweight='bold')
+        ax.legend(fontsize=11)
+        ax.grid(True, alpha=0.3)
+        
+        # Add final loss values as text
+        if ga_losses is not None and len(ga_losses) > 0:
+            final_ga_loss = ga_losses[-1]
+            ax.text(0.02, 0.98, f'GA Final Loss: {final_ga_loss:.4f}', 
+                   transform=ax.transAxes, fontsize=10, verticalalignment='top',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='#FBB998', alpha=0.7))
         
         if es_losses is not None and len(es_losses) > 0:
-            # ES individual heatmap - show trajectory over actual budget steps
-            # For individual heatmap, we show the trajectory as a single row
-            es_loss_matrix = es_losses.reshape(1, -1)
-            
-            fig = visualize_loss_difference_heatmap(
-                es_budget, es_budget, es_loss_matrix,
-                method_A_name="ES", method_B_name="ES"
-            )
-            es_file = os.path.join(output_dir, f"es_individual_{checkpoint_name}.png")
-            fig.savefig(es_file, dpi=150, bbox_inches='tight')
-            plt.close(fig)
-            heatmap_files.append(es_file)
+            final_es_loss = es_losses[-1]
+            ax.text(0.02, 0.88, f'ES Final Loss: {final_es_loss:.4f}', 
+                   transform=ax.transAxes, fontsize=10, verticalalignment='top',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='#DB74DB', alpha=0.7))
         
-        # Create differential heatmap (ES - GA)
+        # Save plot
+        plot_file = os.path.join(output_dir, f"trajectory_{checkpoint_name}.png")
+        fig.savefig(plot_file, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        plot_files.append(plot_file)
+        
+        # Create differential plot (ES - GA)
         if ga_losses is not None and es_losses is not None:
             # Align the loss trajectories to the same length
             min_len = min(len(ga_losses), len(es_losses))
-            max_len = max(len(ga_losses), len(es_losses))
             
-            # Truncate or pad to same length
-            if len(ga_losses) > min_len:
-                ga_losses_aligned = ga_losses[:min_len]
-                ga_budget_aligned = ga_budget[:min_len]
-            else:
-                ga_losses_aligned = np.pad(ga_losses, (0, min_len - len(ga_losses)), mode='edge')
-                ga_budget_aligned = np.pad(ga_budget, (0, min_len - len(ga_budget)), mode='edge')
-                
-            if len(es_losses) > min_len:
-                es_losses_aligned = es_losses[:min_len]
-                es_budget_aligned = es_budget[:min_len]
-            else:
-                es_losses_aligned = np.pad(es_losses, (0, min_len - len(es_losses)), mode='edge')
-                es_budget_aligned = np.pad(es_budget, (0, min_len - len(es_budget)), mode='edge')
+            # Truncate to same length
+            ga_losses_aligned = ga_losses[:min_len]
+            es_losses_aligned = es_losses[:min_len]
+            ga_budget_aligned = ga_budget[:min_len]
+            es_budget_aligned = es_budget[:min_len]
             
             # Calculate difference (ES - GA)
             loss_diff = es_losses_aligned - ga_losses_aligned
             
-            # Use the average budget trajectory for the differential heatmap
+            # Use the average budget trajectory
             avg_budget = (ga_budget_aligned + es_budget_aligned) / 2
-            # Show as single row heatmap
-            loss_diff_matrix = loss_diff.reshape(1, -1)
             
-            fig = visualize_loss_difference_heatmap(
-                avg_budget, avg_budget, loss_diff_matrix,
-                method_A_name="GA", method_B_name="ES"
-            )
+            # Create differential plot
+            fig, ax = plt.subplots(figsize=(12, 8))
+            ax.plot(avg_budget, loss_diff, 'o-', color='#5361E5', linewidth=2, markersize=6, 
+                   label='ES - GA', alpha=0.8)
+            ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, label='Equal Performance')
+            
+            # Customize plot
+            ax.set_xlabel('Search Budget (Evaluations)', fontsize=12)
+            ax.set_ylabel('Loss Difference (ES - GA)', fontsize=12)
+            ax.set_title(f'Performance Difference - Checkpoint {checkpoint_name}', fontsize=14, fontweight='bold')
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
+            
+            # Add interpretation text
+            ax.text(0.02, 0.98, 'Positive: ES better (lower loss)', 
+                   transform=ax.transAxes, fontsize=10, verticalalignment='top',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.7))
+            ax.text(0.02, 0.88, 'Negative: GA better (lower loss)', 
+                   transform=ax.transAxes, fontsize=10, verticalalignment='top',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='lightcoral', alpha=0.7))
+            
+            # Save differential plot
             diff_file = os.path.join(output_dir, f"differential_{checkpoint_name}.png")
             fig.savefig(diff_file, dpi=150, bbox_inches='tight')
             plt.close(fig)
-            heatmap_files.append(diff_file)
+            plot_files.append(diff_file)
     
-    return heatmap_files
+    return plot_files
 
 
 def main():
@@ -515,30 +531,30 @@ def main():
                     "es_results": es_results
                 })
                 
-                # Create heatmaps for this checkpoint
-                print(f"Creating heatmaps for checkpoint {checkpoint_name}...")
-                heatmap_files = create_heatmaps(
+                # Create trajectory plots for this checkpoint
+                print(f"Creating trajectory plots for checkpoint {checkpoint_name}...")
+                plot_files = create_trajectory_plots(
                     [checkpoint_results[-1]], max_budget, args.output_dir
                 )
                 
                 # Upload to W&B
-                for heatmap_file in heatmap_files:
+                for plot_file in plot_files:
                     wandb.log({
-                        f"heatmap_{checkpoint_name}": wandb.Image(heatmap_file)
+                        f"trajectory_{checkpoint_name}": wandb.Image(plot_file)
                     })
                 
-                print(f"Uploaded {len(heatmap_files)} heatmaps to W&B")
+                print(f"Uploaded {len(plot_files)} trajectory plots to W&B")
             else:
                 print(f"Skipping checkpoint {checkpoint_name} due to both methods failing")
     
-    # Create final summary heatmaps
+    # Create final summary trajectory plots
     if checkpoint_results:
-        print("Creating summary heatmaps...")
-        summary_heatmaps = create_heatmaps(checkpoint_results, max_budget, args.output_dir)
+        print("Creating summary trajectory plots...")
+        summary_plots = create_trajectory_plots(checkpoint_results, max_budget, args.output_dir)
         
-        for heatmap_file in summary_heatmaps:
+        for plot_file in summary_plots:
             wandb.log({
-                "summary_heatmap": wandb.Image(heatmap_file)
+                "summary_trajectory": wandb.Image(plot_file)
             })
     
     print(f"Completed evaluation of {len(checkpoint_results)} checkpoints")
