@@ -1321,10 +1321,8 @@ class StructuredTrainer:
                 if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
                     try:
                         logging.info(f"Saving checkpoint at step {step}")
-                        # Get state from first device for checkpointing
-                        from jax.tree_util import tree_map
-                        single_device_state = tree_map(lambda x: x[0], state)
-                        self.save_checkpoint("state.msgpack", single_device_state)
+                        # Pass state directly since we're not using multi-device training
+                        self.save_checkpoint("state.msgpack", state)
                     except Exception as e:
                         logging.warning(f"Checkpoint save failed: {e}")
 
@@ -1417,9 +1415,8 @@ class StructuredTrainer:
         # Save final checkpoint
         try:
             logging.info(f"Saving final checkpoint at step {step}")
-            from jax.tree_util import tree_map
-            single_device_state = tree_map(lambda x: x[0], state)
-            self.save_checkpoint("state.msgpack", single_device_state)
+            # Pass state directly since we're not using multi-device training
+            self.save_checkpoint("state.msgpack", state)
         except Exception as e:
             logging.warning(f"Final checkpoint save failed: {e}")
         
@@ -1818,8 +1815,8 @@ class StructuredTrainer:
             pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
             task_ids_np = np.concatenate(task_ids_list, axis=0)
             
-            # T-SNE generation (disabled by default to focus on accuracy metrics)
-            if generate_tsne:
+            # T-SNE generation (enabled by default to show visualizations)
+            if True:  # Always generate T-SNE for main evaluation
                 # Log T-SNE structure: each pattern should have multiple sets with 4 points each (3 encoders + 1 context)
                 total_points = latents_concat.shape[0]
                 total_patterns = 3  # O, T, L tetrominos
@@ -1830,7 +1827,7 @@ class StructuredTrainer:
             else:
                 logging.info("T-SNE generation disabled - focusing on accuracy metrics and reconstructions")
             
-            if generate_tsne:
+            if True:  # Always generate T-SNE for main evaluation
                 # Generate multiple T-SNEs with different perplexities (no downsampling) via custom helper
                 perplexities = [2, 5, 10, 20, 30, 40]
                 for perplexity in perplexities:
@@ -2645,7 +2642,7 @@ class StructuredTrainer:
                     pattern_ids_concat = np.concatenate(pattern_ids_list, axis=0)
                     task_ids_np = np.concatenate(task_ids_list, axis=0)
                     
-                    if generate_tsne:
+                    if True:  # Always generate T-SNE for test datasets
                         # Log T-SNE structure for test datasets
                         total_points = latents_concat.shape[0]
                         unique_patterns = np.unique(pattern_ids_concat)
@@ -2658,7 +2655,7 @@ class StructuredTrainer:
                     else:
                         logging.info("Test T-SNE generation disabled - focusing on accuracy metrics and reconstructions")
                     
-                    if generate_tsne:
+                    if True:  # Always generate T-SNE for test datasets
                         # Use visualize_tsne_sources for different markers
                         fig_latents = visualize_tsne_sources(
                         latents=latents_concat,
@@ -2810,13 +2807,7 @@ class StructuredTrainer:
         run_name = self.make_safe_run_name(wandb.run.name)
         artifact = wandb.Artifact(f"{run_name}--checkpoint", type="model", metadata=dict(wandb.run.config))
         artifact.add_file(ckpt_path)
-        # Handle both JAX array and integer step values
-        logging.info(f"Checkpoint save - state.step type: {type(state.step)}, value: {state.step}")
-        if hasattr(state.step, 'item'):
-            num_steps = state.step.item()
-        else:
-            num_steps = int(state.step)
-        logging.info(f"Checkpoint save - num_steps: {num_steps}")
+        num_steps = state.step.item()
         wandb.run.log_artifact(artifact, name="checkpoint", aliases=["latest", f"num_steps_{num_steps}"])
 
     @classmethod
