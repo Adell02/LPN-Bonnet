@@ -352,6 +352,7 @@ def log_evaluation_start(method: str, budget_info: Dict[str, Any], method_kwargs
         print(f"   • Population Size: {method_kwargs.get('population_size', 'N/A')}")
         print(f"   • Num Generations: {method_kwargs.get('num_generations', 'N/A')}")
         print(f"   • Mutation Std: {method_kwargs.get('mutation_std', 'N/A')}")
+        print(f"   • Mutation Decay: {method_kwargs.get('mutation_decay', 'N/A')}")
         print(f"   • Include Mean Latent: {method_kwargs.get('include_mean_latent', 'N/A')}")
         print(f"   • Include All Latents: {method_kwargs.get('include_all_latents', 'N/A')}")
         if method_kwargs.get('random_perturbation'):
@@ -931,6 +932,8 @@ def main():
                    help="Override learning rate (step size) for gradient_ascent")
     parser.add_argument("--es_mutation_std", type=float, default=None,
                    help="Override mutation standard deviation for evolutionary_search")
+    parser.add_argument("--es_mutation_decay", type=float, default=None,
+                   help="Override mutation decay rate for evolutionary_search")
     
     # Subspace evolutionary search parameters
     parser.add_argument("--es_use_subspace_mutation", action="store_true",
@@ -1183,6 +1186,12 @@ def main():
         try:
             base_methods["evolutionary_search"]["mutation_std"] = float(args.es_mutation_std)
             print(f"⚙️  Overriding evolutionary_search mutation_std -> {base_methods['evolutionary_search']['mutation_std']}")
+        except Exception:
+            pass
+    if args.es_mutation_decay is not None:
+        try:
+            base_methods["evolutionary_search"]["mutation_decay"] = float(args.es_mutation_decay)
+            print(f"⚙️  Overriding evolutionary_search mutation_decay -> {base_methods['evolutionary_search']['mutation_decay']}")
         except Exception:
             pass
     
@@ -2139,7 +2148,7 @@ def main():
         elif method == "random_search":
             print(f"   • {method}: scale={base_methods[method].get('scale')}, scan_batch_size={base_methods[method].get('scan_batch_size')}")
         elif method == "evolutionary_search":
-            print(f"   • {method}: mutation_std={base_methods[method].get('mutation_std')}")
+            print(f"   • {method}: mutation_std={base_methods[method].get('mutation_std')}, mutation_decay={base_methods[method].get('mutation_decay')}")
             if args.es_use_subspace_mutation:
                 print(f"     - Subspace mutation: enabled (dim={args.es_subspace_dim}, ga_step={args.es_ga_step_length})")
                 if args.es_trust_region_radius is not None:
