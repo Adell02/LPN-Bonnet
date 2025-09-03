@@ -1083,7 +1083,6 @@ class Trainer:
     def _generate_optimization_comparison(self) -> Optional[plt.Figure]:
         """Simplified: Generate comparison plot between optimization methods"""
         if not hasattr(self, '_optimization_data') or len(self._optimization_data) == 0:
-            print("DEBUG: No optimization data available for comparison")
             return None
         
         # Simple approach: take the first method that has both optimization types
@@ -1175,7 +1174,7 @@ class Trainer:
             if num_logs_per_epoch == 0:
                 raise ValueError(
                     "The number of logs per epoch is 0 because the dataset size is "
-                    f"{self.train_dataset_grids.shape[0]} < {self.batch_size=} * {log_every_n_steps=}."
+                    f"{self.train_dataset_grids.shape[0]} < {self.batch_size} * {log_every_n_steps}."
                 )
             num_steps_per_epoch = num_logs_per_epoch * log_every_n_steps
             num_epochs = math.ceil(total_num_steps / num_steps_per_epoch)
