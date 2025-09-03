@@ -352,10 +352,10 @@ def create_heatmaps(
         if i < len(all_ga_losses) and len(all_ga_losses[i]) > 0:
             ga_losses = all_ga_losses[i]
             ga_budget = all_ga_budgets[i]
-            
-            # Create 2D matrix: [checkpoint_idx, budget_steps]
-            # For individual checkpoint, we have 1 checkpoint and multiple budget steps
-            ga_loss_matrix = ga_losses.reshape(1, -1)  # [1, num_budget_steps]
+
+            # Create 2D matrix with budgets on the first axis
+            # For a single checkpoint the matrix shape should be [budget_steps, 1]
+            ga_loss_matrix = ga_losses.reshape(-1, 1)  # [num_budget_steps, 1]
             checkpoint_indices = np.array([i])  # [1] - single checkpoint
             
             fig = visualize_loss_difference_heatmap(
@@ -371,9 +371,9 @@ def create_heatmaps(
         if i < len(all_es_losses) and len(all_es_losses[i]) > 0:
             es_losses = all_es_losses[i]
             es_budget = all_es_budgets[i]
-            
-            # Create 2D matrix: [checkpoint_idx, budget_steps]
-            es_loss_matrix = es_losses.reshape(1, -1)  # [1, num_budget_steps]
+
+            # Create 2D matrix with budgets on the first axis
+            es_loss_matrix = es_losses.reshape(-1, 1)  # [num_budget_steps, 1]
             checkpoint_indices = np.array([i])  # [1] - single checkpoint
             
             fig = visualize_loss_difference_heatmap(
@@ -410,8 +410,8 @@ def create_heatmaps(
             # Use the average budget trajectory
             avg_budget = (ga_budget_aligned + es_budget_aligned) / 2
             
-            # Create 2D matrix: [checkpoint_idx, budget_steps]
-            loss_diff_matrix = loss_diff.reshape(1, -1)  # [1, num_budget_steps]
+            # Create 2D matrix with budgets on the first axis
+            loss_diff_matrix = loss_diff.reshape(-1, 1)  # [num_budget_steps, 1]
             checkpoint_indices = np.array([i])  # [1] - single checkpoint
             
             fig = visualize_loss_difference_heatmap(
@@ -425,19 +425,19 @@ def create_heatmaps(
     
     # Create summary heatmap across all checkpoints if we have multiple checkpoints
     if len(all_checkpoints) > 1:
-        # Aggregate all GA losses into a 2D matrix: [checkpoints, budget_steps]
+        # Aggregate all GA losses into a 2D matrix: [budget_steps, checkpoints]
         if all_ga_losses:
             # Find the maximum budget steps across all checkpoints
             max_ga_steps = max(len(ga_losses) for ga_losses in all_ga_losses)
-            ga_summary_matrix = np.full((len(all_checkpoints), max_ga_steps), np.nan)
-            
+            ga_summary_matrix = np.full((max_ga_steps, len(all_checkpoints)), np.nan)
+
             for i, ga_losses in enumerate(all_ga_losses):
-                ga_summary_matrix[i, :len(ga_losses)] = ga_losses
-            
+                ga_summary_matrix[:len(ga_losses), i] = ga_losses
+
             # Use the budget from the first checkpoint (assuming they're similar)
             ga_budget_summary = all_ga_budgets[0] if all_ga_budgets else np.arange(max_ga_steps)
             checkpoint_indices = np.arange(len(all_checkpoints))
-            
+
             fig = visualize_loss_difference_heatmap(
                 checkpoint_indices, ga_budget_summary, ga_summary_matrix,
                 method_A_name="GA", method_B_name="GA"
@@ -446,20 +446,20 @@ def create_heatmaps(
             fig.savefig(ga_summary_file, dpi=150, bbox_inches='tight')
             plt.close(fig)
             heatmap_files.append(ga_summary_file)
-        
-        # Aggregate all ES losses into a 2D matrix: [checkpoints, budget_steps]
+
+        # Aggregate all ES losses into a 2D matrix: [budget_steps, checkpoints]
         if all_es_losses:
             # Find the maximum budget steps across all checkpoints
             max_es_steps = max(len(es_losses) for es_losses in all_es_losses)
-            es_summary_matrix = np.full((len(all_checkpoints), max_es_steps), np.nan)
-            
+            es_summary_matrix = np.full((max_es_steps, len(all_checkpoints)), np.nan)
+
             for i, es_losses in enumerate(all_es_losses):
-                es_summary_matrix[i, :len(es_losses)] = es_losses
-            
+                es_summary_matrix[:len(es_losses), i] = es_losses
+
             # Use the budget from the first checkpoint (assuming they're similar)
             es_budget_summary = all_es_budgets[0] if all_es_budgets else np.arange(max_es_steps)
             checkpoint_indices = np.arange(len(all_checkpoints))
-            
+
             fig = visualize_loss_difference_heatmap(
                 checkpoint_indices, es_budget_summary, es_summary_matrix,
                 method_A_name="ES", method_B_name="ES"
@@ -587,18 +587,18 @@ def main():
                     "es_results": es_results
                 })
                 
-                # Create heatmaps for this checkpoint
+                # Create heatmaps using all collected checkpoints so far
                 print(f"Creating heatmaps for checkpoint {checkpoint_name}...")
                 heatmap_files = create_heatmaps(
-                    [checkpoint_results[-1]], max_budget, args.output_dir
+                    checkpoint_results, max_budget, args.output_dir
                 )
-                
-                # Upload to W&B
+
+                # Upload to W&B using unique keys based on filename
                 for heatmap_file in heatmap_files:
                     wandb.log({
-                        f"heatmap_{checkpoint_name}": wandb.Image(heatmap_file)
+                        Path(heatmap_file).stem: wandb.Image(heatmap_file)
                     })
-                
+
                 print(f"Uploaded {len(heatmap_files)} heatmaps to W&B")
             else:
                 print(f"Skipping checkpoint {checkpoint_name} due to both methods failing")
