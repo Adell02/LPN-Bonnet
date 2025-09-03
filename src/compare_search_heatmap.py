@@ -268,17 +268,22 @@ def run_evaluation_with_budget(
                     metrics["accuracies"] = scores  # Assuming scores are already accuracies
                 
                 # Extract steps/budget information
-                if f"{method}_steps" in data:
-                    metrics["steps"] = np.array(data[f"{method}_steps"])
+                if f"{method}_budget" in data:
+                    metrics["budget"] = np.array(data[f"{method}_budget"])
+                    print(f"Extracted {method} budget trajectory: {metrics['budget'].shape}")
+                elif f"{method}_steps" in data:
+                    metrics["budget"] = np.array(data[f"{method}_steps"])
+                    print(f"Extracted {method} steps as budget: {metrics['budget'].shape}")
                 else:
                     # Create budget steps based on method
                     if method == "gradient_ascent":
                         # GA: each step = 2 evaluations, so budget steps are [0, 2, 4, 6, ...]
-                        metrics["steps"] = np.arange(0, len(metrics.get("losses", [])), 1) * 2
+                        metrics["budget"] = np.arange(0, len(metrics.get("losses", [])), 1) * 2
                     else:
                         # ES: cumulative evaluations at each generation
                         pop = int(np.sqrt(budget))
-                        metrics["steps"] = np.arange(len(metrics.get("losses", []))) * pop
+                        metrics["budget"] = np.arange(len(metrics.get("losses", []))) * pop
+                    print(f"Created {method} budget trajectory: {metrics['budget'].shape}")
                 
             except Exception as e:
                 print(f"Warning: Could not load trajectory data: {e}")
@@ -309,27 +314,30 @@ def create_heatmaps(
         ga_results = checkpoint_data["ga_results"]
         es_results = checkpoint_data["es_results"]
         
-        # Extract losses for both methods (single budget approach)
+        # Extract losses and budget trajectories for both methods
         ga_losses = None
         es_losses = None
+        ga_budget = None
+        es_budget = None
         
         if max_budget in ga_results and "losses" in ga_results[max_budget]:
             ga_losses = ga_results[max_budget]["losses"]
-            print(f"GA losses shape: {ga_losses.shape}")
+            ga_budget = ga_results[max_budget].get("budget", np.arange(len(ga_losses)) * 2)
+            print(f"GA losses shape: {ga_losses.shape}, budget shape: {ga_budget.shape}")
                 
         if max_budget in es_results and "losses" in es_results[max_budget]:
             es_losses = es_results[max_budget]["losses"]
-            print(f"ES losses shape: {es_losses.shape}")
+            es_budget = es_results[max_budget].get("budget", np.arange(len(es_losses)) * 4)
+            print(f"ES losses shape: {es_losses.shape}, budget shape: {es_budget.shape}")
         
         # Create individual heatmaps
         if ga_losses is not None and len(ga_losses) > 0:
-            # GA individual heatmap - show trajectory over steps
-            steps = np.arange(len(ga_losses))
+            # GA individual heatmap - show trajectory over actual budget steps
             # For individual heatmap, we show the trajectory as a single row
             ga_loss_matrix = ga_losses.reshape(1, -1)
             
             fig = visualize_loss_difference_heatmap(
-                steps, [max_budget], ga_loss_matrix,
+                ga_budget, ga_budget, ga_loss_matrix,
                 method_A_name="GA", method_B_name="GA"
             )
             ga_file = os.path.join(output_dir, f"ga_individual_{checkpoint_name}.png")
@@ -338,13 +346,12 @@ def create_heatmaps(
             heatmap_files.append(ga_file)
         
         if es_losses is not None and len(es_losses) > 0:
-            # ES individual heatmap - show trajectory over steps
-            steps = np.arange(len(es_losses))
+            # ES individual heatmap - show trajectory over actual budget steps
             # For individual heatmap, we show the trajectory as a single row
             es_loss_matrix = es_losses.reshape(1, -1)
             
             fig = visualize_loss_difference_heatmap(
-                steps, [max_budget], es_loss_matrix,
+                es_budget, es_budget, es_loss_matrix,
                 method_A_name="ES", method_B_name="ES"
             )
             es_file = os.path.join(output_dir, f"es_individual_{checkpoint_name}.png")
@@ -361,23 +368,28 @@ def create_heatmaps(
             # Truncate or pad to same length
             if len(ga_losses) > min_len:
                 ga_losses_aligned = ga_losses[:min_len]
+                ga_budget_aligned = ga_budget[:min_len]
             else:
                 ga_losses_aligned = np.pad(ga_losses, (0, min_len - len(ga_losses)), mode='edge')
+                ga_budget_aligned = np.pad(ga_budget, (0, min_len - len(ga_budget)), mode='edge')
                 
             if len(es_losses) > min_len:
                 es_losses_aligned = es_losses[:min_len]
+                es_budget_aligned = es_budget[:min_len]
             else:
                 es_losses_aligned = np.pad(es_losses, (0, min_len - len(es_losses)), mode='edge')
+                es_budget_aligned = np.pad(es_budget, (0, min_len - len(es_budget)), mode='edge')
             
             # Calculate difference (ES - GA)
             loss_diff = es_losses_aligned - ga_losses_aligned
             
-            steps = np.arange(min_len)
+            # Use the average budget trajectory for the differential heatmap
+            avg_budget = (ga_budget_aligned + es_budget_aligned) / 2
             # Show as single row heatmap
             loss_diff_matrix = loss_diff.reshape(1, -1)
             
             fig = visualize_loss_difference_heatmap(
-                steps, [max_budget], loss_diff_matrix,
+                avg_budget, avg_budget, loss_diff_matrix,
                 method_A_name="GA", method_B_name="ES"
             )
             diff_file = os.path.join(output_dir, f"differential_{checkpoint_name}.png")
