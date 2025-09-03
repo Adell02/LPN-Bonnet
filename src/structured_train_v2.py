@@ -24,17 +24,17 @@ from models.structured_lpn import StructuredLPN, poe_diag_gaussians
 from datasets.task_gen.dataloader import make_task_gen_dataloader
 from visualization import visualize_tsne, visualize_tsne_sources
 
+
 logging.getLogger().setLevel(logging.INFO)
 
 
 def _instantiate_modules(cfg: omegaconf.DictConfig) -> tuple[List[EncoderTransformer], DecoderTransformer]:
+    """Instantiate encoder and decoder modules from config."""
     # Prefer structured.model_config if provided to match artifact shapes
     mc = getattr(cfg.structured, "model_config", None)
     if mc is not None:
         if not getattr(mc, "variational", False):
-            raise ValueError(
-                "Encoders must be variational; set structured.model_config.variational=true."
-            )
+            raise ValueError("Encoders must be variational; set structured.model_config.variational=true.")
         enc_cfg = omegaconf.OmegaConf.create({
             "_target_": "models.utils.EncoderTransformerConfig",
             "max_rows": mc.max_rows,
@@ -71,9 +71,7 @@ def _instantiate_modules(cfg: omegaconf.DictConfig) -> tuple[List[EncoderTransfo
     else:
         # Fallback to explicit encoder/decoder configs
         if not getattr(cfg.encoder_transformer, "variational", False):
-            raise ValueError(
-                "Encoders must be variational; set encoder_transformer.variational=true."
-            )
+            raise ValueError("Encoders must be variational; set encoder_transformer.variational=true.")
         enc_cfg: EncoderTransformerConfig = hydra.utils.instantiate(cfg.encoder_transformer)
         dec_cfg: DecoderTransformerConfig = hydra.utils.instantiate(cfg.decoder_transformer)
     
@@ -82,39 +80,58 @@ def _instantiate_modules(cfg: omegaconf.DictConfig) -> tuple[List[EncoderTransfo
     return encoders, decoder
 
 
-def _load_artifact_params(ref: str) -> dict:
-    art = wandb.use_artifact(ref)
-    path = art.download()
+def load_artifact_params(artifact_ref: str, key: str = "params") -> dict:
+    """Load parameters from W&B artifact (same as structured_train.py)."""
+    art = wandb.use_artifact(artifact_ref)
+    art_dir = art.download()
     import os
     from flax.serialization import msgpack_restore
-
-    with open(os.path.join(path, "state.msgpack"), "rb") as f:
+    state_path = os.path.join(art_dir, "state.msgpack")
+    with open(state_path, "rb") as f:
         data = f.read()
-    state = msgpack_restore(data)
-    return state["params"] if "params" in state else state
+    restored = msgpack_restore(data)
+    if isinstance(restored, dict) and "params" in restored:
+        return restored["params"]
+    return restored
 
 
-def _build_params(cfg: omegaconf.DictConfig) -> tuple[list[dict], dict]:
-    enc_params, dec_params = [], []
-    for ref in cfg.structured.artifacts.models:
-        params = _load_artifact_params(ref)
-        enc_params.append(params["encoder"])
-        dec_params.append(params["decoder"])
-    avg_dec = jax.tree_util.tree_map(lambda *xs: sum(xs) / len(xs), *dec_params)
-    return enc_params, avg_dec
+def build_params_from_artifacts(cfg: omegaconf.DictConfig) -> tuple[list[dict], dict]:
+    """Build encoder and decoder parameters from W&B artifacts (same as structured_train.py)."""
+    enc_params_list = []
+    dec_params_list = []
+    model_artifacts = list(cfg.structured.artifacts.models or [])
+    
+    for art in model_artifacts:
+        full_params = load_artifact_params(art)
+        # Expect top-level keys 'encoder' and 'decoder'
+        enc_params = full_params["encoder"] if "encoder" in full_params else full_params
+        dec_params = full_params["decoder"] if "decoder" in full_params else full_params
+        enc_params_list.append(enc_params)
+        dec_params_list.append(dec_params)
+
+    if len(dec_params_list) == 0:
+        raise ValueError("No structured.artifacts.models provided.")
+    if len(dec_params_list) == 1:
+        avg_decoder_params = dec_params_list[0]
+    else:
+        # Average decoder parameters across models
+        avg_decoder_params = jax.tree_util.tree_map(lambda *xs: sum(xs) / len(xs), *dec_params_list)
+    
+    return enc_params_list, avg_decoder_params
 
 
 def _kl_to_prior(mu: jnp.ndarray, logvar: jnp.ndarray) -> jnp.ndarray:
+    """Compute KL divergence to standard normal prior."""
     return 0.5 * jnp.mean(jnp.exp(logvar) + mu ** 2 - 1.0 - logvar)
 
 
 def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, key):
+    """Single training step with off-domain KL regularization."""
     off_coeff = cfg.training.get("off_domain_kl", 1.0)
 
     def loss_fn(dec_params, key):
         scoped = {"params": {"decoder": dec_params}}
         # Call the model directly - it handles encoder application and PoE internally
-        # Note: We don't pass pattern_ids for single-pattern batches to avoid enhanced uncertainty shaping warnings
         loss, metrics = model.apply(
             scoped,
             batch["pairs"],
@@ -126,11 +143,9 @@ def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, 
             decoder_params=dec_params,
             rngs={"latents": key},
             prior_kl_coeff=cfg.training.prior_kl_coeff,
-            # pattern_ids=batch["pattern_id"],  # Commented out to avoid enhanced uncertainty shaping warnings
         )
         
         # Add off-domain KL regularization manually
-        # We need to compute this separately since the model doesn't handle it
         enc_out = [
             enc.apply({"params": p}, batch["pairs"], batch["shapes"], dropout_eval=True)
             for enc, p in zip(model.encoders, enc_params)
@@ -154,9 +169,9 @@ def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, 
 
 
 def eval_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg):
+    """Single evaluation step."""
     def eval_fn():
         scoped = {"params": {"decoder": state.params["decoder"]}}
-        # Call the model directly - it handles encoder application and PoE internally
         loss, metrics = model.apply(
             scoped,
             batch["pairs"],
@@ -166,7 +181,7 @@ def eval_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg):
             poe_alphas=jnp.array(cfg.structured.alphas),
             encoder_params_list=enc_params,
             decoder_params=state.params["decoder"],
-            rngs={"latents": jax.random.PRNGKey(0)},  # Use dummy key for eval
+            rngs={"latents": jax.random.PRNGKey(0)},
             prior_kl_coeff=cfg.training.prior_kl_coeff,
         )
         return loss, metrics
@@ -175,13 +190,7 @@ def eval_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg):
 
 
 def generate_contexts_for_tsne(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, key):
-    """Generate contexts from individual encoders and PoE for T-SNE visualization.
-    
-    Returns:
-        individual_contexts: List of contexts from each encoder
-        poe_context: Context from PoE combination
-        pattern_ids: Pattern IDs for coloring
-    """
+    """Generate contexts from individual encoders and PoE for T-SNE visualization."""
     def generate_fn():
         # Get individual encoder outputs
         individual_contexts = []
@@ -201,7 +210,6 @@ def generate_contexts_for_tsne(state: TrainState, batch, enc_params, model: Stru
             individual_contexts.append(context_i)
         
         # Get PoE context
-        # Apply all encoders
         enc_outputs = []
         for enc, enc_param in zip(model.encoders, enc_params):
             mu_i, logvar_i = enc.apply(
@@ -218,7 +226,7 @@ def generate_contexts_for_tsne(state: TrainState, batch, enc_params, model: Stru
         mu_poe, logvar_poe = poe_diag_gaussians(mus, logvars, alphas)
         
         # Sample PoE latents
-        key_poe = jax.random.fold_in(key, 999)  # Use different key for PoE
+        key_poe = jax.random.fold_in(key, 999)
         latents_poe = mu_poe + jnp.exp(0.5 * logvar_poe) * jax.random.normal(key_poe, mu_poe.shape)
         poe_context = latents_poe.mean(axis=-2)  # (batch, latent_dim)
         
@@ -229,21 +237,25 @@ def generate_contexts_for_tsne(state: TrainState, batch, enc_params, model: Stru
 
 @hydra.main(config_path="configs", config_name="structured", version_base=None)
 def main(cfg: omegaconf.DictConfig):
-    wandb.init(entity=cfg.wandb.entity, project=cfg.wandb.project,
-               config=omegaconf.OmegaConf.to_container(cfg))
+    # Initialize wandb
+    wandb.init(
+        entity=cfg.wandb.entity,
+        project=cfg.wandb.project,
+        config=omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
+    )
+    
+    # Build model and load parameters (same as structured_train.py)
     encoders, decoder = _instantiate_modules(cfg)
-    enc_params, dec_params = _build_params(cfg)
+    enc_params, dec_params = build_params_from_artifacts(cfg)
     model = StructuredLPN(tuple(encoders), decoder)
     
-    # Initialize model with dummy data (critical for proper initialization)
+    # Initialize model with dummy data
     key = jax.random.PRNGKey(cfg.training.seed)
     init_key, train_key = jax.random.split(key)
     
-    # Create dummy data for initialization (like train.py and structured_train.py)
-    dummy_pairs = jnp.zeros((1, 1, 5, 5, 2), dtype=jnp.int32)  # (batch, pairs, rows, cols, channels)
-    dummy_shapes = jnp.array([[[5, 5], [5, 5]]], dtype=jnp.int32)  # (batch, 2, 2)
+    dummy_pairs = jnp.zeros((1, 1, 5, 5, 2), dtype=jnp.int32)
+    dummy_shapes = jnp.array([[[5, 5], [5, 5]]], dtype=jnp.int32)
     
-    # Initialize the model
     variables = model.init(
         init_key,
         dummy_pairs,
@@ -255,9 +267,11 @@ def main(cfg: omegaconf.DictConfig):
         decoder_params=dec_params,
     )
     
+    # Create optimizer and training state
     tx = optax.adam(cfg.training.learning_rate)
     state = TrainState.create(apply_fn=model.apply, params={"decoder": dec_params}, tx=tx)
 
+    # Create data loaders for each pattern
     loaders = []
     for pattern in [1, 2, 3]:
         loader = make_task_gen_dataloader(
@@ -274,6 +288,7 @@ def main(cfg: omegaconf.DictConfig):
         )
         loaders.append(iter(loader))
 
+    # Training loop
     for step in range(cfg.training.total_num_steps):
         pat = step % 3
         pairs, shapes = next(loaders[pat])
@@ -284,8 +299,10 @@ def main(cfg: omegaconf.DictConfig):
         }
         train_key, subkey = jax.random.split(train_key)
         state, metrics = train_step(state, batch, enc_params, model, cfg, subkey)
+        
         if (step + 1) % cfg.training.log_every_n_steps == 0:
             wandb.log(metrics, step=step + 1)
+            
         if cfg.training.eval_every_n_logs and (step + 1) % (
             cfg.training.log_every_n_steps * cfg.training.eval_every_n_logs
         ) == 0:
@@ -306,17 +323,16 @@ def main(cfg: omegaconf.DictConfig):
         import matplotlib.pyplot as plt
         
         # Collect contexts from all patterns
-        all_individual_contexts = [[] for _ in range(len(enc_params))]  # One list per encoder
+        all_individual_contexts = [[] for _ in range(len(enc_params))]
         all_poe_contexts = []
         all_pattern_ids = []
         all_task_ids = []
         
         # Generate evaluation data from all patterns
-        eval_key = jax.random.PRNGKey(42)  # Fixed key for reproducible T-SNE
+        eval_key = jax.random.PRNGKey(42)
         for pattern in [1, 2, 3]:
-            # Create a small evaluation batch for this pattern
             eval_loader = make_task_gen_dataloader(
-                batch_size=min(32, cfg.training.batch_size),  # Smaller batch for T-SNE
+                batch_size=min(32, cfg.training.batch_size),
                 log_every_n_steps=cfg.training.log_every_n_steps,
                 num_workers=cfg.training.num_workers,
                 task_generator_class="STRUCT_PATTERN",
@@ -328,9 +344,8 @@ def main(cfg: omegaconf.DictConfig):
                 num_cols=5,
             )
             
-            # Generate a few batches for this pattern
             for batch_idx, (pairs, shapes) in enumerate(eval_loader):
-                if batch_idx >= 3:  # Limit to 3 batches per pattern for T-SNE
+                if batch_idx >= 3:
                     break
                     
                 batch = {
@@ -339,21 +354,17 @@ def main(cfg: omegaconf.DictConfig):
                     "pattern_id": jnp.full((pairs.shape[0],), pattern, dtype=jnp.int32),
                 }
                 
-                # Generate contexts
                 eval_key, subkey = jax.random.split(eval_key)
                 individual_contexts, poe_context, pattern_ids = generate_contexts_for_tsne(
                     state, batch, enc_params, model, cfg, subkey
                 )
                 
-                # Store individual encoder contexts
                 for enc_idx, context in enumerate(individual_contexts):
                     all_individual_contexts[enc_idx].append(context)
                 
-                # Store PoE context
                 all_poe_contexts.append(poe_context)
                 all_pattern_ids.append(pattern_ids)
                 
-                # Create task IDs for grouping (pattern + batch + sample)
                 task_ids = jnp.full((pairs.shape[0],), pattern * 1000 + batch_idx * 100 + jnp.arange(pairs.shape[0]), dtype=jnp.int32)
                 all_task_ids.append(task_ids)
         
@@ -366,7 +377,7 @@ def main(cfg: omegaconf.DictConfig):
         
         # Create T-SNE plots
         try:
-            # 1. Individual encoder contexts (separate plot for each encoder)
+            # Individual encoder contexts
             for enc_idx, contexts in enumerate(all_individual_contexts):
                 if contexts.shape[0] > 0:
                     fig_individual = visualize_tsne(contexts, all_pattern_ids)
@@ -374,40 +385,35 @@ def main(cfg: omegaconf.DictConfig):
                         wandb.log({f"tsne/encoder_{enc_idx+1}_contexts": wandb.Image(fig_individual)}, step=cfg.training.total_num_steps)
                         plt.close(fig_individual)
             
-            # 2. PoE contexts
+            # PoE contexts
             if all_poe_contexts.shape[0] > 0:
                 fig_poe = visualize_tsne(all_poe_contexts, all_pattern_ids)
                 if fig_poe is not None:
                     wandb.log({f"tsne/poe_contexts": wandb.Image(fig_poe)}, step=cfg.training.total_num_steps)
                     plt.close(fig_poe)
             
-            # 3. Combined plot: Individual encoders + PoE (using visualize_tsne_sources)
-            # Prepare data for combined visualization
+            # Combined plot
             combined_contexts = []
             combined_pattern_ids = []
             combined_source_ids = []
             combined_task_ids = []
             
-            # Add individual encoder contexts
             for enc_idx, contexts in enumerate(all_individual_contexts):
                 combined_contexts.append(contexts)
                 combined_pattern_ids.append(all_pattern_ids)
                 combined_source_ids.append(jnp.full((contexts.shape[0],), enc_idx, dtype=jnp.int32))
                 combined_task_ids.append(all_task_ids)
             
-            # Add PoE contexts
             combined_contexts.append(all_poe_contexts)
             combined_pattern_ids.append(all_pattern_ids)
-            combined_source_ids.append(jnp.full((all_poe_contexts.shape[0],), len(enc_params), dtype=jnp.int32))  # PoE = last source
+            combined_source_ids.append(jnp.full((all_poe_contexts.shape[0],), len(enc_params), dtype=jnp.int32))
             combined_task_ids.append(all_task_ids)
             
-            # Concatenate everything
             combined_contexts = jnp.concatenate(combined_contexts, axis=0)
             combined_pattern_ids = jnp.concatenate(combined_pattern_ids, axis=0)
             combined_source_ids = jnp.concatenate(combined_source_ids, axis=0)
             combined_task_ids = jnp.concatenate(combined_task_ids, axis=0)
             
-            # Create combined T-SNE plot
             if combined_contexts.shape[0] > 0:
                 fig_combined = visualize_tsne_sources(
                     combined_contexts, 
