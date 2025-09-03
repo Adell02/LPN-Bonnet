@@ -1161,7 +1161,7 @@ class StructuredTrainer:
                         try:
                             start = time.time()
                             test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_context, fig_tsne_encoders_list = self.test_dataset_submission(
-                                state, dataset_dict, generate_tsne=False
+                                state, dataset_dict, generate_tsne=True
                             )
                             test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                             
@@ -1186,7 +1186,7 @@ class StructuredTrainer:
                                 else:
                                     logging.warning(f"No T-SNE plot available for pattern {pattern_idx}")
                             
-                            wandb.log(test_metrics)
+                            wandb.log(test_metrics, step=step)
                             plt.close('all')  # Close all figures to prevent memory leaks
                             # Explicitly close additional T-SNE figures
                             if fig_tsne_context is not None:
@@ -1333,10 +1333,28 @@ class StructuredTrainer:
                 if self.encoder_expose_steps > 0:
                     eval_interval = 5  # More frequent during encoder training
                 else:
-                    eval_interval = cfg.training.get("eval_every_n_logs", 20)  # Less frequent but still active during frozen phase
+                    eval_interval = cfg.training.get("eval_every_n_logs", 10)  # Less frequent but still active during frozen phase
+                
+                # CRITICAL FIX: Ensure eval_interval is not None/0
+                if eval_interval is None or eval_interval == 0:
+                    eval_interval = 10  # Default fallback
+                
+                # Debug evaluation logic
+                if step % (log_every * 10) == 0:  # Log every 10 evaluation cycles
+                    logging.info(f"🔍 EVALUATION CHECK at step {step}")
+                    logging.info(f"   - Encoder exposure steps remaining: {self.encoder_expose_steps}")
+                    logging.info(f"   - Evaluation interval: {eval_interval}")
+                    logging.info(f"   - Step // log_every: {step // log_every}")
+                    logging.info(f"   - (step // log_every) % eval_interval: {(step // log_every) % eval_interval}")
+                    logging.info(f"   - Will evaluate: {eval_interval and (step // log_every) % eval_interval == 0}")
+                
                 if eval_interval and (step // log_every) % eval_interval == 0:
                     try:
-                        logging.info(f"Running evaluation at step {step}")
+                        logging.info(f"🔍 EVALUATION TRIGGERED at step {step}")
+                        logging.info(f"   - Encoder exposure steps remaining: {self.encoder_expose_steps}")
+                        logging.info(f"   - Evaluation interval: {eval_interval}")
+                        logging.info(f"   - Step // log_every: {step // log_every}")
+                        logging.info(f"   - (step // log_every) % eval_interval: {(step // log_every) % eval_interval}")
                         self.evaluate(state, enc_params_list)
                         
                         # Test datasets evaluation (like train.py)
@@ -1345,7 +1363,7 @@ class StructuredTrainer:
                                 try:
                                     start = time.time()
                                     test_metrics, fig_grids, fig_heatmap, fig_latents, fig_latents_samples, fig_search_progress, fig_tsne_context, fig_tsne_encoders_list = self.test_dataset_submission(
-                                        state, dataset_dict, generate_tsne=False
+                                        state, dataset_dict, generate_tsne=True
                                     )
                                     test_metrics[f"timing/test_{dataset_dict['test_name']}"] = time.time() - start
                                     
@@ -2022,7 +2040,7 @@ class StructuredTrainer:
         if fig_tsne_encoders is not None:
             wandb_log_data[f"test/{test_name}/latents_encoders_pattern1"] = wandb.Image(fig_tsne_encoders)
         
-        wandb.log(wandb_log_data)
+        wandb.log(wandb_log_data, step=step if 'step' in locals() else None)
 
         # NEW: Confidence panel per pattern (one task per pattern)
         try:
@@ -2100,7 +2118,7 @@ class StructuredTrainer:
                     encoder_labels=enc_labels,
                     combined_label="PoE",
                 )
-                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)})
+                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)}, step=step if 'step' in locals() else None)
                 plt.close(fig_panel)
                 
                 logging.info(f"Generated confidence panel for pattern {pid} with {len(enc_mus[0])} pairs")
@@ -2346,7 +2364,7 @@ class StructuredTrainer:
         num_tasks_to_show: int = 5,
         inference_mode: str = "mean",
         inference_kwargs: dict = None,
-        generate_tsne: bool = False,  # Disable T-SNE by default to focus on accuracy metrics
+        generate_tsne: bool = True,  # Enable T-SNE by default to show visualizations
     ) -> tuple[dict[str, float], Optional[plt.Figure], plt.Figure, Optional[plt.Figure], Optional[plt.Figure], Optional[plt.Figure], list[Optional[plt.Figure]]]:
         """
         Test dataset submission method for structured training (similar to train.py).
