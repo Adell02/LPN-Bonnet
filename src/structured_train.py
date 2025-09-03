@@ -1107,7 +1107,6 @@ class StructuredTrainer:
             
             # CRITICAL: Validate encoder variance outputs before training
             self._validate_encoder_variance_outputs(state, test_batch)
-            
                 test_loss, test_metrics = self.model.apply(
                     {"params": state.params["decoder"]},
                     *test_batch,
@@ -1700,6 +1699,12 @@ class StructuredTrainer:
             f"T-SNE pattern mapping: {samples_per_pattern} samples per pattern, total patterns: {np.unique(pattern_sequence)}"
         )
         logging.info(f"Pattern ID distribution: {np.bincount(pattern_sequence)[1:]} (should be [32, 32, 32])")
+        # HARD CHECK: labels must align one-to-one with evaluated tasks
+        if int(pattern_sequence.shape[0]) != int(pairs.shape[0]):
+            raise ValueError(
+                f"Evaluation label alignment error: pattern_sequence length {pattern_sequence.shape[0]} "
+                f"!= number of tasks {pairs.shape[0]}"
+            )
 
         # Task IDs: each of the num_sets tasks contributes one point per source
         task_id_sequence = np.arange(num_sets, dtype=int)
@@ -1748,38 +1753,60 @@ class StructuredTrainer:
                 continue
         
         # Add the generation context (source_id = num_encoders)
-        if "context" in info:
-            generation_context = info["context"]
-            logging.info(f"Main eval - Found context in info, shape: {generation_context.shape}")
-            if generation_context is not None:
-                # Reshape like train.py does
-                context_np = np.array(generation_context).reshape(-1, generation_context.shape[-1])
-                
-                # Log the context latent dimension
-                context_latent_dim = context_np.shape[-1]
-                logging.info(f"Main eval - Context latent dim: {context_latent_dim}")
-                
-                if context_latent_dim != 32:
-                    logging.warning(f"Main eval - Context has unexpected latent dim: {context_latent_dim}, expected 32")
-                    
-                    # Ensure consistent latent dimension for T-SNE
-                    if context_latent_dim < 32:
-                        # Pad with zeros
-                        padding = np.zeros((context_np.shape[0], 32 - context_latent_dim))
+        # OVERRIDE: Compute context via PoE-then-average across pairs (ignoring info["context"])
+        try:
+            # Collect full per-encoder per-pair mus/logvars for all tasks
+            encoder_full_mus = []   # list of [L, P, D]
+            encoder_full_logvars = []
+            for enc_idx, enc_params in enumerate(current_enc_params_list):
+                mu_i, logvar_i = self.encoders[enc_idx].apply(
+                    {"params": enc_params},
+                    pairs,
+                    shapes,
+                    True,
+                    mutable=False,
+                )
+                encoder_full_mus.append(np.array(mu_i))
+                encoder_full_logvars.append(np.array(logvar_i))
+            L = int(encoder_full_mus[0].shape[0]) if encoder_full_mus else 0
+            P = int(encoder_full_mus[0].shape[-2]) if encoder_full_mus else 0  # pairs axis
+            alphas_np = np.asarray(alphas)
+            context_list = []
+            for t in range(L):
+                pairwise_mu = []
+                pairwise_var = []
+                for j in range(P):
+                    mus_j = [m[t, j] for m in encoder_full_mus]              # [E, D]
+                    logvars_j = [lv[t, j] for lv in encoder_full_logvars]    # [E, D]
+                    precisions_j = [np.exp(-lvj) for lvj in logvars_j]
+                    poe_prec_j = np.zeros_like(precisions_j[0])
+                    for a, p in zip(alphas_np, precisions_j):
+                        poe_prec_j = poe_prec_j + a * p
+                    poe_var_j = 1.0 / (poe_prec_j + 1e-8)
+                    num_j = np.zeros_like(mus_j[0])
+                    for a, p, m in zip(alphas_np, precisions_j, mus_j):
+                        num_j = num_j + a * p * m
+                    poe_mu_j = num_j / (poe_prec_j + 1e-8)
+                    pairwise_mu.append(poe_mu_j)
+                    pairwise_var.append(poe_var_j)
+                ctx_mu = np.mean(np.stack(pairwise_mu, axis=0), axis=0)
+                # Keep means for plotting contexts
+                context_list.append(ctx_mu)
+            context_np = np.stack(context_list, axis=0)  # [L, D]
+            # Pad/truncate to 32 dims for consistency if needed
+            if context_np.shape[-1] != 32:
+                if context_np.shape[-1] < 32:
+                    padding = np.zeros((context_np.shape[0], 32 - context_np.shape[-1]))
                         context_np = np.concatenate([context_np, padding], axis=1)
                     else:
-                        # Truncate
                         context_np = context_np[:, :32]
-                    
-                    logging.info(f"Main eval - Context final latent shape: {context_np.shape}")
-                
                 all_latents.append(context_np)
-                source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for generation context
-                pattern_ids_list.append(pattern_sequence)  # Same pattern sequence for context
-                task_ids_list.append(task_id_sequence)  # Task IDs for context points
-                logging.info(f"Main eval - Added context to T-SNE: {len(context_np)} points")
-        else:
-            logging.warning(f"Main eval - No 'context' key found in info. Available keys: {list(info.keys())}")
+            source_ids.extend([len(enc_params_list)] * context_np.shape[0])
+            pattern_ids_list.append(pattern_sequence)
+            task_ids_list.append(task_id_sequence)
+            logging.info(f"Main eval - Added PoE-then-average context: {len(context_np)} points")
+        except Exception as e:
+            logging.warning(f"Main eval - Failed to compute PoE-then-average context: {e}")
         
         if all_latents:
             latents_concat = np.concatenate(all_latents, axis=0)
@@ -2366,10 +2393,8 @@ class StructuredTrainer:
         fig_latents = None
         fig_search_progress = None
         
-        if "context" in info and program_ids is not None:
-            context = info["context"]
-            if context is not None:
-                # Show both encoder outputs and generation context
+        if program_ids is not None:
+            # OVERRIDE: Recompute context via PoE-then-average for test submission
                 all_latents = []
                 source_ids = []
                 pattern_ids_list = []
@@ -2424,31 +2449,58 @@ class StructuredTrainer:
                         logging.error(f"Test eval - Encoder {enc_idx} failed: {e}")
                         continue
                 
-                # Add generation context (source_id = num_encoders)
-                context_np = np.array(context).reshape(-1, context.shape[-1])
-                
-                # Log the context latent dimension
-                context_latent_dim = context_np.shape[-1]
-                logging.info(f"Test eval - Context latent dim: {context_latent_dim}")
-                
-                if context_latent_dim != 32:
-                    logging.warning(f"Test eval - Context has unexpected latent dim: {context_latent_dim}, expected 32")
-                    
-                    # Ensure consistent latent dimension for T-SNE
-                    if context_latent_dim < 32:
-                        # Pad with zeros
-                        padding = np.zeros((context_np.shape[0], 32 - context_latent_dim))
+                # Recompute context via PoE per pair then average across pairs
+                try:
+                    # Gather per-encoder mus/logvars for all tasks
+                    encoder_full_mus = []  # [E, L, P, D]
+                    encoder_full_logvars = []
+                    for enc_idx, enc_params in enumerate(current_enc_params_list):
+                        mu_i, logvar_i = self.encoders[enc_idx].apply(
+                            {"params": enc_params},
+                            dataset_grids,
+                            dataset_shapes,
+                            True,
+                            mutable=False,
+                        )
+                        encoder_full_mus.append(np.array(mu_i))
+                        encoder_full_logvars.append(np.array(logvar_i))
+                    L = int(encoder_full_mus[0].shape[0]) if encoder_full_mus else 0
+                    P = int(encoder_full_mus[0].shape[-2]) if encoder_full_mus else 0
+                    alphas_np = np.asarray(alphas)
+                    context_list = []
+                    for t in range(L):
+                        pairwise_mu = []
+                        pairwise_var = []
+                        for j in range(P):
+                            mus_j = [m[t, j] for m in encoder_full_mus]
+                            logvars_j = [lv[t, j] for lv in encoder_full_logvars]
+                            precisions_j = [np.exp(-lvj) for lvj in logvars_j]
+                            poe_prec_j = np.zeros_like(precisions_j[0])
+                            for a, p in zip(alphas_np, precisions_j):
+                                poe_prec_j = poe_prec_j + a * p
+                            poe_var_j = 1.0 / (poe_prec_j + 1e-8)
+                            num_j = np.zeros_like(mus_j[0])
+                            for a, p, m in zip(alphas_np, precisions_j, mus_j):
+                                num_j = num_j + a * p * m
+                            poe_mu_j = num_j / (poe_prec_j + 1e-8)
+                            pairwise_mu.append(poe_mu_j)
+                            pairwise_var.append(poe_var_j)
+                        ctx_mu = np.mean(np.stack(pairwise_mu, axis=0), axis=0)
+                        context_list.append(ctx_mu)
+                    context_np = np.stack(context_list, axis=0)
+                    # Pad/truncate to 32 dims if needed
+                    if context_np.shape[-1] != 32:
+                        if context_np.shape[-1] < 32:
+                            padding = np.zeros((context_np.shape[0], 32 - context_np.shape[-1]))
                         context_np = np.concatenate([context_np, padding], axis=1)
                     else:
-                        # Truncate
                         context_np = context_np[:, :32]
-                    
-                    logging.info(f"Test eval - Context final latent shape: {context_np.shape}")
-                
                 all_latents.append(context_np)
-                source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for context
+                    source_ids.extend([len(enc_params_list)] * context_np.shape[0])
                 pattern_ids_list.append(pattern_ids_np)
                 task_ids_list.append(task_id_sequence)
+                except Exception as e:
+                    logging.warning(f"Test eval - Failed to compute PoE-then-average context: {e}")
                 
                 if all_latents:
                     latents_concat = np.concatenate(all_latents, axis=0)
