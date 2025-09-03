@@ -4420,44 +4420,6 @@ class StructuredTrainer:
         # Use current encoder weights from state.params, not the original artifact weights
         current_enc_params_list = state.params["encoders"]
         logging.info(f"Evaluation using current encoder weights from training state (step {getattr(state, 'step', 'unknown')})")
-        
-        # CRITICAL FIX: Use fresh data generation instead of cached eval_grids to ensure consistency
-        # with confidence panel evaluation that shows correct specialization
-        if hasattr(self, "eval_grids") and self.phase1_completed:
-            logging.info("🔄 Using fresh data generation for T-SNE evaluation (Phase 1 completed)")
-            # Generate fresh balanced data using the same method as confidence panel
-            from datasets.task_gen.dataloader import make_dataset
-            total_eval_length = 96  # Total evaluation samples
-            samples_per_pattern = total_eval_length // 3  # 32 samples per pattern
-            N = int(self.cfg.training.get("struct_num_pairs", 4))  # Use 4 pairs like training
-            
-            grids_all, shapes_all = [], []
-            for pid in (1, 2, 3):  # Generate from all 3 patterns (O, T, L tetrominos)
-                g, s, _ = make_dataset(
-                    length=samples_per_pattern,  # 32 samples per pattern
-                    num_pairs=N,  # 4 pairs per task
-                    num_workers=0,
-                    task_generator_class="STRUCT_PATTERN",
-                    online_data_augmentation=False,
-                    seed=self.cfg.training.seed + pid + 1000,  # Different seed to avoid cache
-                    pattern=pid,  # pattern 1, 2, 3 for O, T, L tetrominos
-                )
-                grids_all.append(g)
-                shapes_all.append(s)
-            
-            # Use fresh data instead of cached eval_grids
-            self.eval_grids = jnp.concatenate(grids_all, axis=0)
-            self.eval_shapes = jnp.concatenate(shapes_all, axis=0)
-            
-            # Create explicit pattern IDs that match the concatenation order
-            self.eval_pattern_ids = jnp.concatenate([
-                jnp.full((samples_per_pattern,), 1),  # Pattern 1 (first 32 samples)
-                jnp.full((samples_per_pattern,), 2),  # Pattern 2 (next 32 samples)
-                jnp.full((samples_per_pattern,), 3),  # Pattern 3 (last 32 samples)
-            ], axis=0)
-            
-            logging.info(f"🔄 Generated fresh evaluation data: {self.eval_grids.shape[0]} samples")
-        
         if not hasattr(self, "eval_grids"):
             return {}
         cfg = self.cfg
