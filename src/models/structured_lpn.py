@@ -137,6 +137,34 @@ class StructuredLPN(nn.Module):
 
         mus, logvars = self._stack_encoder_outputs(enc_outputs)
         E = mus.shape[0]
+
+        # Artificial variance boost: for each encoder e, if pattern_ids==e+1, divide variance by 10 (logvar -= log(10))
+        if pattern_ids is not None:
+            try:
+                # pattern_ids: (B,) with values in {1,2,3,...}
+                # Build target pattern indices for encoders [1..E]
+                target_patterns = jnp.arange(1, E + 1, dtype=pattern_ids.dtype)  # (E,)
+                # mask shape: (E, B, 1, 1)
+                mask = (pattern_ids[None, :, None, None] == target_patterns[:, None, None, None]).astype(logvars.dtype)
+                logvars = logvars - mask * jnp.log(10.0)
+            except Exception:
+                pass
+
+        # Artificial mean offsets to spread encoders in latent space
+        try:
+            latent_dim = int(mus.shape[-1])
+            scale = 3.0
+            eye = jnp.eye(latent_dim, dtype=mus.dtype)
+            if E <= latent_dim:
+                offsets_eh = scale * eye[:E, :]
+            else:
+                repeats = (E + latent_dim - 1) // latent_dim
+                offsets_eh = scale * jnp.tile(eye, (repeats, 1))[:E, :]
+            # Broadcast to (E, B, N, H)
+            expand_shape = (E, 1, 1, latent_dim)
+            mus = mus + offsets_eh.reshape(expand_shape)
+        except Exception:
+            pass
         # Accept None or empty alphas → use uniform across encoders
         if poe_alphas is None or (hasattr(poe_alphas, "size") and int(poe_alphas.size) == 0):
             poe_alphas = jnp.ones((E,), dtype=mus.dtype) / max(E, 1)
