@@ -1991,21 +1991,29 @@ class StructuredTrainer:
                     std_var = np.std(var_i)
                     logging.info(f"Pattern {pid} - Encoder {enc_idx}: mean_var={mean_var:.6f}, std_var={std_var:.6f}")
 
-                # CRITICAL: Compute PoE across all pairs to show aggregated confidence
-                # Average across pairs for each encoder, then compute PoE
-                avg_enc_mus = [np.mean(em, axis=0) for em in enc_mus]  # [latent_dim] per encoder
-                avg_enc_logvars = [np.mean(lv, axis=0) for lv in enc_logvars]  # [latent_dim] per encoder
-                
+                # CRITICAL: Compute PoE PER PAIR first, THEN average across pairs (requested behavior)
+                # enc_mus: list of [num_pairs, latent_dim] per encoder
+                # enc_logvars: list of [num_pairs, latent_dim] per encoder
                     alphas_np = np.asarray(alphas)
-                precisions = [np.exp(-lv) for lv in avg_enc_logvars]  # [latent_dim] per encoder
-                poe_precision = np.zeros_like(precisions[0])
-                for a, p in zip(alphas_np, precisions):
-                    poe_precision = poe_precision + a * p
-                poe_var = 1.0 / (poe_precision + 1e-8)
-                num = np.zeros_like(avg_enc_mus[0])
-                for a, p, m in zip(alphas_np, precisions, avg_enc_mus):
-                    num = num + a * p * m
-                poe_mu = num / (poe_precision + 1e-8)
+                num_pairs_here = int(enc_mus[0].shape[0]) if enc_mus else 0
+                pairwise_poe_mu = []
+                pairwise_poe_var = []
+                for j in range(num_pairs_here):
+                    mus_j = [em[j] for em in enc_mus]                 # [E, D]
+                    logvars_j = [lv[j] for lv in enc_logvars]         # [E, D]
+                    precisions_j = [np.exp(-lvj) for lvj in logvars_j]  # [E, D]
+                    poe_precision_j = np.zeros_like(precisions_j[0])
+                    for a, p in zip(alphas_np, precisions_j):
+                        poe_precision_j = poe_precision_j + a * p
+                    poe_var_j = 1.0 / (poe_precision_j + 1e-8)
+                    num_j = np.zeros_like(mus_j[0])
+                    for a, p, m in zip(alphas_np, precisions_j, mus_j):
+                        num_j = num_j + a * p * m
+                    poe_mu_j = num_j / (poe_precision_j + 1e-8)
+                    pairwise_poe_mu.append(poe_mu_j)
+                    pairwise_poe_var.append(poe_var_j)
+                poe_mu = np.mean(np.stack(pairwise_poe_mu, axis=0), axis=0)
+                poe_var = np.mean(np.stack(pairwise_poe_var, axis=0), axis=0)
                 poe_logvar = np.log(poe_var + 1e-8)
 
                 panel_title = f"Pattern {pid} - Confidence (All Pairs)"
