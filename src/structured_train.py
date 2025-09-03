@@ -1816,138 +1816,138 @@ class StructuredTrainer:
                 # Generate multiple T-SNEs with different perplexities (no downsampling) via custom helper
                 perplexities = [2, 5, 10, 20, 30, 40]
                 for perplexity in perplexities:
-                fig_tsne = self._create_tsne_sources_with_perplexity(
-                latents=latents_concat,
-                program_ids=pattern_ids_concat,  # Pattern types (1, 2, 3) for colors
-                source_ids=source_ids_np,        # 0,1,2 for encoders, 3 for context
-                task_ids=task_ids_np,
-                    perplexity=perplexity,
-                    title=f"t-SNE (encoders+context), perplexity={perplexity}"
-            )
-                if fig_tsne is not None:
-                    log_kwargs = {"step": step} if "step" in locals() else {}
-                    wandb.log({f"test/{test_name}/latents_tsne_perplexity_{perplexity}": wandb.Image(fig_tsne)}, **log_kwargs)
-                    plt.close(fig_tsne)
-            
-            # 1. ADDITIONAL T-SNE: Show just the context latents (with samples from the 3 patterns)
-            context_mask = (source_ids_np == (len(enc_params_list)))
-            if np.any(context_mask):
-                context_latents = latents_concat[context_mask]
-                context_patterns = pattern_ids_concat[context_mask]
-                context_task_ids = task_ids_np[context_mask]
-                
-                # Downsample context points for cleaner visualization
-                max_context_points = min(500, len(context_latents))
-                if len(context_latents) > max_context_points:
-                    # Stratified sampling to maintain pattern distribution
-                    context_indices = []
-                    for pattern_id in [1, 2, 3]:
-                        pattern_mask = context_patterns == pattern_id
-                        pattern_indices = np.where(pattern_mask)[0]
-                        if len(pattern_indices) > 0:
-                            # Sample up to max_context_points // 3 from each pattern
-                            max_per_pattern = max_context_points // 3
-                            if len(pattern_indices) > max_per_pattern:
-                                sampled_indices = np.random.RandomState(42).choice(
-                                    pattern_indices, size=max_per_pattern, replace=False
-                                )
-                            else:
-                                sampled_indices = pattern_indices
-                            context_indices.extend(sampled_indices)
-                    
-                    # Apply sampling
-                    context_latents = context_latents[context_indices]
-                    context_patterns = context_patterns[context_indices]
-                    context_task_ids = context_task_ids[context_indices]
-                
-                # Create T-SNE for context-only latents
-                # Use source_id = 0 for all points (will show as same marker type)
-                context_source_ids = np.zeros(len(context_latents), dtype=int)
-                
-                perplexities = [2, 5, 10, 20, 30, 40]
-                for perplexity in perplexities:
-                    fig_tsne_context = self._create_tsne_sources_with_perplexity(
-                        latents=context_latents,
-                        program_ids=context_patterns,
-                        source_ids=context_source_ids,
-                        task_ids=context_task_ids,
+                    fig_tsne = self._create_tsne_sources_with_perplexity(
+                        latents=latents_concat,
+                        program_ids=pattern_ids_concat,  # Pattern types (1, 2, 3) for colors
+                        source_ids=source_ids_np,        # 0,1,2 for encoders, 3 for context
+                        task_ids=task_ids_np,
                         perplexity=perplexity,
-                        title=f"t-SNE (context-only), perplexity={perplexity}"
+                        title=f"t-SNE (encoders+context), perplexity={perplexity}"
                     )
-                    if fig_tsne_context is not None:
+                    if fig_tsne is not None:
                         log_kwargs = {"step": step} if "step" in locals() else {}
-                        wandb.log({f"test/{test_name}/latents_context_only_perplexity_{perplexity}": wandb.Image(fig_tsne_context)}, **log_kwargs)
-                        plt.close(fig_tsne_context)
-            else:
-                fig_tsne_context = None
-                logging.warning("No context points found for context-only T-SNE")
+                        wandb.log({f"test/{test_name}/latents_tsne_perplexity_{perplexity}": wandb.Image(fig_tsne)}, **log_kwargs)
+                        plt.close(fig_tsne)
             
-            # 2. ADDITIONAL T-SNE: Show just the 3 encoders latents for EACH pattern
-            # Generate one T-SNE plot for each pattern (1, 2, 3)
-            fig_tsne_encoders_list = []
-            
-            for target_pattern in [1, 2, 3]:
-                pattern_mask = (pattern_ids_concat == target_pattern)
-                if np.any(pattern_mask):
-                    # Get encoder points only (exclude context)
-                    encoder_mask = (source_ids_np < len(enc_params_list))
-                    combined_mask = pattern_mask & encoder_mask
+                # 1. ADDITIONAL T-SNE: Show just the context latents (with samples from the 3 patterns)
+                context_mask = (source_ids_np == (len(enc_params_list)))
+                if np.any(context_mask):
+                    context_latents = latents_concat[context_mask]
+                    context_patterns = pattern_ids_concat[context_mask]
+                    context_task_ids = task_ids_np[context_mask]
                     
-                    if np.any(combined_mask):
-                        encoder_latents = latents_concat[combined_mask]
-                        encoder_sources = source_ids_np[combined_mask]
-                        encoder_task_ids = task_ids_np[combined_mask]
-                        
-                        # Downsample encoder points for cleaner visualization
-                        max_encoder_points = min(300, len(encoder_latents))
-                        if len(encoder_latents) > max_encoder_points:
-                            # Stratified sampling to maintain encoder distribution
-                            encoder_indices = []
-                            for enc_id in range(len(enc_params_list)):
-                                enc_mask = encoder_sources == enc_id
-                                enc_indices = np.where(enc_mask)[0]
-                                if len(enc_indices) > 0:
-                                    # Sample up to max_encoder_points // num_encoders from each encoder
-                                    max_per_encoder = max_encoder_points // len(enc_params_list)
-                                    if len(enc_indices) > max_per_encoder:
-                                        sampled_indices = np.random.RandomState(42).choice(
-                                            enc_indices, size=max_per_encoder, replace=False
-                                        )
-                                    else:
-                                        sampled_indices = enc_indices
-                                    encoder_indices.extend(sampled_indices)
-                            
-                            # Apply sampling
-                            encoder_latents = encoder_latents[encoder_indices]
-                            encoder_sources = encoder_sources[encoder_indices]
-                            encoder_task_ids = encoder_task_ids[encoder_indices]
-                        
-                        # Create T-SNE for encoder-only latents (specific pattern)
-                        # Use pattern_id = target_pattern for all points (will show as same color)
-                        encoder_patterns = np.full(len(encoder_latents), target_pattern, dtype=int)
-                        
-                        # Create custom title for this pattern-specific T-SNE
-                        pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
-                        custom_title = f"t-SNE Visualisation of Latent Embeddings: Pattern {target_pattern}"
-                        
-                        # Create a custom T-SNE visualization for pattern-specific plots with source color coding
-                        fig_tsne_encoders_single = self._create_pattern_specific_tsne(
-                            latents=encoder_latents,
-                            source_ids=encoder_sources,    # 0,1,2 for different encoders
-                            task_ids=encoder_task_ids,
-                            title=custom_title,
-                            max_points=max_encoder_points,
-                            random_state=42
+                    # Downsample context points for cleaner visualization
+                    max_context_points = min(500, len(context_latents))
+                    if len(context_latents) > max_context_points:
+                        # Stratified sampling to maintain pattern distribution
+                        context_indices = []
+                        for pattern_id in [1, 2, 3]:
+                            pattern_mask = context_patterns == pattern_id
+                            pattern_indices = np.where(pattern_mask)[0]
+                            if len(pattern_indices) > 0:
+                                # Sample up to max_context_points // 3 from each pattern
+                                max_per_pattern = max_context_points // 3
+                                if len(pattern_indices) > max_per_pattern:
+                                    sampled_indices = np.random.RandomState(42).choice(
+                                        pattern_indices, size=max_per_pattern, replace=False
+                                    )
+                                else:
+                                    sampled_indices = pattern_indices
+                                context_indices.extend(sampled_indices)
+                    
+                        # Apply sampling
+                        context_latents = context_latents[context_indices]
+                        context_patterns = context_patterns[context_indices]
+                        context_task_ids = context_task_ids[context_indices]
+                
+                    # Create T-SNE for context-only latents
+                    # Use source_id = 0 for all points (will show as same marker type)
+                    context_source_ids = np.zeros(len(context_latents), dtype=int)
+                
+                    perplexities = [2, 5, 10, 20, 30, 40]
+                    for perplexity in perplexities:
+                        fig_tsne_context = self._create_tsne_sources_with_perplexity(
+                            latents=context_latents,
+                            program_ids=context_patterns,
+                            source_ids=context_source_ids,
+                            task_ids=context_task_ids,
+                            perplexity=perplexity,
+                            title=f"t-SNE (context-only), perplexity={perplexity}"
                         )
+                        if fig_tsne_context is not None:
+                            log_kwargs = {"step": step} if "step" in locals() else {}
+                            wandb.log({f"test/{test_name}/latents_context_only_perplexity_{perplexity}": wandb.Image(fig_tsne_context)}, **log_kwargs)
+                            plt.close(fig_tsne_context)
+                else:
+                    fig_tsne_context = None
+                    logging.warning("No context points found for context-only T-SNE")
+            
+                # 2. ADDITIONAL T-SNE: Show just the 3 encoders latents for EACH pattern
+                # Generate one T-SNE plot for each pattern (1, 2, 3)
+                fig_tsne_encoders_list = []
+                
+                for target_pattern in [1, 2, 3]:
+                    pattern_mask = (pattern_ids_concat == target_pattern)
+                    if np.any(pattern_mask):
+                        # Get encoder points only (exclude context)
+                        encoder_mask = (source_ids_np < len(enc_params_list))
+                        combined_mask = pattern_mask & encoder_mask
                         
-                        fig_tsne_encoders_list.append(fig_tsne_encoders_single)
-                        logging.info(f"Generated encoder-only T-SNE (pattern {target_pattern}): {len(encoder_latents)} points")
+                        if np.any(combined_mask):
+                            encoder_latents = latents_concat[combined_mask]
+                            encoder_sources = source_ids_np[combined_mask]
+                            encoder_task_ids = task_ids_np[combined_mask]
+                            
+                            # Downsample encoder points for cleaner visualization
+                            max_encoder_points = min(300, len(encoder_latents))
+                            if len(encoder_latents) > max_encoder_points:
+                                # Stratified sampling to maintain encoder distribution
+                                encoder_indices = []
+                                for enc_id in range(len(enc_params_list)):
+                                    enc_mask = encoder_sources == enc_id
+                                    enc_indices = np.where(enc_mask)[0]
+                                    if len(enc_indices) > 0:
+                                        # Sample up to max_encoder_points // num_encoders from each encoder
+                                        max_per_encoder = max_encoder_points // len(enc_params_list)
+                                        if len(enc_indices) > max_per_encoder:
+                                            sampled_indices = np.random.RandomState(42).choice(
+                                                enc_indices, size=max_per_encoder, replace=False
+                                            )
+                                        else:
+                                            sampled_indices = enc_indices
+                                        encoder_indices.extend(sampled_indices)
+                            
+                                # Apply sampling
+                                encoder_latents = encoder_latents[encoder_indices]
+                                encoder_sources = encoder_sources[encoder_indices]
+                                encoder_task_ids = encoder_task_ids[encoder_indices]
+                            
+                            # Create T-SNE for encoder-only latents (specific pattern)
+                            # Use pattern_id = target_pattern for all points (will show as same color)
+                            encoder_patterns = np.full(len(encoder_latents), target_pattern, dtype=int)
+                            
+                            # Create custom title for this pattern-specific T-SNE
+                            pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
+                            custom_title = f"t-SNE Visualisation of Latent Embeddings: Pattern {target_pattern}"
+                            
+                            # Create a custom T-SNE visualization for pattern-specific plots with source color coding
+                            fig_tsne_encoders_single = self._create_pattern_specific_tsne(
+                                latents=encoder_latents,
+                                source_ids=encoder_sources,    # 0,1,2 for different encoders
+                                task_ids=encoder_task_ids,
+                                title=custom_title,
+                                max_points=max_encoder_points,
+                                random_state=42
+                            )
+                            
+                            fig_tsne_encoders_list.append(fig_tsne_encoders_single)
+                            logging.info(f"Generated encoder-only T-SNE (pattern {target_pattern}): {len(encoder_latents)} points")
+                        else:
+                            fig_tsne_encoders_list.append(None)
+                            logging.warning(f"No encoder points found for pattern {target_pattern}")
                     else:
                         fig_tsne_encoders_list.append(None)
-                        logging.warning(f"No encoder points found for pattern {target_pattern}")
-                else:
-                    fig_tsne_encoders_list.append(None)
-                    logging.warning(f"No points found for pattern {target_pattern}")
+                        logging.warning(f"No points found for pattern {target_pattern}")
             
                 # For backward compatibility, keep the first pattern T-SNE as the main one
                 fig_tsne_encoders = fig_tsne_encoders_list[0] if fig_tsne_encoders_list else None
