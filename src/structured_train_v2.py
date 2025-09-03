@@ -61,11 +61,11 @@ def _kl_to_prior(mu: jnp.ndarray, logvar: jnp.ndarray) -> jnp.ndarray:
     return 0.5 * jnp.mean(jnp.exp(logvar) + mu ** 2 - 1.0 - logvar)
 
 
+@jax.jit
 def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, key):
     pattern = int(batch["pattern_id"][0]) - 1
     off_coeff = cfg.training.get("off_domain_kl", 1.0)
 
-    @jax.jit
     def loss_fn(dec_params, key):
         enc_out = [
             enc.apply({"params": p}, batch["pairs"], batch["shapes"], train=False)
@@ -102,32 +102,29 @@ def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, 
     return state, metrics
 
 
+@jax.jit
 def eval_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg):
-    @jax.jit
-    def eval_fn():
-        enc_out = [
-            enc.apply({"params": p}, batch["pairs"], batch["shapes"], train=False)
-            for enc, p in zip(model.encoders, enc_params)
-        ]
-        mus, logvars = model._stack_encoder_outputs(enc_out)
-        mu_poe, logvar_poe = poe_diag_gaussians(mus, logvars, jnp.array(cfg.structured.alphas))
-        scoped = {"params": {"decoder": state.params["decoder"]}}
-        loss, metrics = model._core.apply(
-            scoped,
-            method=model._core_forward_with_fixed_latents,
-            latents=mu_poe,
-            pairs=batch["pairs"],
-            grid_shapes=batch["shapes"],
-            dropout_eval=True,
-            mode=cfg.training.inference_mode,
-            prior_kl_coeff=cfg.training.prior_kl_coeff,
-        )
-        return loss, metrics
-    
-    return eval_fn()
+    enc_out = [
+        enc.apply({"params": p}, batch["pairs"], batch["shapes"], train=False)
+        for enc, p in zip(model.encoders, enc_params)
+    ]
+    mus, logvars = model._stack_encoder_outputs(enc_out)
+    mu_poe, logvar_poe = poe_diag_gaussians(mus, logvars, jnp.array(cfg.structured.alphas))
+    scoped = {"params": {"decoder": state.params["decoder"]}}
+    loss, metrics = model._core.apply(
+        scoped,
+        method=model._core_forward_with_fixed_latents,
+        latents=mu_poe,
+        pairs=batch["pairs"],
+        grid_shapes=batch["shapes"],
+        dropout_eval=True,
+        mode=cfg.training.inference_mode,
+        prior_kl_coeff=cfg.training.prior_kl_coeff,
+    )
+    return loss, metrics
 
 
-@hydra.main(config_path="configs", config_name="structured", version_base=None)
+@hydra.main(config_path="configs", config_name="structured")
 def main(cfg: omegaconf.DictConfig):
     wandb.init(entity=cfg.wandb.entity, project=cfg.wandb.project,
                config=omegaconf.OmegaConf.to_container(cfg))
