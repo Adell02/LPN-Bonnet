@@ -27,7 +27,7 @@ structured:
       - "ga624-imperial-college-london/LPN-ARC/faithful-armadillo-406--checkpoint:latest"  # Model Pattern 1
       - "ga624-imperial-college-london/LPN-ARC/rich-meadow-339--checkpoint:latest"  # Model Pattern 2
       - "ga624-imperial-college-london/LPN-ARC/fiery-lion-340--checkpoint:latest"   # Model Pattern 3
-  # alphas: [0.3333333, 0.3333333, 0.3333333]     # uniform over 3 models - DISABLED for dynamic alphas
+  alphas: [0.3333333, 0.3333333, 0.3333333]     # uniform over 3 models - DISABLED for dynamic alphas
   # Optional: configuration describing the model architecture of the loaded checkpoints.
   # If provided, StructuredTrainer will instantiate enc/dec with these hyperparameters
   # to ensure parameter shapes match the artifacts.
