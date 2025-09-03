@@ -128,7 +128,7 @@ def run_evaluation_with_budget(
         cmd = [
             sys.executable, "src/evaluate_checkpoint.py",
             "-w", artifact_path,
-            "-d", dataset_folder,
+            "-d", f"src/datasets/{dataset_folder}",
             "--dataset-length", str(dataset_length),
             "--dataset-batch-size", str(dataset_batch_size),
             "--dataset-use-hf", str(dataset_use_hf).lower(),
@@ -147,7 +147,7 @@ def run_evaluation_with_budget(
         cmd = [
             sys.executable, "src/evaluate_checkpoint.py",
             "-w", artifact_path,
-            "-d", dataset_folder,
+            "-d", f"src/datasets/{dataset_folder}",
             "--dataset-length", str(dataset_length),
             "--dataset-batch-size", str(dataset_batch_size),
             "--dataset-use-hf", str(dataset_use_hf).lower(),
@@ -172,7 +172,8 @@ def run_evaluation_with_budget(
         
         if result.returncode != 0:
             print(f"Error running {method} with budget {budget}:")
-            print(result.stderr)
+            print("STDOUT:", result.stdout)
+            print("STDERR:", result.stderr)
             return False, {}
         
         # Parse output to extract final metrics
