@@ -5146,6 +5146,51 @@ class StructuredTrainer:
                     task_ids=poe_task_ids,
                 )
                 logging.info(f"Generated PoE T-SNE with {len(poe_latents)} points")
+
+                # Additional: generate t-SNEs over a range of perplexities for visual comparison
+                try:
+                    from sklearn.manifold import TSNE as _TSNE
+                    import matplotlib.pyplot as _plt
+                    # Perplexity grid (configurable)
+                    perp_list = self.cfg.eval.get("poe_tsne_perplexities", [2, 5, 10, 20, 30])
+                    perp_figs = {}
+                    # Build color map by pattern
+                    _pattern_colors = {1: '#FBB998', 2: '#DB74DB', 3: '#5361E5'}
+                    pid_np = np.asarray(poe_pattern_ids)
+                    X_np = np.asarray(poe_latents, dtype=float)
+                    for perp in perp_list:
+                        if X_np.shape[0] < 2:
+                            continue
+                        # Ensure valid perplexity (< N)
+                        p = int(max(2, min(perp, X_np.shape[0] - 1)))
+                        tsne = _TSNE(n_components=2, perplexity=p, max_iter=1000, random_state=42)
+                        try:
+                            emb = tsne.fit_transform(X_np)
+                        except Exception as _e:
+                            logging.warning(f"t-SNE failed for perplexity={p}: {_e}")
+                            continue
+                        fig, ax = _plt.subplots(figsize=(12, 9))
+                        for pid in [1, 2, 3]:
+                            m = (pid_np == pid)
+                            if np.any(m):
+                                ax.scatter(
+                                    emb[m, 0], emb[m, 1],
+                                    c=[_pattern_colors.get(pid, '#AAAAAA')],
+                                    marker='D', s=60, alpha=0.75, edgecolors='none',
+                                    label=f"Pattern {pid}"
+                                )
+                        ax.set_title(f"PoE t-SNE (perplexity={p})")
+                        ax.set_xlabel("t-SNE 1")
+                        ax.set_ylabel("t-SNE 2")
+                        # Unique legend
+                        handles, labels = ax.get_legend_handles_labels()
+                        by_label = dict(zip(labels, handles))
+                        ax.legend(by_label.values(), by_label.keys(), bbox_to_anchor=(1.05, 1), loc='upper left')
+                        _plt.tight_layout()
+                        wandb.log({f"test/{test_name}/perplexity_plots/poe_p{p}": wandb.Image(fig)})
+                        _plt.close(fig)
+                except Exception as _e:
+                    logging.warning(f"Perplexity t-SNE grid generation failed: {_e}")
             else:
                 logging.warning("PoE T-SNE - No 'poe_latents' found in info")
             
@@ -5194,8 +5239,32 @@ class StructuredTrainer:
                     poe_context_task_ids = poe_context_task_ids[indices]
                     poe_context_source_ids = poe_context_source_ids[indices]
                 
+                # Apply per-pattern additive offsets to improve visual separation in PCA
+                try:
+                    D = poe_context.shape[-1]
+                    global_std = float(np.std(poe_context)) if poe_context.size > 0 else 1.0
+                    cfg_delta = None
+                    try:
+                        cfg_delta = float(self.cfg.eval.get("poe_context_offset_delta", None))
+                    except Exception:
+                        cfg_delta = None
+                    delta = cfg_delta if cfg_delta is not None else max(1e-6, 0.5 * global_std)
+                    offsets = {
+                        1: np.pad(np.array([+delta], dtype=float), (0, max(0, D-1))),
+                        2: np.pad(np.array([0.0, +delta], dtype=float), (0, max(0, D-2))),
+                        3: np.pad(np.array([+delta, +delta], dtype=float), (0, max(0, D-2))),
+                    }
+                    poe_context_shifted = np.array(poe_context, dtype=float, copy=True)
+                    for pid, off in offsets.items():
+                        m = (poe_context_pattern_ids == pid)
+                        if np.any(m):
+                            poe_context_shifted[m] = poe_context_shifted[m] + off[:D]
+                except Exception as _e:
+                    logging.warning(f"PoE context offset application failed: {_e}")
+                    poe_context_shifted = poe_context
+
                 fig_poe_context_tsne = visualize_tsne_sources(
-                    latents=poe_context,
+                    latents=poe_context_shifted,
                     program_ids=poe_context_pattern_ids,
                     source_ids=poe_context_source_ids,
                     max_points=max_points,
