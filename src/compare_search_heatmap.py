@@ -120,11 +120,11 @@ def run_evaluation_with_budget(
     dataset_seed: int,
     temp_dir: str
 ) -> Tuple[bool, Dict[str, Any]]:
-    """Run evaluation with a specific budget and extract intermediate metrics."""
+    """Run evaluation with a specific budget and extract intermediate metrics from trajectory."""
     
-    # Calculate method-specific parameters
+    # Calculate method-specific parameters (same as store_latent_search.py)
     if method == "gradient_ascent":
-        ga_steps = budget // 2  # Each step = 2 evaluations (forward + backward)
+        ga_steps = int(np.ceil(budget / 2))  # Each step = 2 evaluations (forward + backward)
         cmd = [
             sys.executable, "src/evaluate_checkpoint.py",
             "-w", artifact_path,
@@ -164,15 +164,18 @@ def run_evaluation_with_budget(
         raise ValueError(f"Unknown method: {method}")
     
     try:
-        print(f"Running {method} with budget {budget}...")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if method == "gradient_ascent":
+            print(f"Running {method} with budget {budget} (steps: {ga_steps})...")
+        else:
+            print(f"Running {method} with budget {budget} (population: {pop}, generations: {gens})...")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         
         if result.returncode != 0:
             print(f"Error running {method} with budget {budget}:")
             print(result.stderr)
             return False, {}
         
-        # Parse output to extract metrics
+        # Parse output to extract final metrics
         output_lines = result.stdout.split('\n')
         metrics = {}
         
@@ -190,17 +193,66 @@ def run_evaluation_with_budget(
                 except:
                     pass
         
-        # Try to load trajectory data if available
+        # Load trajectory data and extract intermediate metrics
         latents_file = os.path.join(temp_dir, f"{method}_latents_{budget}.npz")
         if os.path.exists(latents_file):
             try:
                 data = np.load(latents_file)
-                if "losses" in data:
-                    metrics["losses"] = data["losses"]
-                if "accuracies" in data:
-                    metrics["accuracies"] = data["accuracies"]
-                if "steps" in data:
-                    metrics["steps"] = data["steps"]
+                
+                # Extract intermediate losses (same logic as store_latent_search.py)
+                if method == "gradient_ascent":
+                    # For GA, look for losses_per_sample or trajectory_losses
+                    if f"ga_losses_per_sample" in data:
+                        losses_per_sample = np.array(data["ga_losses_per_sample"])
+                        if losses_per_sample.ndim >= 2:
+                            # Take mean across samples to get trajectory values
+                            trajectory_losses = np.mean(losses_per_sample, axis=0)
+                            metrics["losses"] = trajectory_losses
+                            print(f"Extracted GA trajectory losses: {trajectory_losses.shape}")
+                    elif f"ga_trajectory_losses" in data:
+                        metrics["losses"] = np.array(data["ga_trajectory_losses"])
+                        print(f"Extracted GA trajectory losses: {metrics['losses'].shape}")
+                    elif f"ga_log_probs" in data:
+                        # Convert log_probs to losses
+                        log_probs = np.array(data["ga_log_probs"])
+                        if log_probs.ndim == 4:  # (B, C, T, S)
+                            simple_scores = log_probs.mean(axis=(0, 1))
+                            metrics["losses"] = -simple_scores
+                            print(f"Extracted GA losses from log_probs: {metrics['losses'].shape}")
+                
+                elif method == "evolutionary_search":
+                    # For ES, look for generation_losses or best_losses_per_generation
+                    if f"es_generation_losses" in data:
+                        metrics["losses"] = np.array(data["es_generation_losses"]).reshape(-1)
+                        print(f"Extracted ES generation losses: {metrics['losses'].shape}")
+                    elif f"es_best_losses_per_generation" in data:
+                        metrics["losses"] = np.array(data["es_best_losses_per_generation"]).reshape(-1)
+                        print(f"Extracted ES best losses per generation: {metrics['losses'].shape}")
+                    elif f"es_all_losses" in data:
+                        metrics["losses"] = np.array(data["es_all_losses"]).reshape(-1)
+                        print(f"Extracted ES all losses: {metrics['losses'].shape}")
+                
+                # Extract accuracies if available
+                if f"{method}_accuracies" in data:
+                    metrics["accuracies"] = np.array(data[f"{method}_accuracies"])
+                elif f"{method}_scores" in data:
+                    # Convert scores to accuracies if needed
+                    scores = np.array(data[f"{method}_scores"])
+                    metrics["accuracies"] = scores  # Assuming scores are already accuracies
+                
+                # Extract steps/budget information
+                if f"{method}_steps" in data:
+                    metrics["steps"] = np.array(data[f"{method}_steps"])
+                else:
+                    # Create budget steps based on method
+                    if method == "gradient_ascent":
+                        # GA: each step = 2 evaluations, so budget steps are [0, 2, 4, 6, ...]
+                        metrics["steps"] = np.arange(0, len(metrics.get("losses", [])), 1) * 2
+                    else:
+                        # ES: cumulative evaluations at each generation
+                        pop = int(np.sqrt(budget))
+                        metrics["steps"] = np.arange(len(metrics.get("losses", []))) * pop
+                
             except Exception as e:
                 print(f"Warning: Could not load trajectory data: {e}")
         
@@ -216,7 +268,7 @@ def run_evaluation_with_budget(
 
 def create_heatmaps(
     checkpoint_results: List[Dict[str, Any]],
-    budgets: List[int],
+    max_budget: int,
     output_dir: str
 ) -> List[str]:
     """Create individual and differential heatmaps from checkpoint results."""
@@ -228,37 +280,27 @@ def create_heatmaps(
         ga_results = checkpoint_data["ga_results"]
         es_results = checkpoint_data["es_results"]
         
-        # Extract losses for both methods
-        ga_losses = []
-        es_losses = []
+        # Extract losses for both methods (single budget approach)
+        ga_losses = None
+        es_losses = None
         
-        for budget in budgets:
-            if budget in ga_results and "losses" in ga_results[budget]:
-                ga_losses.append(ga_results[budget]["losses"])
-            else:
-                ga_losses.append(np.array([0.0]))  # Placeholder
+        if max_budget in ga_results and "losses" in ga_results[max_budget]:
+            ga_losses = ga_results[max_budget]["losses"]
+            print(f"GA losses shape: {ga_losses.shape}")
                 
-            if budget in es_results and "losses" in es_results[budget]:
-                es_losses.append(es_results[budget]["losses"])
-            else:
-                es_losses.append(np.array([0.0]))  # Placeholder
+        if max_budget in es_results and "losses" in es_results[max_budget]:
+            es_losses = es_results[max_budget]["losses"]
+            print(f"ES losses shape: {es_losses.shape}")
         
         # Create individual heatmaps
-        if ga_losses and any(len(losses) > 0 for losses in ga_losses):
-            # GA individual heatmap
-            max_steps = max(len(losses) for losses in ga_losses if len(losses) > 0)
-            ga_loss_matrix = np.zeros((len(budgets), max_steps))
+        if ga_losses is not None and len(ga_losses) > 0:
+            # GA individual heatmap - show trajectory over steps
+            steps = np.arange(len(ga_losses))
+            # For individual heatmap, we show the trajectory as a single row
+            ga_loss_matrix = ga_losses.reshape(1, -1)
             
-            for j, losses in enumerate(ga_losses):
-                if len(losses) > 0:
-                    ga_loss_matrix[j, :len(losses)] = losses
-                    if len(losses) < max_steps:
-                        # Pad with last value
-                        ga_loss_matrix[j, len(losses):] = losses[-1]
-            
-            steps = np.arange(max_steps)
             fig = visualize_loss_difference_heatmap(
-                steps, budgets, ga_loss_matrix,
+                steps, [max_budget], ga_loss_matrix,
                 method_A_name="GA", method_B_name="GA"
             )
             ga_file = os.path.join(output_dir, f"ga_individual_{checkpoint_name}.png")
@@ -266,21 +308,14 @@ def create_heatmaps(
             plt.close(fig)
             heatmap_files.append(ga_file)
         
-        if es_losses and any(len(losses) > 0 for losses in es_losses):
-            # ES individual heatmap
-            max_steps = max(len(losses) for losses in es_losses if len(losses) > 0)
-            es_loss_matrix = np.zeros((len(budgets), max_steps))
+        if es_losses is not None and len(es_losses) > 0:
+            # ES individual heatmap - show trajectory over steps
+            steps = np.arange(len(es_losses))
+            # For individual heatmap, we show the trajectory as a single row
+            es_loss_matrix = es_losses.reshape(1, -1)
             
-            for j, losses in enumerate(es_losses):
-                if len(losses) > 0:
-                    es_loss_matrix[j, :len(losses)] = losses
-                    if len(losses) < max_steps:
-                        # Pad with last value
-                        es_loss_matrix[j, len(losses):] = losses[-1]
-            
-            steps = np.arange(max_steps)
             fig = visualize_loss_difference_heatmap(
-                steps, budgets, es_loss_matrix,
+                steps, [max_budget], es_loss_matrix,
                 method_A_name="ES", method_B_name="ES"
             )
             es_file = os.path.join(output_dir, f"es_individual_{checkpoint_name}.png")
@@ -289,33 +324,31 @@ def create_heatmaps(
             heatmap_files.append(es_file)
         
         # Create differential heatmap (ES - GA)
-        if ga_losses and es_losses:
-            # Align the loss trajectories
-            max_steps = max(
-                max(len(losses) for losses in ga_losses if len(losses) > 0),
-                max(len(losses) for losses in es_losses if len(losses) > 0)
-            )
+        if ga_losses is not None and es_losses is not None:
+            # Align the loss trajectories to the same length
+            min_len = min(len(ga_losses), len(es_losses))
+            max_len = max(len(ga_losses), len(es_losses))
             
-            ga_loss_matrix = np.zeros((len(budgets), max_steps))
-            es_loss_matrix = np.zeros((len(budgets), max_steps))
-            
-            for j, (ga_loss, es_loss) in enumerate(zip(ga_losses, es_losses)):
-                if len(ga_loss) > 0:
-                    ga_loss_matrix[j, :len(ga_loss)] = ga_loss
-                    if len(ga_loss) < max_steps:
-                        ga_loss_matrix[j, len(ga_loss):] = ga_loss[-1]
+            # Truncate or pad to same length
+            if len(ga_losses) > min_len:
+                ga_losses_aligned = ga_losses[:min_len]
+            else:
+                ga_losses_aligned = np.pad(ga_losses, (0, min_len - len(ga_losses)), mode='edge')
                 
-                if len(es_loss) > 0:
-                    es_loss_matrix[j, :len(es_loss)] = es_loss
-                    if len(es_loss) < max_steps:
-                        es_loss_matrix[j, len(es_loss):] = es_loss[-1]
+            if len(es_losses) > min_len:
+                es_losses_aligned = es_losses[:min_len]
+            else:
+                es_losses_aligned = np.pad(es_losses, (0, min_len - len(es_losses)), mode='edge')
             
             # Calculate difference (ES - GA)
-            loss_diff = es_loss_matrix - ga_loss_matrix
+            loss_diff = es_losses_aligned - ga_losses_aligned
             
-            steps = np.arange(max_steps)
+            steps = np.arange(min_len)
+            # Show as single row heatmap
+            loss_diff_matrix = loss_diff.reshape(1, -1)
+            
             fig = visualize_loss_difference_heatmap(
-                steps, budgets, loss_diff,
+                steps, [max_budget], loss_diff_matrix,
                 method_A_name="GA", method_B_name="ES"
             )
             diff_file = os.path.join(output_dir, f"differential_{checkpoint_name}.png")
@@ -382,9 +415,9 @@ def main():
         args.run_name, args.project, args.max_checkpoints, args.checkpoint_strategy
     )
     
-    # Generate budget range
-    budgets = list(range(args.budget_start, args.budget_end + 1, args.budget_step))
-    print(f"Evaluating budgets: {budgets}")
+    # Use max budget only (like store_latent_search.py)
+    max_budget = args.budget_end
+    print(f"Running with max budget {max_budget} and extracting intermediate steps...")
     
     # Create temporary directory for intermediate files
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -399,11 +432,8 @@ def main():
             ga_results = {}
             es_results = {}
             
-            # Test with max budget first (as requested)
-            max_budget = max(budgets)
-            print(f"Testing with max budget {max_budget}...")
-            
-            # Run GA
+            # Run GA with max budget and extract intermediate steps
+            print(f"Running GA with budget {max_budget}...")
             success, metrics = run_evaluation_with_budget(
                 checkpoint_path, "gradient_ascent", max_budget,
                 args.ga_lr, args.es_mutation_std, args.es_mutation_decay,
@@ -412,11 +442,14 @@ def main():
             )
             if success:
                 ga_results[max_budget] = metrics
-                print(f"GA max budget test: accuracy={metrics.get('accuracy', 'N/A')}, loss={metrics.get('loss', 'N/A')}")
+                print(f"GA completed: accuracy={metrics.get('accuracy', 'N/A')}, loss={metrics.get('loss', 'N/A')}")
+                if "losses" in metrics:
+                    print(f"GA trajectory: {len(metrics['losses'])} intermediate steps extracted")
             else:
-                print("GA max budget test failed")
+                print("GA failed")
             
-            # Run ES
+            # Run ES with max budget and extract intermediate steps
+            print(f"Running ES with budget {max_budget}...")
             success, metrics = run_evaluation_with_budget(
                 checkpoint_path, "evolutionary_search", max_budget,
                 args.ga_lr, args.es_mutation_std, args.es_mutation_decay,
@@ -425,41 +458,14 @@ def main():
             )
             if success:
                 es_results[max_budget] = metrics
-                print(f"ES max budget test: accuracy={metrics.get('accuracy', 'N/A')}, loss={metrics.get('loss', 'N/A')}")
+                print(f"ES completed: accuracy={metrics.get('accuracy', 'N/A')}, loss={metrics.get('loss', 'N/A')}")
+                if "losses" in metrics:
+                    print(f"ES trajectory: {len(metrics['losses'])} intermediate steps extracted")
             else:
-                print("ES max budget test failed")
+                print("ES failed")
             
-            # If max budget test works, run all budgets (unless in test mode)
+            # If either method succeeded, create heatmaps
             if ga_results or es_results:
-                if args.test_mode:
-                    print(f"Test mode: Max budget test successful, skipping other budgets")
-                else:
-                    print(f"Max budget test successful, running all budgets...")
-                    
-                    for budget in budgets:
-                        if budget == max_budget:
-                            continue  # Already tested
-                        
-                        # Run GA
-                        success, metrics = run_evaluation_with_budget(
-                            checkpoint_path, "gradient_ascent", budget,
-                            args.ga_lr, args.es_mutation_std, args.es_mutation_decay,
-                            args.dataset_folder, args.dataset_length, args.dataset_batch_size,
-                            args.dataset_use_hf == "true", args.dataset_seed, temp_dir
-                        )
-                        if success:
-                            ga_results[budget] = metrics
-                        
-                        # Run ES
-                        success, metrics = run_evaluation_with_budget(
-                            checkpoint_path, "evolutionary_search", budget,
-                            args.ga_lr, args.es_mutation_std, args.es_mutation_decay,
-                            args.dataset_folder, args.dataset_length, args.dataset_batch_size,
-                            args.dataset_use_hf == "true", args.dataset_seed, temp_dir
-                        )
-                        if success:
-                            es_results[budget] = metrics
-                
                 checkpoint_results.append({
                     "checkpoint_name": checkpoint_name,
                     "checkpoint_path": checkpoint_path,
@@ -470,7 +476,7 @@ def main():
                 # Create heatmaps for this checkpoint
                 print(f"Creating heatmaps for checkpoint {checkpoint_name}...")
                 heatmap_files = create_heatmaps(
-                    [checkpoint_results[-1]], budgets, args.output_dir
+                    [checkpoint_results[-1]], max_budget, args.output_dir
                 )
                 
                 # Upload to W&B
@@ -481,12 +487,12 @@ def main():
                 
                 print(f"Uploaded {len(heatmap_files)} heatmaps to W&B")
             else:
-                print(f"Skipping checkpoint {checkpoint_name} due to max budget test failure")
+                print(f"Skipping checkpoint {checkpoint_name} due to both methods failing")
     
     # Create final summary heatmaps
     if checkpoint_results:
         print("Creating summary heatmaps...")
-        summary_heatmaps = create_heatmaps(checkpoint_results, budgets, args.output_dir)
+        summary_heatmaps = create_heatmaps(checkpoint_results, max_budget, args.output_dir)
         
         for heatmap_file in summary_heatmaps:
             wandb.log({
