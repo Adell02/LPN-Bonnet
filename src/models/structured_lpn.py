@@ -353,6 +353,9 @@ class StructuredLPN(nn.Module):
                            alphas=poe_alphas, idx=min_var_idx, vars=encoder_variances)
         
         mu_poe, logvar_poe = poe_diag_gaussians(mus, logvars, poe_alphas)
+        
+        # Store alphas for histogram tracking
+        poe_alphas_for_histogram = poe_alphas
 
         # 2) sample if variational
         assert key is not None, "'key' is required for stochastic generation"
@@ -377,6 +380,8 @@ class StructuredLPN(nn.Module):
         info = {}
         # Store individual encoder latents for comparison
         info["individual_encoder_latents"] = individual_encoder_latents
+        # Store PoE alphas for histogram tracking
+        info["poe_alphas"] = poe_alphas_for_histogram
         
         # 4) select context like in LPN, using core helpers
         if mode == "mean":

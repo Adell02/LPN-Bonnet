@@ -77,6 +77,7 @@ training:
   eval_every_n_logs_phase_2: 20       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable
   resume_from_checkpoint: null
+  tsne_max_points: 500        # Maximum points for T-SNE visualization
   # Option B: balanced structured tetromino patterns (O, T, L) - now using task generator
   struct_patterns_balanced: true
   struct_num_pairs: 4          # 4 pairs per task (input + output)

@@ -13,6 +13,7 @@ from typing import List
 import hydra
 import jax
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import optax
 import omegaconf
 import wandb
@@ -110,7 +111,6 @@ def _kl_to_prior(mu: jnp.ndarray, logvar: jnp.ndarray) -> jnp.ndarray:
 
 
 def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, key):
-    pattern = int(batch["pattern_id"][0]) - 1
     off_coeff = cfg.training.get("off_domain_kl", 1.0)
 
     @jax.jit
@@ -141,8 +141,10 @@ def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, 
         kl_reg = 0.0
         for i in range(len(enc_out)):
             kl_i = _kl_to_prior(mus[i], logvars[i])
-            metrics[f"kl_prior/enc{i+1}"] = float(kl_i)
-            if i != pattern:
+            metrics[f"kl_prior/enc{i+1}"] = kl_i
+            # Check if this encoder is off-domain for any sample in the batch
+            is_off_domain = jnp.any(batch["pattern_id"] != i + 1)  # pattern_ids are 1-indexed
+            if is_off_domain:
                 kl_reg += kl_i
         loss += off_coeff * kl_reg
         metrics["off_domain_kl"] = kl_reg
@@ -173,6 +175,60 @@ def eval_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg):
         return loss, metrics
     
     return eval_fn()
+
+
+def generate_contexts_for_tsne(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, key):
+    """Generate contexts from individual encoders and PoE for T-SNE visualization.
+    
+    Returns:
+        individual_contexts: List of contexts from each encoder
+        poe_context: Context from PoE combination
+        pattern_ids: Pattern IDs for coloring
+    """
+    @jax.jit
+    def generate_fn():
+        # Get individual encoder outputs
+        individual_contexts = []
+        for i, (enc, enc_param) in enumerate(zip(model.encoders, enc_params)):
+            # Apply individual encoder
+            mu_i, logvar_i = enc.apply(
+                {"params": enc_param}, 
+                batch["pairs"], 
+                batch["shapes"], 
+                dropout_eval=True
+            )
+            # Sample latents from individual encoder
+            key_i = jax.random.fold_in(key, i)
+            latents_i = mu_i + jnp.exp(0.5 * logvar_i) * jax.random.normal(key_i, mu_i.shape)
+            # Create context (mean across pairs)
+            context_i = latents_i.mean(axis=-2)  # (batch, latent_dim)
+            individual_contexts.append(context_i)
+        
+        # Get PoE context
+        # Apply all encoders
+        enc_outputs = []
+        for enc, enc_param in zip(model.encoders, enc_params):
+            mu_i, logvar_i = enc.apply(
+                {"params": enc_param}, 
+                batch["pairs"], 
+                batch["shapes"], 
+                dropout_eval=True
+            )
+            enc_outputs.append((mu_i, logvar_i))
+        
+        # Stack and compute PoE
+        mus, logvars = model._stack_encoder_outputs(enc_outputs)
+        alphas = jnp.array(cfg.structured.alphas)
+        mu_poe, logvar_poe = poe_diag_gaussians(mus, logvars, alphas)
+        
+        # Sample PoE latents
+        key_poe = jax.random.fold_in(key, 999)  # Use different key for PoE
+        latents_poe = mu_poe + jnp.exp(0.5 * logvar_poe) * jax.random.normal(key_poe, mu_poe.shape)
+        poe_context = latents_poe.mean(axis=-2)  # (batch, latent_dim)
+        
+        return individual_contexts, poe_context, batch["pattern_id"]
+    
+    return generate_fn()
 
 
 @hydra.main(config_path="configs", config_name="structured", version_base=None)
@@ -242,9 +298,135 @@ def main(cfg: omegaconf.DictConfig):
                 pairs, shapes = next(loaders[p])
                 batch = {"pairs": pairs, "shapes": shapes}
                 loss, m = eval_step(state, batch, enc_params, model, cfg)
-                eval_metrics[f"eval/p{p+1}_loss"] = float(loss)
+                eval_metrics[f"eval/p{p+1}_loss"] = loss
                 eval_metrics.update({f"eval/p{p+1}_{k}": v for k, v in m.items()})
             wandb.log(eval_metrics, step=step + 1)
+
+    # T-SNE Evaluation: Generate contexts from individual encoders and PoE
+    if cfg.training.eval_every_n_logs:
+        logging.info("Generating T-SNE visualizations...")
+        
+        # Collect contexts from all patterns
+        all_individual_contexts = [[] for _ in range(len(enc_params))]  # One list per encoder
+        all_poe_contexts = []
+        all_pattern_ids = []
+        all_task_ids = []
+        
+        # Generate evaluation data from all patterns
+        eval_key = jax.random.PRNGKey(42)  # Fixed key for reproducible T-SNE
+        for pattern in [1, 2, 3]:
+            # Create a small evaluation batch for this pattern
+            eval_loader = make_task_gen_dataloader(
+                batch_size=min(32, cfg.training.batch_size),  # Smaller batch for T-SNE
+                log_every_n_steps=cfg.training.log_every_n_steps,
+                num_workers=cfg.training.num_workers,
+                task_generator_class="STRUCT_PATTERN",
+                num_pairs=cfg.training.struct_num_pairs,
+                num_devices=jax.device_count(),
+                online_data_augmentation=cfg.training.online_data_augmentation,
+                pattern=pattern,
+                num_rows=5,
+                num_cols=5,
+            )
+            
+            # Generate a few batches for this pattern
+            for batch_idx, (pairs, shapes) in enumerate(eval_loader):
+                if batch_idx >= 3:  # Limit to 3 batches per pattern for T-SNE
+                    break
+                    
+                batch = {
+                    "pairs": pairs,
+                    "shapes": shapes,
+                    "pattern_id": jnp.full((pairs.shape[0],), pattern, dtype=jnp.int32),
+                }
+                
+                # Generate contexts
+                eval_key, subkey = jax.random.split(eval_key)
+                individual_contexts, poe_context, pattern_ids = generate_contexts_for_tsne(
+                    state, batch, enc_params, model, cfg, subkey
+                )
+                
+                # Store individual encoder contexts
+                for enc_idx, context in enumerate(individual_contexts):
+                    all_individual_contexts[enc_idx].append(context)
+                
+                # Store PoE context
+                all_poe_contexts.append(poe_context)
+                all_pattern_ids.append(pattern_ids)
+                
+                # Create task IDs for grouping (pattern + batch + sample)
+                task_ids = jnp.full((pairs.shape[0],), pattern * 1000 + batch_idx * 100 + jnp.arange(pairs.shape[0]), dtype=jnp.int32)
+                all_task_ids.append(task_ids)
+        
+        # Concatenate all contexts
+        for enc_idx in range(len(all_individual_contexts)):
+            all_individual_contexts[enc_idx] = jnp.concatenate(all_individual_contexts[enc_idx], axis=0)
+        all_poe_contexts = jnp.concatenate(all_poe_contexts, axis=0)
+        all_pattern_ids = jnp.concatenate(all_pattern_ids, axis=0)
+        all_task_ids = jnp.concatenate(all_task_ids, axis=0)
+        
+        # Create T-SNE plots
+        try:
+            # 1. Individual encoder contexts (separate plot for each encoder)
+            for enc_idx, contexts in enumerate(all_individual_contexts):
+                if contexts.shape[0] > 0:
+                    fig_individual = visualize_tsne(contexts, all_pattern_ids)
+                    if fig_individual is not None:
+                        wandb.log({f"tsne/encoder_{enc_idx+1}_contexts": wandb.Image(fig_individual)}, step=cfg.training.total_num_steps)
+                        plt.close(fig_individual)
+            
+            # 2. PoE contexts
+            if all_poe_contexts.shape[0] > 0:
+                fig_poe = visualize_tsne(all_poe_contexts, all_pattern_ids)
+                if fig_poe is not None:
+                    wandb.log({f"tsne/poe_contexts": wandb.Image(fig_poe)}, step=cfg.training.total_num_steps)
+                    plt.close(fig_poe)
+            
+            # 3. Combined plot: Individual encoders + PoE (using visualize_tsne_sources)
+            # Prepare data for combined visualization
+            combined_contexts = []
+            combined_pattern_ids = []
+            combined_source_ids = []
+            combined_task_ids = []
+            
+            # Add individual encoder contexts
+            for enc_idx, contexts in enumerate(all_individual_contexts):
+                combined_contexts.append(contexts)
+                combined_pattern_ids.append(all_pattern_ids)
+                combined_source_ids.append(jnp.full((contexts.shape[0],), enc_idx, dtype=jnp.int32))
+                combined_task_ids.append(all_task_ids)
+            
+            # Add PoE contexts
+            combined_contexts.append(all_poe_contexts)
+            combined_pattern_ids.append(all_pattern_ids)
+            combined_source_ids.append(jnp.full((all_poe_contexts.shape[0],), len(enc_params), dtype=jnp.int32))  # PoE = last source
+            combined_task_ids.append(all_task_ids)
+            
+            # Concatenate everything
+            combined_contexts = jnp.concatenate(combined_contexts, axis=0)
+            combined_pattern_ids = jnp.concatenate(combined_pattern_ids, axis=0)
+            combined_source_ids = jnp.concatenate(combined_source_ids, axis=0)
+            combined_task_ids = jnp.concatenate(combined_task_ids, axis=0)
+            
+            # Create combined T-SNE plot
+            if combined_contexts.shape[0] > 0:
+                fig_combined = visualize_tsne_sources(
+                    combined_contexts, 
+                    combined_pattern_ids, 
+                    combined_source_ids,
+                    max_points=cfg.training.get("tsne_max_points", 500),
+                    task_ids=combined_task_ids
+                )
+                if fig_combined is not None:
+                    wandb.log({f"tsne/combined_encoders_poe": wandb.Image(fig_combined)}, step=cfg.training.total_num_steps)
+                    plt.close(fig_combined)
+            
+            logging.info("T-SNE visualizations completed and logged to wandb")
+            
+        except Exception as e:
+            logging.warning(f"T-SNE visualization failed: {e}")
+            import traceback
+            traceback.print_exc()
 
     wandb.finish()
 

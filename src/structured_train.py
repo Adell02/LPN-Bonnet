@@ -4560,6 +4560,10 @@ class StructuredTrainer:
                 # Store individual encoder latents (list of lists)
                 info[key] = [inf[key] for inf in all_info]
                 logging.info(f"Individual encoder latents: {len(info[key])} batches, {len(info[key][0])} encoders per batch")
+            elif key == "poe_alphas":
+                # Store PoE alphas for histogram tracking
+                info[key] = [inf[key] for inf in all_info]
+                logging.info(f"PoE alphas: {len(info[key])} batches, shape per batch: {info[key][0].shape}")
             else:
                 # For other info, just take the first batch
                 info[key] = all_info[0][key]
@@ -5044,6 +5048,14 @@ class StructuredTrainer:
             else:
                 logging.warning("PoE Context T-SNE - No 'context_poe' found in info")
             
+            # NEW: PoE Alphas Histogram - Show distribution of alphas for each encoder
+            fig_alpha_histogram = None
+            if "poe_alphas" in info and info["poe_alphas"] is not None:
+                fig_alpha_histogram = self._create_poe_alpha_histogram(info["poe_alphas"], test_name)
+                logging.info("Generated PoE alphas histogram")
+            else:
+                logging.warning("PoE Alphas Histogram - No 'poe_alphas' found in info")
+            
             # 1. ADDITIONAL T-SNE: Show latent samples to demonstrate uncertainty (equivalent to train.py fig_latents_samples)
             # Since structured_train doesn't have latents_samples, we'll create multiple samples from encoders
             if len(enc_params_list) > 0:
@@ -5315,6 +5327,7 @@ class StructuredTrainer:
             f"test/{test_name}/latents_samples": wandb.Image(fig_tsne_samples) if fig_tsne_samples is not None else None,
             f"test/{test_name}/latents_poe": wandb.Image(fig_poe_tsne) if fig_poe_tsne is not None else None,
             f"test/{test_name}/latents_poe_context": wandb.Image(fig_poe_context_tsne) if fig_poe_context_tsne is not None else None,
+            f"test/{test_name}/poe_alphas_histogram": wandb.Image(fig_alpha_histogram) if fig_alpha_histogram is not None else None,
             **metrics,
         }
         
@@ -5442,6 +5455,8 @@ class StructuredTrainer:
             plt.close(fig_poe_tsne)
         if fig_poe_context_tsne is not None:
             plt.close(fig_poe_context_tsne)
+        if fig_alpha_histogram is not None:
+            plt.close(fig_alpha_histogram)
 
         # Release large intermediates
         del all_latents, latents_concat, source_ids_np, pattern_ids_concat
@@ -5570,6 +5585,103 @@ class StructuredTrainer:
         plt.tight_layout()
         
         return fig
+    
+    def _create_poe_alpha_histogram(self, poe_alphas_list: list, test_name: str) -> Optional[plt.Figure]:
+        """
+        Create a histogram showing the distribution of PoE alphas for each encoder.
+        
+        Args:
+            poe_alphas_list: List of PoE alphas arrays from each batch
+            test_name: Name of the test for the title
+            
+        Returns:
+            Matplotlib figure with alpha histograms
+        """
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            # Convert all alphas to numpy and concatenate
+            all_alphas = []
+            for batch_alphas in poe_alphas_list:
+                if batch_alphas is not None:
+                    batch_alphas_np = np.array(batch_alphas)
+                    if batch_alphas_np.ndim > 1:
+                        # If batch_alphas has shape (batch_size, num_encoders), flatten
+                        batch_alphas_np = batch_alphas_np.reshape(-1, batch_alphas_np.shape[-1])
+                    all_alphas.append(batch_alphas_np)
+            
+            if not all_alphas:
+                logging.warning("No valid PoE alphas found for histogram")
+                return None
+            
+            # Concatenate all alphas
+            all_alphas = np.concatenate(all_alphas, axis=0)  # Shape: (total_samples, num_encoders)
+            num_encoders = all_alphas.shape[1]
+            total_samples = all_alphas.shape[0]
+            
+            # Create figure with subplots for each encoder
+            fig, axes = plt.subplots(1, num_encoders, figsize=(5 * num_encoders, 6))
+            if num_encoders == 1:
+                axes = [axes]
+            
+            # Color scheme for encoders
+            encoder_colors = ['#FBB998', '#DB74DB', '#5361E5', '#2ca02c', '#ff7f0e', '#1f77b4']
+            
+            for enc_idx in range(num_encoders):
+                ax = axes[enc_idx]
+                encoder_alphas = all_alphas[:, enc_idx]
+                
+                # Create histogram
+                n, bins, patches = ax.hist(encoder_alphas, bins=20, alpha=0.7, 
+                                         color=encoder_colors[enc_idx % len(encoder_colors)],
+                                         edgecolor='black', linewidth=0.5)
+                
+                # Add statistics
+                mean_alpha = np.mean(encoder_alphas)
+                std_alpha = np.std(encoder_alphas)
+                min_alpha = np.min(encoder_alphas)
+                max_alpha = np.max(encoder_alphas)
+                
+                # Set title and labels
+                ax.set_title(f'Encoder {enc_idx}\nMean: {mean_alpha:.3f}, Std: {std_alpha:.3f}', 
+                           fontsize=12, fontweight='bold')
+                ax.set_xlabel('PoE Alpha Value', fontsize=10)
+                ax.set_ylabel('Frequency', fontsize=10)
+                
+                # Add vertical line for mean
+                ax.axvline(mean_alpha, color='red', linestyle='--', linewidth=2, 
+                          label=f'Mean: {mean_alpha:.3f}')
+                
+                # Add text box with statistics
+                stats_text = f'Min: {min_alpha:.3f}\nMax: {max_alpha:.3f}\nSamples: {total_samples}'
+                ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
+                       verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                
+                # Set x-axis limits
+                ax.set_xlim(0, 1)
+                
+                # Add grid
+                ax.grid(True, alpha=0.3)
+                
+                # Add legend
+                ax.legend(loc='upper right')
+            
+            # Overall title
+            fig.suptitle(f'PoE Alpha Distribution - {test_name}\nTotal Samples: {total_samples}', 
+                        fontsize=16, fontweight='bold')
+            
+            # Adjust layout
+            plt.tight_layout()
+            
+            logging.info(f"Created PoE alpha histogram with {total_samples} samples across {num_encoders} encoders")
+            return fig
+            
+        except Exception as e:
+            logging.error(f"Failed to create PoE alpha histogram: {e}")
+            import traceback
+            logging.error(f"Traceback: {traceback.format_exc()}")
+            return None
         
     def test_dataset_submission(
         self,
