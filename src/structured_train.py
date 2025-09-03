@@ -2217,8 +2217,8 @@ class StructuredTrainer:
         random_state: int = 42
     ) -> Optional[plt.Figure]:
         """
-        Create a T-SNE visualization matching visualize_tsne_sources styling, with configurable perplexity.
-        No downsampling is applied; all points are used.
+        Create a T-SNE visualization matching the exact style from test/structured_mean/latents_encoders_pattern3.
+        Uses orange/pink/blue/green palette, top-right legend, colors for patterns, shapes for sources.
         """
         try:
             from sklearn.manifold import TSNE
@@ -2234,56 +2234,90 @@ class StructuredTrainer:
 
         fig, ax = plt.subplots(figsize=(15, 12))
 
-        # Colors by program (pattern ids)
-        unique_programs = np.unique(program_ids)
-        palette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
-        program_to_color = {int(pid): palette[i % len(palette)] for i, pid in enumerate(unique_programs)}
+        # EXACT color palette from existing T-SNE: orange, pink, blue, green
+        pattern_colors = {
+            1: '#FBB998',  # Orange for O-tetromino
+            2: '#DB74DB',  # Pink for T-tetromino  
+            3: '#5361E5',  # Blue for L-tetromino
+            4: '#2CA02C',  # Green (if needed)
+        }
 
-        # Markers by source id
+        # EXACT marker styles from existing T-SNE: shapes for sources
+        source_markers = {
+            0: 'o',    # Circle for Encoder 0
+            1: 's',    # Square for Encoder 1
+            2: '^',    # Triangle for Encoder 2
+            3: 'D',    # Diamond for Context
+        }
+
+        source_labels = {
+            0: "Encoder 0",
+            1: "Encoder 1", 
+            2: "Encoder 2",
+            3: "Context"
+        }
+
+        # Plot each source with its marker, color by pattern
         unique_sources = sorted(list(np.unique(source_ids)))
-        default_markers = ['o', 's', '^', 'D', 'P', 'X']
-        source_to_marker = {int(src): default_markers[i % len(default_markers)] for i, src in enumerate(unique_sources)}
-
-        # Scatter by source, color by program
-        for src in unique_sources:
-            mask = source_ids == src
+        for source_id in unique_sources:
+            mask = source_ids == source_id
             if not np.any(mask):
                 continue
-            pts = latents_2d[mask]
-            colors = [program_to_color[int(pid)] for pid in program_ids[mask]]
+                
+            # Get points for this source
+            source_points = latents_2d[mask]
+            source_programs = program_ids[mask]
+            source_task_ids = task_ids[mask]
+            
+            # Color each point by its pattern
+            colors = [pattern_colors.get(int(pid), '#888888') for pid in source_programs]
+            
+            # Plot with exact styling from existing T-SNE
             ax.scatter(
-                pts[:, 0], pts[:, 1],
-                c=colors,
-                marker=source_to_marker.get(int(src), 'o'),
-                s=28,
-                alpha=0.9,
-                edgecolor='black', linewidth=0.3,
-                label=f"Source {int(src)}"
+                source_points[:, 0], 
+                source_points[:, 1],
+                c=colors, 
+                marker=source_markers.get(int(source_id), 'o'),
+                alpha=0.7,
+                s=100,  # Same size as existing T-SNE
+                edgecolors='none',
+                label=source_labels.get(int(source_id), f"Source {int(source_id)}")
             )
+            
+            # Add task ID labels for each point (like existing T-SNE)
+            for i, (x, y) in enumerate(source_points):
+                if i < len(source_task_ids):
+                    ax.annotate(
+                        str(int(source_task_ids[i])), 
+                        (x, y), 
+                        xytext=(2, 2), 
+                        textcoords='offset points',
+                        fontsize=8,
+                        alpha=0.8
+                    )
 
-        # Legends
-        program_handles = [
-            Line2D([0], [0], marker='o', color='w', label=f'Pattern {int(pid)}',
-                   markerfacecolor=program_to_color[int(pid)], markeredgecolor='black',
-                   markersize=8, markeredgewidth=0.6)
-            for pid in unique_programs
-        ]
-        source_handles = [
-            Line2D([0], [0], marker=source_to_marker[int(src)], color='w', label=f'Source {int(src)}',
-                   markerfacecolor='#cccccc', markeredgecolor='black',
-                   markersize=8, markeredgewidth=0.6)
-            for src in unique_sources
-        ]
+        # EXACT legend style: top-right, same as existing T-SNE
+        shape_handles = []
+        for src in unique_sources:
+            marker = source_markers.get(src, 'o')
+            label = source_labels.get(src, f"Source {src}")
+            shape_handles.append(
+                Line2D([0], [0], marker=marker, linestyle='None', color='black',
+                       markerfacecolor='white', markeredgecolor='black', markersize=10, label=label)
+            )
+        
+        # Add legend - EXACTLY like existing T-SNE
+        ax.legend(handles=shape_handles, bbox_to_anchor=(1.05, 1), loc="upper left", 
+                  borderaxespad=0.0, title="Sources (shape)")
 
-        first_legend = ax.legend(handles=program_handles, title='Patterns', loc='upper right', frameon=True, framealpha=0.9)
-        ax.add_artist(first_legend)
-        ax.legend(handles=source_handles, title='Sources', loc='lower right', frameon=True, framealpha=0.9)
-
-        ax.set_title(title, fontsize=16)
-        ax.set_xlabel('t-SNE 1')
-        ax.set_ylabel('t-SNE 2')
-        ax.grid(True, linestyle='--', alpha=0.3)
-        fig.tight_layout()
+        # EXACT title and label styling
+        ax.set_title(title, fontsize=16, fontweight='bold')
+        ax.set_xlabel("t-SNE 1", fontsize=12)
+        ax.set_ylabel("t-SNE 2", fontsize=12)
+        
+        # Set tight layout - EXACTLY like existing T-SNE
+        plt.tight_layout()
+        
         return fig
         
     def test_dataset_submission(
