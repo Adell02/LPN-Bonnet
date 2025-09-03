@@ -49,7 +49,7 @@ training:
   mixed_precision: false
   batch_size: 128
   gradient_accumulation_steps: 1
-  learning_rate: 1e-3
+  learning_rate: 1e-4
   linear_warmup_steps: 99
   # Option A: use HF/local datasets
   train_datasets: ""  # leave empty when using struct patterns
@@ -61,11 +61,11 @@ training:
   pairwise_kl_coeff: null
   total_num_steps: 5000
   encoder_expose_steps: 500  # number of initial gradient steps encoders are trainable
-  repulsion_kl: 0e-6 
+  repulsion_kl: 1e-6 
   # This coefficient controls the strength of contrastive loss
   # Lower values = more stable, higher values = more aggressive specialization
   # Current value: 1e-5 (very conservative for stability)
-  contrastive_kl: 1e-3  # specialization effects
+  contrastive_kl: 1e-6  # specialization effects
   log_every_n_steps: 5
   eval_every_n_logs: 20       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable
