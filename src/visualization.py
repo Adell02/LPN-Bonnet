@@ -293,9 +293,7 @@ def visualize_tsne(latents, program_ids, perplexity=2, max_iter=1000, random_sta
         points = embeddings_2d[mask]
         ax.scatter(points[:, 0], points[:, 1], c=[color_map[id]], label=f"Program {id}", alpha=0.7, s=100)
 
-        # Add numbering to each point
-        for point in points:
-            ax.annotate(str(id), point, xytext=(3, 3), textcoords="offset points", fontsize=8, alpha=0.8)
+
 
     ax.set_title("t-SNE Visualization of Latent Embeddings")
     ax.set_xlabel("t-SNE 1")

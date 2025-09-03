@@ -2284,17 +2284,7 @@ class StructuredTrainer:
                 label=source_labels.get(int(source_id), f"Source {int(source_id)}")
             )
             
-            # Add task ID labels for each point (like existing T-SNE)
-            for i, (x, y) in enumerate(source_points):
-                if i < len(source_task_ids):
-                    ax.annotate(
-                        str(int(source_task_ids[i])), 
-                        (x, y), 
-                        xytext=(2, 2), 
-                        textcoords='offset points',
-                        fontsize=8,
-                        alpha=0.8
-                    )
+
 
         # EXACT legend style: top-right, same as existing T-SNE
         shape_handles = []
