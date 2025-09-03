@@ -60,7 +60,7 @@ training:
   prior_kl_coeff: null
   pairwise_kl_coeff: null
   decoder_expose_steps: 500
-  encoder_expose_steps: 200  # number of initial gradient steps encoders are trainable
+  encoder_expose_steps: 50  # number of initial gradient steps encoders are trainable
   repulsion_kl: 10
   # Distance margin for repulsion loss (default: 10.0)
   # Using a larger margin (e.g., 10) keeps the repulsion term active
@@ -70,8 +70,8 @@ training:
   # Lower values = more stable, higher values = more aggressive specialization
   # The system will dynamically adjust this coefficient based on specialization progress
   contrastive_kl: 10  # specialization effects (increased from 1e-3)
-  log_every_n_steps: 10
-  eval_every_n_logs: 10       # null to disable
+  log_every_n_steps: 2
+  eval_every_n_logs: 5       # null to disable
   eval_every_n_logs_phase_2: 20       # null to disable
   save_checkpoint_every_n_logs: null  # null to disable
   resume_from_checkpoint: null
