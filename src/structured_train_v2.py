@@ -130,12 +130,12 @@ def _kl_to_prior(mu: jnp.ndarray, logvar: jnp.ndarray) -> jnp.ndarray:
 
 
 @jax.jit
-def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, key):
+def train_step(state: TrainState, batch, model: StructuredLPN, cfg, key):
     """Single training step with off-domain KL regularization."""
     off_coeff = cfg.training.get("off_domain_kl", 1.0)
 
-    def loss_fn(dec_params, key):
-        scoped = {"params": {"decoder": dec_params}}
+    def loss_fn(full_params, key):
+        scoped = {"params": full_params}
         # Call the model directly - it handles encoder application and PoE internally
         loss, metrics = model.apply(
             scoped,
@@ -144,16 +144,17 @@ def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, 
             dropout_eval=False,
             mode=cfg.training.inference_mode,
             poe_alphas=jnp.array(cfg.structured.alphas),
-            encoder_params_list=enc_params,
-            decoder_params=dec_params,
+            encoder_params_list=full_params["encoders"],
+            decoder_params=full_params["decoder"],
             rngs={"latents": key},
             prior_kl_coeff=cfg.training.prior_kl_coeff,
         )
         
         # Add off-domain KL regularization manually
+        # Note: This still requires separate encoder calls, but now parameters are on-device
         enc_out = [
             enc.apply({"params": p}, batch["pairs"], batch["shapes"], dropout_eval=True)
-            for enc, p in zip(model.encoders, enc_params)
+            for enc, p in zip(model.encoders, full_params["encoders"])
         ]
         mus, logvars = model._stack_encoder_outputs(enc_out)
         kl_reg = 0.0
@@ -168,15 +169,20 @@ def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, 
         metrics["off_domain_kl"] = kl_reg
         return loss, metrics
 
-    (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params["decoder"], key)
-    state = state.apply_gradients(grads={"decoder": grads})
+    (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params, key)
+    
+    # Zero encoder gradients to keep encoders frozen
+    grads = dict(grads)
+    grads["encoders"] = jax.tree_util.tree_map(lambda g: jnp.zeros_like(g), grads["encoders"])
+    
+    state = state.apply_gradients(grads=grads)
     return state, metrics
 
 
 @jax.jit
-def eval_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg):
+def eval_step(state: TrainState, batch, model: StructuredLPN, cfg):
     """Single evaluation step."""
-    scoped = {"params": {"decoder": state.params["decoder"]}}
+    scoped = {"params": state.params}
     loss, metrics = model.apply(
         scoped,
         batch["pairs"],
@@ -184,7 +190,7 @@ def eval_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg):
         dropout_eval=True,
         mode=cfg.training.inference_mode,
         poe_alphas=jnp.array(cfg.structured.alphas),
-        encoder_params_list=enc_params,
+        encoder_params_list=state.params["encoders"],
         decoder_params=state.params["decoder"],
         rngs={"latents": jax.random.PRNGKey(0)},
         prior_kl_coeff=cfg.training.prior_kl_coeff,
@@ -192,12 +198,12 @@ def eval_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg):
     return loss, metrics
 
 
-def generate_contexts_for_tsne(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, key):
+def generate_contexts_for_tsne(state: TrainState, batch, model: StructuredLPN, cfg, key):
     """Generate contexts from individual encoders and PoE for T-SNE visualization."""
     def generate_fn():
         # Get individual encoder outputs
         individual_contexts = []
-        for i, (enc, enc_param) in enumerate(zip(model.encoders, enc_params)):
+        for i, (enc, enc_param) in enumerate(zip(model.encoders, state.params["encoders"])):
             # Apply individual encoder
             mu_i, logvar_i = enc.apply(
                 {"params": enc_param}, 
@@ -214,7 +220,7 @@ def generate_contexts_for_tsne(state: TrainState, batch, enc_params, model: Stru
         
         # Get PoE context
         enc_outputs = []
-        for enc, enc_param in zip(model.encoders, enc_params):
+        for enc, enc_param in zip(model.encoders, state.params["encoders"]):
             mu_i, logvar_i = enc.apply(
                 {"params": enc_param}, 
                 batch["pairs"], 
@@ -272,9 +278,13 @@ def main(cfg: omegaconf.DictConfig):
         decoder_params=dec_params,
     )
     
-    # Create optimizer and training state
+    # Create optimizer and training state with combined parameters (like structured_train.py)
     tx = optax.adam(cfg.training.learning_rate)
-    state = TrainState.create(apply_fn=model.apply, params={"decoder": dec_params}, tx=tx)
+    combined_params = {
+        "decoder": dec_params,
+        "encoders": tuple(enc_params),
+    }
+    state = TrainState.create(apply_fn=model.apply, params=combined_params, tx=tx)
 
     # Create data loaders for each pattern
     logging.info("Creating data loaders...")
@@ -306,7 +316,7 @@ def main(cfg: omegaconf.DictConfig):
             "pattern_id": jnp.full((pairs.shape[0],), pat + 1, dtype=jnp.int32),
         }
         train_key, subkey = jax.random.split(train_key)
-        state, metrics = train_step(state, batch, enc_params, model, cfg, subkey)
+        state, metrics = train_step(state, batch, model, cfg, subkey)
         
         if (step + 1) % cfg.training.log_every_n_steps == 0:
             logging.info(f"Step {step + 1}: Loss={metrics.get('loss', 'N/A'):.4f}, Pattern={pat + 1}")
@@ -319,7 +329,7 @@ def main(cfg: omegaconf.DictConfig):
             for p in range(3):
                 pairs, shapes = next(loaders[p])
                 batch = {"pairs": pairs, "shapes": shapes}
-                loss, m = eval_step(state, batch, enc_params, model, cfg)
+                loss, m = eval_step(state, batch, model, cfg)
                 eval_metrics[f"eval/p{p+1}_loss"] = loss
                 eval_metrics.update({f"eval/p{p+1}_{k}": v for k, v in m.items()})
             wandb.log(eval_metrics, step=step + 1)
@@ -332,7 +342,7 @@ def main(cfg: omegaconf.DictConfig):
         import matplotlib.pyplot as plt
         
         # Collect contexts from all patterns
-        all_individual_contexts = [[] for _ in range(len(enc_params))]
+        all_individual_contexts = [[] for _ in range(len(state.params["encoders"]))]
         all_poe_contexts = []
         all_pattern_ids = []
         all_task_ids = []
@@ -365,7 +375,7 @@ def main(cfg: omegaconf.DictConfig):
                 
                 eval_key, subkey = jax.random.split(eval_key)
                 individual_contexts, poe_context, pattern_ids = generate_contexts_for_tsne(
-                    state, batch, enc_params, model, cfg, subkey
+                    state, batch, model, cfg, subkey
                 )
                 
                 for enc_idx, context in enumerate(individual_contexts):
@@ -415,7 +425,7 @@ def main(cfg: omegaconf.DictConfig):
             
             combined_contexts.append(all_poe_contexts)
             combined_pattern_ids.append(all_pattern_ids)
-            combined_source_ids.append(jnp.full((all_poe_contexts.shape[0],), len(enc_params), dtype=jnp.int32))
+            combined_source_ids.append(jnp.full((all_poe_contexts.shape[0],), len(state.params["encoders"]), dtype=jnp.int32))
             combined_task_ids.append(all_task_ids)
             
             combined_contexts = jnp.concatenate(combined_contexts, axis=0)

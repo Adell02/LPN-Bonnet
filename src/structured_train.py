@@ -2682,7 +2682,8 @@ class StructuredTrainer:
         """
         try:
             enc_params_list = state.params["encoders"]
-            alphas = jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32) if hasattr(self.cfg.structured, 'alphas') and self.cfg.structured.alphas is not None else None
+            # Use uniform alphas for clustering data creation (this is separate from dynamic alphas in generate_output)
+            alphas = jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32) if hasattr(self.cfg.structured, 'alphas') and self.cfg.structured.alphas is not None else jnp.array([1.0/3, 1.0/3, 1.0/3], dtype=jnp.float32)
             
             pattern_latents = {}
             pattern_ids_list = []
@@ -4400,7 +4401,7 @@ class StructuredTrainer:
         if not hasattr(self, "eval_grids"):
             return {}
         cfg = self.cfg
-        alphas = jnp.asarray(cfg.structured.alphas, dtype=jnp.float32)
+        alphas = jnp.asarray(cfg.structured.alphas, dtype=jnp.float32) if hasattr(cfg.structured, 'alphas') and cfg.structured.alphas is not None else None
         
         # Initialize metrics dict early to avoid variable not defined errors
         encoder_variance_metrics = {}
