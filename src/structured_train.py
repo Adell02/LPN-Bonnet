@@ -2488,21 +2488,21 @@ class StructuredTrainer:
             # Compute metrics for different k values to check sensitivity (same as commit)
             k_values = [3, 5, 10]
             
-            # OPTION 1: Encoder samples clustering (like train.py fig_latents_samples) - for direct comparison
-            encoder_mask = (source_ids_np < len(self.encoders))
-            if np.any(encoder_mask):
-                enc_emb = latents_concat[encoder_mask]
-                enc_prog = pattern_ids_concat[encoder_mask]
-                logging.info(f"Phase 2: Encoder samples clustering: {enc_emb.shape[0]} points, patterns: {np.unique(enc_prog)}")
+            # OPTION 1: PoE samples clustering (like train.py fig_latents_samples) - for direct comparison
+            poe_mask = (source_ids_np == len(self.encoders))  # PoE context points
+            if np.any(poe_mask):
+                poe_emb = latents_concat[poe_mask]
+                poe_prog = pattern_ids_concat[poe_mask]
+                logging.info(f"Phase 2: PoE samples clustering: {poe_emb.shape[0]} points, patterns: {np.unique(poe_prog)}")
                 
                 for k in k_values:
-                    # Modularity Q on encoder samples (comparable to train.py)
-                    modularity_q = compute_modularity_q(enc_emb, enc_prog, k=k)
-                    clustering_metrics[f"phase_2/clustering/encoder_samples/modularity_q_k{k}"] = modularity_q
+                    # Modularity Q on PoE samples (comparable to train.py)
+                    modularity_q = compute_modularity_q(poe_emb, poe_prog, k=k)
+                    clustering_metrics[f"phase_2/clustering/poe_samples/modularity_q_k{k}"] = modularity_q
                     
-                    # Adjusted Rand Index on encoder samples (comparable to train.py)
-                    ari_score = compute_adjusted_rand_index(enc_emb, enc_prog, k=k)
-                    clustering_metrics[f"phase_2/clustering/encoder_samples/ari_k{k}"] = ari_score
+                    # Adjusted Rand Index on PoE samples (comparable to train.py)
+                    ari_score = compute_adjusted_rand_index(poe_emb, poe_prog, k=k)
+                    clustering_metrics[f"phase_2/clustering/poe_samples/ari_k{k}"] = ari_score
             else:
                 logging.warning("Phase 2: No encoder samples found for encoder samples clustering; skipping")
             
@@ -3584,24 +3584,35 @@ class StructuredTrainer:
             fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
             return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
         
-    def _compute_inflated_poe_weights(self, logvars_stack: chex.Array, base_alphas: chex.Array, inflation_factor: float = 10.0) -> chex.Array:
+    def _compute_inflated_poe_weights(self, logvars_stack, base_alphas, inflation_factor: float = 10.0):
         """Compute inflated PoE weights based on encoder confidence (lowest variance gets higher weight)."""
-        # Compute mean variance per encoder across all dimensions
-        mean_var_per_encoder = jnp.mean(jnp.exp(logvars_stack), axis=tuple(range(1, logvars_stack.ndim)))
-        lowest_var_encoder = jnp.argmin(mean_var_per_encoder)
+        # Convert to numpy if needed for compatibility
+        if hasattr(logvars_stack, 'shape'):
+            logvars_np = np.array(logvars_stack)
+        else:
+            logvars_np = logvars_stack
+            
+        if hasattr(base_alphas, 'shape'):
+            alphas_np = np.array(base_alphas)
+        else:
+            alphas_np = base_alphas
         
-        # Create inflated alphas
-        inflated_alphas = base_alphas.copy()
-        inflated_alphas = inflated_alphas.at[lowest_var_encoder].multiply(inflation_factor)
+        # Compute mean variance per encoder across all dimensions
+        mean_var_per_encoder = np.mean(np.exp(logvars_np), axis=tuple(range(1, logvars_np.ndim)))
+        lowest_var_encoder = np.argmin(mean_var_per_encoder)
+        
+        # Create inflated alphas using numpy operations
+        inflated_alphas = alphas_np.copy()
+        inflated_alphas[lowest_var_encoder] *= inflation_factor
         
         # Renormalize to maintain sum <= 1
-        total_weight = jnp.sum(inflated_alphas)
+        total_weight = np.sum(inflated_alphas)
         if total_weight > 1.0:
             inflated_alphas = inflated_alphas / total_weight
         
         # Log the inflation for debugging
         logging.debug(f"🎯 PoE weight inflation: Encoder {lowest_var_encoder} (var={mean_var_per_encoder[lowest_var_encoder]:.4f}) inflated by {inflation_factor}x")
-        logging.debug(f"   Base alphas: {[f'{a:.3f}' for a in base_alphas]}")
+        logging.debug(f"   Base alphas: {[f'{a:.3f}' for a in alphas_np]}")
         logging.debug(f"   Inflated alphas: {[f'{a:.3f}' for a in inflated_alphas]}")
         
         return inflated_alphas
@@ -5017,76 +5028,53 @@ class StructuredTrainer:
                 task_ids=task_ids_np,
             )
             
-            # 1. ADDITIONAL T-SNE: Show latent samples to demonstrate uncertainty (equivalent to train.py fig_latents_samples)
-            # Since structured_train doesn't have latents_samples, we'll create multiple samples from encoders
+            # 1. ADDITIONAL T-SNE: Show PoE latents to demonstrate fused representation (equivalent to train.py fig_latents_samples)
+            # Use the PoE latents (source_id=3) which represent the fused encoder outputs
             if len(current_enc_params_list) > 0:
-                # Create multiple samples by using different encoder outputs as "samples"
-                # This shows how different encoders represent the same patterns (uncertainty)
-                encoder_samples = []
-                encoder_sample_program_ids = []
-                encoder_sample_task_ids = []
+                # Get PoE latents (source_id=3) which are the fused encoder outputs
+                poe_mask = (source_ids_np == len(current_enc_params_list))  # PoE context points
                 
-                # For each pattern, collect encoder outputs as samples
-                for pattern_id in [1, 2, 3]:
-                    pattern_mask = (pattern_ids_concat == pattern_id)
-                    if np.any(pattern_mask):
-                        # Get encoder points only (exclude context)
-                        encoder_mask = (source_ids_np < len(current_enc_params_list))
-                        combined_mask = pattern_mask & encoder_mask
-                        
-                        if np.any(combined_mask):
-                            encoder_latents = latents_concat[combined_mask]
-                            encoder_sources = source_ids_np[combined_mask]
-                            encoder_task_ids = task_ids_np[combined_mask]
-                            
-                            # Downsample for cleaner visualization
-                            max_encoder_points = min(200, len(encoder_latents))
-                            if len(encoder_latents) > max_encoder_points:
-                                # Stratified sampling to maintain encoder distribution
-                                encoder_indices = []
-                                for enc_id in range(len(current_enc_params_list)):
-                                    enc_mask = encoder_sources == enc_id
-                                    enc_indices = np.where(enc_mask)[0]
-                                    if len(enc_indices) > 0:
-                                        max_per_encoder = max_encoder_points // len(current_enc_params_list)
-                                        if len(enc_indices) > max_per_encoder:
-                                            sampled_indices = np.random.RandomState(42).choice(
-                                                enc_indices, size=max_per_encoder, replace=False
-                                            )
-                                        else:
-                                            sampled_indices = enc_indices
-                                        encoder_indices.extend(sampled_indices)
-                                
-                                # Apply sampling
-                                encoder_latents = encoder_latents[encoder_indices]
-                                encoder_sources = encoder_sources[encoder_indices]
-                                encoder_task_ids = encoder_task_ids[encoder_indices]
-                            
-                            # Add encoder outputs as samples for this pattern
-                            encoder_samples.append(encoder_latents)
-                            encoder_sample_program_ids.extend([pattern_id] * len(encoder_latents))
-                            encoder_sample_task_ids.extend(encoder_task_ids)
-                
-                if encoder_samples:
-                    # Concatenate all encoder samples
-                    all_encoder_samples = np.concatenate(encoder_samples, axis=0)
-                    all_encoder_program_ids = np.array(encoder_sample_program_ids)
-                    all_encoder_task_ids = np.array(encoder_sample_task_ids)
+                if np.any(poe_mask):
+                    poe_latents = latents_concat[poe_mask]
+                    poe_program_ids = pattern_ids_concat[poe_mask]
+                    poe_task_ids = task_ids_np[poe_mask]
                     
-                    # Create T-SNE for encoder samples (showing uncertainty across encoders)
+                    # Downsample if too many points
+                    max_poe_points = 2000
+                    if len(poe_latents) > max_poe_points:
+                        # Stratified sampling to maintain pattern distribution
+                        poe_indices = []
+                        for pattern_id in [1, 2, 3]:
+                            pattern_mask = (poe_program_ids == pattern_id)
+                            pattern_indices = np.where(pattern_mask)[0]
+                            if len(pattern_indices) > 0:
+                                max_per_pattern = max_poe_points // 3
+                                if len(pattern_indices) > max_per_pattern:
+                                    sampled_indices = np.random.RandomState(42).choice(
+                                        pattern_indices, size=max_per_pattern, replace=False
+                                    )
+                                else:
+                                    sampled_indices = pattern_indices
+                                poe_indices.extend(sampled_indices)
+                        
+                        poe_latents = poe_latents[poe_indices]
+                        poe_program_ids = poe_program_ids[poe_indices]
+                        poe_task_ids = poe_task_ids[poe_indices]
+                    
+                    # Create T-SNE for PoE samples (showing fused encoder outputs)
                     fig_tsne_samples = visualize_tsne_sources(
-                        latents=all_encoder_samples,
-                        program_ids=all_encoder_program_ids,  # Pattern types (1, 2, 3) for colors
-                        source_ids=np.zeros(len(all_encoder_samples), dtype=int),  # All same source (encoder samples)
-                        max_points=min(2000, len(all_encoder_samples)),
+                        latents=poe_latents,
+                        program_ids=poe_program_ids,  # Pattern types (1, 2, 3) for colors
+                        source_ids=np.zeros(len(poe_latents), dtype=int),  # All same source (PoE)
+                        max_points=min(2000, len(poe_latents)),
                         random_state=42,
-                        task_ids=all_encoder_task_ids,
+                        task_ids=poe_task_ids,
                     )
                     
-                    logging.info(f"Generated encoder samples T-SNE: {len(all_encoder_samples)} points")
+                    logging.info(f"Generated PoE samples T-SNE: {len(poe_latents)} points (fused encoder outputs)")
                 else:
                     fig_tsne_samples = None
-                    logging.warning("No encoder samples found for samples T-SNE")
+                    logging.warning("No PoE latents found for samples T-SNE")
             else:
                 fig_tsne_samples = None
                 logging.warning("No encoders available for samples T-SNE")
@@ -5194,21 +5182,21 @@ class StructuredTrainer:
                 k_values = [3, 5, 10]
                 clustering_metrics = {}
                 
-                # OPTION 1: Encoder samples clustering (like train.py fig_latents_samples) - for direct comparison
-                encoder_mask = (source_ids_np < len(current_enc_params_list))
-                if np.any(encoder_mask):
-                    enc_emb = latents_concat[encoder_mask]
-                    enc_prog = pattern_ids_concat[encoder_mask]
-                    logging.info(f"Encoder samples clustering: {enc_emb.shape[0]} points, patterns: {np.unique(enc_prog)}")
+                # OPTION 1: PoE samples clustering (like train.py fig_latents_samples) - for direct comparison
+                poe_mask = (source_ids_np == len(current_enc_params_list))  # PoE context points
+                if np.any(poe_mask):
+                    poe_emb = latents_concat[poe_mask]
+                    poe_prog = pattern_ids_concat[poe_mask]
+                    logging.info(f"PoE samples clustering: {poe_emb.shape[0]} points, patterns: {np.unique(poe_prog)}")
                     
                     for k in k_values:
-                        # Modularity Q on encoder samples (comparable to train.py)
-                        modularity_q = compute_modularity_q(enc_emb, enc_prog, k=k)
-                        clustering_metrics[f"clustering/encoder_samples/modularity_q_k{k}"] = modularity_q
+                        # Modularity Q on PoE samples (comparable to train.py)
+                        modularity_q = compute_modularity_q(poe_emb, poe_prog, k=k)
+                        clustering_metrics[f"clustering/poe_samples/modularity_q_k{k}"] = modularity_q
                         
-                        # Adjusted Rand Index on encoder samples (comparable to train.py)
-                        ari_score = compute_adjusted_rand_index(enc_emb, enc_prog, k=k)
-                        clustering_metrics[f"clustering/encoder_samples/ari_k{k}"] = ari_score
+                        # Adjusted Rand Index on PoE samples (comparable to train.py)
+                        ari_score = compute_adjusted_rand_index(poe_emb, poe_prog, k=k)
+                        clustering_metrics[f"clustering/poe_samples/ari_k{k}"] = ari_score
                 else:
                     logging.warning("No encoder samples found for encoder samples clustering; skipping")
                 
@@ -6368,21 +6356,21 @@ class StructuredTrainer:
                         k_values = [3, 5, 10]
                         test_clustering_metrics = {}
                         
-                        # OPTION 1: Encoder samples clustering (like train.py fig_latents_samples) - for direct comparison
-                        encoder_mask = (source_ids_np < len(current_enc_params_list))
-                        if np.any(encoder_mask):
-                            enc_emb = latents_concat[encoder_mask]
-                            enc_prog = pattern_ids_concat[encoder_mask]
-                            logging.info(f"Test encoder samples clustering: {enc_emb.shape[0]} points, patterns: {np.unique(enc_prog)}")
+                        # OPTION 1: PoE samples clustering (like train.py fig_latents_samples) - for direct comparison
+                        poe_mask = (source_ids_np == len(current_enc_params_list))  # PoE context points
+                        if np.any(poe_mask):
+                            poe_emb = latents_concat[poe_mask]
+                            poe_prog = pattern_ids_concat[poe_mask]
+                            logging.info(f"Test PoE samples clustering: {poe_emb.shape[0]} points, patterns: {np.unique(poe_prog)}")
                             
                             for k in k_values:
-                                # Modularity Q on encoder samples (comparable to train.py)
-                                modularity_q = compute_modularity_q(enc_emb, enc_prog, k=k)
-                                test_clustering_metrics[f"clustering/{test_name}/encoder_samples/modularity_q_k{k}"] = modularity_q
+                                # Modularity Q on PoE samples (comparable to train.py)
+                                modularity_q = compute_modularity_q(poe_emb, poe_prog, k=k)
+                                test_clustering_metrics[f"clustering/{test_name}/poe_samples/modularity_q_k{k}"] = modularity_q
                                 
-                                # Adjusted Rand Index on encoder samples (comparable to train.py)
-                                ari_score = compute_adjusted_rand_index(enc_emb, enc_prog, k=k)
-                                test_clustering_metrics[f"clustering/{test_name}/encoder_samples/ari_k{k}"] = ari_score
+                                # Adjusted Rand Index on PoE samples (comparable to train.py)
+                                ari_score = compute_adjusted_rand_index(poe_emb, poe_prog, k=k)
+                                test_clustering_metrics[f"clustering/{test_name}/poe_samples/ari_k{k}"] = ari_score
                         else:
                             logging.warning(f"Test: No encoder samples found for encoder samples clustering; skipping")
                         
