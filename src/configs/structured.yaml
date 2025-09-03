@@ -27,7 +27,7 @@ structured:
       - "ga624-imperial-college-london/LPN-ARC/sparkling-wood-255--checkpoint:latest"  # Model Pattern 1
       - "ga624-imperial-college-london/LPN-ARC/revived-grass-259--checkpoint:latest"  # Model Pattern 2
       - "ga624-imperial-college-london/LPN-ARC/wobbly-rain-258--checkpoint:latest"   # Model Pattern 3
-  alphas: [0.3333333, 0.3333333, 0.3333333]     # uniform over 3 models
+  # alphas: [0.3333333, 0.3333333, 0.3333333]     # uniform over 3 models - DISABLED for dynamic alphas
   # Optional: configuration describing the model architecture of the loaded checkpoints.
   # If provided, StructuredTrainer will instantiate enc/dec with these hyperparameters
   # to ensure parameter shapes match the artifacts.
@@ -60,7 +60,7 @@ training:
   prior_kl_coeff: null
   pairwise_kl_coeff: null
   decoder_expose_steps: 500
-  encoder_expose_steps: 50  # number of initial gradient steps encoders are trainable
+  encoder_expose_steps: 20  # number of initial gradient steps encoders are trainable
   repulsion_kl: 10
   # Distance margin for repulsion loss (default: 10.0)
   # Using a larger margin (e.g., 10) keeps the repulsion term active

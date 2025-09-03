@@ -8,6 +8,7 @@ compact.
 """
 
 import logging
+import os
 from typing import List
 
 import hydra
@@ -17,6 +18,9 @@ import optax
 import omegaconf
 import wandb
 from flax.training.train_state import TrainState
+
+# Optimize JAX compilation
+os.environ["XLA_FLAGS"] = "--xla_gpu_enable_fast_min_max=true --xla_gpu_enable_async_all_gather=true"
 
 from models.transformer import EncoderTransformer, DecoderTransformer
 from models.utils import EncoderTransformerConfig, DecoderTransformerConfig
@@ -125,6 +129,7 @@ def _kl_to_prior(mu: jnp.ndarray, logvar: jnp.ndarray) -> jnp.ndarray:
     return 0.5 * jnp.mean(jnp.exp(logvar) + mu ** 2 - 1.0 - logvar)
 
 
+@jax.jit
 def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, key):
     """Single training step with off-domain KL regularization."""
     off_coeff = cfg.training.get("off_domain_kl", 1.0)
@@ -168,25 +173,23 @@ def train_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, 
     return state, metrics
 
 
+@jax.jit
 def eval_step(state: TrainState, batch, enc_params, model: StructuredLPN, cfg):
     """Single evaluation step."""
-    def eval_fn():
-        scoped = {"params": {"decoder": state.params["decoder"]}}
-        loss, metrics = model.apply(
-            scoped,
-            batch["pairs"],
-            batch["shapes"],
-            dropout_eval=True,
-            mode=cfg.training.inference_mode,
-            poe_alphas=jnp.array(cfg.structured.alphas),
-            encoder_params_list=enc_params,
-            decoder_params=state.params["decoder"],
-            rngs={"latents": jax.random.PRNGKey(0)},
-            prior_kl_coeff=cfg.training.prior_kl_coeff,
-        )
-        return loss, metrics
-    
-    return eval_fn()
+    scoped = {"params": {"decoder": state.params["decoder"]}}
+    loss, metrics = model.apply(
+        scoped,
+        batch["pairs"],
+        batch["shapes"],
+        dropout_eval=True,
+        mode=cfg.training.inference_mode,
+        poe_alphas=jnp.array(cfg.structured.alphas),
+        encoder_params_list=enc_params,
+        decoder_params=state.params["decoder"],
+        rngs={"latents": jax.random.PRNGKey(0)},
+        prior_kl_coeff=cfg.training.prior_kl_coeff,
+    )
+    return loss, metrics
 
 
 def generate_contexts_for_tsne(state: TrainState, batch, enc_params, model: StructuredLPN, cfg, key):
@@ -245,9 +248,11 @@ def main(cfg: omegaconf.DictConfig):
     )
     
     # Build model and load parameters (same as structured_train.py)
+    logging.info("Building model and loading parameters...")
     encoders, decoder = _instantiate_modules(cfg)
     enc_params, dec_params = build_params_from_artifacts(cfg)
     model = StructuredLPN(tuple(encoders), decoder)
+    logging.info(f"Created StructuredLPN model with {len(encoders)} encoders")
     
     # Initialize model with dummy data
     key = jax.random.PRNGKey(cfg.training.seed)
@@ -272,6 +277,7 @@ def main(cfg: omegaconf.DictConfig):
     state = TrainState.create(apply_fn=model.apply, params={"decoder": dec_params}, tx=tx)
 
     # Create data loaders for each pattern
+    logging.info("Creating data loaders...")
     loaders = []
     for pattern in [1, 2, 3]:
         loader = make_task_gen_dataloader(
@@ -287,8 +293,10 @@ def main(cfg: omegaconf.DictConfig):
             num_cols=5,
         )
         loaders.append(iter(loader))
+    logging.info("Data loaders created successfully")
 
     # Training loop
+    logging.info(f"Starting training for {cfg.training.total_num_steps} steps...")
     for step in range(cfg.training.total_num_steps):
         pat = step % 3
         pairs, shapes = next(loaders[pat])
@@ -301,6 +309,7 @@ def main(cfg: omegaconf.DictConfig):
         state, metrics = train_step(state, batch, enc_params, model, cfg, subkey)
         
         if (step + 1) % cfg.training.log_every_n_steps == 0:
+            logging.info(f"Step {step + 1}: Loss={metrics.get('loss', 'N/A'):.4f}, Pattern={pat + 1}")
             wandb.log(metrics, step=step + 1)
             
         if cfg.training.eval_every_n_logs and (step + 1) % (

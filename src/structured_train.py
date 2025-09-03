@@ -552,7 +552,7 @@ class StructuredTrainer:
             init_shapes,
             dropout_eval=False,
             mode=self.cfg.training.inference_mode,
-            poe_alphas=jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32),
+            poe_alphas=jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32) if hasattr(self.cfg.structured, 'alphas') and self.cfg.structured.alphas is not None else None,
             encoder_params_list=enc_params_list,
             decoder_params=avg_decoder_params,
         )
@@ -713,7 +713,7 @@ class StructuredTrainer:
                     batch_shapes,
                     dropout_eval=False,
                     mode=self.cfg.training.inference_mode,
-                    poe_alphas=jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32),
+                    poe_alphas=jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32) if hasattr(self.cfg.structured, 'alphas') and self.cfg.structured.alphas is not None else None,
                     encoder_params_list=full_params["encoders"],
                     decoder_params=full_params["decoder"],
                     rngs={"dropout": rng, "latents": rng},
@@ -2013,7 +2013,7 @@ class StructuredTrainer:
                     batch_shapes,
                     dropout_eval=False,
                     mode=self.cfg.training.inference_mode,
-                    poe_alphas=jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32),
+                    poe_alphas=jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32) if hasattr(self.cfg.structured, 'alphas') and self.cfg.structured.alphas is not None else None,
                     encoder_params_list=full_params["encoders"],
                     decoder_params=full_params["decoder"],
                     rngs={"dropout": rng, "latents": rng},
@@ -2682,7 +2682,7 @@ class StructuredTrainer:
         """
         try:
             enc_params_list = state.params["encoders"]
-            alphas = jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32)
+            alphas = jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32) if hasattr(self.cfg.structured, 'alphas') and self.cfg.structured.alphas is not None else None
             
             pattern_latents = {}
             pattern_ids_list = []
@@ -3904,7 +3904,7 @@ class StructuredTrainer:
                     *test_batch,
                     dropout_eval=False,
                     mode=cfg.training.inference_mode,
-                    poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32),
+                    poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32) if hasattr(cfg.structured, 'alphas') and cfg.structured.alphas is not None else None,
                     encoder_params_list=state.params["encoders"],
                     decoder_params=state.params["decoder"],
                     rngs={"dropout": key, "latents": key},
@@ -3921,7 +3921,7 @@ class StructuredTrainer:
                     *test_batch,
                     dropout_eval=False,
                     mode=cfg.training.inference_mode,
-                    poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32),
+                    poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32) if hasattr(cfg.structured, 'alphas') and cfg.structured.alphas is not None else None,
                     encoder_params_list=state.params["encoders"],
                     decoder_params=state.params["decoder"],
                     rngs={"dropout": key, "latents": key},
@@ -5765,7 +5765,7 @@ class StructuredTrainer:
             inference_kwargs = {}
             
         # Define alphas for PoE (same as main evaluation)
-        alphas = jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32)
+        alphas = jnp.asarray(self.cfg.structured.alphas, dtype=jnp.float32) if hasattr(self.cfg.structured, 'alphas') and self.cfg.structured.alphas is not None else None
             
         # Create leave_one_out data
         raw_leave_one_out_grids = make_leave_one_out(dataset_grids, axis=-4)

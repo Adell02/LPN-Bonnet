@@ -332,8 +332,6 @@ class StructuredLPN(nn.Module):
         E = mus.shape[0]
         
         # DYNAMIC POE ALPHAS: Compute per context (per group of 4 input-output pairs)
-        import logging
-        logging.info(f"🔍 DEBUG: poe_alphas type={type(poe_alphas)}, value={poe_alphas}")
         if poe_alphas is None or (hasattr(poe_alphas, "size") and int(poe_alphas.size) == 0):
             # mus shape: (E, batch_size, num_pairs, latent_dim)
             # logvars shape: (E, batch_size, num_pairs, latent_dim)
@@ -404,7 +402,6 @@ class StructuredLPN(nn.Module):
             poe_alphas_for_histogram = per_context_alphas
         else:
             # Use provided alphas (fallback to original behavior)
-            logging.info(f"🔍 SKIPPING dynamic alphas - using provided alphas: {poe_alphas}")
             mu_poe, logvar_poe = poe_diag_gaussians(mus, logvars, poe_alphas)
             poe_alphas_for_histogram = poe_alphas
 
