@@ -714,14 +714,6 @@ class StructuredTrainer:
                     repulsion_kl_coeff=repulsion_coeff,  # Conditional coefficient
                     contrastive_kl_coeff=contrastive_coeff,  # Conditional coefficient
                     pattern_ids=pattern_ids,  # ADD PATTERN IDS FOR CONTRASTIVE LOSS
-                    # Enhanced uncertainty shaping parameters
-                    beta_target=self.cfg.training.get("beta_target"),
-                    beta_other=self.cfg.training.get("beta_other"),
-                    prior_var_target=self.cfg.training.get("prior_var_target"),
-                    prior_var_other=self.cfg.training.get("prior_var_other"),
-                    alpha_target=self.cfg.training.get("alpha_target"),
-                    alpha_other=self.cfg.training.get("alpha_other"),
-                    entropy_gamma=self.cfg.training.get("entropy_gamma"),
                     **(self.cfg.training.get("inference_kwargs") or {}),
                 )
                 return loss, metrics
@@ -1177,23 +1169,7 @@ class StructuredTrainer:
         new_params["encoders"] = tuple(specialized_encoders)
         updated_state = state.replace(params=new_params)
         
-        # Debug: Verify that specialized encoders are properly saved
-        logging.info(f"🔍 Specialized encoders saved to main state:")
-        for enc_idx, specialized_encoder in enumerate(specialized_encoders):
-            logging.info(f"   - Encoder {enc_idx}: type={type(specialized_encoder)}, keys={list(specialized_encoder.keys()) if isinstance(specialized_encoder, dict) else 'Not a dict'}")
-        
-        # Verify the updated state has the specialized encoders
-        logging.info(f"🔍 Updated state encoder params:")
-        for enc_idx, enc_params in enumerate(updated_state.params["encoders"]):
-            logging.info(f"   - State Encoder {enc_idx}: type={type(enc_params)}, keys={list(enc_params.keys()) if isinstance(enc_params, dict) else 'Not a dict'}")
-        
         self.phase1_completed = True
-        
-        # CRITICAL FIX: Clear Phase 2 evaluation cache after Phase 1 completion
-        # This ensures that fresh data is generated with specialized encoder parameters
-        if hasattr(self, '_phase2_eval_cache'):
-            self._phase2_eval_cache.clear()
-            logging.info("🧹 Cleared Phase 2 evaluation cache to use specialized encoder parameters")
         
         # Calculate Phase A evaluation statistics
         eval_every_n_steps = self.cfg.training.get("eval_every_n_logs", 20) * self.cfg.training.get("log_every_n_steps", 5)
@@ -1214,7 +1190,7 @@ class StructuredTrainer:
         if self.cfg.training.get("eval_every_n_logs"):
             try:
                 logging.info(f"🔍 Phase 2: Running initial evaluation after Phase 1 completion")
-                self.evaluate(updated_state, step=0)
+                self.evaluate(updated_state, enc_params_list, step=0)
                 
                 # Initial test datasets evaluation for Phase 2
                 if hasattr(self, 'test_datasets') and self.test_datasets:
@@ -1469,9 +1445,6 @@ class StructuredTrainer:
                 # Update state
                 state = state.replace(params=new_params)
                 
-                # CRITICAL FIX: Update encoder_params to use the trained parameters
-                encoder_params = state.params["encoders"][enc_idx]
-                
                 # Log essential metrics to WandB with proper tab organization
                 if step % 10 == 0:  # Log more frequently
                     current_global_step = self.phase_a_global_step + step
@@ -1565,15 +1538,7 @@ class StructuredTrainer:
             import traceback
             logging.error(f"     Traceback: {traceback.format_exc()}")
         
-        # Return the final trained encoder parameters from the updated state
-        final_encoder_params = state.params["encoders"][enc_idx]
-        
-        # Debug: Verify that we're returning the trained parameters
-        logging.info(f"   ✅ Encoder {enc_idx} training completed - returning specialized parameters")
-        logging.info(f"   🔍 Final encoder params type: {type(final_encoder_params)}")
-        logging.info(f"   🔍 Final encoder params keys: {list(final_encoder_params.keys()) if isinstance(final_encoder_params, dict) else 'Not a dict'}")
-        
-        return final_encoder_params
+        return state.params["encoders"][enc_idx]  # Return trained encoder params
     
     def _evaluate_specialized_encoder(self, enc_idx: int, encoder_params: dict, state: TrainState, global_step: int):
         """
@@ -2280,32 +2245,16 @@ class StructuredTrainer:
                 if len(per_encoder_mu_list) > 0 and len(per_encoder_var_list) > 0:
                     mu_enc  = np.stack(per_encoder_mu_list, axis=0)     # [E,N,D]
                     var_enc = np.stack(per_encoder_var_list, axis=0)    # [E,N,D]
-                    
-                    # ENHANCED: Inflate PoE weight of encoder with lowest mean variance across the quad
-                    # Compute mean variance per encoder across all samples
-                    mean_var_per_encoder = np.mean(var_enc, axis=(1, 2))  # [E] - average variance per encoder
-                    lowest_var_encoder = np.argmin(mean_var_per_encoder)
-                    
-                    # Create inflated precision weights
                     precision = 1.0 / np.clip(var_enc, 1e-12, None)     # [E,N,D]
-                    
-                    # Inflate the precision of the lowest variance encoder by a factor
-                    inflation_factor = 10.0  # Make the most confident encoder much more influential
-                    precision[lowest_var_encoder] *= inflation_factor
-                    
                     precision_sum = np.sum(precision, axis=0)           # [N,D]
                     poe_var  = 1.0 / np.clip(precision_sum, 1e-12, None)
                     poe_mean = poe_var * np.sum(precision * mu_enc, axis=0)  # [N,D]
-                    
-                    # Log the PoE weight inflation
-                    logging.info(f"🎯 PoE weight inflation: Encoder {lowest_var_encoder} (var={mean_var_per_encoder[lowest_var_encoder]:.4f}) inflated by {inflation_factor}x")
-                    logging.info(f"   All encoder variances: {[f'{v:.4f}' for v in mean_var_per_encoder]}")
 
                     combined_latents = np.concatenate([combined_latents, poe_mean], axis=0)
                     combined_source_ids = np.concatenate([combined_source_ids, np.full((poe_mean.shape[0],), 3, dtype=combined_source_ids.dtype)])
                     combined_pattern_ids = np.concatenate([combined_pattern_ids, np.array(pattern_ids_all)])
                     combined_task_ids = np.concatenate([combined_task_ids, np.arange(poe_mean.shape[0])])
-                    logging.info("Appended PoE latents (source_id=3) with inflated weights for pattern-specific T-SNE")
+                    logging.info("Appended PoE latents (source_id=3) for pattern-specific T-SNE")
             except Exception as _poe_e:
                 logging.warning(f"Failed to compute/append PoE latents: {_poe_e}")
 
@@ -2488,21 +2437,21 @@ class StructuredTrainer:
             # Compute metrics for different k values to check sensitivity (same as commit)
             k_values = [3, 5, 10]
             
-            # OPTION 1: PoE samples clustering (like train.py fig_latents_samples) - for direct comparison
-            poe_mask = (source_ids_np == len(self.encoders))  # PoE context points
-            if np.any(poe_mask):
-                poe_emb = latents_concat[poe_mask]
-                poe_prog = pattern_ids_concat[poe_mask]
-                logging.info(f"Phase 2: PoE samples clustering: {poe_emb.shape[0]} points, patterns: {np.unique(poe_prog)}")
+            # OPTION 1: Encoder samples clustering (like train.py fig_latents_samples) - for direct comparison
+            encoder_mask = (source_ids_np < len(self.encoders))
+            if np.any(encoder_mask):
+                enc_emb = latents_concat[encoder_mask]
+                enc_prog = pattern_ids_concat[encoder_mask]
+                logging.info(f"Phase 2: Encoder samples clustering: {enc_emb.shape[0]} points, patterns: {np.unique(enc_prog)}")
                 
                 for k in k_values:
-                    # Modularity Q on PoE samples (comparable to train.py)
-                    modularity_q = compute_modularity_q(poe_emb, poe_prog, k=k)
-                    clustering_metrics[f"phase_2/clustering/poe_samples/modularity_q_k{k}"] = modularity_q
+                    # Modularity Q on encoder samples (comparable to train.py)
+                    modularity_q = compute_modularity_q(enc_emb, enc_prog, k=k)
+                    clustering_metrics[f"phase_2/clustering/encoder_samples/modularity_q_k{k}"] = modularity_q
                     
-                    # Adjusted Rand Index on PoE samples (comparable to train.py)
-                    ari_score = compute_adjusted_rand_index(poe_emb, poe_prog, k=k)
-                    clustering_metrics[f"phase_2/clustering/poe_samples/ari_k{k}"] = ari_score
+                    # Adjusted Rand Index on encoder samples (comparable to train.py)
+                    ari_score = compute_adjusted_rand_index(enc_emb, enc_prog, k=k)
+                    clustering_metrics[f"phase_2/clustering/encoder_samples/ari_k{k}"] = ari_score
             else:
                 logging.warning("Phase 2: No encoder samples found for encoder samples clustering; skipping")
             
@@ -2754,9 +2703,7 @@ class StructuredTrainer:
                     mus_stack = jnp.stack(mus, axis=0)  # (E, B, 1, H)
                     logvars_stack = jnp.stack(logvars, axis=0)
 
-                    # ENHANCED: Inflate PoE weights based on encoder confidence (lowest variance)
-                    inflated_alphas = self._compute_inflated_poe_weights(logvars_stack, alphas)
-                    poe_mu, _ = poe_diag_gaussians(mus_stack, logvars_stack, inflated_alphas)
+                    poe_mu, _ = poe_diag_gaussians(mus_stack, logvars_stack, alphas)
                     latents = np.array(poe_mu[:, 0])  # (B, H)
 
                     pattern_latents[pattern_id] = latents
@@ -3431,10 +3378,40 @@ class StructuredTrainer:
         
         logging.info(f"      Loading {num_samples} samples from {dataset_folder} ({pattern_names[pattern_id]})")
         
-        # Use synthetic data generation to ensure consistent structure (4 pairs per task)
-        # The pre-existing datasets have 2 pairs, but training expects 4 pairs
-        logging.info(f"      Using synthetic data generation for pattern {pattern_id} to ensure 4 pairs per task")
-        return self._create_pattern_dataset_synthetic(pattern_id, num_samples)
+        # Load the pre-existing dataset
+        try:
+            dataset_path = os.path.join("src/datasets", dataset_folder)
+            grids = np.load(os.path.join(dataset_path, "grids.npy")).astype(np.uint8)
+            shapes = np.load(os.path.join(dataset_path, "shapes.npy")).astype(np.uint8)
+
+            # Ensure we have enough samples
+            available_samples = len(grids)
+            rng = np.random.default_rng(self.cfg.training.seed)
+            if available_samples >= num_samples:
+                # Sample without replacement when enough data is available
+                indices = rng.choice(available_samples, size=num_samples, replace=False)
+                grids = grids[indices]
+                shapes = shapes[indices]
+            else:
+                # Sample with replacement to match the requested batch size
+                logging.warning(
+                    f"      Dataset {dataset_folder} only has {available_samples} samples, sampling with replacement to reach {num_samples}"
+                )
+                indices = rng.choice(available_samples, size=num_samples, replace=True)
+                grids = grids[indices]
+                shapes = shapes[indices]
+
+            pattern_ids = np.full(num_samples, pattern_id, dtype=np.uint8)
+            
+            logging.info(f"      Loaded {num_samples} samples from {dataset_folder}: {grids.shape}, {shapes.shape}")
+            return jnp.array(grids), jnp.array(shapes), jnp.array(pattern_ids)
+                
+        except Exception as e:
+            logging.error(f"      Failed to load dataset {dataset_folder}: {e}")
+            logging.info(f"      Falling back to synthetic data generation for pattern {pattern_id}")
+            
+            # Fallback to the original synthetic generation method
+            return self._create_pattern_dataset_synthetic(pattern_id, num_samples)
     
     def _create_pattern_dataset_synthetic(self, pattern_id: int, num_samples: int) -> tuple:
         """Create a dataset composed solely of a single pattern with clean tetromino shapes.
@@ -3584,39 +3561,6 @@ class StructuredTrainer:
             fallback_shapes = jnp.ones((1, 1, num_pairs, 2, 2), jnp.uint8)
             return fallback_grids[0, 0], fallback_shapes[0, 0], pattern_id
         
-    def _compute_inflated_poe_weights(self, logvars_stack, base_alphas, inflation_factor: float = 10.0):
-        """Compute inflated PoE weights based on encoder confidence (lowest variance gets higher weight)."""
-        # Convert to numpy if needed for compatibility
-        if hasattr(logvars_stack, 'shape'):
-            logvars_np = np.array(logvars_stack)
-        else:
-            logvars_np = logvars_stack
-            
-        if hasattr(base_alphas, 'shape'):
-            alphas_np = np.array(base_alphas)
-        else:
-            alphas_np = base_alphas
-        
-        # Compute mean variance per encoder across all dimensions
-        mean_var_per_encoder = np.mean(np.exp(logvars_np), axis=tuple(range(1, logvars_np.ndim)))
-        lowest_var_encoder = np.argmin(mean_var_per_encoder)
-        
-        # Create inflated alphas using numpy operations
-        inflated_alphas = alphas_np.copy()
-        inflated_alphas[lowest_var_encoder] *= inflation_factor
-        
-        # Renormalize to maintain sum <= 1
-        total_weight = np.sum(inflated_alphas)
-        if total_weight > 1.0:
-            inflated_alphas = inflated_alphas / total_weight
-        
-        # Log the inflation for debugging
-        logging.debug(f"🎯 PoE weight inflation: Encoder {lowest_var_encoder} (var={mean_var_per_encoder[lowest_var_encoder]:.4f}) inflated by {inflation_factor}x")
-        logging.debug(f"   Base alphas: {[f'{a:.3f}' for a in alphas_np]}")
-        logging.debug(f"   Inflated alphas: {[f'{a:.3f}' for a in inflated_alphas]}")
-        
-        return inflated_alphas
-
     def _compute_repulsion_loss(self, current_latents: chex.Array, target_latents_store: dict, current_encoder_idx: int, margin: float = 10.0) -> float:
         """
         Compute repulsion loss to push current encoder away from previous encoders' latent targets.
@@ -3630,8 +3574,14 @@ class StructuredTrainer:
         Returns:
             Repulsion loss value
         """
-        # Log basic repulsion info
-        logging.debug(f"Computing repulsion loss for encoder {current_encoder_idx}")
+        # DEBUG: Log repulsion loss computation
+        logging.info(f"🔍 REPULSION LOSS COMPUTATION DEBUG:")
+        logging.info(f"   - current_encoder_idx: {current_encoder_idx}")
+        logging.info(f"   - target_latents_store keys: {list(target_latents_store.keys()) if target_latents_store else 'None'}")
+        # Convert JAX tensor shape to Python tuple for safe logging
+        current_shape = tuple(current_latents.shape) if hasattr(current_latents, 'shape') else 'No shape'
+        logging.info(f"   - current_latents shape: {current_shape}")
+        logging.info(f"   - margin: {margin}")
         
         # Adaptive margin: if margin is too small, compute a reasonable one based on data
         if margin < 5.0:
@@ -3654,10 +3604,14 @@ class StructuredTrainer:
             if sample_distances:
                 sample_array = jnp.stack(sample_distances)
                 adaptive_margin = jnp.maximum(5.0, jnp.min(sample_array) * 0.8)
+                jax.debug.print("   - Adaptive margin computed: {m}", m=adaptive_margin)
                 margin = adaptive_margin
         
         if not target_latents_store or current_encoder_idx == 0:
             # No previous encoders to repulse from
+            logging.info(f"   - REPULSION SKIPPED: No previous encoders to repulse from")
+            logging.info(f"     * target_latents_store: {target_latents_store}")
+            logging.info(f"     * current_encoder_idx: {current_encoder_idx}")
             return 0.0
         
         repulsion_loss = 0.0
@@ -3665,18 +3619,31 @@ class StructuredTrainer:
         
         # Iterate through all previous encoders
         for prev_enc_idx in range(current_encoder_idx):
+            logging.info(f"   - Checking previous encoder {prev_enc_idx}")
             if prev_enc_idx in target_latents_store:
                 prev_targets = target_latents_store[prev_enc_idx]
+                logging.info(f"     * Found targets for encoder {prev_enc_idx}, keys: {list(prev_targets.keys()) if prev_targets else 'None'}")
                 
                 # For each pattern, compute repulsion from previous encoder's targets
                 for pattern_id, target_latents in prev_targets.items():
+                    # Convert JAX tensor shape to Python tuple for safe logging
+                    target_shape = tuple(target_latents.shape) if hasattr(target_latents, 'shape') else 'No shape'
+                    logging.info(f"       - Pattern {pattern_id}: target_latents type={type(target_latents)}, shape={target_shape}")
+                    
                     if target_latents is not None and len(target_latents) > 0:
                         # Ensure target latents have the same batch size
                         target_len = int(target_latents.shape[0]) if hasattr(target_latents, 'shape') else len(target_latents)
                         current_len = int(current_latents.shape[0]) if hasattr(current_latents, 'shape') else len(current_latents)
                         if target_len == current_len:
+                            logging.info(f"         * Batch sizes match: {target_len} == {current_len}")
+                            
                             # Compute L2 distance between current and target latents
                             distances = jnp.linalg.norm(current_latents - target_latents, axis=1)
+                            jax.debug.print(
+                                "         * Distances shape: {shape}, mean: {mean}",
+                                             shape=distances.shape,
+                                mean=jnp.mean(distances),
+                            )
                             
                             # Repulsion loss: penalize when distance < margin
                             # R(z_i, t_j) = max(0, margin - ||z_i - t_j||_2^2)
@@ -3689,10 +3656,22 @@ class StructuredTrainer:
                             # Use the maximum of both approaches
                             final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)  # Scale soft term down
                             
+                            jax.debug.print("         * Repulsion term: {rt}", rt=repulsion_term)
+                            jax.debug.print(
+                                "         * Soft repulsion term: {srt}",
+                                srt=soft_repulsion_term,
+                            )
+                            jax.debug.print(
+                                "         * Final repulsion term: {frt}",
+                                frt=final_repulsion_term,
+                            )
+                            
                             repulsion_loss += final_repulsion_term
                             num_repulsion_terms += 1
                         else:
-                            # Handle batch size mismatch by resizing target latents
+                            logging.warning(f"         * Batch size mismatch: {target_len} != {current_len}")
+                            logging.warning("         * Attempting to resize target latents to match current batch size")
+
                             try:
                                 if target_len > current_len:
                                     # Truncate excess target latents
@@ -3710,23 +3689,57 @@ class StructuredTrainer:
                                     )
 
                                 distances = jnp.linalg.norm(current_latents - resized_target_latents, axis=1)
+                                jax.debug.print(
+                                    "         * Resized distances shape: {shape}, mean: {mean}",
+                                                shape=distances.shape,
+                                    mean=jnp.mean(distances),
+                                )
+                                
                                 repulsion_term = jnp.mean(jnp.maximum(0, margin - distances))
                                 soft_repulsion_term = jnp.mean(1.0 / (distances + 1e-6))
                                 final_repulsion_term = jnp.maximum(repulsion_term, soft_repulsion_term * 0.1)
                                 
+                                jax.debug.print(
+                                    "         * Resized repulsion term: {rt}",
+                                    rt=repulsion_term,
+                                )
+                                jax.debug.print(
+                                    "         * Resized soft repulsion term: {srt}",
+                                    srt=soft_repulsion_term,
+                                )
+                                jax.debug.print(
+                                    "         * Resized final repulsion term: {frt}",
+                                    frt=final_repulsion_term,
+                                )
+                                
                                 repulsion_loss += final_repulsion_term
                                 num_repulsion_terms += 1
                             except Exception as resize_error:
-                                logging.warning(f"Failed to resize target latents: {resize_error}")
+                                logging.warning(
+                                    f"         * Failed to resize target latents: {resize_error}"
+                                )
+                                logging.warning(
+                                    "         * Skipping this repulsion term"
+                                )
                     else:
-                        logging.debug(f"Invalid target_latents for pattern {pattern_id}")
+                        logging.warning(f"         * Invalid target_latents: {target_latents}")
+            else:
+                logging.info(f"     * No targets found for encoder {prev_enc_idx}")
         
         # Average over all repulsion terms
         if num_repulsion_terms > 0:
             repulsion_loss = repulsion_loss / num_repulsion_terms
-            logging.debug(f"Repulsion loss computed from {num_repulsion_terms} terms")
+            jax.debug.print(
+                "   - Final repulsion loss: {loss} (from {n} terms)",
+                loss=repulsion_loss,
+                n=num_repulsion_terms,
+            )
+            logging.info(
+                f"   ✅ REPULSION LOSS COMPUTATION SUCCESSFUL: {repulsion_loss} from {num_repulsion_terms} terms"
+            )
         else:
-            logging.debug("No repulsion terms computed, returning 0.0")
+            jax.debug.print("   - No repulsion terms computed, returning 0.0")
+            logging.warning(f"   ⚠️  REPULSION LOSS COMPUTATION FAILED - no valid terms")
         
         return repulsion_loss
     
@@ -3864,19 +3877,6 @@ class StructuredTrainer:
                 logging.info(f"       ✅ Merged encoder certainty panel logged to WandB with step {phase1_completion_step}")
             else:
                 logging.warning("       ❌ Failed to create merged encoder certainty panel")
-
-            # Analyze PoE weights after Phase 1 completion
-            logging.info("🔍 Analyzing PoE weights after Phase 1 completion...")
-            poe_weight_analysis = self._analyze_poe_weights(state, step=0)
-            if poe_weight_analysis is not None:
-                phase1_completion_step = max(600, self.phase_a_global_step + 100)
-                wandb.log({
-                    "phase_1_completion/poe_weight_analysis": wandb.Image(poe_weight_analysis)
-                }, step=phase1_completion_step)
-                plt.close(poe_weight_analysis)
-                logging.info(f"       ✅ PoE weight analysis logged to WandB with step {phase1_completion_step}")
-            else:
-                logging.warning("       ❌ Failed to create PoE weight analysis")
 
             poster_poe_fig = self._create_poster_poe_figure(state, step=0)
             if poster_poe_fig is not None:
@@ -4471,49 +4471,6 @@ class StructuredTrainer:
         # Use current encoder weights from state.params, not the original artifact weights
         current_enc_params_list = state.params["encoders"]
         logging.info(f"Evaluation using current encoder weights from training state (step {getattr(state, 'step', 'unknown')})")
-        
-        # CRITICAL FIX: Use IDENTICAL samples for all evaluations to ensure consistency
-        # Generate data once and cache it to ensure Phase 1 and Phase 2 see the same samples
-        if not hasattr(self, "_cached_eval_data") or self._cached_eval_data is None:
-            logging.info("🔄 Generating and caching identical evaluation samples for consistency")
-            # Generate balanced data using synthetic method (same as confidence panel)
-            total_eval_length = 96  # Total evaluation samples
-            samples_per_pattern = total_eval_length // 3  # 32 samples per pattern
-            
-            grids_all, shapes_all = [], []
-            for pid in (1, 2, 3):  # Generate from all 3 patterns (O, T, L tetrominos)
-                # Use the SAME synthetic data generation as confidence panel
-                g, s, _ = self._create_pattern_dataset_synthetic(pid, samples_per_pattern)
-                grids_all.append(g)
-                shapes_all.append(s)
-            
-            # Cache the generated data
-            self._cached_eval_data = {
-                'grids': jnp.concatenate(grids_all, axis=0),
-                'shapes': jnp.concatenate(shapes_all, axis=0),
-                'pattern_ids': jnp.concatenate([
-                    jnp.full((samples_per_pattern,), 1),  # Pattern 1 (first 32 samples)
-                    jnp.full((samples_per_pattern,), 2),  # Pattern 2 (next 32 samples)
-                    jnp.full((samples_per_pattern,), 3),  # Pattern 3 (last 32 samples)
-                ], axis=0)
-            }
-            logging.info(f"✅ Cached identical evaluation data: {self._cached_eval_data['grids'].shape[0]} samples")
-        
-        # Use cached data for all evaluations
-        self.eval_grids = self._cached_eval_data['grids']
-        self.eval_shapes = self._cached_eval_data['shapes']
-        self.eval_pattern_ids = self._cached_eval_data['pattern_ids']
-        logging.info("🔄 Using cached identical samples for consistent evaluation")
-        
-        # VALIDATION: Log sample consistency for debugging
-        logging.info(f"✅ Evaluation data consistency check:")
-        logging.info(f"   - Grids shape: {self.eval_grids.shape}")
-        logging.info(f"   - Shapes shape: {self.eval_shapes.shape}")
-        logging.info(f"   - Pattern IDs: {np.unique(self.eval_pattern_ids)}")
-        logging.info(f"   - Samples per pattern: {[np.sum(self.eval_pattern_ids == pid) for pid in [1, 2, 3]]}")
-        logging.info(f"   - Phase: {'Phase 1' if not self.phase1_completed else 'Phase 2'}")
-        logging.info(f"   - Step: {step}")
-        
         if not hasattr(self, "eval_grids"):
             return {}
         cfg = self.cfg
@@ -4933,7 +4890,7 @@ class StructuredTrainer:
                     logging.info(f"Main eval - Context final latent shape: {context_np.shape}")
                 
                 all_latents.append(context_np)
-                source_ids.extend([len(current_enc_params_list)] * context_np.shape[0])  # num_encoders for generation context
+                source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for generation context
                 # CRITICAL FIX: Use the correct pattern sequence length for context output
                 context_pattern_sequence = pattern_sequence[:context_np.shape[0]]
                 pattern_ids_list.append(context_pattern_sequence)  # Pattern sequence matching context output length
@@ -4977,7 +4934,7 @@ class StructuredTrainer:
             total_patterns = 3  # O, T, L tetrominos
             points_per_pattern = total_points // total_patterns
             logging.info(f"T-SNE structure: {total_points} total points, {total_patterns} patterns, {points_per_pattern} points per pattern")
-            logging.info(f"Expected: {len(current_enc_params_list)} encoders + 1 context = {len(current_enc_params_list) + 1} points per set")
+            logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
             logging.info(f"Generating 3 T-SNE visualizations: main (encoders+context), context-only, encoders-only (pattern 1)")
             
             # Downsample points for t-SNE to be memory efficient (match train.py default)
@@ -5028,53 +4985,63 @@ class StructuredTrainer:
                 task_ids=task_ids_np,
             )
             
-            # 1. ADDITIONAL T-SNE: Show PoE latents to demonstrate fused representation (equivalent to train.py fig_latents_samples)
-            # Use the PoE latents (source_id=3) which represent the fused encoder outputs
-            if len(current_enc_params_list) > 0:
-                # Get PoE latents (source_id=3) which are the fused encoder outputs
-                poe_mask = (source_ids_np == len(current_enc_params_list))  # PoE context points
+            # 1. ADDITIONAL T-SNE: Show only contexts (PoE outputs) from specialized encoders
+            # Pattern 1 from Encoder 0, Pattern 2 from Encoder 1, Pattern 3 from Encoder 2
+            if len(enc_params_list) > 0:
+                specialized_context_samples = []
+                specialized_context_program_ids = []
+                specialized_context_task_ids = []
                 
-                if np.any(poe_mask):
-                    poe_latents = latents_concat[poe_mask]
-                    poe_program_ids = pattern_ids_concat[poe_mask]
-                    poe_task_ids = task_ids_np[poe_mask]
+                # For each pattern, collect only the context (PoE) outputs from the specialized encoder
+                for pattern_id in [1, 2, 3]:
+                    specialized_encoder_id = pattern_id - 1  # Pattern 1 -> Encoder 0, Pattern 2 -> Encoder 1, Pattern 3 -> Encoder 2
                     
-                    # Downsample if too many points
-                    max_poe_points = 2000
-                    if len(poe_latents) > max_poe_points:
-                        # Stratified sampling to maintain pattern distribution
-                        poe_indices = []
-                        for pattern_id in [1, 2, 3]:
-                            pattern_mask = (poe_program_ids == pattern_id)
-                            pattern_indices = np.where(pattern_mask)[0]
-                            if len(pattern_indices) > 0:
-                                max_per_pattern = max_poe_points // 3
-                                if len(pattern_indices) > max_per_pattern:
-                                    sampled_indices = np.random.RandomState(42).choice(
-                                        pattern_indices, size=max_per_pattern, replace=False
-                                    )
-                                else:
-                                    sampled_indices = pattern_indices
-                                poe_indices.extend(sampled_indices)
+                    pattern_mask = (pattern_ids_concat == pattern_id)
+                    if np.any(pattern_mask):
+                        # Get context points only (PoE outputs)
+                        context_mask = (source_ids_np == len(enc_params_list))  # PoE context points
+                        combined_mask = pattern_mask & context_mask
                         
-                        poe_latents = poe_latents[poe_indices]
-                        poe_program_ids = poe_program_ids[poe_indices]
-                        poe_task_ids = poe_task_ids[poe_indices]
+                        if np.any(combined_mask):
+                            context_latents = latents_concat[combined_mask]
+                            context_task_ids = task_ids_np[combined_mask]
+                            
+                            # Downsample for cleaner visualization
+                            max_context_points = min(100, len(context_latents))
+                            if len(context_latents) > max_context_points:
+                                sampled_indices = np.random.RandomState(42).choice(
+                                    len(context_latents), size=max_context_points, replace=False
+                                )
+                                context_latents = context_latents[sampled_indices]
+                                context_task_ids = context_task_ids[sampled_indices]
+                            
+                            # Add context outputs as samples for this pattern
+                            specialized_context_samples.append(context_latents)
+                            specialized_context_program_ids.extend([pattern_id] * len(context_latents))
+                            specialized_context_task_ids.extend(context_task_ids)
+                            
+                            logging.info(f"Pattern {pattern_id} (Encoder {specialized_encoder_id}): {len(context_latents)} context samples")
+                
+                if specialized_context_samples:
+                    # Concatenate all specialized context samples
+                    all_context_samples = np.concatenate(specialized_context_samples, axis=0)
+                    all_context_program_ids = np.array(specialized_context_program_ids)
+                    all_context_task_ids = np.array(specialized_context_task_ids)
                     
-                    # Create T-SNE for PoE samples (showing fused encoder outputs)
+                    # Create T-SNE for specialized context samples
                     fig_tsne_samples = visualize_tsne_sources(
-                        latents=poe_latents,
-                        program_ids=poe_program_ids,  # Pattern types (1, 2, 3) for colors
-                        source_ids=np.zeros(len(poe_latents), dtype=int),  # All same source (PoE)
-                        max_points=min(2000, len(poe_latents)),
+                        latents=all_context_samples,
+                        program_ids=all_context_program_ids,  # Pattern types (1, 2, 3) for colors
+                        source_ids=np.zeros(len(all_context_samples), dtype=int),  # All same source (context samples)
+                        max_points=min(2000, len(all_context_samples)),
                         random_state=42,
-                        task_ids=poe_task_ids,
+                        task_ids=all_context_task_ids,
                     )
                     
-                    logging.info(f"Generated PoE samples T-SNE: {len(poe_latents)} points (fused encoder outputs)")
+                    logging.info(f"Generated specialized context samples T-SNE: {len(all_context_samples)} points")
                 else:
                     fig_tsne_samples = None
-                    logging.warning("No PoE latents found for samples T-SNE")
+                    logging.warning("No specialized context samples found for samples T-SNE")
             else:
                 fig_tsne_samples = None
                 logging.warning("No encoders available for samples T-SNE")
@@ -5088,8 +5055,8 @@ class StructuredTrainer:
                 
                 if np.any(pattern_mask):
                     # Get encoder points AND PoE context points for this pattern
-                    encoder_mask = (source_ids_np < len(current_enc_params_list))
-                    context_mask = (source_ids_np == len(current_enc_params_list))  # PoE context points
+                    encoder_mask = (source_ids_np < len(enc_params_list))
+                    context_mask = (source_ids_np == len(enc_params_list))  # PoE context points
                     
                     encoder_combined_mask = pattern_mask & encoder_mask
                     context_combined_mask = pattern_mask & context_mask
@@ -5126,12 +5093,12 @@ class StructuredTrainer:
                         if len(encoder_latents) > max_encoder_points:
                             # Stratified sampling to maintain encoder distribution
                             encoder_indices = []
-                            for enc_id in range(len(current_enc_params_list)):
+                            for enc_id in range(len(enc_params_list)):
                                 enc_mask = encoder_sources == enc_id
                                 enc_indices = np.where(enc_mask)[0]
                                 if len(enc_indices) > 0:
                                     # Sample up to max_encoder_points // num_encoders from each encoder
-                                    max_per_encoder = max_encoder_points // len(current_enc_params_list)
+                                    max_per_encoder = max_encoder_points // len(enc_params_list)
                                     if len(enc_indices) > max_per_encoder:
                                         sampled_indices = np.random.RandomState(42).choice(
                                             enc_indices, size=max_per_encoder, replace=False
@@ -5153,19 +5120,19 @@ class StructuredTrainer:
                         pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
                         custom_title = f"t-SNE: Pattern {target_pattern} ({pattern_names[target_pattern]}) - Encoders + PoE"
                         
-                        # Create a custom PCA visualization for pattern-specific plots with source color coding
+                        # Create a custom T-SNE visualization for pattern-specific plots with source color coding
                         # Now includes both encoders (0,1,2) and PoE context (3)
-                        fig_tsne_encoders_single = self._create_pattern_specific_pca(
+                        fig_tsne_encoders_single = self._create_pattern_specific_tsne(
                             latents=encoder_latents,
                             source_ids=encoder_sources,    # 0,1,2 for encoders, 3 for PoE
                             task_ids=encoder_task_ids,
-                            title=custom_title.replace('t-SNE', 'PCA'),
+                            title=custom_title,
                             max_points=max_encoder_points,
                             random_state=42
                         )
                         
                         fig_tsne_encoders_list.append(fig_tsne_encoders_single)
-                        logging.info(f"Generated encoder+PoE PCA (pattern {target_pattern}): {len(encoder_latents)} points")
+                        logging.info(f"Generated encoder+PoE T-SNE (pattern {target_pattern}): {len(encoder_latents)} points")
                     else:
                         fig_tsne_encoders_list.append(None)
                         logging.warning(f"No encoder points found for pattern {target_pattern}")
@@ -5182,21 +5149,21 @@ class StructuredTrainer:
                 k_values = [3, 5, 10]
                 clustering_metrics = {}
                 
-                # OPTION 1: PoE samples clustering (like train.py fig_latents_samples) - for direct comparison
-                poe_mask = (source_ids_np == len(current_enc_params_list))  # PoE context points
-                if np.any(poe_mask):
-                    poe_emb = latents_concat[poe_mask]
-                    poe_prog = pattern_ids_concat[poe_mask]
-                    logging.info(f"PoE samples clustering: {poe_emb.shape[0]} points, patterns: {np.unique(poe_prog)}")
+                # OPTION 1: Encoder samples clustering (like train.py fig_latents_samples) - for direct comparison
+                encoder_mask = (source_ids_np < len(enc_params_list))
+                if np.any(encoder_mask):
+                    enc_emb = latents_concat[encoder_mask]
+                    enc_prog = pattern_ids_concat[encoder_mask]
+                    logging.info(f"Encoder samples clustering: {enc_emb.shape[0]} points, patterns: {np.unique(enc_prog)}")
                     
                     for k in k_values:
-                        # Modularity Q on PoE samples (comparable to train.py)
-                        modularity_q = compute_modularity_q(poe_emb, poe_prog, k=k)
-                        clustering_metrics[f"clustering/poe_samples/modularity_q_k{k}"] = modularity_q
+                        # Modularity Q on encoder samples (comparable to train.py)
+                        modularity_q = compute_modularity_q(enc_emb, enc_prog, k=k)
+                        clustering_metrics[f"clustering/encoder_samples/modularity_q_k{k}"] = modularity_q
                         
-                        # Adjusted Rand Index on PoE samples (comparable to train.py)
-                        ari_score = compute_adjusted_rand_index(poe_emb, poe_prog, k=k)
-                        clustering_metrics[f"clustering/poe_samples/ari_k{k}"] = ari_score
+                        # Adjusted Rand Index on encoder samples (comparable to train.py)
+                        ari_score = compute_adjusted_rand_index(enc_emb, enc_prog, k=k)
+                        clustering_metrics[f"clustering/encoder_samples/ari_k{k}"] = ari_score
                 else:
                     logging.warning("No encoder samples found for encoder samples clustering; skipping")
                 
@@ -5389,250 +5356,19 @@ class StructuredTrainer:
             import traceback
             logging.error(f"Traceback: {traceback.format_exc()}")
 
-        # Free figures to save memory
-        plt.close(fig_heatmap)
-        plt.close(fig_gen)
-        plt.close(fig_tsne)
-        if fig_tsne_samples is not None:
-            plt.close(fig_tsne_samples)
-        if fig_tsne_encoders is not None:
-            plt.close(fig_tsne_encoders)
-
         # Release large intermediates
         del all_latents, latents_concat, source_ids_np, pattern_ids_concat
-        return metrics
-
-    def _create_pca_sources_visualization(
-        self,
-        latents: np.ndarray,
-        program_ids: np.ndarray,
-        source_ids: np.ndarray,
-        max_points: int = 2000,
-        random_state: int = 42,
-        task_ids: Optional[np.ndarray] = None
-    ) -> Optional[plt.Figure]:
-        """
-        Create a PCA visualization similar to visualize_tsne_sources but using PCA instead of t-SNE.
         
-        Args:
-            latents: [N, D] array of latent embeddings
-            program_ids: [N] array of program/pattern IDs for coloring
-            source_ids: [N] array of source IDs for different markers
-            max_points: Maximum number of points to show
-            random_state: Random state for PCA
-            task_ids: Optional task IDs
-            
-        Returns:
-            matplotlib Figure with the PCA visualization
-        """
-        try:
-            from sklearn.decomposition import PCA
-            import matplotlib.pyplot as plt
-            import numpy as np
-            
-            if len(latents) == 0:
-                logging.warning("No latents provided for PCA visualization")
-                return None
-            
-            # Downsample if needed
-            if len(latents) > max_points:
-                # Stratified sampling to maintain pattern distribution
-                indices = []
-                unique_programs = np.unique(program_ids)
-                max_per_program = max_points // len(unique_programs)
-                
-                for prog_id in unique_programs:
-                    prog_mask = (program_ids == prog_id)
-                    prog_indices = np.where(prog_mask)[0]
-                    if len(prog_indices) > max_per_program:
-                        sampled_indices = np.random.RandomState(random_state).choice(
-                            prog_indices, size=max_per_program, replace=False
-                        )
-                    else:
-                        sampled_indices = prog_indices
-                    indices.extend(sampled_indices)
-                
-                latents = latents[indices]
-                program_ids = program_ids[indices]
-                source_ids = source_ids[indices]
-                if task_ids is not None:
-                    task_ids = task_ids[indices]
-            
-            # Apply PCA
-            pca = PCA(n_components=2, random_state=random_state)
-            latents_2d = pca.fit_transform(latents)
-            
-            # Create figure with same style as visualize_tsne_sources
-            fig, ax = plt.subplots(figsize=(12, 8))
-            
-            # Define colors for different patterns (same as visualize_tsne_sources)
-            pattern_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-            source_markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
-            source_labels = ['Encoder 0', 'Encoder 1', 'Encoder 2', 'Context', 'Source 4', 'Source 5', 'Source 6', 'Source 7', 'Source 8', 'Source 9']
-            
-            # Plot points for each source and pattern combination
-            unique_sources = np.unique(source_ids)
-            unique_programs = np.unique(program_ids)
-            
-            for source_id in unique_sources:
-                source_mask = (source_ids == source_id)
-                if np.any(source_mask):
-                    marker = source_markers[source_id % len(source_markers)]
-                    label = source_labels[source_id] if source_id < len(source_labels) else f'Source {source_id}'
-                    
-                    for prog_id in unique_programs:
-                        prog_mask = (program_ids == prog_id)
-                        combined_mask = source_mask & prog_mask
-                        
-                        if np.any(combined_mask):
-                            color = pattern_colors[prog_id % len(pattern_colors)]
-                            
-                            ax.scatter(
-                                latents_2d[combined_mask, 0], 
-                                latents_2d[combined_mask, 1],
-                                c=color, 
-                                marker=marker, 
-                                s=50, 
-                                alpha=0.7, 
-                                label=f'{label} (Pattern {prog_id})' if len(unique_programs) > 1 else label,
-                                edgecolors='white',
-                                linewidth=0.5
-                            )
-            
-            # Style the plot to match visualize_tsne_sources
-            ax.set_title('PCA: Latent Space Visualization', fontsize=14, fontweight='bold', pad=20)
-            ax.set_xlabel('PC1', fontsize=12)
-            ax.set_ylabel('PC2', fontsize=12)
-            ax.grid(True, alpha=0.3)
-            ax.legend(title='Sources', bbox_to_anchor=(1.05, 1), loc='upper left')
-            
-            # Add explained variance ratio to title
-            explained_var = pca.explained_variance_ratio_
-            total_explained = np.sum(explained_var)
-            ax.text(0.02, 0.98, f'Explained Variance: {total_explained:.1%}', 
-                   transform=ax.transAxes, fontsize=10, verticalalignment='top',
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-            
-            plt.tight_layout()
-            return fig
-            
-        except Exception as e:
-            logging.error(f"Failed to create PCA sources visualization: {e}")
-            return None
-
-    def _create_pattern_specific_pca(
-        self,
-        latents: np.ndarray,
-        source_ids: np.ndarray,
-        task_ids: np.ndarray,
-        title: str,
-        max_points: Optional[int] = 300,
-        random_state: int = 42
-    ) -> Optional[plt.Figure]:
-        """
-        Create a custom PCA visualization for pattern-specific plots with source color coding.
-        
-        This method creates PCA plots that match EXACTLY the style of visualize_tsne_sources:
-        - Same color palette, size, shapes, legend title, title style, axes style
-        - All points have the same pattern (same color)
-        - Different sources (encoders) have different colors and markers
-        - EXACTLY matches test/structured_mean/latents_context_only styling
-        
-        Args:
-            latents: [N, D] array of latent embeddings
-            source_ids: [N] array of source IDs (0, 1, 2 for encoders)
-            task_ids: [N] array of task IDs
-            title: Title for the PCA plot
-            max_points: Maximum number of points to show. If ``None``, use all points.
-            random_state: Random state for PCA (not used but kept for consistency)
-            
-        Returns:
-            matplotlib Figure with the PCA visualization
-        """
-        try:
-            from sklearn.decomposition import PCA
-            import matplotlib.pyplot as plt
-            import numpy as np
-            
-            if len(latents) == 0:
-                logging.warning("No latents provided for PCA visualization")
-                return None
-            
-            # Downsample if needed
-            if max_points is not None and len(latents) > max_points:
-                # Stratified sampling to maintain source distribution
-                indices = []
-                unique_sources = np.unique(source_ids)
-                max_per_source = max_points // len(unique_sources)
-                
-                for source_id in unique_sources:
-                    source_mask = (source_ids == source_id)
-                    source_indices = np.where(source_mask)[0]
-                    if len(source_indices) > max_per_source:
-                        sampled_indices = np.random.RandomState(random_state).choice(
-                            source_indices, size=max_per_source, replace=False
-                        )
-                    else:
-                        sampled_indices = source_indices
-                    indices.extend(sampled_indices)
-                
-                latents = latents[indices]
-                source_ids = source_ids[indices]
-                task_ids = task_ids[indices]
-            
-            # Apply PCA
-            pca = PCA(n_components=2, random_state=random_state)
-            latents_2d = pca.fit_transform(latents)
-            
-            # Create figure with same style as visualize_tsne_sources
-            fig, ax = plt.subplots(figsize=(10, 8))
-            
-            # Define colors and markers for different sources (same as visualize_tsne_sources)
-            source_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-            source_markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
-            source_labels = ['Encoder 0', 'Encoder 1', 'Encoder 2', 'Context', 'Source 4', 'Source 5', 'Source 6', 'Source 7', 'Source 8', 'Source 9']
-            
-            # Plot points for each source
-            unique_sources = np.unique(source_ids)
-            for i, source_id in enumerate(unique_sources):
-                source_mask = (source_ids == source_id)
-                if np.any(source_mask):
-                    color = source_colors[source_id % len(source_colors)]
-                    marker = source_markers[source_id % len(source_markers)]
-                    label = source_labels[source_id] if source_id < len(source_labels) else f'Source {source_id}'
-                    
-                    ax.scatter(
-                        latents_2d[source_mask, 0], 
-                        latents_2d[source_mask, 1],
-                        c=color, 
-                        marker=marker, 
-                        s=50, 
-                        alpha=0.7, 
-                        label=label,
-                        edgecolors='white',
-                        linewidth=0.5
-                    )
-            
-            # Style the plot to match visualize_tsne_sources
-            ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
-            ax.set_xlabel('PC1', fontsize=12)
-            ax.set_ylabel('PC2', fontsize=12)
-            ax.grid(True, alpha=0.3)
-            ax.legend(title='Sources', bbox_to_anchor=(1.05, 1), loc='upper left')
-            
-            # Add explained variance ratio to title
-            explained_var = pca.explained_variance_ratio_
-            total_explained = np.sum(explained_var)
-            ax.text(0.02, 0.98, f'Explained Variance: {total_explained:.1%}', 
-                   transform=ax.transAxes, fontsize=10, verticalalignment='top',
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-            
-            plt.tight_layout()
-            return fig
-            
-        except Exception as e:
-            logging.error(f"Failed to create PCA visualization: {e}")
-            return None
+        # Return all expected values according to function signature
+        return (
+            metrics,                    # dict[str, float]
+            fig_gen,                    # Optional[plt.Figure] - generation figure
+            fig_heatmap,                # plt.Figure - heatmap figure  
+            fig_tsne,                   # Optional[plt.Figure] - latents figure
+            fig_tsne_samples,           # Optional[plt.Figure] - latents_samples figure
+            None,                       # Optional[plt.Figure] - search_progress figure (not implemented)
+            fig_tsne_encoders_list      # list[Optional[plt.Figure]] - pattern-specific T-SNE plots
+        )
 
     def _create_pattern_specific_tsne(
         self,
@@ -6036,42 +5772,20 @@ class StructuredTrainer:
                     f"Test dataset pattern types: {np.unique(pattern_ids_np)}"
                 )
 
+                task_id_sequence = np.arange(dataset_grids.shape[0], dtype=int)
+                task_ids_list = []
+
                 # NEW: Track encoder variances for each pattern in test datasets
                 test_encoder_variance_metrics = {}
                 
                 # Add encoder outputs (unique source_id per encoder)
-                # CRITICAL FIX: Use pattern-specific datasets like phase_a certainty plots
-                # Generate pattern-specific data for each pattern and merge them
-                pattern_specific_data = {}
-                for pattern_id in [1, 2, 3]:
-                    pattern_specific_data[pattern_id] = self._create_pattern_dataset(pattern_id, num_samples=self.batch_size)
-                
-                # Merge all pattern data together
-                merged_grids = []
-                merged_shapes = []
-                merged_pattern_ids = []
-                
-                for pattern_id in [1, 2, 3]:
-                    grids, shapes, pattern_ids = pattern_specific_data[pattern_id]
-                    merged_grids.append(grids)
-                    merged_shapes.append(shapes)
-                    merged_pattern_ids.append(pattern_ids)
-                
-                merged_grids = jnp.concatenate(merged_grids, axis=0)
-                merged_shapes = jnp.concatenate(merged_shapes, axis=0)
-                merged_pattern_ids = jnp.concatenate(merged_pattern_ids, axis=0)
-                
-                # Update task_id_sequence to match merged data size
-                task_id_sequence = np.arange(merged_grids.shape[0], dtype=int)
-                task_ids_list = []
-                
                 for enc_idx, enc_params in enumerate(current_enc_params_list):
                     try:
                         mu_i, logvar_i = self.encoders[enc_idx].apply(
                             {"params": enc_params}, 
-                            merged_grids, 
-                            merged_shapes, 
-                            dropout_eval=False, 
+                            dataset_grids, 
+                            dataset_shapes, 
+                            True, 
                             mutable=False
                         )
                         lat = mu_i.mean(axis=-2)  # Mean over pairs
@@ -6086,9 +5800,8 @@ class StructuredTrainer:
                         mean_var_per_task = np.mean(var_i_flat, axis=1)  # [num_tasks]
                         
                         # Group variances by pattern for detailed analysis
-                        # Use merged pattern IDs instead of original program_ids
-                        for pattern_id in np.unique(merged_pattern_ids):
-                            pattern_mask = (merged_pattern_ids == pattern_id)
+                        for pattern_id in np.unique(pattern_ids_np):
+                            pattern_mask = (pattern_ids_np == pattern_id)
                             if np.any(pattern_mask):
                                 pattern_variances = mean_var_per_task[pattern_mask]
                                 pattern_mean_var = float(np.mean(pattern_variances))
@@ -6124,7 +5837,7 @@ class StructuredTrainer:
                         logging.info(f"Test eval - Encoder {enc_idx} - final latent shape: {lat_np.shape}")
                         all_latents.append(lat_np)
                         source_ids.extend([enc_idx] * lat_np.shape[0])  # enc_idx for each encoder (0, 1, 2)
-                        pattern_ids_list.append(merged_pattern_ids)  # Use merged pattern IDs
+                        pattern_ids_list.append(pattern_ids_np)
                         task_ids_list.append(task_id_sequence)
                         
                     except Exception as e:
@@ -6153,8 +5866,8 @@ class StructuredTrainer:
                     logging.info(f"Test eval - Context final latent shape: {context_np.shape}")
                 
                 all_latents.append(context_np)
-                source_ids.extend([len(current_enc_params_list)] * context_np.shape[0])  # num_encoders for context
-                pattern_ids_list.append(merged_pattern_ids)  # Use merged pattern IDs
+                source_ids.extend([len(enc_params_list)] * context_np.shape[0])  # num_encoders for context
+                pattern_ids_list.append(pattern_ids_np)
                 task_ids_list.append(task_id_sequence)
                 
                 if all_latents:
@@ -6170,7 +5883,7 @@ class StructuredTrainer:
                     logging.info(
                         f"Test T-SNE structure: {total_points} total points, {len(unique_patterns)} patterns, counts per pattern: {pattern_counts}"
                     )
-                    logging.info(f"Expected: {len(current_enc_params_list)} encoders + 1 context = {len(current_enc_params_list) + 1} points per set")
+                    logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
                     logging.info(f"Test: Generating 3 T-SNE visualizations: main (encoders+context), PoE task latents, encoders-only (single pattern)")
                     
                     # Use visualize_tsne_sources for different markers
@@ -6188,22 +5901,11 @@ class StructuredTrainer:
                     poe_program_ids = []
                     poe_task_ids = []
 
-                    # CRITICAL FIX: Use pattern-specific merged data for PoE computation to match encoder evaluation
-                    # Create leave-one-out data from the pattern-specific merged data
-                    merged_leave_one_out_grids = make_leave_one_out(merged_grids, axis=-4)
-                    merged_leave_one_out_shapes = make_leave_one_out(merged_shapes, axis=-3)
-                    
-                    # Handle the extra dimension from make_leave_one_out
-                    if merged_leave_one_out_grids.shape[1] == merged_grids.shape[1]:
-                        merged_leave_one_out_grids = merged_leave_one_out_grids[:, 0, ...]
-                    if merged_leave_one_out_shapes.shape[1] == merged_shapes.shape[1]:
-                        merged_leave_one_out_shapes = merged_leave_one_out_shapes[:, 0, ...]
-                    
                     for batch_idx in range(num_batches):
                         start = batch_idx * batch_size
                         end = start + batch_size
-                        batch_lo_grids = merged_leave_one_out_grids[start:end]
-                        batch_lo_shapes = merged_leave_one_out_shapes[start:end]
+                        batch_lo_grids = leave_one_out_grids[start:end]
+                        batch_lo_shapes = leave_one_out_shapes[start:end]
 
                         enc_mus = []
                         enc_logvars = []
@@ -6222,16 +5924,13 @@ class StructuredTrainer:
 
                         mus_stack = jnp.stack(enc_mus, axis=0)
                         logvars_stack = jnp.stack(enc_logvars, axis=0)
-                        
-                        # ENHANCED: Inflate PoE weights based on encoder confidence (lowest variance)
-                        inflated_alphas = self._compute_inflated_poe_weights(logvars_stack, alphas)
-                        poe_mu, _ = poe_diag_gaussians(mus_stack, logvars_stack, inflated_alphas)
+                        poe_mu, _ = poe_diag_gaussians(mus_stack, logvars_stack, alphas)
                         poe_mu_np = np.array(poe_mu).mean(axis=1)  # Average across contexts
 
                         poe_latents_list.append(poe_mu_np)
-                        # Use merged pattern IDs instead of original program_ids
-                        poe_program_ids.append(np.array(merged_pattern_ids[start:end]))
-                        poe_task_ids.append(np.arange(start, end, dtype=int))
+                        if program_ids is not None:
+                            poe_program_ids.append(np.array(program_ids[start:end]))
+                            poe_task_ids.append(np.arange(start, end, dtype=int))
 
                     if poe_latents_list:
                         poe_latents = np.concatenate(poe_latents_list, axis=0)
@@ -6263,7 +5962,7 @@ class StructuredTrainer:
 
                         # Label PoE-aggregated task latents as coming from the Context source in legend
                         poe_source_ids = np.full(poe_latents.shape[0], len(current_enc_params_list), dtype=int)
-                        fig_tsne_samples = self._create_pca_sources_visualization(
+                        fig_tsne_samples = visualize_tsne_sources(
                             latents=poe_latents,
                             program_ids=poe_program_ids_np,
                             source_ids=poe_source_ids,
@@ -6273,14 +5972,14 @@ class StructuredTrainer:
                         )
                         
                         logging.info(
-                            f"Test: Generated PoE task latents PCA: {poe_latents.shape[0]} points"
+                            f"Test: Generated PoE task latents T-SNE: {poe_latents.shape[0]} points"
                         )
                     else:
                         fig_tsne_samples = None
-                        logging.warning("Test: No PoE latents found for samples PCA")
+                        logging.warning("Test: No PoE latents found for samples T-SNE")
                     
-                    # 2. ADDITIONAL PCA: Show just the 3 encoders latents for EACH pattern
-                    # Generate one PCA plot for each pattern
+                    # 2. ADDITIONAL T-SNE: Show just the 3 encoders latents for EACH pattern
+                    # Generate one T-SNE plot for each pattern
                     fig_tsne_encoders_list = []
                     available_patterns = np.unique(pattern_ids_concat)
                     
@@ -6289,7 +5988,7 @@ class StructuredTrainer:
                         
                         if np.any(pattern_mask):
                             # Get encoder points only (exclude context)
-                            encoder_mask = (source_ids_np < len(current_enc_params_list))
+                            encoder_mask = (source_ids_np < len(enc_params_list))
                             combined_mask = pattern_mask & encoder_mask
                             
                             if np.any(combined_mask):
@@ -6302,12 +6001,12 @@ class StructuredTrainer:
                                 if len(encoder_latents) > max_encoder_points:
                                     # Stratified sampling to maintain encoder distribution
                                     encoder_indices = []
-                                    for enc_id in range(len(current_enc_params_list)):
+                                    for enc_id in range(len(enc_params_list)):
                                         enc_mask = encoder_sources == enc_id
                                         enc_indices = np.where(enc_mask)[0]
                                         if len(enc_indices) > 0:
                                             # Sample up to max_encoder_points // num_encoders from each encoder
-                                            max_per_encoder = max_encoder_points // len(current_enc_params_list)
+                                            max_per_encoder = max_encoder_points // len(enc_params_list)
                                             if len(enc_indices) > max_per_encoder:
                                                 sampled_indices = np.random.RandomState(42).choice(
                                                     enc_indices, size=max_per_encoder, replace=False
@@ -6325,11 +6024,11 @@ class StructuredTrainer:
                                 # Use pattern_id = target_pattern for all points (will show as same color)
                                 encoder_patterns = np.full(len(encoder_latents), target_pattern, dtype=int)
                                 
-                                # Create custom title for this pattern-specific PCA
-                                custom_title = f"PCA Visualisation of Latent Embeddings: Pattern {target_pattern}"
+                                # Create custom title for this pattern-specific T-SNE
+                                custom_title = f"t-SNE Visualisation of Latent Embeddings: Pattern {target_pattern}"
                                 
-                                # Create a custom PCA visualization for pattern-specific plots with source color coding
-                                fig_tsne_encoders_single = self._create_pattern_specific_pca(
+                                # Create a custom T-SNE visualization for pattern-specific plots with source color coding
+                                fig_tsne_encoders_single = self._create_pattern_specific_tsne(
                                     latents=encoder_latents,
                                     source_ids=encoder_sources,    # 0,1,2 for different encoders
                                     task_ids=encoder_task_ids,
@@ -6339,7 +6038,7 @@ class StructuredTrainer:
                                 )
                                 
                                 fig_tsne_encoders_list.append(fig_tsne_encoders_single)
-                                logging.info(f"Test: Generated encoder-only PCA (pattern {target_pattern}): {len(encoder_latents)} points")
+                                logging.info(f"Test: Generated encoder-only T-SNE (pattern {target_pattern}): {len(encoder_latents)} points")
                             else:
                                 fig_tsne_encoders_list.append(None)
                                 logging.warning(f"Test: No encoder points found for pattern {target_pattern}")
@@ -6356,21 +6055,21 @@ class StructuredTrainer:
                         k_values = [3, 5, 10]
                         test_clustering_metrics = {}
                         
-                        # OPTION 1: PoE samples clustering (like train.py fig_latents_samples) - for direct comparison
-                        poe_mask = (source_ids_np == len(current_enc_params_list))  # PoE context points
-                        if np.any(poe_mask):
-                            poe_emb = latents_concat[poe_mask]
-                            poe_prog = pattern_ids_concat[poe_mask]
-                            logging.info(f"Test PoE samples clustering: {poe_emb.shape[0]} points, patterns: {np.unique(poe_prog)}")
+                        # OPTION 1: Encoder samples clustering (like train.py fig_latents_samples) - for direct comparison
+                        encoder_mask = (source_ids_np < len(enc_params_list))
+                        if np.any(encoder_mask):
+                            enc_emb = latents_concat[encoder_mask]
+                            enc_prog = pattern_ids_concat[encoder_mask]
+                            logging.info(f"Test encoder samples clustering: {enc_emb.shape[0]} points, patterns: {np.unique(enc_prog)}")
                             
                             for k in k_values:
-                                # Modularity Q on PoE samples (comparable to train.py)
-                                modularity_q = compute_modularity_q(poe_emb, poe_prog, k=k)
-                                test_clustering_metrics[f"clustering/{test_name}/poe_samples/modularity_q_k{k}"] = modularity_q
+                                # Modularity Q on encoder samples (comparable to train.py)
+                                modularity_q = compute_modularity_q(enc_emb, enc_prog, k=k)
+                                test_clustering_metrics[f"clustering/{test_name}/encoder_samples/modularity_q_k{k}"] = modularity_q
                                 
-                                # Adjusted Rand Index on PoE samples (comparable to train.py)
-                                ari_score = compute_adjusted_rand_index(poe_emb, poe_prog, k=k)
-                                test_clustering_metrics[f"clustering/{test_name}/poe_samples/ari_k{k}"] = ari_score
+                                # Adjusted Rand Index on encoder samples (comparable to train.py)
+                                ari_score = compute_adjusted_rand_index(enc_emb, enc_prog, k=k)
+                                test_clustering_metrics[f"clustering/{test_name}/encoder_samples/ari_k{k}"] = ari_score
                         else:
                             logging.warning(f"Test: No encoder samples found for encoder samples clustering; skipping")
                         
@@ -6427,7 +6126,7 @@ class StructuredTrainer:
             logging.info(f"   - Using SAME computation approach as Phase 1: _create_specialized_training_data + visualize_struct_confidence_panel")
             logging.info(f"   - Merging all encoders into single comprehensive plots per pattern")
             
-            # Create evaluation data for all patterns
+            # Create evaluation data for all patterns using the SAME approach as Phase 1
             eval_data = {}
             for pattern_id in [1, 2, 3]:
                 eval_data[pattern_id] = self._get_phase2_eval_data(target_pattern=pattern_id)
@@ -6563,12 +6262,10 @@ class StructuredTrainer:
                             f"stacked_logvars={stacked_logvars.shape}, alphas={poe_alphas.shape}"
                         )
 
-                        # ENHANCED: Inflate PoE weights based on encoder confidence (lowest variance)
-                        inflated_alphas = self._compute_inflated_poe_weights(stacked_logvars, poe_alphas)
                         poe_mu, poe_logvar = poe_diag_gaussians(
                             stacked_mus,
                             stacked_logvars,
-                            inflated_alphas,
+                            poe_alphas,
                         )
 
                         # Debug: Log output shapes
@@ -6711,158 +6408,6 @@ class StructuredTrainer:
             return None
     
 
-    def _analyze_poe_weights(self, state: TrainState, step: int) -> Optional[plt.Figure]:
-        """Analyze actual PoE weights per sample and per dimension.
-        
-        Computes:
-        - tau = 1.0 / var (precision)
-        - w = (alpha * tau) / (tau0 + sum(alpha * tau)) (per-dimension weights)
-        - w_enc = w.mean(-1) (per-encoder average weight)
-        
-        Plots w_enc histograms per pattern to show actual encoder weights.
-        """
-        try:
-            import matplotlib.pyplot as plt
-            import numpy as np
-            
-            # Get evaluation data for each pattern
-            eval_data = {}
-            for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._get_phase2_eval_data(target_pattern=pattern_id)
-            
-            # Get encoder parameters
-            enc_params_list = state.params["encoders"]
-            poe_alphas = np.array(self.cfg.structured.alphas, dtype=np.float32)
-            
-            # Store results
-            all_w_enc = {pattern_id: [] for pattern_id in [1, 2, 3]}
-            all_encoder_mus = {pattern_id: [] for pattern_id in [1, 2, 3]}
-            all_encoder_logvars = {pattern_id: [] for pattern_id in [1, 2, 3]}
-            
-            # Process each pattern
-            for pattern_id in [1, 2, 3]:
-                grids, shapes = eval_data[pattern_id]
-                
-                # Get encoder outputs for this pattern
-                encoder_mus = []
-                encoder_logvars = []
-                
-                for enc_idx, enc_params in enumerate(enc_params_list):
-                    mu_i, logvar_i = self.encoders[enc_idx].apply(
-                        {"params": enc_params}, 
-                        grids, 
-                        shapes, 
-                        dropout_eval=False, 
-                        mutable=False
-                    )
-                    encoder_mus.append(np.array(mu_i))
-                    encoder_logvars.append(np.array(logvar_i))
-                
-                # Stack encoder outputs: [E, B, N, H]
-                stacked_mus = np.stack(encoder_mus)  # [E, B, N, H]
-                stacked_logvars = np.stack(encoder_logvars)  # [E, B, N, H]
-                
-                # Compute PoE weights for each sample
-                E, B, N, H = stacked_mus.shape
-                w_enc_per_sample = []
-                
-                for b in range(B):
-                    # Get data for this sample: [E, N, H]
-                    sample_mus = stacked_mus[:, b, :, :]
-                    sample_logvars = stacked_logvars[:, b, :, :]
-                    
-                    # Compute precisions: tau = 1.0 / var
-                    sample_vars = np.exp(sample_logvars)
-                    sample_taus = 1.0 / (sample_vars + 1e-8)  # [E, N, H]
-                    
-                    # Compute per-dimension weights: w = (alpha * tau) / (tau0 + sum(alpha * tau))
-                    prior_prec = np.maximum(1.0 - np.sum(poe_alphas), 1e-8)
-                    alpha_reshaped = poe_alphas.reshape(-1, 1, 1)  # [E, 1, 1]
-                    
-                    # Weighted precisions: alpha * tau
-                    weighted_taus = alpha_reshaped * sample_taus  # [E, N, H]
-                    
-                    # Sum over encoders: sum(alpha * tau)
-                    total_weighted_tau = np.sum(weighted_taus, axis=0)  # [N, H]
-                    
-                    # Per-dimension weights: w = (alpha * tau) / (tau0 + sum(alpha * tau))
-                    w_per_dim = weighted_taus / (prior_prec + total_weighted_tau + 1e-8)  # [E, N, H]
-                    
-                    # Per-encoder average weight: w_enc = w.mean(-1)
-                    w_enc = np.mean(w_per_dim, axis=(1, 2))  # [E] - average over N and H
-                    w_enc_per_sample.append(w_enc)
-                
-                # Store results
-                all_w_enc[pattern_id] = np.array(w_enc_per_sample)  # [B, E]
-                all_encoder_mus[pattern_id] = stacked_mus
-                all_encoder_logvars[pattern_id] = stacked_logvars
-            
-            # Create visualization
-            fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-            fig.suptitle(f'PoE Weight Analysis (Step {step})', fontsize=16)
-            
-            # Plot w_enc histograms per pattern
-            for pattern_id in [1, 2, 3]:
-                w_enc_data = all_w_enc[pattern_id]  # [B, E]
-                
-                # Plot per-encoder weight distributions
-                ax = axes[0, pattern_id - 1]
-                for enc_idx in range(len(enc_params_list)):
-                    weights = w_enc_data[:, enc_idx]
-                    ax.hist(weights, bins=20, alpha=0.7, label=f'Encoder {enc_idx}', density=True)
-                ax.set_title(f'Pattern {pattern_id} - PoE Weights per Encoder')
-                ax.set_xlabel('w_enc (per-encoder average weight)')
-                ax.set_ylabel('Density')
-                ax.legend()
-                ax.grid(True, alpha=0.3)
-                
-                # Plot encoder variance distributions
-                ax = axes[1, pattern_id - 1]
-                for enc_idx in range(len(enc_params_list)):
-                    vars_data = all_encoder_logvars[pattern_id][enc_idx]  # [B, N, H]
-                    vars_flat = np.exp(vars_data).reshape(-1)
-                    ax.hist(vars_flat, bins=20, alpha=0.7, label=f'Encoder {enc_idx}', density=True)
-                ax.set_title(f'Pattern {pattern_id} - Encoder Variances')
-                ax.set_xlabel('Variance')
-                ax.set_ylabel('Density')
-                ax.legend()
-                ax.grid(True, alpha=0.3)
-                ax.set_yscale('log')
-            
-            plt.tight_layout()
-            
-            # Log detailed summary statistics
-            logging.info(f"PoE Weight Analysis Summary (Step {step}):")
-            logging.info(f"  PoE alphas: {poe_alphas}")
-            logging.info(f"  Prior precision: {np.maximum(1.0 - np.sum(poe_alphas), 1e-8):.6f}")
-            
-            for pattern_id in [1, 2, 3]:
-                w_enc_data = all_w_enc[pattern_id]
-                logging.info(f"  Pattern {pattern_id}:")
-                for enc_idx in range(len(enc_params_list)):
-                    weights = w_enc_data[:, enc_idx]
-                    logging.info(f"    Encoder {enc_idx}: mean={np.mean(weights):.4f}, std={np.std(weights):.4f}, min={np.min(weights):.4f}, max={np.max(weights):.4f}")
-                    
-                    # Also log variance statistics for this encoder on this pattern
-                    vars_data = all_encoder_logvars[pattern_id][enc_idx]  # [B, N, H]
-                    vars_flat = np.exp(vars_data).reshape(-1)
-                    logging.info(f"      Variance: mean={np.mean(vars_flat):.6f}, std={np.std(vars_flat):.6f}, min={np.min(vars_flat):.6f}, max={np.max(vars_flat):.6f}")
-            
-            # Log key insights
-            logging.info("  Key Insights:")
-            for pattern_id in [1, 2, 3]:
-                w_enc_data = all_w_enc[pattern_id]
-                # Find which encoder has highest average weight on this pattern
-                avg_weights = np.mean(w_enc_data, axis=0)
-                best_encoder = np.argmax(avg_weights)
-                logging.info(f"    Pattern {pattern_id}: Encoder {best_encoder} has highest average weight ({avg_weights[best_encoder]:.4f})")
-            
-            return fig
-            
-        except Exception as e:
-            logging.error(f"Failed to analyze PoE weights: {e}")
-            return None
-
     def _create_poster_poe_figure(self, state: TrainState, step: int) -> Optional[plt.Figure]:
         """Create a simplified PoE figure for posters without notes or dashed lines."""
         try:
@@ -6871,10 +6416,10 @@ class StructuredTrainer:
             from scipy.stats import norm
             from models.structured_lpn import poe_diag_gaussians
 
-            # Prepare evaluation data for each pattern - use same method as merged_encoder_certainty_panel
+            # Prepare evaluation data for each pattern
             eval_data = {}
             for pattern_id in [1, 2, 3]:
-                eval_data[pattern_id] = self._get_phase2_eval_data(target_pattern=pattern_id)
+                eval_data[pattern_id] = self._create_specialized_training_data(pattern_id)
 
             poster_fig, poster_axes = plt.subplots(2, 3, figsize=(20, 12))
             if len(poster_axes.shape) == 1:
@@ -6952,13 +6497,10 @@ class StructuredTrainer:
                         stacked_mus = np.stack(all_encoder_mus)
                         stacked_logvars = np.stack(all_encoder_logvars)
                         poe_alphas = np.ones(len(self.encoders)) / len(self.encoders)
-                        
-                        # ENHANCED: Inflate PoE weights based on encoder confidence (lowest variance)
-                        inflated_alphas = self._compute_inflated_poe_weights(stacked_logvars, poe_alphas)
                         poe_mu, poe_logvar = poe_diag_gaussians(
                             stacked_mus,
                             stacked_logvars,
-                            inflated_alphas,
+                            poe_alphas,
                         )
                         poe_mu_np = np.array(poe_mu).squeeze()
                         poe_logvar_np = np.array(poe_logvar).squeeze()
