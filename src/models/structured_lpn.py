@@ -330,8 +330,28 @@ class StructuredLPN(nn.Module):
             enc_outputs.append((mu_i, logvar_i))
         mus, logvars = self._stack_encoder_outputs(enc_outputs)
         E = mus.shape[0]
+        
+        # DYNAMIC POE ALPHAS: Compute based on encoder with lowest variance
         if poe_alphas is None or (hasattr(poe_alphas, "size") and int(poe_alphas.size) == 0):
-            poe_alphas = jnp.ones((E,), dtype=mus.dtype) / max(E, 1)
+            # Compute average variance for each encoder across all context samples
+            encoder_variances = []
+            for i in range(E):
+                # Average variance across all pairs and latent dimensions
+                avg_var = jnp.mean(jnp.exp(logvars[i]))  # exp(logvar) = variance
+                encoder_variances.append(avg_var)
+            
+            # Find encoder with lowest variance (most confident)
+            encoder_variances = jnp.array(encoder_variances)
+            min_var_idx = jnp.argmin(encoder_variances)
+            
+            # Create dynamic alphas: 95% weight to most confident encoder, 5% distributed among others
+            poe_alphas = jnp.ones((E,), dtype=mus.dtype) * 0.05 / max(E - 1, 1)  # 5% distributed
+            poe_alphas = poe_alphas.at[min_var_idx].set(0.95)  # 95% to most confident encoder
+            
+            # Debug logging
+            jax.debug.print("Dynamic PoE alphas: {alphas}, min_var_idx: {idx}, variances: {vars}", 
+                           alphas=poe_alphas, idx=min_var_idx, vars=encoder_variances)
+        
         mu_poe, logvar_poe = poe_diag_gaussians(mus, logvars, poe_alphas)
 
         # 2) sample if variational
@@ -363,13 +383,19 @@ class StructuredLPN(nn.Module):
             first_context = latents.mean(axis=-2)
             second_context = first_context
             info["context"] = first_context
-            # Also store the raw PoE latents for comparison
+            # Store PoE-specific context and latents
+            info["context_poe"] = first_context  # PoE context (same as regular context in mean mode)
+            info["latents_samples_poe"] = latents  # Raw PoE latents
+            # Also store the raw PoE latents for comparison (legacy)
             info["poe_latents"] = latents
         elif mode == "first":
             first_context = latents[..., 0, :]
             second_context = first_context
-            info = {"context": first_context}
-            # Also store the raw PoE latents for comparison
+            info["context"] = first_context
+            # Store PoE-specific context and latents
+            info["context_poe"] = first_context  # PoE context (same as regular context in first mode)
+            info["latents_samples_poe"] = latents  # Raw PoE latents
+            # Also store the raw PoE latents for comparison (legacy)
             info["poe_latents"] = latents
         elif mode == "random_search":
             assert key is not None
@@ -379,8 +405,11 @@ class StructuredLPN(nn.Module):
             first_context, second_context = self._core._get_random_search_context(
                 latents, pairs, grid_shapes, k, **mode_kwargs
             )
-            info = {"context": first_context}
-            # Also store the raw PoE latents for comparison
+            info["context"] = first_context
+            # Store PoE-specific context and latents
+            info["context_poe"] = first_context  # PoE context (optimized from PoE latents)
+            info["latents_samples_poe"] = latents  # Raw PoE latents
+            # Also store the raw PoE latents for comparison (legacy)
             info["poe_latents"] = latents
         elif mode == "gradient_ascent":
             for arg in ["num_steps", "lr"]:
@@ -389,8 +418,11 @@ class StructuredLPN(nn.Module):
             first_context, second_context = self._core._get_gradient_ascent_context(
                 latents, pairs, grid_shapes, k, **mode_kwargs
             )
-            info = {"context": first_context}
-            # Also store the raw PoE latents for comparison
+            info["context"] = first_context
+            # Store PoE-specific context and latents
+            info["context_poe"] = first_context  # PoE context (optimized from PoE latents)
+            info["latents_samples_poe"] = latents  # Raw PoE latents
+            # Also store the raw PoE latents for comparison (legacy)
             info["poe_latents"] = latents
         elif mode == "evolutionary_search":
             for arg in ["population_size", "num_generations", "mutation_std"]:
@@ -399,8 +431,11 @@ class StructuredLPN(nn.Module):
             first_context, second_context = self._core._get_evolutionary_search_context(
                 latents, pairs, grid_shapes, k, **mode_kwargs
             )
-            info = {"context": first_context}
-            # Also store the raw PoE latents for comparison
+            info["context"] = first_context
+            # Store PoE-specific context and latents
+            info["context_poe"] = first_context  # PoE context (optimized from PoE latents)
+            info["latents_samples_poe"] = latents  # Raw PoE latents
+            # Also store the raw PoE latents for comparison (legacy)
             info["poe_latents"] = latents
         else:
             raise ValueError(f"Unsupported mode: {mode}")

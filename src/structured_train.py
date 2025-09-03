@@ -4541,8 +4541,18 @@ class StructuredTrainer:
                 contexts = [inf[key] for inf in all_info]
                 info[key] = jnp.concatenate(contexts, axis=0)
                 logging.info(f"Context shape after concatenation: {info[key].shape}")
+            elif key == "context_poe":
+                # Concatenate PoE contexts
+                poe_contexts = [inf[key] for inf in all_info]
+                info[key] = jnp.concatenate(poe_contexts, axis=0)
+                logging.info(f"PoE context shape after concatenation: {info[key].shape}")
+            elif key == "latents_samples_poe":
+                # Concatenate PoE latents samples
+                poe_latents_samples = [inf[key] for inf in all_info]
+                info[key] = jnp.concatenate(poe_latents_samples, axis=0)
+                logging.info(f"PoE latents samples shape after concatenation: {info[key].shape}")
             elif key == "poe_latents":
-                # Concatenate PoE latents
+                # Concatenate PoE latents (legacy)
                 poe_latents = [inf[key] for inf in all_info]
                 info[key] = jnp.concatenate(poe_latents, axis=0)
                 logging.info(f"PoE latents shape after concatenation: {info[key].shape}")
@@ -4977,6 +4987,63 @@ class StructuredTrainer:
             else:
                 logging.warning("PoE T-SNE - No 'poe_latents' found in info")
             
+            # NEW: PoE Context T-SNE - Show the PoE context (aggregated PoE latents)
+            fig_poe_context_tsne = None
+            if "context_poe" in info and info["context_poe"] is not None:
+                poe_context = np.array(info["context_poe"])
+                logging.info(f"PoE Context T-SNE - Found PoE context with shape: {poe_context.shape}")
+                
+                # Reshape PoE context to 2D if needed
+                if poe_context.ndim > 2:
+                    poe_context = poe_context.reshape(-1, poe_context.shape[-1])
+                
+                # Ensure consistent latent dimension
+                if poe_context.shape[-1] != 32:
+                    if poe_context.shape[-1] < 32:
+                        padding = np.zeros((poe_context.shape[0], 32 - poe_context.shape[-1]))
+                        poe_context = np.concatenate([poe_context, padding], axis=1)
+                    else:
+                        poe_context = poe_context[:, :32]
+                
+                # Create pattern IDs for PoE context (same as context)
+                poe_context_pattern_ids = pattern_ids_concat[source_ids_np == len(enc_params_list)]  # Context pattern IDs
+                poe_context_task_ids = task_ids_np[source_ids_np == len(enc_params_list)]  # Context task IDs
+                
+                # Ensure we have the right number of pattern/task IDs
+                if len(poe_context_pattern_ids) != len(poe_context):
+                    # If mismatch, repeat the pattern IDs to match PoE context length
+                    repeat_factor = len(poe_context) // len(poe_context_pattern_ids)
+                    remainder = len(poe_context) % len(poe_context_pattern_ids)
+                    poe_context_pattern_ids = np.tile(poe_context_pattern_ids, repeat_factor)
+                    if remainder > 0:
+                        poe_context_pattern_ids = np.concatenate([poe_context_pattern_ids, poe_context_pattern_ids[:remainder]])
+                    poe_context_task_ids = np.tile(poe_context_task_ids, repeat_factor)
+                    if remainder > 0:
+                        poe_context_task_ids = np.concatenate([poe_context_task_ids, poe_context_task_ids[:remainder]])
+                
+                # Create PoE context source IDs (all marked as PoE context)
+                poe_context_source_ids = np.full(len(poe_context), len(enc_params_list), dtype=int)
+                
+                # Downsample if needed
+                if len(poe_context) > max_points:
+                    indices = np.random.choice(len(poe_context), max_points, replace=False)
+                    poe_context = poe_context[indices]
+                    poe_context_pattern_ids = poe_context_pattern_ids[indices]
+                    poe_context_task_ids = poe_context_task_ids[indices]
+                    poe_context_source_ids = poe_context_source_ids[indices]
+                
+                fig_poe_context_tsne = visualize_tsne_sources(
+                    latents=poe_context,
+                    program_ids=poe_context_pattern_ids,
+                    source_ids=poe_context_source_ids,
+                    max_points=max_points,
+                    random_state=42,
+                    task_ids=poe_context_task_ids,
+                )
+                logging.info(f"Generated PoE Context T-SNE with {len(poe_context)} points")
+            else:
+                logging.warning("PoE Context T-SNE - No 'context_poe' found in info")
+            
             # 1. ADDITIONAL T-SNE: Show latent samples to demonstrate uncertainty (equivalent to train.py fig_latents_samples)
             # Since structured_train doesn't have latents_samples, we'll create multiple samples from encoders
             if len(enc_params_list) > 0:
@@ -5247,6 +5314,7 @@ class StructuredTrainer:
             f"test/{test_name}/latents": wandb.Image(fig_tsne),
             f"test/{test_name}/latents_samples": wandb.Image(fig_tsne_samples) if fig_tsne_samples is not None else None,
             f"test/{test_name}/latents_poe": wandb.Image(fig_poe_tsne) if fig_poe_tsne is not None else None,
+            f"test/{test_name}/latents_poe_context": wandb.Image(fig_poe_context_tsne) if fig_poe_context_tsne is not None else None,
             **metrics,
         }
         
@@ -5372,6 +5440,8 @@ class StructuredTrainer:
             plt.close(fig_tsne_encoders)
         if fig_poe_tsne is not None:
             plt.close(fig_poe_tsne)
+        if fig_poe_context_tsne is not None:
+            plt.close(fig_poe_context_tsne)
 
         # Release large intermediates
         del all_latents, latents_concat, source_ids_np, pattern_ids_concat
