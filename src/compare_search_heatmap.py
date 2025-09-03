@@ -286,9 +286,14 @@ def run_evaluation_with_budget(
                         # GA: each step = 2 evaluations, so budget steps are [0, 2, 4, 6, ...]
                         metrics["budget"] = np.arange(0, len(metrics.get("losses", [])), 1) * 2
                     else:
-                        # ES: cumulative evaluations at each generation
-                        pop = int(np.sqrt(budget))
-                        metrics["budget"] = np.arange(len(metrics.get("losses", []))) * pop
+                        # ES: use the same budget range as GA for consistency
+                        # Create budget steps that align with the target budget
+                        num_steps = len(metrics.get("losses", []))
+                        if num_steps > 0:
+                            # Create budget steps that go from 0 to the target budget
+                            metrics["budget"] = np.linspace(0, budget, num_steps, dtype=int)
+                        else:
+                            metrics["budget"] = np.array([])
                     print(f"Created {method} budget trajectory: {metrics['budget'].shape}")
                 
             except Exception as e:
@@ -379,21 +384,41 @@ def create_heatmaps(
         # Create comprehensive heatmaps with budget on Y-axis, checkpoints on X-axis
         print(f"Creating comprehensive heatmaps for {len(all_checkpoints)} checkpoints...")
         
+        # Create uniform budget grid (unit steps: 0-1, 1-2, 2-3, etc.)
+        # Find the maximum budget across all methods and checkpoints
+        max_budget_found = 0
+        for ga_budget in all_ga_budgets:
+            if ga_budget is not None and len(ga_budget) > 0:
+                max_budget_found = max(max_budget_found, int(ga_budget[-1]))
+        for es_budget in all_es_budgets:
+            if es_budget is not None and len(es_budget) > 0:
+                max_budget_found = max(max_budget_found, int(es_budget[-1]))
+        
+        # Create uniform budget grid with unit steps
+        uniform_budget_grid = np.arange(0, max_budget_found + 1)  # [0, 1, 2, 3, ..., max_budget]
+        print(f"Created uniform budget grid: {uniform_budget_grid}")
+        
         # Create comprehensive GA loss heatmap
         if all_ga_losses:
-            # Find the maximum budget steps across all checkpoints
-            max_ga_steps = max(len(ga_losses) for ga_losses in all_ga_losses)
-            ga_loss_matrix = np.full((max_ga_steps, len(all_checkpoints)), np.nan)
+            ga_loss_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
 
-            for i, ga_losses in enumerate(all_ga_losses):
-                ga_loss_matrix[:len(ga_losses), i] = ga_losses
+            for i, (ga_losses, ga_budget) in enumerate(zip(all_ga_losses, all_ga_budgets)):
+                # Interpolate GA values to uniform budget grid
+                for j, budget_val in enumerate(uniform_budget_grid):
+                    # Find the appropriate GA value for this budget
+                    ga_value = None
+                    for k, ga_b in enumerate(ga_budget):
+                        if ga_b <= budget_val:
+                            ga_value = ga_losses[k]
+                        else:
+                            break
+                    if ga_value is not None:
+                        ga_loss_matrix[j, i] = ga_value
 
-            # Use the budget from the first checkpoint (assuming they're similar)
-            ga_budget_summary = all_ga_budgets[0] if all_ga_budgets else np.arange(max_ga_steps)
             checkpoint_indices = np.arange(len(all_checkpoints))
 
             fig = visualize_loss_difference_heatmap(
-                checkpoint_indices, ga_budget_summary, ga_loss_matrix,
+                checkpoint_indices, uniform_budget_grid, ga_loss_matrix,
                 method_A_name="GA", method_B_name="GA"
             )
             ga_file = os.path.join(output_dir, "ga_comprehensive_loss_heatmap.png")
@@ -403,19 +428,25 @@ def create_heatmaps(
 
         # Create comprehensive ES loss heatmap
         if all_es_losses:
-            # Find the maximum budget steps across all checkpoints
-            max_es_steps = max(len(es_losses) for es_losses in all_es_losses)
-            es_loss_matrix = np.full((max_es_steps, len(all_checkpoints)), np.nan)
+            es_loss_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
 
-            for i, es_losses in enumerate(all_es_losses):
-                es_loss_matrix[:len(es_losses), i] = es_losses
+            for i, (es_losses, es_budget) in enumerate(zip(all_es_losses, all_es_budgets)):
+                # Interpolate ES values to uniform budget grid
+                for j, budget_val in enumerate(uniform_budget_grid):
+                    # Find the appropriate ES value for this budget
+                    es_value = None
+                    for k, es_b in enumerate(es_budget):
+                        if es_b <= budget_val:
+                            es_value = es_losses[k]
+                        else:
+                            break
+                    if es_value is not None:
+                        es_loss_matrix[j, i] = es_value
 
-            # Use the budget from the first checkpoint (assuming they're similar)
-            es_budget_summary = all_es_budgets[0] if all_es_budgets else np.arange(max_es_steps)
             checkpoint_indices = np.arange(len(all_checkpoints))
 
             fig = visualize_loss_difference_heatmap(
-                checkpoint_indices, es_budget_summary, es_loss_matrix,
+                checkpoint_indices, uniform_budget_grid, es_loss_matrix,
                 method_A_name="ES", method_B_name="ES"
             )
             es_file = os.path.join(output_dir, "es_comprehensive_loss_heatmap.png")
@@ -427,30 +458,41 @@ def create_heatmaps(
         if (all_ga_losses and all_es_losses and 
             len(all_ga_losses) == len(all_es_losses)):
             
-            # Find the maximum budget steps across both methods
-            max_ga_steps = max(len(ga_losses) for ga_losses in all_ga_losses)
-            max_es_steps = max(len(es_losses) for es_losses in all_es_losses)
-            max_steps = max(max_ga_steps, max_es_steps)
+            # Create aligned matrices for both methods using uniform budget grid
+            ga_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
+            es_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
             
-            # Create aligned matrices for both methods
-            ga_matrix = np.full((max_steps, len(all_checkpoints)), np.nan)
-            es_matrix = np.full((max_steps, len(all_checkpoints)), np.nan)
+            # Fill GA matrix
+            for i, (ga_losses, ga_budget) in enumerate(zip(all_ga_losses, all_ga_budgets)):
+                for j, budget_val in enumerate(uniform_budget_grid):
+                    ga_value = None
+                    for k, ga_b in enumerate(ga_budget):
+                        if ga_b <= budget_val:
+                            ga_value = ga_losses[k]
+                        else:
+                            break
+                    if ga_value is not None:
+                        ga_matrix[j, i] = ga_value
             
-            for i in range(len(all_checkpoints)):
-                if i < len(all_ga_losses):
-                    ga_matrix[:len(all_ga_losses[i]), i] = all_ga_losses[i]
-                if i < len(all_es_losses):
-                    es_matrix[:len(all_es_losses[i]), i] = all_es_losses[i]
+            # Fill ES matrix
+            for i, (es_losses, es_budget) in enumerate(zip(all_es_losses, all_es_budgets)):
+                for j, budget_val in enumerate(uniform_budget_grid):
+                    es_value = None
+                    for k, es_b in enumerate(es_budget):
+                        if es_b <= budget_val:
+                            es_value = es_losses[k]
+                        else:
+                            break
+                    if es_value is not None:
+                        es_matrix[j, i] = es_value
             
             # Calculate difference (ES - GA)
             diff_matrix = es_matrix - ga_matrix
             
-            # Use the budget from the first checkpoint
-            budget_summary = all_ga_budgets[0] if all_ga_budgets else np.arange(max_steps)
             checkpoint_indices = np.arange(len(all_checkpoints))
 
             fig = visualize_loss_difference_heatmap(
-                checkpoint_indices, budget_summary, diff_matrix,
+                checkpoint_indices, uniform_budget_grid, diff_matrix,
                 method_A_name="GA", method_B_name="ES"
             )
             diff_file = os.path.join(output_dir, "differential_comprehensive_loss_heatmap.png")
@@ -461,17 +503,24 @@ def create_heatmaps(
         # Create comprehensive accuracy heatmaps if available
         if all_ga_accuracies and all_es_accuracies:
             # GA accuracy heatmap
-            max_ga_acc_steps = max(len(ga_acc) for ga_acc in all_ga_accuracies)
-            ga_acc_matrix = np.full((max_ga_acc_steps, len(all_checkpoints)), np.nan)
+            ga_acc_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
 
-            for i, ga_acc in enumerate(all_ga_accuracies):
-                ga_acc_matrix[:len(ga_acc), i] = ga_acc
+            for i, (ga_acc, ga_budget) in enumerate(zip(all_ga_accuracies, all_ga_budgets)):
+                # Interpolate GA accuracy values to uniform budget grid
+                for j, budget_val in enumerate(uniform_budget_grid):
+                    ga_value = None
+                    for k, ga_b in enumerate(ga_budget):
+                        if ga_b <= budget_val:
+                            ga_value = ga_acc[k]
+                        else:
+                            break
+                    if ga_value is not None:
+                        ga_acc_matrix[j, i] = ga_value
 
-            ga_budget_summary = all_ga_budgets[0] if all_ga_budgets else np.arange(max_ga_acc_steps)
             checkpoint_indices = np.arange(len(all_checkpoints))
 
             fig = visualize_loss_difference_heatmap(
-                checkpoint_indices, ga_budget_summary, ga_acc_matrix,
+                checkpoint_indices, uniform_budget_grid, ga_acc_matrix,
                 method_A_name="GA", method_B_name="GA"
             )
             ga_acc_file = os.path.join(output_dir, "ga_comprehensive_accuracy_heatmap.png")
@@ -480,17 +529,24 @@ def create_heatmaps(
             heatmap_files.append(ga_acc_file)
             
             # ES accuracy heatmap
-            max_es_acc_steps = max(len(es_acc) for es_acc in all_es_accuracies)
-            es_acc_matrix = np.full((max_es_acc_steps, len(all_checkpoints)), np.nan)
+            es_acc_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
 
-            for i, es_acc in enumerate(all_es_accuracies):
-                es_acc_matrix[:len(es_acc), i] = es_acc
+            for i, (es_acc, es_budget) in enumerate(zip(all_es_accuracies, all_es_budgets)):
+                # Interpolate ES accuracy values to uniform budget grid
+                for j, budget_val in enumerate(uniform_budget_grid):
+                    es_value = None
+                    for k, es_b in enumerate(es_budget):
+                        if es_b <= budget_val:
+                            es_value = es_acc[k]
+                        else:
+                            break
+                    if es_value is not None:
+                        es_acc_matrix[j, i] = es_value
 
-            es_budget_summary = all_es_budgets[0] if all_es_budgets else np.arange(max_es_acc_steps)
             checkpoint_indices = np.arange(len(all_checkpoints))
 
             fig = visualize_loss_difference_heatmap(
-                checkpoint_indices, es_budget_summary, es_acc_matrix,
+                checkpoint_indices, uniform_budget_grid, es_acc_matrix,
                 method_A_name="ES", method_B_name="ES"
             )
             es_acc_file = os.path.join(output_dir, "es_comprehensive_accuracy_heatmap.png")
@@ -499,24 +555,13 @@ def create_heatmaps(
             heatmap_files.append(es_acc_file)
             
             # Differential accuracy heatmap (ES - GA)
-            max_acc_steps = max(max_ga_acc_steps, max_es_acc_steps)
-            ga_acc_matrix_aligned = np.full((max_acc_steps, len(all_checkpoints)), np.nan)
-            es_acc_matrix_aligned = np.full((max_acc_steps, len(all_checkpoints)), np.nan)
-            
-            for i in range(len(all_checkpoints)):
-                if i < len(all_ga_accuracies):
-                    ga_acc_matrix_aligned[:len(all_ga_accuracies[i]), i] = all_ga_accuracies[i]
-                if i < len(all_es_accuracies):
-                    es_acc_matrix_aligned[:len(all_es_accuracies[i]), i] = all_es_accuracies[i]
-            
             # Calculate accuracy difference (ES - GA)
-            acc_diff_matrix = es_acc_matrix_aligned - ga_acc_matrix_aligned
+            acc_diff_matrix = es_acc_matrix - ga_acc_matrix
             
-            budget_summary = all_ga_budgets[0] if all_ga_budgets else np.arange(max_acc_steps)
             checkpoint_indices = np.arange(len(all_checkpoints))
 
             fig = visualize_loss_difference_heatmap(
-                checkpoint_indices, budget_summary, acc_diff_matrix,
+                checkpoint_indices, uniform_budget_grid, acc_diff_matrix,
                 method_A_name="GA", method_B_name="ES"
             )
             acc_diff_file = os.path.join(output_dir, "differential_comprehensive_accuracy_heatmap.png")
