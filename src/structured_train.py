@@ -346,7 +346,7 @@ class StructuredTrainer:
                 self.task_generator = False
             else:
                 raise ValueError("No training data specified: set training.train_datasets or enable struct_patterns_balanced")
-
+        
         # Simple single eval dataset support (optional)
         self.eval_conf = cfg.eval.get("dataset")
         if self.eval_conf and self.eval_conf.get("folder"):
@@ -1040,7 +1040,7 @@ class StructuredTrainer:
         logging.info(f"Repulsion KL coefficient: {cfg.training.get('repulsion_kl', 'disabled')}")
         logging.info(f"Contrastive KL coefficient: {cfg.training.get('contrastive_kl', 'disabled')}")
         logging.info(f"Training with {len(cfg.structured.artifacts.models)} encoders for pattern specialization")
-        
+
         # Test forward pass first to catch any issues early
         logging.info("Testing forward pass...")
         try:
@@ -1107,23 +1107,22 @@ class StructuredTrainer:
             
             # CRITICAL: Validate encoder variance outputs before training
             self._validate_encoder_variance_outputs(state, test_batch)
-            
             test_loss, test_metrics = self.model.apply(
-                {"params": state.params["decoder"]},
-                *test_batch,
-                dropout_eval=False,
-                mode=cfg.training.inference_mode,
-                poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32),
-                encoder_params_list=state.params["encoders"],
-                decoder_params=state.params["decoder"],
-                rngs={"dropout": key, "latents": key},
-                prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
-                pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
-                repulsion_kl_coeff=cfg.training.get("repulsion_kl"),
-                contrastive_kl_coeff=cfg.training.get("contrastive_kl"),  # ADD CONTRASTIVE LOSS
-                pattern_ids=test_pattern_ids,  # ADD PATTERN IDS FOR CONTRASTIVE LOSS
-                **(cfg.training.get("inference_kwargs") or {}),
-            )
+                    {"params": state.params["decoder"]},
+                    *test_batch,
+                    dropout_eval=False,
+                    mode=cfg.training.inference_mode,
+                    poe_alphas=jnp.asarray(cfg.structured.alphas, dtype=jnp.float32),
+                    encoder_params_list=state.params["encoders"],
+                    decoder_params=state.params["decoder"],
+                    rngs={"dropout": key, "latents": key},
+                    prior_kl_coeff=cfg.training.get("prior_kl_coeff"),
+                    pairwise_kl_coeff=cfg.training.get("pairwise_kl_coeff"),
+                    repulsion_kl_coeff=cfg.training.get("repulsion_kl"),
+                    contrastive_kl_coeff=cfg.training.get("contrastive_kl"),  # ADD CONTRASTIVE LOSS
+                    pattern_ids=test_pattern_ids,  # ADD PATTERN IDS FOR CONTRASTIVE LOSS
+                    **(cfg.training.get("inference_kwargs") or {}),
+                )
             logging.info(f"Forward pass test successful: loss={float(test_loss):.4f}")
         except Exception as e:
             logging.error(f"Forward pass test failed: {e}")
@@ -1269,7 +1268,7 @@ class StructuredTrainer:
                     grids, shapes = batches
                     explicit_pattern_ids = self._extract_true_pattern_ids_from_data(grids[0], shapes[0])
                     logging.info(f"⚠️  Using EXTRACTED pattern IDs: {explicit_pattern_ids[:10]}... (first 10)")
-                
+            
                 # Log pattern distribution for current batch
                 batch_size = grids.shape[1] if hasattr(grids, 'shape') and len(grids.shape) > 1 else len(grids)
                 samples_per_pattern = batch_size // 3
@@ -1280,33 +1279,33 @@ class StructuredTrainer:
                 # Pass explicit pattern IDs to training
                 batches_with_patterns = (grids, shapes, explicit_pattern_ids)
                 state, metrics = self.train_n_steps(state, batches_with_patterns, train_key)
-                end = time.time()
-                
-                pbar.update(log_every)
-                step += log_every
+            end = time.time()
+            
+            pbar.update(log_every)
+            step += log_every
                 
                 # Log encoder status after step update
-                if step % 100 == 0:
-                    encoder_status = "TRAINABLE" if self.encoder_expose_steps > 0 else "FROZEN"
-                    logging.info(f"Step {step}/{num_steps}: Encoders {encoder_status} (exposure: {self.encoder_expose_steps} steps remaining)")
-                throughput = log_every * self.batch_size / (end - start)
-                metrics.update({
-                    "timing/train_time": end - start,
-                    "timing/train_num_samples_per_second": throughput
-                })
+            if step % 100 == 0:
+                encoder_status = "TRAINABLE" if self.encoder_expose_steps > 0 else "FROZEN"
+                logging.info(f"Step {step}/{num_steps}: Encoders {encoder_status} (exposure: {self.encoder_expose_steps} steps remaining)")
+            throughput = log_every * self.batch_size / (end - start)
+            metrics.update({
+                "timing/train_time": end - start,
+                "timing/train_num_samples_per_second": throughput
+            })
                 
                 # Add contrastive loss to Charts section for better visualization
-                if "contrastive_loss" in metrics:
-                    # STABILIZATION: Monitor contrastive loss magnitude and clip if needed
-                    try:
-                        contrastive_loss_val = float(np.array(metrics["contrastive_loss"]))
-                        contrastive_loss_weighted_val = float(np.array(metrics["contrastive_loss_weighted"]))
-                        
-                        # Safety check: if contrastive loss is exploding, log warning
-                        if abs(contrastive_loss_val) > 100.0:
-                            logging.warning(f"Contrastive loss is very large: {contrastive_loss_val:.2f}. Consider reducing contrastive_kl coefficient.")
-                    except Exception as e:
-                        logging.warning(f"Could not monitor contrastive loss magnitude: {e}")
+            if "contrastive_loss" in metrics:
+                # STABILIZATION: Monitor contrastive loss magnitude and clip if needed
+                try:
+                    contrastive_loss_val = float(np.array(metrics["contrastive_loss"]))
+                    contrastive_loss_weighted_val = float(np.array(metrics["contrastive_loss_weighted"]))
+                    
+                    # Safety check: if contrastive loss is exploding, log warning
+                    if abs(contrastive_loss_val) > 100.0:
+                        logging.warning(f"Contrastive loss is very large: {contrastive_loss_val:.2f}. Consider reducing contrastive_kl coefficient.")
+                except Exception as e:
+                    logging.warning(f"Could not monitor contrastive loss magnitude: {e}")
                     
                     metrics["Charts/contrastive_loss"] = metrics["contrastive_loss"]
                     metrics["Charts/contrastive_loss_weighted"] = metrics["contrastive_loss_weighted"]
@@ -1795,23 +1794,21 @@ class StructuredTrainer:
             logging.info(f"Expected: {len(enc_params_list)} encoders + 1 context = {len(enc_params_list) + 1} points per set")
             logging.info(f"Generating 3 T-SNE visualizations: main (encoders+context), context-only, encoders-only (pattern 1)")
             
-            # Generate multiple T-SNEs with different perplexities (no downsampling)
+            # Generate multiple T-SNEs with different perplexities (no downsampling) via custom helper
             perplexities = [2, 5, 10, 20, 30, 40]
             for perplexity in perplexities:
-                try:
-                    fig_tsne = visualize_tsne_sources(
-                        latents=latents_concat,
-                        program_ids=pattern_ids_concat,  # Pattern types (1, 2, 3) for colors
-                        source_ids=source_ids_np,        # 0,1,2 for encoders, 3 for context
-                        max_points=len(latents_concat),   # no downsampling
-                        random_state=42,
-                        task_ids=task_ids_np,
-                        perplexity=perplexity,
-                    )
-                    wandb.log({f"test/{test_name}/latents_tsne_perplexity_{perplexity}": wandb.Image(fig_tsne)}, step=step)
+                fig_tsne = self._create_tsne_sources_with_perplexity(
+                latents=latents_concat,
+                program_ids=pattern_ids_concat,  # Pattern types (1, 2, 3) for colors
+                source_ids=source_ids_np,        # 0,1,2 for encoders, 3 for context
+                task_ids=task_ids_np,
+                    perplexity=perplexity,
+                    title=f"t-SNE (encoders+context), perplexity={perplexity}"
+            )
+                if fig_tsne is not None:
+                    log_kwargs = {"step": step} if "step" in locals() else {}
+                    wandb.log({f"test/{test_name}/latents_tsne_perplexity_{perplexity}": wandb.Image(fig_tsne)}, **log_kwargs)
                     plt.close(fig_tsne)
-                except Exception as e:
-                    logging.warning(f"T-SNE generation failed for perplexity={perplexity}: {e}")
             
             # 1. ADDITIONAL T-SNE: Show just the context latents (with samples from the 3 patterns)
             context_mask = (source_ids_np == (len(enc_params_list)))
@@ -1850,20 +1847,18 @@ class StructuredTrainer:
                 
                 perplexities = [2, 5, 10, 20, 30, 40]
                 for perplexity in perplexities:
-                    try:
-                        fig_tsne_context = visualize_tsne_sources(
-                            latents=context_latents,
-                            program_ids=context_patterns,  # Pattern types (1, 2, 3) for colors
-                            source_ids=context_source_ids,  # All 0s (same marker type)
-                            max_points=len(context_latents),  # no downsampling
-                            random_state=42,
-                            task_ids=context_task_ids,
-                            perplexity=perplexity,
-                        )
-                        wandb.log({f"test/{test_name}/latents_context_only_perplexity_{perplexity}": wandb.Image(fig_tsne_context)}, step=step)
+                    fig_tsne_context = self._create_tsne_sources_with_perplexity(
+                        latents=context_latents,
+                        program_ids=context_patterns,
+                        source_ids=context_source_ids,
+                        task_ids=context_task_ids,
+                        perplexity=perplexity,
+                        title=f"t-SNE (context-only), perplexity={perplexity}"
+                    )
+                    if fig_tsne_context is not None:
+                        log_kwargs = {"step": step} if "step" in locals() else {}
+                        wandb.log({f"test/{test_name}/latents_context_only_perplexity_{perplexity}": wandb.Image(fig_tsne_context)}, **log_kwargs)
                         plt.close(fig_tsne_context)
-                    except Exception as e:
-                        logging.warning(f"Context-only T-SNE failed for perplexity={perplexity}: {e}")
             else:
                 fig_tsne_context = None
                 logging.warning("No context points found for context-only T-SNE")
@@ -1874,7 +1869,6 @@ class StructuredTrainer:
             
             for target_pattern in [1, 2, 3]:
                 pattern_mask = (pattern_ids_concat == target_pattern)
-                
                 if np.any(pattern_mask):
                     # Get encoder points only (exclude context)
                     encoder_mask = (source_ids_np < len(enc_params_list))
@@ -2044,21 +2038,27 @@ class StructuredTrainer:
                     std_var = np.std(var_i)
                     logging.info(f"Pattern {pid} - Encoder {enc_idx}: mean_var={mean_var:.6f}, std_var={std_var:.6f}")
 
-                # CRITICAL: Compute PoE across all pairs to show aggregated confidence
-                # Average across pairs for each encoder, then compute PoE
-                avg_enc_mus = [np.mean(em, axis=0) for em in enc_mus]  # [latent_dim] per encoder
-                avg_enc_logvars = [np.mean(lv, axis=0) for lv in enc_logvars]  # [latent_dim] per encoder
-                
-                alphas_np = np.asarray(alphas)
-                precisions = [np.exp(-lv) for lv in avg_enc_logvars]  # [latent_dim] per encoder
-                poe_precision = np.zeros_like(precisions[0])
-                for a, p in zip(alphas_np, precisions):
-                    poe_precision = poe_precision + a * p
-                poe_var = 1.0 / (poe_precision + 1e-8)
-                num = np.zeros_like(avg_enc_mus[0])
-                for a, p, m in zip(alphas_np, precisions, avg_enc_mus):
-                    num = num + a * p * m
-                poe_mu = num / (poe_precision + 1e-8)
+                # CRITICAL: Compute PoE per pair, then average across the quad of pairs
+                    alphas_np = np.asarray(alphas)
+                num_pairs = enc_mus[0].shape[0]
+                pairwise_poe_mu = []
+                pairwise_poe_var = []
+                for pair_index in range(num_pairs):
+                    mus_j = [em[pair_index] for em in enc_mus]           # [latent_dim] per encoder
+                    logvars_j = [lv[pair_index] for lv in enc_logvars]    # [latent_dim] per encoder
+                    precisions_j = [np.exp(-lv_j) for lv_j in logvars_j]  # [latent_dim] per encoder
+                    poe_precision_j = np.zeros_like(precisions_j[0])
+                    for a, p in zip(alphas_np, precisions_j):
+                        poe_precision_j = poe_precision_j + a * p
+                    poe_var_j = 1.0 / (poe_precision_j + 1e-8)
+                    num_j = np.zeros_like(mus_j[0])
+                    for a, p, m in zip(alphas_np, precisions_j, mus_j):
+                        num_j = num_j + a * p * m
+                    poe_mu_j = num_j / (poe_precision_j + 1e-8)
+                    pairwise_poe_mu.append(poe_mu_j)
+                    pairwise_poe_var.append(poe_var_j)
+                poe_mu = np.mean(np.stack(pairwise_poe_mu, axis=0), axis=0)
+                poe_var = np.mean(np.stack(pairwise_poe_var, axis=0), axis=0)
                 poe_logvar = np.log(poe_var + 1e-8)
 
                 panel_title = f"Pattern {pid} - Confidence (All Pairs)"
@@ -2094,7 +2094,7 @@ class StructuredTrainer:
             plt.close(fig_tsne_context)
         if fig_tsne_encoders is not None:
             plt.close(fig_tsne_encoders)
-
+        
         # Release large intermediates
         del all_latents, latents_concat, source_ids_np, pattern_ids_concat
         return metrics
@@ -2137,7 +2137,7 @@ class StructuredTrainer:
             return None
         
         # Perform T-SNE - EXACTLY like visualize_tsne_sources
-        tsne = TSNE(n_components=2, perplexity=2, max_iter=1000, random_state=random_state)
+        tsne = TSNE(n_components=2, perplexity=perplexity if 'perplexity' in locals() else 2, max_iter=1000, random_state=random_state)
         latents_2d = tsne.fit_transform(latents)
         
         # Create figure - EXACTLY like visualize_tsne_sources
@@ -2204,6 +2204,86 @@ class StructuredTrainer:
         # Set tight layout - EXACTLY like visualize_tsne_sources
         plt.tight_layout()
         
+        return fig
+    
+    def _create_tsne_sources_with_perplexity(
+        self,
+        latents: np.ndarray,
+        program_ids: np.ndarray,
+        source_ids: np.ndarray,
+        task_ids: np.ndarray,
+        perplexity: int,
+        title: str,
+        random_state: int = 42
+    ) -> Optional[plt.Figure]:
+        """
+        Create a T-SNE visualization matching visualize_tsne_sources styling, with configurable perplexity.
+        No downsampling is applied; all points are used.
+        """
+        try:
+            from sklearn.manifold import TSNE
+            import matplotlib.pyplot as plt
+            from matplotlib.lines import Line2D
+        except ImportError:
+            logging.warning("sklearn or matplotlib not available for T-SNE visualization")
+            return None
+
+        # Compute TSNE with the requested perplexity
+        tsne = TSNE(n_components=2, perplexity=perplexity, max_iter=1000, random_state=random_state)
+        latents_2d = tsne.fit_transform(latents)
+
+        fig, ax = plt.subplots(figsize=(15, 12))
+
+        # Colors by program (pattern ids)
+        unique_programs = np.unique(program_ids)
+        palette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+        program_to_color = {int(pid): palette[i % len(palette)] for i, pid in enumerate(unique_programs)}
+
+        # Markers by source id
+        unique_sources = sorted(list(np.unique(source_ids)))
+        default_markers = ['o', 's', '^', 'D', 'P', 'X']
+        source_to_marker = {int(src): default_markers[i % len(default_markers)] for i, src in enumerate(unique_sources)}
+
+        # Scatter by source, color by program
+        for src in unique_sources:
+            mask = source_ids == src
+            if not np.any(mask):
+                continue
+            pts = latents_2d[mask]
+            colors = [program_to_color[int(pid)] for pid in program_ids[mask]]
+            ax.scatter(
+                pts[:, 0], pts[:, 1],
+                c=colors,
+                marker=source_to_marker.get(int(src), 'o'),
+                s=28,
+                alpha=0.9,
+                edgecolor='black', linewidth=0.3,
+                label=f"Source {int(src)}"
+            )
+
+        # Legends
+        program_handles = [
+            Line2D([0], [0], marker='o', color='w', label=f'Pattern {int(pid)}',
+                   markerfacecolor=program_to_color[int(pid)], markeredgecolor='black',
+                   markersize=8, markeredgewidth=0.6)
+            for pid in unique_programs
+        ]
+        source_handles = [
+            Line2D([0], [0], marker=source_to_marker[int(src)], color='w', label=f'Source {int(src)}',
+                   markerfacecolor='#cccccc', markeredgecolor='black',
+                   markersize=8, markeredgewidth=0.6)
+            for src in unique_sources
+        ]
+
+        first_legend = ax.legend(handles=program_handles, title='Patterns', loc='upper right', frameon=True, framealpha=0.9)
+        ax.add_artist(first_legend)
+        ax.legend(handles=source_handles, title='Sources', loc='lower right', frameon=True, framealpha=0.9)
+
+        ax.set_title(title, fontsize=16)
+        ax.set_xlabel('t-SNE 1')
+        ax.set_ylabel('t-SNE 2')
+        ax.grid(True, linestyle='--', alpha=0.3)
+        fig.tight_layout()
         return fig
         
     def test_dataset_submission(
@@ -2424,7 +2504,7 @@ class StructuredTrainer:
 
                 task_id_sequence = np.arange(dataset_grids.shape[0], dtype=int)
                 task_ids_list = []
-
+                
                 # Add encoder outputs (unique source_id per encoder)
                 for enc_idx, enc_params in enumerate(current_enc_params_list):
                     try:
@@ -2530,17 +2610,18 @@ class StructuredTrainer:
                         perplexities = [2, 5, 10, 20, 30, 40]
                         for perplexity in perplexities:
                             try:
-                                fig_tsne_context = visualize_tsne_sources(
+                                fig_tsne_context = self._create_tsne_sources_with_perplexity(
                                     latents=context_latents,
-                                    program_ids=context_patterns,  # Pattern types for colors
-                                    source_ids=context_source_ids,  # All 0s (same marker type)
-                                    max_points=len(context_latents),
-                                    random_state=42,
+                                    program_ids=context_patterns,
+                                    source_ids=context_source_ids,
                                     task_ids=context_task_ids,
                                     perplexity=perplexity,
+                                    title=f"t-SNE (context-only), perplexity={perplexity}"
                                 )
-                                wandb.log({f"test/{dataset_dict['test_name']}/latents_context_only_perplexity_{perplexity}": wandb.Image(fig_tsne_context)}, step=step)
-                                plt.close(fig_tsne_context)
+                                log_kwargs = {"step": step} if "step" in locals() else {}
+                                if fig_tsne_context is not None:
+                                    wandb.log({f"test/{dataset_dict['test_name']}/latents_context_only_perplexity_{perplexity}": wandb.Image(fig_tsne_context)}, **log_kwargs)
+                                    plt.close(fig_tsne_context)
                             except Exception as e:
                                 logging.warning(f"Test: Context-only T-SNE failed for perplexity={perplexity}: {e}")
                         logging.info(f"Test: Generated context-only T-SNEs: {len(context_latents)} points")
@@ -2584,7 +2665,8 @@ class StructuredTrainer:
                                         random_state=42
                                     )
                                     if fig_tsne_encoders_single is not None:
-                                        wandb.log({f"test/{dataset_dict['test_name']}/latents_encoders_pattern{int(target_pattern)}_perplexity_{perplexity}": wandb.Image(fig_tsne_encoders_single)}, step=step)
+                                        log_kwargs = {"step": step} if "step" in locals() else {}
+                                        wandb.log({f"test/{dataset_dict['test_name']}/latents_encoders_pattern{int(target_pattern)}_perplexity_{perplexity}": wandb.Image(fig_tsne_encoders_single)}, **log_kwargs)
                                         plt.close(fig_tsne_encoders_single)
                                 
                                 fig_tsne_encoders_list.append(None)
