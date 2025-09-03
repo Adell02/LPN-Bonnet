@@ -822,3 +822,161 @@ def visualize_struct_confidence_panel(
     fig.suptitle(title, fontsize=14, fontweight='bold')
     return fig
 
+
+def visualize_loss_difference_heatmap(
+    steps: chex.Array,
+    budgets: chex.Array, 
+    loss_diff: chex.Array,
+    method_A_name: str = "Method A",
+    method_B_name: str = "Method B"
+) -> plt.Figure:
+    """
+    Visualize loss difference between two optimization methods as a heatmap without log scaling.
+    
+    Args:
+        steps: 1D array of training steps [S]
+        budgets: 1D array of search budgets [B] 
+        loss_diff: 2D array of loss differences [B, S] (method_B - method_A)
+        method_A_name: Name of first method (typically GA)
+        method_B_name: Name of second method (typically ES)
+        
+    Returns:
+        Figure showing heatmap of raw loss differences (delta)
+    """
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    from matplotlib.colors import TwoSlopeNorm
+
+    # numpy
+    steps = np.asarray(steps)
+    budgets = np.asarray(budgets)
+    loss_diff = np.asarray(loss_diff, dtype=float)
+
+    # SAFETY CHECK: Prevent extremely large arrays that could cause memory/image size issues
+    if steps.size > 1000 or budgets.size > 1000:
+        print(f"⚠️  WARNING: Large array dimensions detected: steps={steps.size}, budgets={budgets.size}")
+        print(f"   This could cause extremely large images. Limiting dimensions for safety.")
+        
+        # Limit to reasonable dimensions
+        if steps.size > 1000:
+            step_indices = np.linspace(0, steps.size-1, 1000, dtype=int)
+            steps = steps[step_indices]
+            loss_diff = loss_diff[:, step_indices] if loss_diff.ndim > 1 else loss_diff[step_indices]
+            
+        if budgets.size > 1000:
+            budget_indices = np.linspace(0, budgets.size-1, 1000, dtype=int)
+            budgets = budgets[budget_indices]
+            loss_diff = loss_diff[budget_indices, :] if loss_diff.ndim > 1 else loss_diff[budget_indices]
+
+    # SAFETY CHECK: Calculate expected image dimensions and adjust if too large
+    expected_width_px = steps.size * 8  # Rough estimate: 8 pixels per step
+    expected_height_px = budgets.size * 8  # Rough estimate: 8 pixels per budget
+    
+    if expected_width_px > 65000 or expected_height_px > 65000:
+        print(f"⚠️  WARNING: Expected image dimensions too large: {expected_width_px}x{expected_height_px} pixels")
+        print(f"   Reducing figure size to prevent issues")
+        fig_width = min(8, 12)  # Reduce from 12 to 8 inches
+        fig_height = min(6, 8)   # Reduce from 8 to 6 inches
+    else:
+        fig_width = 12
+        fig_height = 8
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+
+    # Use raw loss difference values without log scaling
+    # Create masked array to handle NaN values
+    loss_diff_masked = np.ma.masked_invalid(loss_diff)
+    
+    if loss_diff_masked.count() > 0:
+        dmin = float(np.nanmin(loss_diff_masked))
+        dmax = float(np.nanmax(loss_diff_masked))
+        L = max(abs(dmin), abs(dmax))
+        # optional global cap; keep symmetry
+        L = min(L, 10.0)
+    else:
+        L = 5.0
+
+    norm = TwoSlopeNorm(vmin=-L, vcenter=0.0, vmax=L)
+
+    # Create heatmap
+    # Handle single-point axes for sane extents
+    x0, x1 = (steps[0] - 0.5, steps[0] + 0.5) if steps.size == 1 else (steps[0], steps[-1])
+    y0, y1 = (budgets[0] - 0.5, budgets[0] + 0.5) if budgets.size == 1 else (budgets[0], budgets[-1])
+    
+    # Create a continuous colormap using the custom color palette
+    # Use the consistent color palette from the codebase with smooth interpolations
+    from matplotlib.colors import LinearSegmentedColormap
+    
+    # Custom color palette: #FBB998 (orange), #DB74DB (pink), #5361E5 (blue), #96DCF8 (light blue)
+    # Create a continuous colormap that smoothly interpolates between these colors
+    colors = ['#FBB998', '#DB74DB', '#5361E5', '#96DCF8']  # Orange, Pink, Blue, Light Blue
+    n_bins = 256  # High resolution for smooth color transitions
+    custom_cmap = LinearSegmentedColormap.from_list('custom_continuous', colors, N=n_bins)
+    
+    im = ax.imshow(
+        loss_diff_masked,
+        extent=[x0, x1, y0, y1],
+        origin='lower', aspect='auto',
+        cmap=custom_cmap,  # Use continuous custom color palette
+        norm=norm
+    )
+
+    # Add zero contour line where methods have equal loss
+    X, Y = np.meshgrid(steps, budgets)
+    try:
+        # Find where loss difference is close to zero
+        cs = ax.contour(X, Y, loss_diff, levels=[0.0], colors='black', linewidths=2.0, alpha=0.9)
+        # Label the contour
+        if cs.collections:
+            cs.collections[0].set_label('LOSS_GA = LOSS_ES')
+    except (ValueError, RuntimeError, TypeError):
+        cs = None  # ignore if not possible
+
+    # Axes labels (no title)
+    ax.set_xlabel("Training Checkpoint", fontsize=12)
+    ax.set_ylabel("Search Budget", fontsize=12)
+
+    # Set ticks
+    ax.set_xticks(steps)
+    ax.set_yticks(budgets)
+    if steps.size > 12:
+        for t in ax.get_xticklabels():
+            t.set_rotation(45)
+            t.set_ha('right')
+
+    # Layout helper for colorbar
+    divider = make_axes_locatable(ax)
+
+    # Colorbar axis
+    cax = divider.append_axes("right", size="4%", pad=0.6)
+    cbar = fig.colorbar(im, cax=cax)
+    cbar.ax.set_title(f"LOSS_GA - LOSS_ES", fontsize=11, pad=10, rotation=0, loc='center')
+    cbar.ax.tick_params(length=3, pad=3)
+
+    # Add explanatory text axis
+    label_ax = divider.append_axes("right", size="15%", pad=0.8)
+    label_ax.axis("off")
+    
+    # Add interpretation text with proper subscripts and black color
+    # For loss difference: method_B - method_A (ES - GA)
+    # Positive values = method_A (GA) better, Negative values = method_B (ES) better
+    label_ax.text(0.05, 0.95, f"LOSS_GA < LOSS_ES", 
+                  ha="left", va="top", fontsize=10, color='black', weight='bold')
+    label_ax.text(0.05, 0.05, f"LOSS_ES < LOSS_GA", 
+                  ha="left", va="bottom", fontsize=10, color='black', weight='bold')
+    label_ax.text(0.05, 0.5, f"LOSS_GA = LOSS_ES", 
+                  ha="left", va="center", fontsize=10, color='black', weight='bold')
+
+    # Legend
+    handles = []
+    labels = []
+    if cs and cs.collections:
+        from matplotlib.lines import Line2D
+        handles.append(Line2D([0], [0], color='black', lw=2))
+        labels.append('LOSS_GA = LOSS_ES')
+    
+    if handles:
+        ax.legend(handles, labels, loc='upper left', frameon=True)
+
+    fig.tight_layout()
+    return fig
+
