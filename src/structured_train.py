@@ -1273,8 +1273,8 @@ class StructuredTrainer:
         # Pattern enc_idx+1 gets reinforced, others get reduced certainty
         target_pattern = enc_idx + 1  # Encoder 0 -> Pattern 1, Encoder 1 -> Pattern 2, etc.
         
-        # Generate specialized training data
-        specialized_data = self._create_specialized_training_data(target_pattern)
+        # Generate uniform (balanced) training data across all patterns for Phase 1
+        specialized_data = self._create_specialized_training_data(target_pattern=None, uniform=True)
         
         # Train for encoder_expose_steps
         num_steps = self.encoder_expose_steps
@@ -3242,10 +3242,13 @@ class StructuredTrainer:
         pattern_ids_list: list = []
 
         if uniform:
-            # Generate equal number of samples for each pattern
+            # Generate equal number of samples for each pattern (strictly balanced)
             samples_per_pattern = total_samples // 3
-            for pattern_id in [1, 2, 3]:
-                for _ in range(samples_per_pattern):
+            remainder = total_samples - samples_per_pattern * 3
+            order = [1, 2, 3]
+            for idx, pattern_id in enumerate(order):
+                n = samples_per_pattern + (1 if idx < remainder else 0)
+                for _ in range(n):
                     grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
                     grids_list.append(grids)
                     shapes_list.append(shapes)
@@ -3253,28 +3256,22 @@ class StructuredTrainer:
         else:
             if target_pattern is None:
                 raise ValueError("target_pattern must be specified when uniform=False")
-        
-        # Generate balanced data with emphasis on target pattern
-        target_samples = int(total_samples * 0.7)  # 70% target pattern
-        other_samples = total_samples - target_samples
-        
-        # Generate target pattern samples (reinforced)
-        for _ in range(target_samples):
-            grids, shapes, _ = self._create_single_pattern_sample(target_pattern)
-            grids_list.append(grids)
-            shapes_list.append(shapes)
-            pattern_ids_list.append(target_pattern)
-        
-        # Generate other pattern samples (reduced certainty)
-        other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
-        samples_per_other = other_samples // len(other_patterns)
-        
-        for pattern_id in other_patterns:
-            for _ in range(samples_per_other):
-                grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
+            # Previous emphasized sampling removed for uniform Phase 1; keep branch for possible reuse
+            target_samples = int(total_samples * 0.7)
+            other_samples = total_samples - target_samples
+            for _ in range(target_samples):
+                grids, shapes, _ = self._create_single_pattern_sample(target_pattern)
                 grids_list.append(grids)
                 shapes_list.append(shapes)
-                pattern_ids_list.append(pattern_id)
+                pattern_ids_list.append(target_pattern)
+            other_patterns = [p for p in [1, 2, 3] if p != target_pattern]
+            samples_per_other = other_samples // len(other_patterns)
+            for pattern_id in other_patterns:
+                for _ in range(samples_per_other):
+                    grids, shapes, _ = self._create_single_pattern_sample(pattern_id)
+                    grids_list.append(grids)
+                    shapes_list.append(shapes)
+                    pattern_ids_list.append(pattern_id)
         
         # Stack and return
         grids = jnp.stack(grids_list, axis=0)
