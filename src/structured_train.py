@@ -1438,7 +1438,9 @@ class StructuredTrainer:
         """
         # Use current encoder weights from state.params, not the original artifact weights
         current_enc_params_list = state.params["encoders"]
-        logging.info(f"Evaluation using current encoder weights from training state (step {getattr(state, 'step', 'unknown')})")
+        # Determine a stable step index for logging (ensures final eval logs appear under the last step)
+        local_step = int(getattr(state, "step", self.cfg.training.total_num_steps))
+        logging.info(f"Evaluation using current encoder weights from training state (step {local_step})")
         if not hasattr(self, "eval_grids"):
             return {}
         cfg = self.cfg
@@ -2007,7 +2009,7 @@ class StructuredTrainer:
                     clustering_metrics[f"clustering/source/ari_k{k}"] = ari_score
                 
                 # Log clustering metrics to WandB
-                wandb.log(clustering_metrics, step=step if 'step' in locals() else None)
+                wandb.log(clustering_metrics, step=local_step)
                 logging.info(f"Clustering metrics computed: {clustering_metrics}")
                 
             except Exception as e:
@@ -2037,7 +2039,7 @@ class StructuredTrainer:
         if fig_tsne_encoders is not None:
             wandb_log_data[f"test/{test_name}/latents_encoders_pattern1"] = wandb.Image(fig_tsne_encoders)
         
-        wandb.log(wandb_log_data, step=step if 'step' in locals() else None)
+        wandb.log(wandb_log_data, step=local_step)
 
         # NEW: Confidence panel per pattern (one task per pattern)
         try:
@@ -2115,7 +2117,7 @@ class StructuredTrainer:
                     encoder_labels=enc_labels,
                     combined_label="PoE",
                 )
-                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)}, step=step if 'step' in locals() else None)
+                wandb.log({f"test/{test_name}/confidence_panel/pattern_{pid}": wandb.Image(fig_panel)}, step=local_step)
                 plt.close(fig_panel)
                 
                 logging.info(f"Generated confidence panel for pattern {pid} with {len(enc_mus[0])} pairs")
