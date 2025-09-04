@@ -1082,28 +1082,21 @@ def visualize_loss_difference_heatmap(
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
-    # Use raw values without log scaling; mask NaNs
-    loss_diff_masked = np.ma.masked_invalid(loss_diff)
+    # Transform values using tanh for bounded visualization, then mask NaNs
+    try:
+        z_values = np.tanh(loss_diff.astype(float))
+    except Exception:
+        z_values = np.tanh(np.asarray(loss_diff, dtype=float))
+    loss_diff_masked = np.ma.masked_invalid(z_values)
 
     # Determine normalization based on symmetric flag
     if symmetric:
-        if loss_diff_masked.count() > 0:
-            dmin = float(np.nanmin(loss_diff_masked))
-            dmax = float(np.nanmax(loss_diff_masked))
-            L = max(abs(dmin), abs(dmax))
-            L = min(L, 10.0)
-        else:
-            L = 5.0
-        norm = TwoSlopeNorm(vmin=-L, vcenter=0.0, vmax=L)
+        # tanh(delta_loss) lies in [-1, 1]
+        norm = TwoSlopeNorm(vmin=-1.0, vcenter=0.0, vmax=1.0)
     else:
-        # Non-symmetric: normalize from 0 to max (for pure-loss heatmaps)
-        if loss_diff_masked.count() > 0:
-            vmax_val = float(np.nanmax(loss_diff_masked))
-            vmax_val = max(vmax_val, 1e-8)
-        else:
-            vmax_val = 1.0
+        # tanh(loss) lies in [0, 1) for positive losses; clamp to [0,1]
         from matplotlib.colors import Normalize as _Normalize
-        norm = _Normalize(vmin=0.0, vmax=vmax_val)
+        norm = _Normalize(vmin=0.0, vmax=1.0)
 
     # Create heatmap
     # Handle single-point axes for sane extents
@@ -1160,10 +1153,10 @@ def visualize_loss_difference_heatmap(
     cbar = fig.colorbar(im, cax=cax)
     # Colorbar title depending on mode
     if symmetric:
-        cbar.ax.set_title(f"LOSS_GA - LOSS_ES", fontsize=11, pad=10, rotation=0, loc='center')
+        cbar.ax.set_title(f"tanh(LOSS_GA - LOSS_ES)", fontsize=11, pad=10, rotation=0, loc='center')
     else:
         label_name = method_A_name if method_A_name == method_B_name else method_B_name
-        cbar.ax.set_title(f"LOSS_{label_name}", fontsize=11, pad=10, rotation=0, loc='center')
+        cbar.ax.set_title(f"tanh(LOSS_{label_name})", fontsize=11, pad=10, rotation=0, loc='center')
     cbar.ax.tick_params(length=3, pad=3)
 
     # Descending colorbar (MAX -> 0) if requested
