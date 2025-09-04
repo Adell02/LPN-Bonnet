@@ -2807,7 +2807,14 @@ class StructuredTrainer:
         run_name = self.make_safe_run_name(wandb.run.name)
         artifact = wandb.Artifact(f"{run_name}--checkpoint", type="model", metadata=dict(wandb.run.config))
         artifact.add_file(ckpt_path)
-        num_steps = state.step.item()
+        # Be robust: step might already be an int, a JAX scalar, or a NumPy scalar
+        try:
+            num_steps = int(state.step)
+        except Exception:
+            try:
+                num_steps = int(np.array(jax.device_get(state.step)).item())
+            except Exception:
+                num_steps = int(getattr(state, "step", 0))
         wandb.run.log_artifact(artifact, name="checkpoint", aliases=["latest", f"num_steps_{num_steps}"])
 
     @classmethod
