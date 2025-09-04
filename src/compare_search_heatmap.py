@@ -42,6 +42,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import json
 import time
 import matplotlib.pyplot as plt
+import math
 
 # Add src to path for imports
 sys.path.append(str(Path(__file__).parent))
@@ -333,6 +334,22 @@ def create_heatmaps(
     
     heatmap_files = []
     
+    def _two_sided_sign_test_pvalue(diffs: np.ndarray) -> float:
+        # Remove zeros (ties)
+        clean = diffs[np.isfinite(diffs) & (diffs != 0.0)]
+        n = int(clean.size)
+        if n == 0:
+            return float('nan')
+        k = int(np.sum(clean > 0))
+        # Binomial tail with p=0.5
+        # Compute CDF up to k and upper tail from k to n
+        # two-sided p = 2 * min( P(X<=k), P(X>=k) )
+        denom = 2.0 ** n
+        cdf_le_k = sum(math.comb(n, i) for i in range(0, k + 1)) / denom
+        cdf_ge_k = sum(math.comb(n, i) for i in range(k, n + 1)) / denom
+        p = 2.0 * min(cdf_le_k, cdf_ge_k)
+        return min(1.0, max(0.0, p))
+    
     # Aggregate data across all checkpoints
     all_checkpoints = []
     all_ga_losses = []
@@ -427,7 +444,7 @@ def create_heatmaps(
             fig = visualize_loss_difference_heatmap(
                 checkpoint_indices, uniform_budget_grid, ga_loss_matrix,
                 method_A_name="GA", method_B_name="GA",
-                symmetric=False, descending_colorbar=True
+                symmetric=False, descending_colorbar=False
             )
             ga_file = os.path.join(output_dir, "ga_comprehensive_loss_heatmap.png")
             fig.savefig(ga_file, dpi=150, bbox_inches='tight')
@@ -463,46 +480,53 @@ def create_heatmaps(
             fig = visualize_loss_difference_heatmap(
                 checkpoint_indices, uniform_budget_grid, es_loss_matrix,
                 method_A_name="ES", method_B_name="ES",
-                symmetric=False, descending_colorbar=True
+                symmetric=False, descending_colorbar=False
             )
             es_file = os.path.join(output_dir, "es_comprehensive_loss_heatmap.png")
             fig.savefig(es_file, dpi=150, bbox_inches='tight')
             plt.close(fig)
             heatmap_files.append(es_file)
         
-        # Create comprehensive differential heatmap (ES - GA)
+        # Create comprehensive differential heatmap (ES - GA) using lowest common granularity per checkpoint
         if (all_ga_losses and all_es_losses and 
             len(all_ga_losses) == len(all_es_losses)):
-            
-            # Create aligned matrices for both methods using uniform budget grid
-            ga_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
-            es_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
-            
-            # Fill GA matrix
-            for i, (ga_losses, ga_budget) in enumerate(zip(all_ga_losses, all_ga_budgets)):
-                for j, budget_val in enumerate(uniform_budget_grid):
-                    ga_value = None
-                    for k, ga_b in enumerate(ga_budget):
-                        if ga_b <= budget_val:
-                            ga_value = ga_losses[k]
-                        else:
-                            break
-                    if ga_value is not None:
-                        ga_matrix[j, i] = ga_value
-            
-            # Fill ES matrix
-            for i, (es_losses, es_budget) in enumerate(zip(all_es_losses, all_es_budgets)):
-                for j, budget_val in enumerate(uniform_budget_grid):
-                    es_value = None
-                    for k, es_b in enumerate(es_budget):
-                        if es_b <= budget_val:
-                            es_value = es_losses[k]
-                        else:
-                            break
-                    if es_value is not None:
-                        es_matrix[j, i] = es_value
-            
-            # Calculate difference (ES - GA)
+            # Compute per-checkpoint common budgets (exact matches)
+            per_ckpt_common = []
+            for ga_b, es_b in zip(all_ga_budgets, all_es_budgets):
+                try:
+                    common = np.intersect1d(np.asarray(ga_b, dtype=int), np.asarray(es_b, dtype=int))
+                except Exception:
+                    common = np.array([], dtype=int)
+                per_ckpt_common.append(common)
+
+            # Global Y-axis as union of all checkpoint-wise common budgets
+            commons_nonempty = [c for c in per_ckpt_common if c.size > 0]
+            if commons_nonempty:
+                global_common_budget = np.unique(np.concatenate(commons_nonempty))
+            else:
+                global_common_budget = np.array([], dtype=int)
+            if global_common_budget.size == 0:
+                global_common_budget = np.array([0], dtype=int)
+
+            # Build matrices using only exact shared budgets, no interpolation
+            ga_matrix = np.full((len(global_common_budget), len(all_checkpoints)), np.nan)
+            es_matrix = np.full((len(global_common_budget), len(all_checkpoints)), np.nan)
+
+            for i, (ga_losses, ga_budget, es_losses, es_budget, common_b) in enumerate(
+                zip(all_ga_losses, all_ga_budgets, all_es_losses, all_es_budgets, per_ckpt_common)
+            ):
+                if common_b.size == 0:
+                    continue
+                ga_map = {int(b): float(ga_losses[idx]) for idx, b in enumerate(ga_budget)}
+                es_map = {int(b): float(es_losses[idx]) for idx, b in enumerate(es_budget)}
+                for row_idx, b in enumerate(global_common_budget):
+                    if b in common_b:
+                        if b in ga_map:
+                            ga_matrix[row_idx, i] = ga_map[b]
+                        if b in es_map:
+                            es_matrix[row_idx, i] = es_map[b]
+
+            # Difference at shared budgets
             diff_matrix = es_matrix - ga_matrix
 
             # Diagnostics: report DIFF range
@@ -511,11 +535,30 @@ def create_heatmaps(
                 diff_min = float(np.nanmin(diff_matrix[diff_finite]))
                 diff_max = float(np.nanmax(diff_matrix[diff_finite]))
                 print(f"Differential (ES-GA) loss range: min={diff_min:.4f}, max={diff_max:.4f}")
-            
+
+            # Compute and log per-checkpoint p-values (two-sided sign test on shared budgets)
+            for i, (ga_losses, ga_budget, es_losses, es_budget, common_b) in enumerate(
+                zip(all_ga_losses, all_ga_budgets, all_es_losses, all_es_budgets, per_ckpt_common)
+            ):
+                if common_b.size == 0:
+                    continue
+                ga_map = {int(b): float(ga_losses[idx]) for idx, b in enumerate(ga_budget)}
+                es_map = {int(b): float(es_losses[idx]) for idx, b in enumerate(es_budget)}
+                diffs = []
+                for b in common_b:
+                    if int(b) in ga_map and int(b) in es_map:
+                        diffs.append(es_map[int(b)] - ga_map[int(b)])
+                if len(diffs) > 0:
+                    pval = _two_sided_sign_test_pvalue(np.asarray(diffs, dtype=float))
+                    wandb.log({
+                        "ga_es_p_value": pval,
+                        "checkpoint_name": all_checkpoints[i]
+                    }, step=i)
+
             checkpoint_indices = np.arange(len(all_checkpoints))
 
             fig = visualize_loss_difference_heatmap(
-                checkpoint_indices, uniform_budget_grid, diff_matrix,
+                checkpoint_indices, global_common_budget, diff_matrix,
                 method_A_name="GA", method_B_name="ES",
                 symmetric=True
             )
@@ -609,7 +652,7 @@ def create_heatmaps(
                 fig = visualize_loss_difference_heatmap(
                     checkpoint_indices, ga_budget, ga_loss_matrix,
                     method_A_name="GA", method_B_name="GA",
-                    symmetric=False, descending_colorbar=True
+                    symmetric=False, descending_colorbar=False
                 )
                 ga_file = os.path.join(output_dir, f"ga_individual_{checkpoint_name}.png")
                 fig.savefig(ga_file, dpi=150, bbox_inches='tight')
@@ -628,7 +671,7 @@ def create_heatmaps(
                 fig = visualize_loss_difference_heatmap(
                     checkpoint_indices, es_budget, es_loss_matrix,
                     method_A_name="ES", method_B_name="ES",
-                    symmetric=False, descending_colorbar=True
+                    symmetric=False, descending_colorbar=False
                 )
                 es_file = os.path.join(output_dir, f"es_individual_{checkpoint_name}.png")
                 fig.savefig(es_file, dpi=150, bbox_inches='tight')
@@ -645,20 +688,23 @@ def create_heatmaps(
                 ga_budget = all_ga_budgets[i]
                 es_budget = all_es_budgets[i]
                 
-                # Align the loss trajectories to the same length
-                min_len = min(len(ga_losses), len(es_losses))
-                
-                # Truncate to same length
-                ga_losses_aligned = ga_losses[:min_len]
-                es_losses_aligned = es_losses[:min_len]
-                ga_budget_aligned = ga_budget[:min_len]
-                es_budget_aligned = es_budget[:min_len]
-                
-                # Calculate difference (ES - GA)
-                loss_diff = es_losses_aligned - ga_losses_aligned
-                
-                # Use the average budget trajectory
-                avg_budget = (ga_budget_aligned + es_budget_aligned) / 2
+                # Use lowest common granularity: exact intersection of budgets
+                common_b = np.intersect1d(np.asarray(ga_budget, dtype=int), np.asarray(es_budget, dtype=int))
+                if common_b.size == 0:
+                    continue
+                ga_map = {int(b): float(ga_losses[idx]) for idx, b in enumerate(ga_budget)}
+                es_map = {int(b): float(es_losses[idx]) for idx, b in enumerate(es_budget)}
+                ga_aligned = np.array([ga_map[int(b)] for b in common_b], dtype=float)
+                es_aligned = np.array([es_map[int(b)] for b in common_b], dtype=float)
+                loss_diff = es_aligned - ga_aligned
+                avg_budget = common_b
+
+                # Log per-checkpoint p-value here as well
+                pval = _two_sided_sign_test_pvalue(loss_diff)
+                wandb.log({
+                    "ga_es_p_value": float(pval),
+                    "checkpoint_name": checkpoint_name
+                }, step=i)
                 
                 # Create 2D matrix with budgets on the first axis
                 loss_diff_matrix = loss_diff.reshape(-1, 1)  # [num_budget_steps, 1]
