@@ -595,6 +595,24 @@ def create_heatmaps(
             fig.savefig(diff_file, dpi=150, bbox_inches='tight')
             plt.close(fig)
             heatmap_files.append(diff_file)
+            
+            # Create binary differential heatmap (1: GA better, 0: same, -1: ES better)
+            binary_diff_matrix = np.full_like(diff_matrix, np.nan)
+            finite_mask = np.isfinite(diff_matrix)
+            binary_diff_matrix[finite_mask] = np.where(
+                diff_matrix[finite_mask] < 0, 1,    # GA has lower loss (ES - GA < 0)
+                np.where(diff_matrix[finite_mask] > 0, -1, 0)  # ES has lower loss (ES - GA > 0), or same (ES - GA = 0)
+            )
+            
+            fig = visualize_loss_difference_heatmap(
+                checkpoint_indices, uniform_budget_grid, binary_diff_matrix,
+                method_A_name="GA", method_B_name="ES",
+                symmetric=True
+            )
+            binary_diff_file = os.path.join(output_dir, "binary_differential_loss_heatmap.png")
+            fig.savefig(binary_diff_file, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            heatmap_files.append(binary_diff_file)
         
         # Create comprehensive accuracy heatmaps if available
         if all_ga_accuracies and all_es_accuracies:
@@ -904,9 +922,15 @@ def main():
         summary_heatmaps = create_heatmaps(checkpoint_results, max_budget, args.output_dir, progressive=use_progressive)
         
         for heatmap_file in summary_heatmaps:
-            wandb.log({
-                "summary_heatmap": wandb.Image(heatmap_file)
-            })
+            # Give binary differential heatmap a specific name in W&B
+            if "binary_differential_loss_heatmap.png" in heatmap_file:
+                wandb.log({
+                    "binary_differential_loss": wandb.Image(heatmap_file)
+                })
+            else:
+                wandb.log({
+                    "summary_heatmap": wandb.Image(heatmap_file)
+                })
     
     print(f"Completed evaluation of {len(checkpoint_results)} checkpoints")
     wandb.finish()
