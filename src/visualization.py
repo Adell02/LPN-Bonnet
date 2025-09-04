@@ -707,10 +707,10 @@ def visualize_optimization_comparison(
     # all ticks
     ax.set_xticks(steps)
     
-    # Limit Y-axis ticks to maximum of 10
-    if budgets.size > 10:
+    # Limit Y-axis ticks to maximum of 20
+    if budgets.size > 20:
         # Select evenly spaced budget ticks
-        budget_indices = np.linspace(0, budgets.size-1, 10, dtype=int)
+        budget_indices = np.linspace(0, budgets.size-1, 20, dtype=int)
         selected_budgets = budgets[budget_indices]
         ax.set_yticks(selected_budgets)
     else:
@@ -1026,7 +1026,9 @@ def visualize_loss_difference_heatmap(
     budgets: chex.Array, 
     loss_diff: chex.Array,
     method_A_name: str = "Method A",
-    method_B_name: str = "Method B"
+    method_B_name: str = "Method B",
+    symmetric: bool = True,
+    descending_colorbar: bool = False
 ) -> plt.Figure:
     """
     Visualize loss difference between two optimization methods as a heatmap without log scaling.
@@ -1080,20 +1082,28 @@ def visualize_loss_difference_heatmap(
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
-    # Use raw loss difference values without log scaling
-    # Create masked array to handle NaN values
+    # Use raw values without log scaling; mask NaNs
     loss_diff_masked = np.ma.masked_invalid(loss_diff)
-    
-    if loss_diff_masked.count() > 0:
-        dmin = float(np.nanmin(loss_diff_masked))
-        dmax = float(np.nanmax(loss_diff_masked))
-        L = max(abs(dmin), abs(dmax))
-        # optional global cap; keep symmetry
-        L = min(L, 10.0)
-    else:
-        L = 5.0
 
-    norm = TwoSlopeNorm(vmin=-L, vcenter=0.0, vmax=L)
+    # Determine normalization based on symmetric flag
+    if symmetric:
+        if loss_diff_masked.count() > 0:
+            dmin = float(np.nanmin(loss_diff_masked))
+            dmax = float(np.nanmax(loss_diff_masked))
+            L = max(abs(dmin), abs(dmax))
+            L = min(L, 10.0)
+        else:
+            L = 5.0
+        norm = TwoSlopeNorm(vmin=-L, vcenter=0.0, vmax=L)
+    else:
+        # Non-symmetric: normalize from 0 to max (for pure-loss heatmaps)
+        if loss_diff_masked.count() > 0:
+            vmax_val = float(np.nanmax(loss_diff_masked))
+            vmax_val = max(vmax_val, 1e-8)
+        else:
+            vmax_val = 1.0
+        from matplotlib.colors import Normalize as _Normalize
+        norm = _Normalize(vmin=0.0, vmax=vmax_val)
 
     # Create heatmap
     # Handle single-point axes for sane extents
@@ -1118,16 +1128,16 @@ def visualize_loss_difference_heatmap(
         norm=norm
     )
 
-    # Add zero contour line where methods have equal loss
-    X, Y = np.meshgrid(steps, budgets)
-    try:
-        # Find where loss difference is close to zero
-        cs = ax.contour(X, Y, loss_diff, levels=[0.0], colors='black', linewidths=2.0, alpha=0.9)
-        # Label the contour
-        if cs.collections:
-            cs.collections[0].set_label('LOSS_GA = LOSS_ES')
-    except (ValueError, RuntimeError, TypeError):
-        cs = None  # ignore if not possible
+    # Add zero contour line only for symmetric difference plots
+    cs = None
+    if symmetric:
+        X, Y = np.meshgrid(steps, budgets)
+        try:
+            cs = ax.contour(X, Y, loss_diff, levels=[0.0], colors='black', linewidths=2.0, alpha=0.9)
+            if cs.collections:
+                cs.collections[0].set_label('LOSS_GA = LOSS_ES')
+        except (ValueError, RuntimeError, TypeError):
+            cs = None
 
     # Axes labels (no title)
     ax.set_xlabel("Training Checkpoint", fontsize=12)
@@ -1136,10 +1146,10 @@ def visualize_loss_difference_heatmap(
     # Set ticks
     ax.set_xticks(steps)
     
-    # Limit Y-axis ticks to maximum of 10
-    if budgets.size > 10:
+    # Limit Y-axis ticks to maximum of 20
+    if budgets.size > 20:
         # Select evenly spaced budget ticks
-        budget_indices = np.linspace(0, budgets.size-1, 10, dtype=int)
+        budget_indices = np.linspace(0, budgets.size-1, 20, dtype=int)
         selected_budgets = budgets[budget_indices]
         ax.set_yticks(selected_budgets)
     else:
@@ -1156,27 +1166,44 @@ def visualize_loss_difference_heatmap(
     # Colorbar axis
     cax = divider.append_axes("right", size="4%", pad=0.6)
     cbar = fig.colorbar(im, cax=cax)
-    cbar.ax.set_title(f"LOSS_GA - LOSS_ES", fontsize=11, pad=10, rotation=0, loc='center')
+    # Colorbar title depending on mode
+    if symmetric:
+        cbar.ax.set_title(f"LOSS_GA - LOSS_ES", fontsize=11, pad=10, rotation=0, loc='center')
+    else:
+        label_name = method_A_name if method_A_name == method_B_name else method_B_name
+        cbar.ax.set_title(f"LOSS_{label_name}", fontsize=11, pad=10, rotation=0, loc='center')
     cbar.ax.tick_params(length=3, pad=3)
+
+    # Descending colorbar (MAX -> 0) if requested
+    if not symmetric and descending_colorbar:
+        try:
+            cbar.ax.invert_yaxis()
+        except Exception:
+            pass
 
     # Add explanatory text axis
     label_ax = divider.append_axes("right", size="15%", pad=0.8)
     label_ax.axis("off")
     
-    # Add interpretation text with proper subscripts and black color
-    # For loss difference: method_B - method_A (ES - GA)
-    # Positive values = method_A (GA) better, Negative values = method_B (ES) better
-    label_ax.text(0.05, 0.95, f"LOSS_GA < LOSS_ES", 
-                  ha="left", va="top", fontsize=10, color='black', weight='bold')
-    label_ax.text(0.05, 0.05, f"LOSS_ES < LOSS_GA", 
-                  ha="left", va="bottom", fontsize=10, color='black', weight='bold')
-    label_ax.text(0.05, 0.5, f"LOSS_GA = LOSS_ES", 
-                  ha="left", va="center", fontsize=10, color='black', weight='bold')
+    if symmetric:
+        # Interpretation for difference plots
+        label_ax.text(0.05, 0.95, f"LOSS_GA < LOSS_ES", 
+                      ha="left", va="top", fontsize=10, color='black', weight='bold')
+        label_ax.text(0.05, 0.05, f"LOSS_ES < LOSS_GA", 
+                      ha="left", va="bottom", fontsize=10, color='black', weight='bold')
+        label_ax.text(0.05, 0.5, f"LOSS_GA = LOSS_ES", 
+                      ha="left", va="center", fontsize=10, color='black', weight='bold')
+    else:
+        # Interpretation for absolute loss plots
+        label_ax.text(0.05, 0.95, f"Higher loss", 
+                      ha="left", va="top", fontsize=10, color='black', weight='bold')
+        label_ax.text(0.05, 0.05, f"Lower loss", 
+                      ha="left", va="bottom", fontsize=10, color='black', weight='bold')
 
     # Legend
     handles = []
     labels = []
-    if cs and cs.collections:
+    if symmetric and cs and cs.collections:
         from matplotlib.lines import Line2D
         handles.append(Line2D([0], [0], color='black', lw=2))
         labels.append('LOSS_GA = LOSS_ES')

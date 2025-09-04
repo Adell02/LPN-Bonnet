@@ -419,7 +419,8 @@ def create_heatmaps(
 
             fig = visualize_loss_difference_heatmap(
                 checkpoint_indices, uniform_budget_grid, ga_loss_matrix,
-                method_A_name="GA", method_B_name="GA"
+                method_A_name="GA", method_B_name="GA",
+                symmetric=False, descending_colorbar=False
             )
             ga_file = os.path.join(output_dir, "ga_comprehensive_loss_heatmap.png")
             fig.savefig(ga_file, dpi=150, bbox_inches='tight')
@@ -447,7 +448,8 @@ def create_heatmaps(
 
             fig = visualize_loss_difference_heatmap(
                 checkpoint_indices, uniform_budget_grid, es_loss_matrix,
-                method_A_name="ES", method_B_name="ES"
+                method_A_name="ES", method_B_name="ES",
+                symmetric=False, descending_colorbar=True
             )
             es_file = os.path.join(output_dir, "es_comprehensive_loss_heatmap.png")
             fig.savefig(es_file, dpi=150, bbox_inches='tight')
@@ -493,7 +495,8 @@ def create_heatmaps(
 
             fig = visualize_loss_difference_heatmap(
                 checkpoint_indices, uniform_budget_grid, diff_matrix,
-                method_A_name="GA", method_B_name="ES"
+                method_A_name="GA", method_B_name="ES",
+                symmetric=True
             )
             diff_file = os.path.join(output_dir, "differential_comprehensive_loss_heatmap.png")
             fig.savefig(diff_file, dpi=150, bbox_inches='tight')
@@ -584,7 +587,8 @@ def create_heatmaps(
                 
                 fig = visualize_loss_difference_heatmap(
                     checkpoint_indices, ga_budget, ga_loss_matrix,
-                    method_A_name="GA", method_B_name="GA"
+                    method_A_name="GA", method_B_name="GA",
+                    symmetric=False, descending_colorbar=False
                 )
                 ga_file = os.path.join(output_dir, f"ga_individual_{checkpoint_name}.png")
                 fig.savefig(ga_file, dpi=150, bbox_inches='tight')
@@ -602,7 +606,8 @@ def create_heatmaps(
                 
                 fig = visualize_loss_difference_heatmap(
                     checkpoint_indices, es_budget, es_loss_matrix,
-                    method_A_name="ES", method_B_name="ES"
+                    method_A_name="ES", method_B_name="ES",
+                    symmetric=False, descending_colorbar=True
                 )
                 es_file = os.path.join(output_dir, f"es_individual_{checkpoint_name}.png")
                 fig.savefig(es_file, dpi=150, bbox_inches='tight')
@@ -640,7 +645,8 @@ def create_heatmaps(
                 
                 fig = visualize_loss_difference_heatmap(
                     checkpoint_indices, avg_budget, loss_diff_matrix,
-                    method_A_name="GA", method_B_name="ES"
+                    method_A_name="GA", method_B_name="ES",
+                    symmetric=True
                 )
                 diff_file = os.path.join(output_dir, f"differential_{checkpoint_name}.png")
                 fig.savefig(diff_file, dpi=150, bbox_inches='tight')
