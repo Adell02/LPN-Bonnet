@@ -692,7 +692,6 @@ def evaluate_custom_dataset(
                     pass
                 if isinstance(traj, dict):
                     print(f"[store_latents] GA traj keys: {list(traj.keys())}")
-                    print(f"[store_latents] GA traj content: {traj}")
                     print(f"[store_latents] GA traj content types: {[(k, type(v)) for k, v in traj.items()]}")
                     
                     # Initialize variables
@@ -702,7 +701,6 @@ def evaluate_custom_dataset(
                     if "latents" in traj:
                         ga_lat = np.array(traj["latents"])  # (*B, steps, C, H)
                         print(f"[store_latents] ga_latents shape: {getattr(ga_lat, 'shape', None)}")
-                        print(f"[store_latents] ga_latents content: {ga_lat}")
                         print(f"[store_latents] ga_latents type: {type(ga_lat)}")
                         payload["ga_latents"] = ga_lat
                     else:
@@ -711,7 +709,6 @@ def evaluate_custom_dataset(
                     if "log_probs" in traj:
                         ga_lp = np.array(traj["log_probs"])  # could be (*B, N, steps?, C) or similar
                         print(f"[store_latents] ga_log_probs shape: {getattr(ga_lp, 'shape', None)}")
-                        print(f"[store_latents] ga_log_probs content: {ga_lp}")
                         print(f"[store_latents] ga_log_probs type: {type(ga_lp)}")
                         payload["ga_log_probs"] = ga_lp
                     else:
