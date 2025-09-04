@@ -1128,16 +1128,8 @@ def visualize_loss_difference_heatmap(
         norm=norm
     )
 
-    # Add zero contour line only for symmetric difference plots
+    # Do not draw contour boundaries (loss equality lines) on the heatmap
     cs = None
-    if symmetric:
-        X, Y = np.meshgrid(steps, budgets)
-        try:
-            cs = ax.contour(X, Y, loss_diff, levels=[0.0], colors='black', linewidths=2.0, alpha=0.9)
-            if cs.collections:
-                cs.collections[0].set_label('LOSS_GA = LOSS_ES')
-        except (ValueError, RuntimeError, TypeError):
-            cs = None
 
     # Axes labels (no title)
     ax.set_xlabel("Training Checkpoint", fontsize=12)
@@ -1203,10 +1195,7 @@ def visualize_loss_difference_heatmap(
     # Legend
     handles = []
     labels = []
-    if symmetric and cs and cs.collections:
-        from matplotlib.lines import Line2D
-        handles.append(Line2D([0], [0], color='black', lw=2))
-        labels.append('LOSS_GA = LOSS_ES')
+    # No contour legend entries, since boundaries are not drawn
     
     if handles:
         ax.legend(handles, labels, loc='upper left', frameon=True)

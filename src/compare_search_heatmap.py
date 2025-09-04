@@ -415,12 +415,19 @@ def create_heatmaps(
                     if ga_value is not None:
                         ga_loss_matrix[j, i] = ga_value
 
+            # Diagnostics: report GA loss range
+            ga_finite = np.isfinite(ga_loss_matrix)
+            if np.any(ga_finite):
+                ga_min = float(np.nanmin(ga_loss_matrix[ga_finite]))
+                ga_max = float(np.nanmax(ga_loss_matrix[ga_finite]))
+                print(f"GA comprehensive loss range: min={ga_min:.4f}, max={ga_max:.4f}")
+
             checkpoint_indices = np.arange(len(all_checkpoints))
 
             fig = visualize_loss_difference_heatmap(
                 checkpoint_indices, uniform_budget_grid, ga_loss_matrix,
                 method_A_name="GA", method_B_name="GA",
-                symmetric=False, descending_colorbar=False
+                symmetric=False, descending_colorbar=True
             )
             ga_file = os.path.join(output_dir, "ga_comprehensive_loss_heatmap.png")
             fig.savefig(ga_file, dpi=150, bbox_inches='tight')
@@ -443,6 +450,13 @@ def create_heatmaps(
                             break
                     if es_value is not None:
                         es_loss_matrix[j, i] = es_value
+
+            # Diagnostics: report ES loss range
+            es_finite = np.isfinite(es_loss_matrix)
+            if np.any(es_finite):
+                es_min = float(np.nanmin(es_loss_matrix[es_finite]))
+                es_max = float(np.nanmax(es_loss_matrix[es_finite]))
+                print(f"ES comprehensive loss range: min={es_min:.4f}, max={es_max:.4f}")
 
             checkpoint_indices = np.arange(len(all_checkpoints))
 
@@ -490,6 +504,13 @@ def create_heatmaps(
             
             # Calculate difference (ES - GA)
             diff_matrix = es_matrix - ga_matrix
+
+            # Diagnostics: report DIFF range
+            diff_finite = np.isfinite(diff_matrix)
+            if np.any(diff_finite):
+                diff_min = float(np.nanmin(diff_matrix[diff_finite]))
+                diff_max = float(np.nanmax(diff_matrix[diff_finite]))
+                print(f"Differential (ES-GA) loss range: min={diff_min:.4f}, max={diff_max:.4f}")
             
             checkpoint_indices = np.arange(len(all_checkpoints))
 
@@ -588,7 +609,7 @@ def create_heatmaps(
                 fig = visualize_loss_difference_heatmap(
                     checkpoint_indices, ga_budget, ga_loss_matrix,
                     method_A_name="GA", method_B_name="GA",
-                    symmetric=False, descending_colorbar=False
+                    symmetric=False, descending_colorbar=True
                 )
                 ga_file = os.path.join(output_dir, f"ga_individual_{checkpoint_name}.png")
                 fig.savefig(ga_file, dpi=150, bbox_inches='tight')
