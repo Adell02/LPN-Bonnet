@@ -1082,11 +1082,24 @@ def visualize_loss_difference_heatmap(
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
-    # Transform values using tanh for bounded visualization, then mask NaNs
+    # Prepare underlying values (alpha) and compute scale so that tanh(SCALE * sigma) ≈ 0.75
+    alpha = np.asarray(loss_diff, dtype=float)
+    alpha_mask = np.isfinite(alpha)
+    if np.any(alpha_mask):
+        sigma = float(np.nanstd(alpha[alpha_mask]))
+    else:
+        sigma = 0.0
+    # Target fraction of colorbar for one sigma
+    target_level = 0.75
     try:
-        z_values = np.tanh(loss_diff.astype(float))
+        # arctanh maps target in (-1,1) to scale for unit sigma
+        base = np.arctanh(target_level)
     except Exception:
-        z_values = np.tanh(np.asarray(loss_diff, dtype=float))
+        base = 1.0
+    scale_factor = base / sigma if sigma > 1e-12 else 1.0
+
+    # Apply tanh with computed scaling, then mask NaNs
+    z_values = np.tanh(scale_factor * alpha)
     loss_diff_masked = np.ma.masked_invalid(z_values)
 
     # Determine normalization based on symmetric flag
