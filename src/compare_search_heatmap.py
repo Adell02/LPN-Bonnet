@@ -49,7 +49,7 @@ sys.path.append(str(Path(__file__).parent))
 from visualization import visualize_loss_difference_heatmap
 
 
-def get_checkpoints_from_run(run_name: str, project: str, max_checkpoints: int, strategy: str) -> List[str]:
+def get_checkpoints_from_run(run_name: str, project: str, max_checkpoints: int, strategy: str, max_checkpoint: Optional[str] = None) -> List[str]:
     """Get checkpoint artifact paths from a W&B run."""
     api = wandb.Api()
     
@@ -75,6 +75,24 @@ def get_checkpoints_from_run(run_name: str, project: str, max_checkpoints: int, 
             raise ValueError(f"Could not find run {run_name} in any accessible project")
         run = found_run
     
+    # Helper to parse wandb artifact version like 'v15' -> 15
+    def _parse_version(ver: Optional[str]) -> Optional[int]:
+        if ver is None:
+            return None
+        try:
+            if isinstance(ver, str):
+                if ver.startswith('v'):
+                    return int(ver[1:])
+                # try name suffix like '...:v12'
+                if ':' in ver:
+                    part = ver.split(':')[-1]
+                    if part.startswith('v'):
+                        return int(part[1:])
+                return int(ver)
+            return int(ver)
+        except Exception:
+            return None
+
     # Get all checkpoint artifacts
     artifacts = []
     for artifact in run.logged_artifacts():
@@ -84,6 +102,27 @@ def get_checkpoints_from_run(run_name: str, project: str, max_checkpoints: int, 
     if not artifacts:
         raise ValueError(f"No checkpoint artifacts found in run {run_name}")
     
+    # Optional filter by max_checkpoint version (e.g., 'v15')
+    if max_checkpoint is not None:
+        max_ver = _parse_version(max_checkpoint)
+        if max_ver is not None:
+            filtered = []
+            for a in artifacts:
+                a_ver = None
+                # Prefer artifact.version if present; fallback to parse from full name
+                try:
+                    a_ver = _parse_version(getattr(a, 'version', None))
+                except Exception:
+                    a_ver = None
+                if a_ver is None:
+                    try:
+                        a_ver = _parse_version(getattr(a, 'name', None))
+                    except Exception:
+                        a_ver = None
+                if a_ver is None or a_ver <= max_ver:
+                    filtered.append(a)
+            artifacts = filtered
+
     # Sort by creation time
     artifacts.sort(key=lambda x: x.created_at)
     
@@ -487,46 +526,38 @@ def create_heatmaps(
             plt.close(fig)
             heatmap_files.append(es_file)
         
-        # Create comprehensive differential heatmap (ES - GA) using lowest common granularity per checkpoint
+        # Create comprehensive differential heatmap (ES - GA)
         if (all_ga_losses and all_es_losses and 
             len(all_ga_losses) == len(all_es_losses)):
-            # Compute per-checkpoint common budgets (exact matches)
-            per_ckpt_common = []
-            for ga_b, es_b in zip(all_ga_budgets, all_es_budgets):
-                try:
-                    common = np.intersect1d(np.asarray(ga_b, dtype=int), np.asarray(es_b, dtype=int))
-                except Exception:
-                    common = np.array([], dtype=int)
-                per_ckpt_common.append(common)
+            # Create aligned matrices for both methods using uniform budget grid (carry-forward)
+            ga_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
+            es_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
 
-            # Global Y-axis as union of all checkpoint-wise common budgets
-            commons_nonempty = [c for c in per_ckpt_common if c.size > 0]
-            if commons_nonempty:
-                global_common_budget = np.unique(np.concatenate(commons_nonempty))
-            else:
-                global_common_budget = np.array([], dtype=int)
-            if global_common_budget.size == 0:
-                global_common_budget = np.array([0], dtype=int)
+            # Fill GA matrix
+            for i, (ga_losses, ga_budget) in enumerate(zip(all_ga_losses, all_ga_budgets)):
+                for j, budget_val in enumerate(uniform_budget_grid):
+                    ga_value = None
+                    for k, ga_b in enumerate(ga_budget):
+                        if ga_b <= budget_val:
+                            ga_value = ga_losses[k]
+                        else:
+                            break
+                    if ga_value is not None:
+                        ga_matrix[j, i] = ga_value
 
-            # Build matrices using only exact shared budgets, no interpolation
-            ga_matrix = np.full((len(global_common_budget), len(all_checkpoints)), np.nan)
-            es_matrix = np.full((len(global_common_budget), len(all_checkpoints)), np.nan)
+            # Fill ES matrix
+            for i, (es_losses, es_budget) in enumerate(zip(all_es_losses, all_es_budgets)):
+                for j, budget_val in enumerate(uniform_budget_grid):
+                    es_value = None
+                    for k, es_b in enumerate(es_budget):
+                        if es_b <= budget_val:
+                            es_value = es_losses[k]
+                        else:
+                            break
+                    if es_value is not None:
+                        es_matrix[j, i] = es_value
 
-            for i, (ga_losses, ga_budget, es_losses, es_budget, common_b) in enumerate(
-                zip(all_ga_losses, all_ga_budgets, all_es_losses, all_es_budgets, per_ckpt_common)
-            ):
-                if common_b.size == 0:
-                    continue
-                ga_map = {int(b): float(ga_losses[idx]) for idx, b in enumerate(ga_budget)}
-                es_map = {int(b): float(es_losses[idx]) for idx, b in enumerate(es_budget)}
-                for row_idx, b in enumerate(global_common_budget):
-                    if b in common_b:
-                        if b in ga_map:
-                            ga_matrix[row_idx, i] = ga_map[b]
-                        if b in es_map:
-                            es_matrix[row_idx, i] = es_map[b]
-
-            # Difference at shared budgets
+            # Calculate difference (ES - GA)
             diff_matrix = es_matrix - ga_matrix
 
             # Diagnostics: report DIFF range
@@ -536,18 +567,16 @@ def create_heatmaps(
                 diff_max = float(np.nanmax(diff_matrix[diff_finite]))
                 print(f"Differential (ES-GA) loss range: min={diff_min:.4f}, max={diff_max:.4f}")
 
-            # Compute and log per-checkpoint p-values (two-sided sign test on shared budgets)
-            for i, (ga_losses, ga_budget, es_losses, es_budget, common_b) in enumerate(
-                zip(all_ga_losses, all_ga_budgets, all_es_losses, all_es_budgets, per_ckpt_common)
+            # Compute and log per-checkpoint p-values on shared budgets (unchanged)
+            for i, (ga_losses, ga_budget, es_losses, es_budget) in enumerate(
+                zip(all_ga_losses, all_ga_budgets, all_es_losses, all_es_budgets)
             ):
+                common_b = np.intersect1d(np.asarray(ga_budget, dtype=int), np.asarray(es_budget, dtype=int))
                 if common_b.size == 0:
                     continue
                 ga_map = {int(b): float(ga_losses[idx]) for idx, b in enumerate(ga_budget)}
                 es_map = {int(b): float(es_losses[idx]) for idx, b in enumerate(es_budget)}
-                diffs = []
-                for b in common_b:
-                    if int(b) in ga_map and int(b) in es_map:
-                        diffs.append(es_map[int(b)] - ga_map[int(b)])
+                diffs = [es_map[int(b)] - ga_map[int(b)] for b in common_b if int(b) in ga_map and int(b) in es_map]
                 if len(diffs) > 0:
                     pval = _two_sided_sign_test_pvalue(np.asarray(diffs, dtype=float))
                     wandb.log({
@@ -558,7 +587,7 @@ def create_heatmaps(
             checkpoint_indices = np.arange(len(all_checkpoints))
 
             fig = visualize_loss_difference_heatmap(
-                checkpoint_indices, global_common_budget, diff_matrix,
+                checkpoint_indices, uniform_budget_grid, diff_matrix,
                 method_A_name="GA", method_B_name="ES",
                 symmetric=True
             )
@@ -688,23 +717,30 @@ def create_heatmaps(
                 ga_budget = all_ga_budgets[i]
                 es_budget = all_es_budgets[i]
                 
-                # Use lowest common granularity: exact intersection of budgets
-                common_b = np.intersect1d(np.asarray(ga_budget, dtype=int), np.asarray(es_budget, dtype=int))
-                if common_b.size == 0:
-                    continue
-                ga_map = {int(b): float(ga_losses[idx]) for idx, b in enumerate(ga_budget)}
-                es_map = {int(b): float(es_losses[idx]) for idx, b in enumerate(es_budget)}
-                ga_aligned = np.array([ga_map[int(b)] for b in common_b], dtype=float)
-                es_aligned = np.array([es_map[int(b)] for b in common_b], dtype=float)
-                loss_diff = es_aligned - ga_aligned
-                avg_budget = common_b
+                # Align the loss trajectories to the same length
+                min_len = min(len(ga_losses), len(es_losses))
+                # Truncate to same length
+                ga_losses_aligned = ga_losses[:min_len]
+                es_losses_aligned = es_losses[:min_len]
+                ga_budget_aligned = ga_budget[:min_len]
+                es_budget_aligned = es_budget[:min_len]
+                # Calculate difference (ES - GA)
+                loss_diff = es_losses_aligned - ga_losses_aligned
+                # Use the average budget trajectory
+                avg_budget = (ga_budget_aligned + es_budget_aligned) / 2
 
-                # Log per-checkpoint p-value here as well
-                pval = _two_sided_sign_test_pvalue(loss_diff)
-                wandb.log({
-                    "ga_es_p_value": float(pval),
-                    "checkpoint_name": checkpoint_name
-                }, step=i)
+                # Log per-checkpoint p-value computed on shared budgets
+                common_b = np.intersect1d(np.asarray(ga_budget, dtype=int), np.asarray(es_budget, dtype=int))
+                if common_b.size > 0:
+                    ga_map = {int(b): float(ga_losses[idx]) for idx, b in enumerate(ga_budget)}
+                    es_map = {int(b): float(es_losses[idx]) for idx, b in enumerate(es_budget)}
+                    diffs = [es_map[int(b)] - ga_map[int(b)] for b in common_b if int(b) in ga_map and int(b) in es_map]
+                    if len(diffs) > 0:
+                        pval = _two_sided_sign_test_pvalue(np.asarray(diffs, dtype=float))
+                        wandb.log({
+                            "ga_es_p_value": float(pval),
+                            "checkpoint_name": checkpoint_name
+                        }, step=i)
                 
                 # Create 2D matrix with budgets on the first axis
                 loss_diff_matrix = loss_diff.reshape(-1, 1)  # [num_budget_steps, 1]
@@ -742,6 +778,7 @@ def main():
     parser.add_argument("--max_checkpoints", type=int, default=10, help="Maximum number of checkpoints to evaluate")
     parser.add_argument("--checkpoint_strategy", type=str, default="even", choices=["even", "latest"], 
                        help="Strategy for selecting checkpoints")
+    parser.add_argument("--max_checkpoint", type=str, default=None, help="Maximum checkpoint version to include (e.g., v15)")
     
     # Budget configuration
     parser.add_argument("--budget_start", type=int, default=10, help="Starting budget")
@@ -783,7 +820,7 @@ def main():
     # Get checkpoints
     print(f"Getting checkpoints from run {args.run_name} in project {args.project}...")
     checkpoint_paths = get_checkpoints_from_run(
-        args.run_name, args.project, args.max_checkpoints, args.checkpoint_strategy
+        args.run_name, args.project, args.max_checkpoints, args.checkpoint_strategy, args.max_checkpoint
     )
     
     # Use max budget only (like store_latent_search.py)
