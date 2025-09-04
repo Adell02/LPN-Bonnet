@@ -1166,10 +1166,10 @@ def visualize_loss_difference_heatmap(
     cbar = fig.colorbar(im, cax=cax)
     # Colorbar title depending on mode
     if symmetric:
-        cbar.ax.set_title(f"tanh(LOSS_GA - LOSS_ES)", fontsize=11, pad=10, rotation=0, loc='center')
+        cbar.ax.set_title(f"tanh[ {scale_factor:.3g} * (LOSS_GA - LOSS_ES) ]", fontsize=11, pad=10, rotation=0, loc='center')
     else:
         label_name = method_A_name if method_A_name == method_B_name else method_B_name
-        cbar.ax.set_title(f"tanh(LOSS_{label_name})", fontsize=11, pad=10, rotation=0, loc='center')
+        cbar.ax.set_title(f"tanh[ {scale_factor:.3g} * LOSS_{label_name} ]", fontsize=11, pad=10, rotation=0, loc='center')
     cbar.ax.tick_params(length=3, pad=3)
 
     # Descending colorbar (MAX -> 0) if requested
