@@ -378,6 +378,20 @@ def run_evaluation_with_budget(
                     else:
                         metrics["budget"] = np.array([])
                     print(f"Created {method} budget trajectory: {metrics['budget'].shape}")
+                    
+                    # Ensure budget values are properly aligned and monotonic
+                    if len(metrics.get("budget", [])) > 0:
+                        budget_array = np.array(metrics["budget"])
+                        # Ensure budgets are non-negative and monotonic
+                        budget_array = np.maximum(budget_array, 0)
+                        # Sort to ensure monotonicity
+                        sort_idx = np.argsort(budget_array)
+                        metrics["budget"] = budget_array[sort_idx]
+                        # Also sort the corresponding losses
+                        if "losses" in metrics and len(metrics["losses"]) == len(budget_array):
+                            metrics["losses"] = np.array(metrics["losses"])[sort_idx]
+                        if "accuracies" in metrics and len(metrics["accuracies"]) == len(budget_array):
+                            metrics["accuracies"] = np.array(metrics["accuracies"])[sort_idx]
                 
             except Exception as e:
                 print(f"Warning: Could not load trajectory data: {e}")
@@ -432,6 +446,59 @@ def create_heatmaps(
         p = 2.0 * min(cdf_le_k, cdf_ge_k)
         return min(1.0, max(0.0, p))
     
+    def _create_unified_budget_grid(ga_budgets: List[np.ndarray], es_budgets: List[np.ndarray], 
+                                  max_budget: int, target_granularity: int = 100) -> np.ndarray:
+        """
+        Create a unified budget grid that ensures both GA and ES have the same granularity.
+        
+        Args:
+            ga_budgets: List of GA budget arrays
+            es_budgets: List of ES budget arrays  
+            max_budget: Maximum budget value
+            target_granularity: Target number of budget points
+            
+        Returns:
+            Unified budget grid with consistent granularity
+        """
+        # Collect all unique budget values from both methods
+        all_budgets = set()
+        
+        for ga_budget in ga_budgets:
+            if len(ga_budget) > 0:
+                all_budgets.update(ga_budget)
+        
+        for es_budget in es_budgets:
+            if len(es_budget) > 0:
+                all_budgets.update(es_budget)
+        
+        if not all_budgets:
+            # Fallback to simple linear grid
+            return np.linspace(0, max_budget, target_granularity, dtype=int)
+        
+        # Convert to sorted array
+        unique_budgets = np.array(sorted(all_budgets))
+        
+        # If we have too many points, sample them
+        if len(unique_budgets) > target_granularity:
+            # Sample to target granularity while preserving key points (0, max_budget)
+            indices = np.linspace(0, len(unique_budgets) - 1, target_granularity, dtype=int)
+            unified_grid = unique_budgets[indices]
+        else:
+            # Use all unique budget points
+            unified_grid = unique_budgets
+        
+        # Ensure 0 and max_budget are included
+        if 0 not in unified_grid:
+            unified_grid = np.concatenate([[0], unified_grid])
+        if max_budget not in unified_grid:
+            unified_grid = np.concatenate([unified_grid, [max_budget]])
+        
+        # Sort and remove duplicates
+        unified_grid = np.unique(unified_grid)
+        
+        print(f"Created unified budget grid with {len(unified_grid)} points: {unified_grid[:5]}...{unified_grid[-5:]}")
+        return unified_grid
+    
     # Aggregate data across all checkpoints
     all_checkpoints = []
     all_ga_losses = []
@@ -483,7 +550,7 @@ def create_heatmaps(
         # Create comprehensive heatmaps with budget on Y-axis, checkpoints on X-axis
         print(f"Creating comprehensive heatmaps for {len(all_checkpoints)} checkpoints...")
         
-        # Create uniform budget grid (unit steps: 0-1, 1-2, 2-3, etc.)
+        # Create unified budget grid that ensures both methods have the same granularity
         # Find the maximum budget across all methods and checkpoints
         max_budget_found = 0
         for ga_budget in all_ga_budgets:
@@ -493,26 +560,33 @@ def create_heatmaps(
             if es_budget is not None and len(es_budget) > 0:
                 max_budget_found = max(max_budget_found, int(es_budget[-1]))
         
-        # Create uniform budget grid with unit steps
-        uniform_budget_grid = np.arange(0, max_budget_found + 1)  # [0, 1, 2, 3, ..., max_budget]
-        print(f"Created uniform budget grid: {uniform_budget_grid}")
+        # Create unified budget grid with consistent granularity
+        uniform_budget_grid = _create_unified_budget_grid(all_ga_budgets, all_es_budgets, max_budget_found)
         
         # Create comprehensive GA loss heatmap
         if all_ga_losses:
             ga_loss_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
 
             for i, (ga_losses, ga_budget) in enumerate(zip(all_ga_losses, all_ga_budgets)):
-                # Interpolate GA values to uniform budget grid
-                for j, budget_val in enumerate(uniform_budget_grid):
-                    # Find the appropriate GA value for this budget
-                    ga_value = None
-                    for k, ga_b in enumerate(ga_budget):
-                        if ga_b <= budget_val:
-                            ga_value = ga_losses[k]
-                        else:
-                            break
-                    if ga_value is not None:
-                        ga_loss_matrix[j, i] = ga_value
+                # Use linear interpolation for smooth transitions
+                if len(ga_losses) > 0 and len(ga_budget) > 0:
+                    # Ensure budgets are sorted for interpolation
+                    sort_idx = np.argsort(ga_budget)
+                    ga_budget_sorted = ga_budget[sort_idx]
+                    ga_losses_sorted = ga_losses[sort_idx]
+                    
+                    # Remove duplicates and ensure monotonic budgets
+                    unique_mask = np.concatenate(([True], np.diff(ga_budget_sorted) > 0))
+                    ga_budget_unique = ga_budget_sorted[unique_mask]
+                    ga_losses_unique = ga_losses_sorted[unique_mask]
+                    
+                    if len(ga_budget_unique) > 1:
+                        # Linear interpolation for smooth transitions
+                        ga_interpolated = np.interp(uniform_budget_grid, ga_budget_unique, ga_losses_unique)
+                        ga_loss_matrix[:, i] = ga_interpolated
+                    elif len(ga_budget_unique) == 1:
+                        # Single point - fill with constant value
+                        ga_loss_matrix[:, i] = ga_losses_unique[0]
 
             # Diagnostics: report GA loss range
             ga_finite = np.isfinite(ga_loss_matrix)
@@ -538,17 +612,25 @@ def create_heatmaps(
             es_loss_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
 
             for i, (es_losses, es_budget) in enumerate(zip(all_es_losses, all_es_budgets)):
-                # Interpolate ES values to uniform budget grid
-                for j, budget_val in enumerate(uniform_budget_grid):
-                    # Find the appropriate ES value for this budget
-                    es_value = None
-                    for k, es_b in enumerate(es_budget):
-                        if es_b <= budget_val:
-                            es_value = es_losses[k]
-                        else:
-                            break
-                    if es_value is not None:
-                        es_loss_matrix[j, i] = es_value
+                # Use linear interpolation for smooth transitions
+                if len(es_losses) > 0 and len(es_budget) > 0:
+                    # Ensure budgets are sorted for interpolation
+                    sort_idx = np.argsort(es_budget)
+                    es_budget_sorted = es_budget[sort_idx]
+                    es_losses_sorted = es_losses[sort_idx]
+                    
+                    # Remove duplicates and ensure monotonic budgets
+                    unique_mask = np.concatenate(([True], np.diff(es_budget_sorted) > 0))
+                    es_budget_unique = es_budget_sorted[unique_mask]
+                    es_losses_unique = es_losses_sorted[unique_mask]
+                    
+                    if len(es_budget_unique) > 1:
+                        # Linear interpolation for smooth transitions
+                        es_interpolated = np.interp(uniform_budget_grid, es_budget_unique, es_losses_unique)
+                        es_loss_matrix[:, i] = es_interpolated
+                    elif len(es_budget_unique) == 1:
+                        # Single point - fill with constant value
+                        es_loss_matrix[:, i] = es_losses_unique[0]
 
             # Diagnostics: report ES loss range
             es_finite = np.isfinite(es_loss_matrix)
@@ -572,35 +654,51 @@ def create_heatmaps(
         # Create comprehensive differential heatmap (ES - GA)
         if (all_ga_losses and all_es_losses and 
             len(all_ga_losses) == len(all_es_losses)):
-            # Create aligned matrices for both methods using uniform budget grid (carry-forward)
-            ga_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
-            es_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
+            # Use the already interpolated matrices for consistent granularity
+            if 'ga_loss_matrix' in locals() and 'es_loss_matrix' in locals():
+                # Use the already interpolated matrices
+                ga_matrix = ga_loss_matrix
+                es_matrix = es_loss_matrix
+            else:
+                # Fallback: create aligned matrices using linear interpolation
+                ga_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
+                es_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
 
-            # Fill GA matrix
-            for i, (ga_losses, ga_budget) in enumerate(zip(all_ga_losses, all_ga_budgets)):
-                for j, budget_val in enumerate(uniform_budget_grid):
-                    ga_value = None
-                    for k, ga_b in enumerate(ga_budget):
-                        if ga_b <= budget_val:
-                            ga_value = ga_losses[k]
-                        else:
-                            break
-                    if ga_value is not None:
-                        ga_matrix[j, i] = ga_value
+                # Fill GA matrix with linear interpolation
+                for i, (ga_losses, ga_budget) in enumerate(zip(all_ga_losses, all_ga_budgets)):
+                    if len(ga_losses) > 0 and len(ga_budget) > 0:
+                        sort_idx = np.argsort(ga_budget)
+                        ga_budget_sorted = ga_budget[sort_idx]
+                        ga_losses_sorted = ga_losses[sort_idx]
+                        
+                        unique_mask = np.concatenate(([True], np.diff(ga_budget_sorted) > 0))
+                        ga_budget_unique = ga_budget_sorted[unique_mask]
+                        ga_losses_unique = ga_losses_sorted[unique_mask]
+                        
+                        if len(ga_budget_unique) > 1:
+                            ga_interpolated = np.interp(uniform_budget_grid, ga_budget_unique, ga_losses_unique)
+                            ga_matrix[:, i] = ga_interpolated
+                        elif len(ga_budget_unique) == 1:
+                            ga_matrix[:, i] = ga_losses_unique[0]
 
-            # Fill ES matrix
-            for i, (es_losses, es_budget) in enumerate(zip(all_es_losses, all_es_budgets)):
-                for j, budget_val in enumerate(uniform_budget_grid):
-                    es_value = None
-                    for k, es_b in enumerate(es_budget):
-                        if es_b <= budget_val:
-                            es_value = es_losses[k]
-                        else:
-                            break
-                    if es_value is not None:
-                        es_matrix[j, i] = es_value
+                # Fill ES matrix with linear interpolation
+                for i, (es_losses, es_budget) in enumerate(zip(all_es_losses, all_es_budgets)):
+                    if len(es_losses) > 0 and len(es_budget) > 0:
+                        sort_idx = np.argsort(es_budget)
+                        es_budget_sorted = es_budget[sort_idx]
+                        es_losses_sorted = es_losses[sort_idx]
+                        
+                        unique_mask = np.concatenate(([True], np.diff(es_budget_sorted) > 0))
+                        es_budget_unique = es_budget_sorted[unique_mask]
+                        es_losses_unique = es_losses_sorted[unique_mask]
+                        
+                        if len(es_budget_unique) > 1:
+                            es_interpolated = np.interp(uniform_budget_grid, es_budget_unique, es_losses_unique)
+                            es_matrix[:, i] = es_interpolated
+                        elif len(es_budget_unique) == 1:
+                            es_matrix[:, i] = es_losses_unique[0]
 
-            # Calculate difference (ES - GA)
+            # Calculate difference (ES - GA) with proper budget matching
             diff_matrix = es_matrix - ga_matrix
 
             # Diagnostics: report DIFF range
@@ -663,16 +761,21 @@ def create_heatmaps(
             ga_acc_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
 
             for i, (ga_acc, ga_budget) in enumerate(zip(all_ga_accuracies, all_ga_budgets)):
-                # Interpolate GA accuracy values to uniform budget grid
-                for j, budget_val in enumerate(uniform_budget_grid):
-                    ga_value = None
-                    for k, ga_b in enumerate(ga_budget):
-                        if ga_b <= budget_val:
-                            ga_value = ga_acc[k]
-                        else:
-                            break
-                    if ga_value is not None:
-                        ga_acc_matrix[j, i] = ga_value
+                # Use linear interpolation for smooth transitions
+                if len(ga_acc) > 0 and len(ga_budget) > 0:
+                    sort_idx = np.argsort(ga_budget)
+                    ga_budget_sorted = ga_budget[sort_idx]
+                    ga_acc_sorted = ga_acc[sort_idx]
+                    
+                    unique_mask = np.concatenate(([True], np.diff(ga_budget_sorted) > 0))
+                    ga_budget_unique = ga_budget_sorted[unique_mask]
+                    ga_acc_unique = ga_acc_sorted[unique_mask]
+                    
+                    if len(ga_budget_unique) > 1:
+                        ga_acc_interpolated = np.interp(uniform_budget_grid, ga_budget_unique, ga_acc_unique)
+                        ga_acc_matrix[:, i] = ga_acc_interpolated
+                    elif len(ga_budget_unique) == 1:
+                        ga_acc_matrix[:, i] = ga_acc_unique[0]
 
             checkpoint_indices = np.arange(len(all_checkpoints))
 
@@ -689,16 +792,21 @@ def create_heatmaps(
             es_acc_matrix = np.full((len(uniform_budget_grid), len(all_checkpoints)), np.nan)
 
             for i, (es_acc, es_budget) in enumerate(zip(all_es_accuracies, all_es_budgets)):
-                # Interpolate ES accuracy values to uniform budget grid
-                for j, budget_val in enumerate(uniform_budget_grid):
-                    es_value = None
-                    for k, es_b in enumerate(es_budget):
-                        if es_b <= budget_val:
-                            es_value = es_acc[k]
-                        else:
-                            break
-                    if es_value is not None:
-                        es_acc_matrix[j, i] = es_value
+                # Use linear interpolation for smooth transitions
+                if len(es_acc) > 0 and len(es_budget) > 0:
+                    sort_idx = np.argsort(es_budget)
+                    es_budget_sorted = es_budget[sort_idx]
+                    es_acc_sorted = es_acc[sort_idx]
+                    
+                    unique_mask = np.concatenate(([True], np.diff(es_budget_sorted) > 0))
+                    es_budget_unique = es_budget_sorted[unique_mask]
+                    es_acc_unique = es_acc_sorted[unique_mask]
+                    
+                    if len(es_budget_unique) > 1:
+                        es_acc_interpolated = np.interp(uniform_budget_grid, es_budget_unique, es_acc_unique)
+                        es_acc_matrix[:, i] = es_acc_interpolated
+                    elif len(es_budget_unique) == 1:
+                        es_acc_matrix[:, i] = es_acc_unique[0]
 
             checkpoint_indices = np.arange(len(all_checkpoints))
 
