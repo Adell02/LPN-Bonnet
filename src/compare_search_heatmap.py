@@ -164,7 +164,8 @@ def run_evaluation_with_budget(
     dataset_batch_size: int,
     dataset_use_hf: bool,
     dataset_seed: int,
-    temp_dir: str
+    temp_dir: str,
+    granularity_mode: str = "auto"
 ) -> Tuple[bool, Dict[str, Any]]:
     """Run evaluation with a specific budget and extract intermediate metrics from trajectory."""
     
@@ -321,19 +322,61 @@ def run_evaluation_with_budget(
                     metrics["budget"] = np.array(data[f"{method}_steps"])
                     print(f"Extracted {method} steps as budget: {metrics['budget'].shape}")
                 else:
-                    # Create budget steps based on method
-                    if method == "gradient_ascent":
-                        # GA: each step = 2 evaluations, so budget steps are [0, 2, 4, 6, ...]
-                        metrics["budget"] = np.arange(0, len(metrics.get("losses", [])), 1) * 2
+                    # Create budget steps based on method and granularity mode
+                    num_steps = len(metrics.get("losses", []))
+                    if num_steps > 0:
+                        if method == "gradient_ascent":
+                            if granularity_mode == "match_es":
+                                # Reduce GA granularity to match ES (sample every few steps)
+                                # Calculate ES granularity first
+                                pop = int(np.sqrt(budget))
+                                gens = budget // pop
+                                es_granularity = max(1, gens)  # Number of ES data points
+                                
+                                # Sample GA data to match ES granularity
+                                if num_steps > es_granularity:
+                                    step_indices = np.linspace(0, num_steps - 1, es_granularity, dtype=int)
+                                    metrics["budget"] = step_indices * 2  # Each GA step = 2 evaluations
+                                else:
+                                    metrics["budget"] = np.arange(0, num_steps, 1) * 2
+                            else:
+                                # Default GA: each step = 2 evaluations, so budget steps are [0, 2, 4, 6, ...]
+                                metrics["budget"] = np.arange(0, num_steps, 1) * 2
+                        else:  # evolutionary_search
+                            if granularity_mode == "match_ga":
+                                # Reduce ES granularity to match GA (sample fewer points)
+                                ga_granularity = num_steps  # GA has this many data points
+                                if num_steps > ga_granularity:
+                                    step_indices = np.linspace(0, num_steps - 1, ga_granularity, dtype=int)
+                                    metrics["budget"] = np.linspace(0, budget, len(step_indices), dtype=int)
+                                else:
+                                    metrics["budget"] = np.linspace(0, budget, num_steps, dtype=int)
+                            elif granularity_mode == "high_res":
+                                # Maximum granularity: create budget steps for every evaluation
+                                metrics["budget"] = np.linspace(0, budget, num_steps, dtype=int)
+                            else:  # auto or match_es
+                                # Create more granular budget steps to match GA granularity
+                                # Calculate population size from budget and generations
+                                pop = int(np.sqrt(budget))
+                                gens = budget // pop
+                                
+                                # Create per-evaluation budget steps for more granularity
+                                if gens > 1:
+                                    # Create budget steps that go from 0 to budget with pop_size increments
+                                    # This gives us budget steps like [0, pop, 2*pop, 3*pop, ..., budget]
+                                    budget_steps = np.arange(0, budget + 1, pop)
+                                    # If we have more loss values than budget steps, interpolate
+                                    if num_steps > len(budget_steps):
+                                        # Interpolate to match the number of loss values
+                                        metrics["budget"] = np.linspace(0, budget, num_steps, dtype=int)
+                                    else:
+                                        # Use the calculated budget steps, truncating if necessary
+                                        metrics["budget"] = budget_steps[:num_steps]
+                                else:
+                                    # Single generation case - create uniform distribution
+                                    metrics["budget"] = np.linspace(0, budget, num_steps, dtype=int)
                     else:
-                        # ES: use the same budget range as GA for consistency
-                        # Create budget steps that align with the target budget
-                        num_steps = len(metrics.get("losses", []))
-                        if num_steps > 0:
-                            # Create budget steps that go from 0 to the target budget
-                            metrics["budget"] = np.linspace(0, budget, num_steps, dtype=int)
-                        else:
-                            metrics["budget"] = np.array([])
+                        metrics["budget"] = np.array([])
                     print(f"Created {method} budget trajectory: {metrics['budget'].shape}")
                 
             except Exception as e:
@@ -819,6 +862,10 @@ def main():
     parser.add_argument("--progressive", action="store_true", default=True, help="Create comprehensive heatmaps with budget on Y-axis, checkpoints on X-axis")
     parser.add_argument("--no_progressive", action="store_true", help="Disable comprehensive heatmaps, use original individual heatmaps")
     
+    # Granularity control
+    parser.add_argument("--granularity_mode", type=str, default="auto", choices=["auto", "match_ga", "match_es", "high_res"], 
+                       help="Control granularity: auto=improve ES granularity, match_ga=reduce GA to match ES, match_es=reduce ES to match GA, high_res=maximum granularity for both")
+    
     args = parser.parse_args()
     
     # Handle progressive flag
@@ -865,7 +912,8 @@ def main():
                 checkpoint_path, "gradient_ascent", max_budget,
                 args.ga_lr, args.es_mutation_std, args.es_mutation_decay,
                 args.dataset_folder, args.dataset_length, args.dataset_batch_size,
-                args.dataset_use_hf == "true", args.dataset_seed, temp_dir
+                args.dataset_use_hf == "true", args.dataset_seed, temp_dir,
+                args.granularity_mode
             )
             if success:
                 ga_results[max_budget] = metrics
@@ -881,7 +929,8 @@ def main():
                 checkpoint_path, "evolutionary_search", max_budget,
                 args.ga_lr, args.es_mutation_std, args.es_mutation_decay,
                 args.dataset_folder, args.dataset_length, args.dataset_batch_size,
-                args.dataset_use_hf == "true", args.dataset_seed, temp_dir
+                args.dataset_use_hf == "true", args.dataset_seed, temp_dir,
+                args.granularity_mode
             )
             if success:
                 es_results[max_budget] = metrics
