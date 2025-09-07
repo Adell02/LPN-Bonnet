@@ -1619,12 +1619,16 @@ class StructuredTrainer:
         try:
             # Collect latents from all patterns
             all_latents = []
-            all_patterns = []
+            all_program_ids = []
+            all_source_ids = []
+            all_task_ids = []
             
             # Configuration for number of samples and resampling
             max_total_points = int(self.cfg.eval.get("tsne_max_points", 2304))
             max_samples_per_pattern = max_total_points // 3
             num_resamples = 3
+
+            task_counter = 0  # global task id counter across all patterns
 
             for pattern_id, (grids, shapes, pattern_ids) in eval_data.items():
                 # Sample subset for T-SNE
@@ -1655,19 +1659,39 @@ class StructuredTrainer:
                     samples.append(mu_np + np.random.randn(*mu_np.shape) * std_np)
                 samples = np.concatenate(samples, axis=0)
 
+                # Append latents
                 all_latents.append(samples)
-                all_patterns.extend(np.repeat(sample_pattern_ids, num_resamples))
+
+                # Program ids (pattern ids), repeated per resample
+                all_program_ids.extend(np.repeat(sample_pattern_ids, num_resamples))
+
+                # Source ids: single encoder here -> 0 for all points
+                all_source_ids.extend(np.zeros(samples.shape[0], dtype=int))
+
+                # Task ids: assign a unique id per original sample, repeated across resamples
+                n_base = mu_np.shape[0]
+                local_task_ids = np.arange(task_counter, task_counter + n_base, dtype=int)
+                all_task_ids.extend(np.repeat(local_task_ids, num_resamples))
+                task_counter += n_base
 
             # Concatenate and flatten
             all_latents = np.concatenate(all_latents, axis=0)
             all_latents_flat = all_latents.reshape(all_latents.shape[0], -1)
 
-            # Use visualize_tsne function to match train.py style exactly
-            fig_latents = visualize_tsne(jnp.array(all_latents_flat), np.array(all_patterns))
+            # Use task-aware PCA visualization: color by pattern (program_ids), marker by source, annotate task ids
+            fig_latents = visualize_tsne_sources(
+                jnp.array(all_latents_flat),
+                np.array(all_program_ids),
+                np.array(all_source_ids),
+                max_points=int(self.cfg.eval.get("tsne_max_points", 2304)),
+                random_state=42,
+                task_ids=np.array(all_task_ids),
+            )
             
             # Log to WandB
-            wandb.log({f"encoder_{enc_idx}/tsne_plot": wandb.Image(fig_latents)}, step=global_step)
-            plt.close(fig_latents)
+            if fig_latents is not None:
+                wandb.log({f"encoder_{enc_idx}/tsne_plot": wandb.Image(fig_latents)}, step=global_step)
+                plt.close(fig_latents)
             
         except Exception as e:
             logging.warning(f"T-SNE creation failed for Encoder {enc_idx}: {e}")
