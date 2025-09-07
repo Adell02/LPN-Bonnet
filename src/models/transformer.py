@@ -172,26 +172,33 @@ class EncoderTransformer(nn.Module):
         grid_shapes_embed = jnp.concatenate([grid_shapes_row_embed, grid_shapes_col_embed], axis=-2)
         
         # Fix dimension mismatch: ensure grid_shapes_embed has compatible dimensions with x
-        # This handles cases like tetro_pattern where x has extra dimensions
+        # Align existing batch dims of grid_shapes_embed with the leading batch dims of x, and
+        # insert singleton axes immediately after those to match any extra batch dims in x.
         if grid_shapes_embed.shape[:-2] != x.shape[:-2]:
-            # Simple approach: just expand dimensions to match
-            x_batch_dims = len(x.shape[:-2])
-            grid_batch_dims = len(grid_shapes_embed.shape[:-2])
-            dims_to_add = x_batch_dims - grid_batch_dims
-            
-            if dims_to_add > 0:
-                # Add missing dimensions by expanding
-                for _ in range(dims_to_add):
-                    grid_shapes_embed = grid_shapes_embed[None, ...]
-                
-                # Now try broadcasting to final shape
-                try:
-                    target_shape = (*x.shape[:-2], *grid_shapes_embed.shape[-2:])
-                    grid_shapes_embed = jnp.broadcast_to(grid_shapes_embed, target_shape)
-                except Exception as e:
-                    raise ValueError(f"Cannot handle tensor dimension mismatch after expansion")
+            x_batch = x.shape[:-2]
+            g_batch = grid_shapes_embed.shape[:-2]
+            x_batch_rank = len(x_batch)
+            g_batch_rank = len(g_batch)
+            if g_batch_rank > x_batch_rank:
+                raise ValueError(
+                    f"Cannot handle tensor dimension mismatch: grid_shapes_embed {grid_shapes_embed.shape} vs x {x.shape}"
+                )
+            # Build a reshape that keeps existing leading batch dims (if any) and then inserts
+            # singleton axes to fill remaining x batch rank, followed by the last two dims (4, H)
+            if g_batch_rank == 0:
+                # No batch dims in grid_shapes_embed, insert all as singleton after none
+                new_shape = (1,) * x_batch_rank + grid_shapes_embed.shape[-2:]
             else:
-                raise ValueError(f"Cannot handle tensor dimension mismatch: grid_shapes_embed {grid_shapes_embed.shape} vs x {x.shape}")
+                # Keep the first g_batch_rank dims as-is, then add (x_batch_rank - g_batch_rank) singletons
+                new_shape = (*g_batch, *([1] * (x_batch_rank - g_batch_rank)), *grid_shapes_embed.shape[-2:])
+            grid_shapes_embed = jnp.reshape(grid_shapes_embed, new_shape)
+            try:
+                target_shape = (*x_batch, *grid_shapes_embed.shape[-2:])
+                grid_shapes_embed = jnp.broadcast_to(grid_shapes_embed, target_shape)
+            except Exception:
+                raise ValueError(
+                    f"Cannot handle tensor dimension mismatch after expansion: got {grid_shapes_embed.shape}, target {target_shape}"
+                )
         
         x = jnp.concatenate([grid_shapes_embed, x], axis=-2)  # (*B, 4+2*R*C, H)
 
