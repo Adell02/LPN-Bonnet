@@ -445,6 +445,35 @@ def create_heatmaps(
         cdf_ge_k = sum(math.comb(n, i) for i in range(k, n + 1)) / denom
         p = 2.0 * min(cdf_le_k, cdf_ge_k)
         return min(1.0, max(0.0, p))
+
+    def _cohens_dz(diffs: np.ndarray) -> float:
+        clean = diffs[np.isfinite(diffs)]
+        if clean.size == 0:
+            return float('nan')
+        mean = float(np.mean(clean))
+        std = float(np.std(clean, ddof=1)) if clean.size > 1 else 0.0
+        if std == 0.0:
+            return float('nan')
+        return mean / std
+
+    def _method_improvement_stats(losses: np.ndarray, budget: np.ndarray) -> tuple[float, float]:
+        """Compute sign-test p-value and Cohen's dz from consecutive loss improvements for a method."""
+        try:
+            if losses is None or budget is None or len(losses) < 2 or len(budget) < 2:
+                return float('nan'), float('nan')
+            sort_idx = np.argsort(budget)
+            b_sorted = np.asarray(budget)[sort_idx]
+            l_sorted = np.asarray(losses)[sort_idx]
+            unique_mask = np.concatenate(([True], np.diff(b_sorted) > 0))
+            l_unique = l_sorted[unique_mask]
+            if l_unique.size < 2:
+                return float('nan'), float('nan')
+            deltas = l_unique[:-1] - l_unique[1:]
+            pval = _two_sided_sign_test_pvalue(deltas)
+            dz = _cohens_dz(deltas)
+            return float(pval), float(dz)
+        except Exception:
+            return float('nan'), float('nan')
     
     def _create_unified_budget_grid(ga_budgets: List[np.ndarray], es_budgets: List[np.ndarray], 
                                   max_budget: int, target_granularity: int = 100) -> np.ndarray:
@@ -651,7 +680,7 @@ def create_heatmaps(
             plt.close(fig)
             heatmap_files.append(es_file)
         
-        # Create comprehensive differential heatmap (ES - GA)
+        # Create comprehensive differential heatmap (GA - ES)
         if (all_ga_losses and all_es_losses and 
             len(all_ga_losses) == len(all_es_losses)):
             # Use the already interpolated matrices for consistent granularity
@@ -698,15 +727,15 @@ def create_heatmaps(
                         elif len(es_budget_unique) == 1:
                             es_matrix[:, i] = es_losses_unique[0]
 
-            # Calculate difference (ES - GA) with proper budget matching
-            diff_matrix = es_matrix - ga_matrix
+            # Calculate difference (GA - ES) with proper budget matching
+            diff_matrix = ga_matrix - es_matrix
 
-            # Diagnostics: report DIFF range
+            # Diagnostics: report DIFF (GA-ES) range
             diff_finite = np.isfinite(diff_matrix)
             if np.any(diff_finite):
                 diff_min = float(np.nanmin(diff_matrix[diff_finite]))
                 diff_max = float(np.nanmax(diff_matrix[diff_finite]))
-                print(f"Differential (ES-GA) loss range: min={diff_min:.4f}, max={diff_max:.4f}")
+                print(f"Differential (GA-ES) loss range: min={diff_min:.4f}, max={diff_max:.4f}")
 
             # Compute and log per-checkpoint p-values on shared budgets (unchanged)
             for i, (ga_losses, ga_budget, es_losses, es_budget) in enumerate(
@@ -722,6 +751,23 @@ def create_heatmaps(
                     pval = _two_sided_sign_test_pvalue(np.asarray(diffs, dtype=float))
                     wandb.log({
                         "ga_es_p_value": pval,
+                        "checkpoint_name": all_checkpoints[i]
+                    }, step=i)
+
+            # Per-method loss improvement stats (GA and ES): p-value and Cohen's dz
+            for i in range(len(all_checkpoints)):
+                if i < len(all_ga_losses) and i < len(all_ga_budgets):
+                    p_ga, dz_ga = _method_improvement_stats(all_ga_losses[i], all_ga_budgets[i])
+                    wandb.log({
+                        "ga_loss_improvement_p_value": p_ga,
+                        "ga_loss_improvement_cohens_dz": dz_ga,
+                        "checkpoint_name": all_checkpoints[i]
+                    }, step=i)
+                if i < len(all_es_losses) and i < len(all_es_budgets):
+                    p_es, dz_es = _method_improvement_stats(all_es_losses[i], all_es_budgets[i])
+                    wandb.log({
+                        "es_loss_improvement_p_value": p_es,
+                        "es_loss_improvement_cohens_dz": dz_es,
                         "checkpoint_name": all_checkpoints[i]
                     }, step=i)
 
@@ -741,8 +787,8 @@ def create_heatmaps(
             binary_diff_matrix = np.full_like(diff_matrix, np.nan)
             finite_mask = np.isfinite(diff_matrix)
             binary_diff_matrix[finite_mask] = np.where(
-                diff_matrix[finite_mask] < 0, 1,    # GA has lower loss (ES - GA < 0)
-                np.where(diff_matrix[finite_mask] > 0, -1, 0)  # ES has lower loss (ES - GA > 0), or same (ES - GA = 0)
+                diff_matrix[finite_mask] > 0, 1,    # GA has lower loss (GA - ES > 0)
+                np.where(diff_matrix[finite_mask] < 0, -1, 0)  # ES has lower loss (GA - ES < 0), or same (= 0)
             )
             
             fig = visualize_loss_difference_heatmap(
@@ -876,7 +922,7 @@ def create_heatmaps(
                 plt.close(fig)
                 heatmap_files.append(es_file)
         
-        # Create differential heatmap (ES - GA) for each checkpoint
+        # Create differential heatmap (GA - ES) for each checkpoint
         for i, checkpoint_name in enumerate(all_checkpoints):
             if (i < len(all_ga_losses) and i < len(all_es_losses) and 
                 len(all_ga_losses[i]) > 0 and len(all_es_losses[i]) > 0):
@@ -893,23 +939,37 @@ def create_heatmaps(
                 es_losses_aligned = es_losses[:min_len]
                 ga_budget_aligned = ga_budget[:min_len]
                 es_budget_aligned = es_budget[:min_len]
-                # Calculate difference (ES - GA)
-                loss_diff = es_losses_aligned - ga_losses_aligned
+                # Calculate difference (GA - ES)
+                loss_diff = ga_losses_aligned - es_losses_aligned
                 # Use the average budget trajectory
                 avg_budget = (ga_budget_aligned + es_budget_aligned) / 2
 
-                # Log per-checkpoint p-value computed on shared budgets
+                # Log per-checkpoint p-value computed on shared budgets (GA-ES)
                 common_b = np.intersect1d(np.asarray(ga_budget, dtype=int), np.asarray(es_budget, dtype=int))
                 if common_b.size > 0:
                     ga_map = {int(b): float(ga_losses[idx]) for idx, b in enumerate(ga_budget)}
                     es_map = {int(b): float(es_losses[idx]) for idx, b in enumerate(es_budget)}
-                    diffs = [es_map[int(b)] - ga_map[int(b)] for b in common_b if int(b) in ga_map and int(b) in es_map]
+                    diffs = [ga_map[int(b)] - es_map[int(b)] for b in common_b if int(b) in ga_map and int(b) in es_map]
                     if len(diffs) > 0:
                         pval = _two_sided_sign_test_pvalue(np.asarray(diffs, dtype=float))
                         wandb.log({
                             "ga_es_p_value": float(pval),
                             "checkpoint_name": checkpoint_name
                         }, step=i)
+
+                # Also log per-method improvement stats for this checkpoint
+                p_ga, dz_ga = _method_improvement_stats(ga_losses, ga_budget)
+                wandb.log({
+                    "ga_loss_improvement_p_value": p_ga,
+                    "ga_loss_improvement_cohens_dz": dz_ga,
+                    "checkpoint_name": checkpoint_name
+                }, step=i)
+                p_es, dz_es = _method_improvement_stats(es_losses, es_budget)
+                wandb.log({
+                    "es_loss_improvement_p_value": p_es,
+                    "es_loss_improvement_cohens_dz": dz_es,
+                    "checkpoint_name": checkpoint_name
+                }, step=i)
                 
                 # Create 2D matrix with budgets on the first axis
                 loss_diff_matrix = loss_diff.reshape(-1, 1)  # [num_budget_steps, 1]
