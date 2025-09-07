@@ -51,7 +51,7 @@ training:
   num_workers: 4
   repulsion_kl: 10
   learning_rate: 0.001
-  contrastive_kl: 5
+  contrastive_kl: 10
   inference_mode: "mean"
   prior_kl_coeff: null
   train_datasets: ""
