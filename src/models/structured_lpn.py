@@ -383,14 +383,9 @@ class StructuredLPN(nn.Module):
             # Find most confident encoder for each context
             min_var_indices = jnp.argmin(context_encoder_variances, axis=1)  # (batch_size,)
             
-            # Create dynamic alphas for each context
+            # Create uniform alphas for each context
             # Shape: (batch_size, E) - alphas per context per encoder
-            poe_alphas = jnp.ones((batch_size, E), dtype=mus.dtype) * 0.05 / max(E - 1, 1)
-            
-            # Set 95% weight to most confident encoder for each context
-            for batch_idx in range(batch_size):
-                most_confident_enc = min_var_indices[batch_idx]
-                poe_alphas = poe_alphas.at[batch_idx, most_confident_enc].set(0.95)
+            poe_alphas = jnp.ones((batch_size, E), dtype=mus.dtype) / E
             
             # Debug logging for first few contexts
             import logging

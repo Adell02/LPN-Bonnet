@@ -46,43 +46,32 @@ structured:
 
 training:
   seed: 0
-  mixed_precision: false
-  batch_size: 128
-  gradient_accumulation_steps: 1
-  learning_rate: 1e-3
-  linear_warmup_steps: 99
-  # Option A: use HF/local datasets
-  train_datasets: ""  # leave empty when using struct patterns
   use_hf: true
-  online_data_augmentation: false
-  inference_mode: "mean"  # mean/all/random_search/gradient_ascent/evolutionary_search
-  inference_kwargs: {}
+  batch_size: 128
+  num_workers: 4
+  repulsion_kl: 10
+  learning_rate: 0.001
+  contrastive_kl: 5
+  inference_mode: "mean"
   prior_kl_coeff: null
-  pairwise_kl_coeff: null
-  decoder_expose_steps: 1
-  encoder_expose_steps: 10  # number of initial gradient steps encoders are trainable
-  repulsion_kl: 0.5
-  # Distance margin for repulsion loss (default: 10.0)
-  # Using a larger margin (e.g., 10) keeps the repulsion term active
-  # since typical distances (~9) are already larger than the previous margin of 1.0
-  repulsion_margin: 0.5
-  # This coefficient controls the strength of contrastive loss
-  # Lower values = more stable, higher values = more aggressive specialization
-  # The system will dynamically adjust this coefficient based on specialization progress
-  contrastive_kl: 15  # specialization effects (increased from 1e-3)
-  contrastive_margin: 10
-  log_every_n_steps: 5
-  eval_every_n_logs: 1       # null to disable
-  eval_every_n_logs_phase_2: 10       # null to disable
-  save_checkpoint_every_n_logs: null  # null to disable
-  resume_from_checkpoint: null
-  # Option B: balanced structured tetromino patterns (O, T, L) - now using task generator
-  struct_patterns_balanced: true
-  struct_num_pairs: 4          # 4 pairs per task (input + output)
-  num_workers: 4               # Number of workers for data generation
+  train_datasets: ""
+  mixed_precision: false
+  inference_kwargs: {}
   pattern_per_task: true
-  # Training: 1024 total samples (341 per pattern: O, T, L tetrominos)
-  # Evaluation: 96 total samples (32 per pattern: O, T, L tetrominos)
+  repulsion_margin: 10
+  struct_num_pairs: 4
+  eval_every_n_logs: 20
+  log_every_n_steps: 10
+  pairwise_kl_coeff: null
+  linear_warmup_steps: 99
+  decoder_expose_steps: 10000
+  encoder_expose_steps: 5000
+  resume_from_checkpoint: null
+  online_data_augmentation: false
+  struct_patterns_balanced: true
+  eval_every_n_logs_phase_2: 20
+  gradient_accumulation_steps: 1
+  save_checkpoint_every_n_logs: 100  # Save checkpoint every 100 logs (1000 steps with log_every_n_steps=100)
 
 eval:
   dataset:

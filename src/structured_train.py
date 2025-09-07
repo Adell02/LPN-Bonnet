@@ -3832,15 +3832,30 @@ class StructuredTrainer:
     def train(self, state: TrainState, enc_params_list: list[dict]) -> TrainState:
         cfg = self.cfg
         # Training duration: Phase 1 uses encoder_expose_steps; Phase 2 uses decoder_expose_steps
-        num_steps = cfg.training.decoder_expose_steps if self.encoder_expose_steps == 0 else self.encoder_expose_steps
+        if self.encoder_expose_steps > 0 and not self.phase1_completed:
+            # Phase 1: Individual encoder specialization
+            num_steps = self.encoder_expose_steps
+        else:
+            # Phase 2: Decoder exposure
+            num_steps = cfg.training.decoder_expose_steps
         log_every = cfg.training.log_every_n_steps
         self.enc_params_list = enc_params_list  # Store for train_n_steps
         
         step = 0  # Always start from 0 - unique run IDs prevent conflicts
         epoch = 0
         key = jax.random.PRNGKey(cfg.training.seed)
-        logging.info("Starting structured training...")
-        logging.info(f"Total steps: {num_steps}, Log every: {log_every}, Batch size: {self.batch_size}")
+        
+        # Log which phase is running
+        if self.encoder_expose_steps > 0 and not self.phase1_completed:
+            logging.info("🚀 Starting PHASE 1: Individual Encoder Specialization")
+            logging.info(f"   - Phase 1 steps: {num_steps}")
+            logging.info(f"   - Encoder exposure steps: {self.encoder_expose_steps}")
+        else:
+            logging.info("🔒 Starting PHASE 2: Decoder Exposure")
+            logging.info(f"   - Phase 2 steps: {num_steps}")
+            logging.info(f"   - Decoder exposure steps: {cfg.training.decoder_expose_steps}")
+            
+        logging.info(f"Training configuration: Log every {log_every} steps, Batch size: {self.batch_size}")
         eval_every_n_logs = cfg.training.get('eval_every_n_logs')
         save_checkpoint_every_n_logs = cfg.training.get('save_checkpoint_every_n_logs')
         
@@ -4283,6 +4298,18 @@ class StructuredTrainer:
                 else:
                     logging.warning(f"Phase 2: No reconstruction metrics found to log")
                 
+                # Phase 2: Save checkpoint during decoder exposure
+                if cfg.training.get("save_checkpoint_every_n_logs") and (step // log_every) % cfg.training.save_checkpoint_every_n_logs == 0:
+                    try:
+                        logging.info(f"Phase 2: Saving StructuredLPN checkpoint at step {step}")
+                        from flax.serialization import msgpack_serialize, to_state_dict
+                        with open("state.msgpack", "wb") as outfile:
+                            outfile.write(msgpack_serialize(to_state_dict(state)))
+                        wandb.save("state.msgpack")
+                        logging.info(f"Phase 2: Checkpoint saved successfully at step {step}")
+                    except Exception as e:
+                        logging.warning(f"Phase 2: Checkpoint save failed at step {step}: {e}")
+                
                 # Note: Comprehensive metrics (T-SNE, clustering, certainty plots) are computed once 
                 # at the beginning of Phase 2 and uploaded through the train_n_steps_phase2 function
                 
@@ -4504,6 +4531,18 @@ class StructuredTrainer:
                     
             except Exception as e:
                 logging.warning(f"Final evaluation failed: {e}")
+        
+        # Final checkpoint save at end of training
+        if cfg.training.get("save_checkpoint_every_n_logs"):
+            try:
+                logging.info(f"💾 Saving final StructuredLPN checkpoint at end of training")
+                from flax.serialization import msgpack_serialize, to_state_dict
+                with open("state.msgpack", "wb") as outfile:
+                    outfile.write(msgpack_serialize(to_state_dict(state)))
+                wandb.save("state.msgpack")
+                logging.info(f"✅ Final checkpoint saved successfully")
+            except Exception as e:
+                logging.warning(f"❌ Final checkpoint save failed: {e}")
         
         return state
 
@@ -6968,26 +7007,72 @@ class StructuredTrainer:
                     pad_frac = 0.05
                     x_plot = np.linspace(x_min - pad_frac * x_range, x_max + pad_frac * x_range, 200)
 
-                    # Compute PoE Gaussian
+                    # Compute PoE Gaussian using the same robust approach as merged_encoder_certainty_panel
                     try:
                         stacked_mus = np.stack(all_encoder_mus)
                         stacked_logvars = np.stack(all_encoder_logvars)
                         poe_alphas = np.ones(len(self.encoders)) / len(self.encoders)
+                        
+                        # Debug: Log input shapes
+                        logging.debug(
+                            f"       🔍 POSTER POE input shapes: stacked_mus={stacked_mus.shape}, "
+                            f"stacked_logvars={stacked_logvars.shape}, alphas={poe_alphas.shape}"
+                        )
+                        
                         poe_mu, poe_logvar = poe_diag_gaussians(
                             stacked_mus,
                             stacked_logvars,
                             poe_alphas,
                         )
-                        poe_mu_np = np.array(poe_mu).squeeze()
-                        poe_logvar_np = np.array(poe_logvar).squeeze()
+                        
+                        # Debug: Log output shapes
+                        logging.debug(
+                            f"       🔍 POSTER POE output shapes: poe_mu={poe_mu.shape}, poe_logvar={poe_logvar.shape}"
+                        )
+                        
+                        # Handle different possible shapes from poe_diag_gaussians (same as merged_encoder_certainty_panel)
+                        if poe_mu.ndim > 1 and poe_mu.shape[0] == 1:
+                            # Shape is (1, H) - safe to squeeze
+                            poe_mu = poe_mu.squeeze(0)  # Remove batch dimension [H]
+                            poe_logvar = poe_logvar.squeeze(0)  # Remove batch dimension [H]
+                        elif poe_mu.ndim == 1:
+                            # Shape is already (H,) - no need to squeeze
+                            poe_mu = poe_mu
+                            poe_logvar = poe_logvar
+                        else:
+                            # Unexpected shape - log warning and try to handle
+                            logging.warning(
+                                f"       ⚠️  POSTER Unexpected POE output shape: mu={poe_mu.shape}, logvar={poe_logvar.shape}"
+                            )
+                            # Try to flatten to 1D if possible
+                            if poe_mu.size == poe_mu.shape[-1]:  # Last dimension is the latent dimension
+                                poe_mu = poe_mu.flatten()
+                                poe_logvar = poe_logvar.flatten()
+                            else:
+                                # Fallback: take mean across all dimensions except the last
+                                poe_mu = np.mean(poe_mu, axis=tuple(range(poe_mu.ndim - 1)))
+                                poe_logvar = np.mean(poe_logvar, axis=tuple(range(poe_logvar.ndim - 1)))
+                        
+                        # Convert to numpy arrays for computation
+                        poe_mu_np = np.array(poe_mu)
+                        poe_logvar_np = np.array(poe_logvar)
+                        
+                        # Compute PoE statistics
                         poe_mean = np.mean(poe_mu_np)
                         poe_std = np.mean(np.sqrt(np.exp(poe_logvar_np)))
+                        
+                        # Generate PoE Gaussian
                         poe_gaussian = norm.pdf(x_plot, poe_mean, poe_std)
                         poe_gaussian = poe_gaussian / np.max(poe_gaussian)
                         ax_gauss.plot(x_plot, poe_gaussian, color='#d62728', linewidth=3,
                                       alpha=0.9, label='PoE (Product of Experts)')
-                    except Exception:
-                        pass
+                        
+                        logging.debug(f"       🔍 POSTER PoE computed successfully: mean={poe_mean:.4f}, std={poe_std:.4f}")
+                        
+                    except Exception as e:
+                        logging.warning(f"       ⚠️  POSTER PoE computation failed: {e}")
+                        import traceback
+                        logging.debug(f"       POSTER PoE traceback: {traceback.format_exc()}")
 
                     max_height = 0
                     gaussians = []
