@@ -60,16 +60,16 @@ training:
   pattern_per_task: true
   repulsion_margin: 5
   struct_num_pairs: 4
-  eval_every_n_logs: 5000
+  eval_every_n_logs: 20
   log_every_n_steps: 100
   pairwise_kl_coeff: null
   linear_warmup_steps: 99
   decoder_expose_steps: 10000
-  encoder_expose_steps: 5000
+  encoder_expose_steps: 2000
   resume_from_checkpoint: null
   online_data_augmentation: false
   struct_patterns_balanced: true
-  eval_every_n_logs_phase_2: 5000
+  eval_every_n_logs_phase_2: 50
   gradient_accumulation_steps: 1
   save_checkpoint_every_n_logs: 10  # Save checkpoint every 100 logs (1000 steps with log_every_n_steps=100)
 
