@@ -60,7 +60,7 @@ training:
   pattern_per_task: true
   repulsion_margin: 5
   struct_num_pairs: 4
-  eval_every_n_logs: 20
+  eval_every_n_logs: 2
   log_every_n_steps: 100
   pairwise_kl_coeff: null
   linear_warmup_steps: 99

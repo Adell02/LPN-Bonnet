@@ -6709,17 +6709,19 @@ class StructuredTrainer:
                     continue
 
                 # Create merged histograms and Gaussian functions using the SAME data as Phase 1
+                # Convert encoder outputs to mean and std arrays
+                all_encoder_means = []
+                all_encoder_stds = []
+                for enc_idx in range(num_enc_collected):
+                    mu_np = np.array(all_encoder_mus[enc_idx])
+                    logvar_np = np.array(all_encoder_logvars[enc_idx])
+                    all_encoder_means.append(mu_np.flatten())
+                    all_encoder_stds.append(np.sqrt(np.exp(logvar_np)).flatten())
+                
+                # Check if we have sufficient data to plot
+                if all_encoder_means and len(all_encoder_means) > 0 and all(len(means) > 0 for means in all_encoder_means):
                     pattern_names = {1: "O-tetromino", 2: "T-tetromino", 3: "L-tetromino"}
                     pattern_name = pattern_names.get(pattern_id, f"Pattern {pattern_id}")
-                    
-                    # Convert encoder outputs to mean and std arrays
-                    all_encoder_means = []
-                    all_encoder_stds = []
-                    for enc_idx in range(num_enc_collected):
-                        mu_np = np.array(all_encoder_mus[enc_idx])
-                        logvar_np = np.array(all_encoder_logvars[enc_idx])
-                        all_encoder_means.append(mu_np.flatten())
-                        all_encoder_stds.append(np.sqrt(np.exp(logvar_np)).flatten())
                     
                     # Create merged histogram for this pattern (top row)
                     # Use different colors for each encoder
