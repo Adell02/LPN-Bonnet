@@ -446,6 +446,141 @@ def create_heatmaps(
         p = 2.0 * min(cdf_le_k, cdf_ge_k)
         return min(1.0, max(0.0, p))
     
+    def _compute_metric_pvalues(ga_losses: np.ndarray, ga_budget: np.ndarray, 
+                               es_losses: np.ndarray, es_budget: np.ndarray,
+                               checkpoint_name: str, checkpoint_idx: int) -> dict:
+        """Compute p-values for all metrics (GA, ES, differential) and upload to W&B."""
+        pvalues = {}
+        
+        # Find common budget points for comparison
+        common_b = np.intersect1d(np.asarray(ga_budget, dtype=int), np.asarray(es_budget, dtype=int))
+        if common_b.size == 0:
+            print(f"No common budget points found for checkpoint {checkpoint_name}")
+            return pvalues
+        
+        # Create mapping from budget to loss values
+        ga_map = {int(b): float(ga_losses[idx]) for idx, b in enumerate(ga_budget)}
+        es_map = {int(b): float(es_losses[idx]) for idx, b in enumerate(es_budget)}
+        
+        # Get loss values at common budget points
+        ga_common = [ga_map[int(b)] for b in common_b if int(b) in ga_map]
+        es_common = [es_map[int(b)] for b in common_b if int(b) in es_map]
+        
+        if len(ga_common) == 0 or len(es_common) == 0:
+            print(f"No valid loss values at common budget points for checkpoint {checkpoint_name}")
+            return pvalues
+        
+        # 1. Differential p-value (ES - GA)
+        diffs = [es_common[i] - ga_common[i] for i in range(len(ga_common))]
+        if len(diffs) > 0:
+            diff_pval = _two_sided_sign_test_pvalue(np.asarray(diffs, dtype=float))
+            pvalues["ga_es_differential_p_value"] = diff_pval
+            wandb.log({
+                "ga_es_differential_p_value": diff_pval,
+                "checkpoint_name": checkpoint_name
+            }, step=checkpoint_idx)
+        
+        # 2. GA improvement p-value (comparing GA losses to baseline/mean)
+        # Test if GA losses are significantly different from their mean
+        ga_array = np.array(ga_common)
+        ga_mean = np.mean(ga_array)
+        ga_diffs = ga_array - ga_mean
+        if len(ga_diffs) > 0:
+            ga_pval = _two_sided_sign_test_pvalue(ga_diffs)
+            pvalues["ga_improvement_p_value"] = ga_pval
+            wandb.log({
+                "ga_improvement_p_value": ga_pval,
+                "checkpoint_name": checkpoint_name
+            }, step=checkpoint_idx)
+        
+        # 3. ES improvement p-value (comparing ES losses to baseline/mean)
+        # Test if ES losses are significantly different from their mean
+        es_array = np.array(es_common)
+        es_mean = np.mean(es_array)
+        es_diffs = es_array - es_mean
+        if len(es_diffs) > 0:
+            es_pval = _two_sided_sign_test_pvalue(es_diffs)
+            pvalues["es_improvement_p_value"] = es_pval
+            wandb.log({
+                "es_improvement_p_value": es_pval,
+                "checkpoint_name": checkpoint_name
+            }, step=checkpoint_idx)
+        
+        # 4. GA vs ES relative performance p-value (alternative formulation)
+        # Test if GA is consistently better/worse than ES
+        ga_vs_es_diffs = [ga_common[i] - es_common[i] for i in range(len(ga_common))]
+        if len(ga_vs_es_diffs) > 0:
+            ga_vs_es_pval = _two_sided_sign_test_pvalue(np.asarray(ga_vs_es_diffs, dtype=float))
+            pvalues["ga_vs_es_relative_p_value"] = ga_vs_es_pval
+            wandb.log({
+                "ga_vs_es_relative_p_value": ga_vs_es_pval,
+                "checkpoint_name": checkpoint_name
+            }, step=checkpoint_idx)
+        
+        print(f"Computed p-values for checkpoint {checkpoint_name}: {pvalues}")
+        return pvalues
+    
+    def _compute_accuracy_pvalues(ga_accuracies: np.ndarray, ga_budget: np.ndarray, 
+                                  es_accuracies: np.ndarray, es_budget: np.ndarray,
+                                  checkpoint_name: str, checkpoint_idx: int) -> dict:
+        """Compute p-values for accuracy metrics and upload to W&B."""
+        pvalues = {}
+        
+        # Find common budget points for comparison
+        common_b = np.intersect1d(np.asarray(ga_budget, dtype=int), np.asarray(es_budget, dtype=int))
+        if common_b.size == 0:
+            print(f"No common budget points found for accuracy in checkpoint {checkpoint_name}")
+            return pvalues
+        
+        # Create mapping from budget to accuracy values
+        ga_map = {int(b): float(ga_accuracies[idx]) for idx, b in enumerate(ga_budget)}
+        es_map = {int(b): float(es_accuracies[idx]) for idx, b in enumerate(es_budget)}
+        
+        # Get accuracy values at common budget points
+        ga_common = [ga_map[int(b)] for b in common_b if int(b) in ga_map]
+        es_common = [es_map[int(b)] for b in common_b if int(b) in es_map]
+        
+        if len(ga_common) == 0 or len(es_common) == 0:
+            print(f"No valid accuracy values at common budget points for checkpoint {checkpoint_name}")
+            return pvalues
+        
+        # 1. Differential accuracy p-value (ES - GA)
+        acc_diffs = [es_common[i] - ga_common[i] for i in range(len(ga_common))]
+        if len(acc_diffs) > 0:
+            acc_diff_pval = _two_sided_sign_test_pvalue(np.asarray(acc_diffs, dtype=float))
+            pvalues["ga_es_accuracy_differential_p_value"] = acc_diff_pval
+            wandb.log({
+                "ga_es_accuracy_differential_p_value": acc_diff_pval,
+                "checkpoint_name": checkpoint_name
+            }, step=checkpoint_idx)
+        
+        # 2. GA accuracy improvement p-value
+        ga_acc_array = np.array(ga_common)
+        ga_acc_mean = np.mean(ga_acc_array)
+        ga_acc_diffs = ga_acc_array - ga_acc_mean
+        if len(ga_acc_diffs) > 0:
+            ga_acc_pval = _two_sided_sign_test_pvalue(ga_acc_diffs)
+            pvalues["ga_accuracy_improvement_p_value"] = ga_acc_pval
+            wandb.log({
+                "ga_accuracy_improvement_p_value": ga_acc_pval,
+                "checkpoint_name": checkpoint_name
+            }, step=checkpoint_idx)
+        
+        # 3. ES accuracy improvement p-value
+        es_acc_array = np.array(es_common)
+        es_acc_mean = np.mean(es_acc_array)
+        es_acc_diffs = es_acc_array - es_acc_mean
+        if len(es_acc_diffs) > 0:
+            es_acc_pval = _two_sided_sign_test_pvalue(es_acc_diffs)
+            pvalues["es_accuracy_improvement_p_value"] = es_acc_pval
+            wandb.log({
+                "es_accuracy_improvement_p_value": es_acc_pval,
+                "checkpoint_name": checkpoint_name
+            }, step=checkpoint_idx)
+        
+        print(f"Computed accuracy p-values for checkpoint {checkpoint_name}: {pvalues}")
+        return pvalues
+    
     def _create_unified_budget_grid(ga_budgets: List[np.ndarray], es_budgets: List[np.ndarray], 
                                   max_budget: int, target_granularity: int = 100) -> np.ndarray:
         """
@@ -708,22 +843,14 @@ def create_heatmaps(
                 diff_max = float(np.nanmax(diff_matrix[diff_finite]))
                 print(f"Differential (ES-GA) loss range: min={diff_min:.4f}, max={diff_max:.4f}")
 
-            # Compute and log per-checkpoint p-values on shared budgets (unchanged)
+            # Compute and log comprehensive p-values for all metrics
             for i, (ga_losses, ga_budget, es_losses, es_budget) in enumerate(
                 zip(all_ga_losses, all_ga_budgets, all_es_losses, all_es_budgets)
             ):
-                common_b = np.intersect1d(np.asarray(ga_budget, dtype=int), np.asarray(es_budget, dtype=int))
-                if common_b.size == 0:
-                    continue
-                ga_map = {int(b): float(ga_losses[idx]) for idx, b in enumerate(ga_budget)}
-                es_map = {int(b): float(es_losses[idx]) for idx, b in enumerate(es_budget)}
-                diffs = [es_map[int(b)] - ga_map[int(b)] for b in common_b if int(b) in ga_map and int(b) in es_map]
-                if len(diffs) > 0:
-                    pval = _two_sided_sign_test_pvalue(np.asarray(diffs, dtype=float))
-                    wandb.log({
-                        "ga_es_p_value": pval,
-                        "checkpoint_name": all_checkpoints[i]
-                    }, step=i)
+                _compute_metric_pvalues(
+                    ga_losses, ga_budget, es_losses, es_budget,
+                    all_checkpoints[i], i
+                )
 
             checkpoint_indices = np.arange(len(all_checkpoints))
 
@@ -823,6 +950,15 @@ def create_heatmaps(
             # Calculate accuracy difference (ES - GA)
             acc_diff_matrix = es_acc_matrix - ga_acc_matrix
             
+            # Compute and log accuracy p-values for all checkpoints
+            for i, (ga_acc, ga_budget, es_acc, es_budget) in enumerate(
+                zip(all_ga_accuracies, all_ga_budgets, all_es_accuracies, all_es_budgets)
+            ):
+                _compute_accuracy_pvalues(
+                    ga_acc, ga_budget, es_acc, es_budget,
+                    all_checkpoints[i], i
+                )
+            
             checkpoint_indices = np.arange(len(all_checkpoints))
 
             fig = visualize_loss_difference_heatmap(
@@ -898,18 +1034,11 @@ def create_heatmaps(
                 # Use the average budget trajectory
                 avg_budget = (ga_budget_aligned + es_budget_aligned) / 2
 
-                # Log per-checkpoint p-value computed on shared budgets
-                common_b = np.intersect1d(np.asarray(ga_budget, dtype=int), np.asarray(es_budget, dtype=int))
-                if common_b.size > 0:
-                    ga_map = {int(b): float(ga_losses[idx]) for idx, b in enumerate(ga_budget)}
-                    es_map = {int(b): float(es_losses[idx]) for idx, b in enumerate(es_budget)}
-                    diffs = [es_map[int(b)] - ga_map[int(b)] for b in common_b if int(b) in ga_map and int(b) in es_map]
-                    if len(diffs) > 0:
-                        pval = _two_sided_sign_test_pvalue(np.asarray(diffs, dtype=float))
-                        wandb.log({
-                            "ga_es_p_value": float(pval),
-                            "checkpoint_name": checkpoint_name
-                        }, step=i)
+                # Compute and log comprehensive p-values for all metrics
+                _compute_metric_pvalues(
+                    ga_losses, ga_budget, es_losses, es_budget,
+                    checkpoint_name, i
+                )
                 
                 # Create 2D matrix with budgets on the first axis
                 loss_diff_matrix = loss_diff.reshape(-1, 1)  # [num_budget_steps, 1]
