@@ -4327,9 +4327,12 @@ class StructuredTrainer:
                     try:
                         logging.info(f"Phase 2: Saving StructuredLPN checkpoint at step {step}")
                         from flax.serialization import msgpack_serialize, to_state_dict
-                        with open("state.msgpack", "wb") as outfile:
+                        # Write directly into the WandB run directory to avoid GDrive/FUSE rename issues
+                        run_dir = getattr(getattr(wandb, "run", None), "dir", os.getcwd())
+                        ckpt_path = os.path.join(run_dir, "state.msgpack")
+                        with open(ckpt_path, "wb") as outfile:
                             outfile.write(msgpack_serialize(to_state_dict(state)))
-                        wandb.save("state.msgpack")
+                        wandb.save(ckpt_path)
                         logging.info(f"Phase 2: Checkpoint saved successfully at step {step}")
                     except Exception as e:
                         logging.warning(f"Phase 2: Checkpoint save failed at step {step}: {e}")
@@ -4344,7 +4347,7 @@ class StructuredTrainer:
                 )
                 if eval_every_n_steps_phase_2 and (step % eval_every_n_steps_phase_2 == 0):
                     try:
-                        logging.info(f"🔍 Phase 2: Running main evaluation at step {step}")
+                        logging.info(f"🔍 Phase 2: Running main evaluation at step {step} (wandb step {self.phase2_offset + step})")
                         # Run main evaluation (T-SNE, clustering metrics, etc.)
                         self.evaluate(state, enc_params_list, self.phase2_offset + step)
                         
@@ -4411,15 +4414,18 @@ class StructuredTrainer:
                     try:
                         logging.info(f"Saving checkpoint at step {step}")
                         from flax.serialization import msgpack_serialize, to_state_dict
-                        with open("state.msgpack", "wb") as outfile:
+                        import os
+                        run_dir = getattr(getattr(wandb, "run", None), "dir", os.getcwd())
+                        ckpt_path = os.path.join(run_dir, "state.msgpack")
+                        with open(ckpt_path, "wb") as outfile:
                             outfile.write(msgpack_serialize(to_state_dict(state)))
-                        wandb.save("state.msgpack")
+                        wandb.save(ckpt_path)
                     except Exception as e:
                         logging.warning(f"Checkpoint save failed: {e}")
 
                 # Evaluation - More frequent during encoder exposure period (Phase 1), use Phase 2 setting otherwise
                 if self.encoder_expose_steps > 0:
-                    eval_interval = 5  # Phase 1: frequent evaluation during encoder specialization
+                    eval_interval = 1  # Phase 1: evaluate every log step
                 else:
                     # Phase 2: use Phase 2 evaluation frequency
                     eval_interval = cfg.training.get("eval_every_n_logs_phase_2", 20)
@@ -4561,9 +4567,12 @@ class StructuredTrainer:
             try:
                 logging.info(f"💾 Saving final StructuredLPN checkpoint at end of training")
                 from flax.serialization import msgpack_serialize, to_state_dict
-                with open("state.msgpack", "wb") as outfile:
+                import os
+                run_dir = getattr(getattr(wandb, "run", None), "dir", os.getcwd())
+                ckpt_path = os.path.join(run_dir, "state.msgpack")
+                with open(ckpt_path, "wb") as outfile:
                     outfile.write(msgpack_serialize(to_state_dict(state)))
-                wandb.save("state.msgpack")
+                wandb.save(ckpt_path)
                 logging.info(f"✅ Final checkpoint saved successfully")
             except Exception as e:
                 logging.warning(f"❌ Final checkpoint save failed: {e}")
@@ -6786,8 +6795,8 @@ class StructuredTrainer:
                     stacked_mus = np.stack(all_encoder_mus)
                     stacked_logvars = np.stack(all_encoder_logvars)
 
-                    # Use uniform weights for POE (1/E for each encoder)
-                    poe_alphas = np.ones(len(self.encoders)) / len(self.encoders)
+                    # Use uniform weights for POE (1/E for each collected encoder)
+                    poe_alphas = np.ones(num_enc_collected, dtype=float) / float(num_enc_collected)
 
                     # Compute POE mean and variance using the poe_diag_gaussians function
                     try:
@@ -6811,32 +6820,25 @@ class StructuredTrainer:
                         )
 
                         # Handle different possible shapes from poe_diag_gaussians
-                        # Expected: (1, H) or (H,) - handle both cases safely
-                        if poe_mu.ndim > 1 and poe_mu.shape[0] == 1:
-                            # Shape is (1, H) - safe to squeeze
-                            poe_mu = poe_mu.squeeze(0)  # Remove batch dimension [H]
-                            poe_logvar = poe_logvar.squeeze(0)  # Remove batch dimension [H]
+                        # Accept (H,), (N, H), or (1, N, H) and reduce appropriately for visualization
+                        if poe_mu.ndim == 3 and poe_mu.shape[0] == 1:
+                            # (1, N, H) → (N, H)
+                            poe_mu = poe_mu.squeeze(0)
+                            poe_logvar = poe_logvar.squeeze(0)
                         elif poe_mu.ndim == 1:
-                            # Shape is already (H,) - no need to squeeze
-                            poe_mu = poe_mu
-                            poe_logvar = poe_logvar
+                            # (H,) leave as-is
+                            pass
+                        elif poe_mu.ndim == 2:
+                            # (N, H) leave as-is for statistics aggregation
+                            pass
                         else:
-                            # Unexpected shape - log warning and try to handle
-                            logging.warning(
-                                f"       ⚠️  Unexpected POE output shape: mu={poe_mu.shape}, logvar={poe_logvar.shape}"
-                            )
-                            # Try to flatten to 1D if possible
-                            if poe_mu.size == poe_mu.shape[-1]:  # Last dimension is the latent dimension
-                                poe_mu = poe_mu.flatten()
-                                poe_logvar = poe_logvar.flatten()
-                            else:
-                                # Fallback: use first element if it's a batch
-                                poe_mu = poe_mu[0] if poe_mu.ndim > 1 else poe_mu
-                                poe_logvar = poe_logvar[0] if poe_logvar.ndim > 1 else poe_logvar
+                            # Fallback: flatten last two dims if present
+                            poe_mu = poe_mu.reshape(-1)
+                            poe_logvar = poe_logvar.reshape(-1)
 
                         # Ensure numpy arrays
-                        poe_logvar_np = poe_logvar.numpy() if hasattr(poe_logvar, "numpy") else np.array(poe_logvar)
-                        poe_mu_np = poe_mu.numpy() if hasattr(poe_mu, "numpy") else np.array(poe_mu)
+                        poe_logvar_np = np.array(poe_logvar)
+                        poe_mu_np = np.array(poe_mu)
 
                         # Safety check
                         if poe_logvar_np.size == 0 or poe_mu_np.size == 0:
@@ -6844,8 +6846,9 @@ class StructuredTrainer:
                                 f"       ❌ POE outputs have zero size: mu={poe_mu_np.size}, logvar={poe_logvar_np.size}"
                             )
                         else:
-                            poe_mean = np.mean(poe_mu_np)
-                            poe_std = np.mean(np.sqrt(np.exp(poe_logvar_np)))
+                            # Reduce across all entries for a single representative Gaussian
+                            poe_mean = float(np.mean(poe_mu_np))
+                            poe_std = float(np.mean(np.sqrt(np.exp(poe_logvar_np))))
                             if not np.isfinite(poe_std) or poe_std <= 0:
                                 poe_std = 1e-3
                             logging.debug(
@@ -7035,7 +7038,8 @@ class StructuredTrainer:
                     try:
                         stacked_mus = np.stack(all_encoder_mus)
                         stacked_logvars = np.stack(all_encoder_logvars)
-                        poe_alphas = np.ones(len(self.encoders)) / len(self.encoders)
+                        # Use collected-encoder count for alphas to match stacked arrays
+                        poe_alphas = np.ones(len(all_encoder_mus), dtype=float) / float(len(all_encoder_mus))
                         
                         # Debug: Log input shapes
                         logging.debug(
@@ -7054,36 +7058,25 @@ class StructuredTrainer:
                             f"       🔍 POSTER POE output shapes: poe_mu={poe_mu.shape}, poe_logvar={poe_logvar.shape}"
                         )
                         
-                        # Handle different possible shapes from poe_diag_gaussians (same as merged_encoder_certainty_panel)
-                        if poe_mu.ndim > 1 and poe_mu.shape[0] == 1:
-                            # Shape is (1, H) - safe to squeeze
-                            poe_mu = poe_mu.squeeze(0)  # Remove batch dimension [H]
-                            poe_logvar = poe_logvar.squeeze(0)  # Remove batch dimension [H]
+                        # Handle output shapes like (H,), (N,H), or (1,N,H)
+                        if poe_mu.ndim == 3 and poe_mu.shape[0] == 1:
+                            poe_mu = poe_mu.squeeze(0)
+                            poe_logvar = poe_logvar.squeeze(0)
                         elif poe_mu.ndim == 1:
-                            # Shape is already (H,) - no need to squeeze
-                            poe_mu = poe_mu
-                            poe_logvar = poe_logvar
+                            pass
+                        elif poe_mu.ndim == 2:
+                            pass
                         else:
-                            # Unexpected shape - log warning and try to handle
-                            logging.warning(
-                                f"       ⚠️  POSTER Unexpected POE output shape: mu={poe_mu.shape}, logvar={poe_logvar.shape}"
-                            )
-                            # Try to flatten to 1D if possible
-                            if poe_mu.size == poe_mu.shape[-1]:  # Last dimension is the latent dimension
-                                poe_mu = poe_mu.flatten()
-                                poe_logvar = poe_logvar.flatten()
-                            else:
-                                # Fallback: take mean across all dimensions except the last
-                                poe_mu = np.mean(poe_mu, axis=tuple(range(poe_mu.ndim - 1)))
-                                poe_logvar = np.mean(poe_logvar, axis=tuple(range(poe_logvar.ndim - 1)))
+                            poe_mu = poe_mu.reshape(-1)
+                            poe_logvar = poe_logvar.reshape(-1)
                         
                         # Convert to numpy arrays for computation
                         poe_mu_np = np.array(poe_mu)
                         poe_logvar_np = np.array(poe_logvar)
                         
                         # Compute PoE statistics
-                        poe_mean = np.mean(poe_mu_np)
-                        poe_std = np.mean(np.sqrt(np.exp(poe_logvar_np)))
+                        poe_mean = float(np.mean(poe_mu_np))
+                        poe_std = float(np.mean(np.sqrt(np.exp(poe_logvar_np))))
                         
                         # Generate PoE Gaussian
                         poe_gaussian = norm.pdf(x_plot, poe_mean, poe_std)
