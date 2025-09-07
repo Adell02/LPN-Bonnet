@@ -405,7 +405,21 @@ class LPN(nn.Module):
             output_shapes: shapes of the most likely output grids. Shape (*B, 2).
             info: dictionary of additional information.
         """
-        latents_mu, latents_logvar = self.encoder(pairs, grid_shapes, dropout_eval)
+        # Fix: Handle extra dimensions in grid_shapes from make_leave_one_out
+        # grid_shapes can have different shapes depending on the calling context:
+        # - From __call__: (*B, N, 2, 2) 
+        # - From generate_output via make_leave_one_out: (*B, N, N-1, 2, 2)
+        # - Expected by encoder: (*B, 2, 2)
+        if grid_shapes.ndim == 5:  # (*B, N, N-1, 2, 2) - from make_leave_one_out
+            # Take the first pair's grid shapes for consistency
+            grid_shapes_for_encoder = grid_shapes[..., 0, 0, :, :]  # (*B, 2, 2)
+        elif grid_shapes.ndim == 4:  # (*B, N, 2, 2) - from __call__ or other contexts
+            # Take the first pair's grid shapes
+            grid_shapes_for_encoder = grid_shapes[..., 0, :, :]  # (*B, 2, 2)
+        else:  # (*B, 2, 2) - expected shape
+            grid_shapes_for_encoder = grid_shapes
+        
+        latents_mu, latents_logvar = self.encoder(pairs, grid_shapes_for_encoder, dropout_eval)
 
         if latents_logvar is not None:
             assert key is not None, "'key' argument required for variational inference."
