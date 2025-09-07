@@ -58,7 +58,7 @@ training:
   mixed_precision: false
   inference_kwargs: {}
   pattern_per_task: true
-  repulsion_margin: 10
+  repulsion_margin: 20
   struct_num_pairs: 4
   eval_every_n_logs: 5000
   log_every_n_steps: 100
