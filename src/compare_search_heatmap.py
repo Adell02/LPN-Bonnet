@@ -470,8 +470,8 @@ def create_heatmaps(
             print(f"No valid loss values at common budget points for checkpoint {checkpoint_name}")
             return pvalues
         
-        # 1. Differential p-value (ES - GA)
-        diffs = [es_common[i] - ga_common[i] for i in range(len(ga_common))]
+        # 1. Differential p-value (GA - ES)
+        diffs = [ga_common[i] - es_common[i] for i in range(len(ga_common))]
         if len(diffs) > 0:
             diff_pval = _two_sided_sign_test_pvalue(np.asarray(diffs, dtype=float))
             pvalues["ga_es_differential_p_value"] = diff_pval
@@ -544,8 +544,8 @@ def create_heatmaps(
             print(f"No valid accuracy values at common budget points for checkpoint {checkpoint_name}")
             return pvalues
         
-        # 1. Differential accuracy p-value (ES - GA)
-        acc_diffs = [es_common[i] - ga_common[i] for i in range(len(ga_common))]
+        # 1. Differential accuracy p-value (GA - ES)
+        acc_diffs = [ga_common[i] - es_common[i] for i in range(len(ga_common))]
         if len(acc_diffs) > 0:
             acc_diff_pval = _two_sided_sign_test_pvalue(np.asarray(acc_diffs, dtype=float))
             pvalues["ga_es_accuracy_differential_p_value"] = acc_diff_pval
@@ -833,7 +833,7 @@ def create_heatmaps(
                         elif len(es_budget_unique) == 1:
                             es_matrix[:, i] = es_losses_unique[0]
 
-            # Calculate difference (GA - ES) with proper budget matching (aligns with binary convention)
+            # Calculate difference (GA - ES) with proper budget matching
             diff_matrix = ga_matrix - es_matrix
 
             # Diagnostics: report DIFF range
@@ -841,7 +841,7 @@ def create_heatmaps(
             if np.any(diff_finite):
                 diff_min = float(np.nanmin(diff_matrix[diff_finite]))
                 diff_max = float(np.nanmax(diff_matrix[diff_finite]))
-                print(f"Differential (ES-GA) loss range: min={diff_min:.4f}, max={diff_max:.4f}")
+                print(f"Differential (GA-ES) loss range: min={diff_min:.4f}, max={diff_max:.4f}")
 
             # Compute and log comprehensive p-values for all metrics
             for i, (ga_losses, ga_budget, es_losses, es_budget) in enumerate(
@@ -864,12 +864,12 @@ def create_heatmaps(
             plt.close(fig)
             heatmap_files.append(diff_file)
             
-            # Create binary differential heatmap (1: GA better, 0: same, -1: ES better)
+            # Create binary differential heatmap based on GA-ES sign
             binary_diff_matrix = np.full_like(diff_matrix, np.nan)
             finite_mask = np.isfinite(diff_matrix)
             binary_diff_matrix[finite_mask] = np.where(
-                diff_matrix[finite_mask] > 0, 1,    # GA has lower loss (GA - ES > 0)
-                np.where(diff_matrix[finite_mask] < 0, -1, 0)  # ES has lower loss (GA - ES < 0), or same (== 0)
+                diff_matrix[finite_mask] > 0, 1,
+                np.where(diff_matrix[finite_mask] < 0, -1, 0)
             )
             
             fig = visualize_loss_difference_heatmap(
@@ -946,9 +946,9 @@ def create_heatmaps(
             plt.close(fig)
             heatmap_files.append(es_acc_file)
             
-            # Differential accuracy heatmap (ES - GA)
-            # Calculate accuracy difference (ES - GA)
-            acc_diff_matrix = es_acc_matrix - ga_acc_matrix
+            # Differential accuracy heatmap (GA - ES)
+            # Calculate accuracy difference (GA - ES)
+            acc_diff_matrix = ga_acc_matrix - es_acc_matrix
             
             # Compute and log accuracy p-values for all checkpoints
             for i, (ga_acc, ga_budget, es_acc, es_budget) in enumerate(
