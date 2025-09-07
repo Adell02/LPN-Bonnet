@@ -833,8 +833,8 @@ def create_heatmaps(
                         elif len(es_budget_unique) == 1:
                             es_matrix[:, i] = es_losses_unique[0]
 
-            # Calculate difference (ES - GA) with proper budget matching
-            diff_matrix = es_matrix - ga_matrix
+            # Calculate difference (GA - ES) with proper budget matching (aligns with binary convention)
+            diff_matrix = ga_matrix - es_matrix
 
             # Diagnostics: report DIFF range
             diff_finite = np.isfinite(diff_matrix)
@@ -868,8 +868,8 @@ def create_heatmaps(
             binary_diff_matrix = np.full_like(diff_matrix, np.nan)
             finite_mask = np.isfinite(diff_matrix)
             binary_diff_matrix[finite_mask] = np.where(
-                diff_matrix[finite_mask] < 0, 1,    # GA has lower loss (ES - GA < 0)
-                np.where(diff_matrix[finite_mask] > 0, -1, 0)  # ES has lower loss (ES - GA > 0), or same (ES - GA = 0)
+                diff_matrix[finite_mask] > 0, 1,    # GA has lower loss (GA - ES > 0)
+                np.where(diff_matrix[finite_mask] < 0, -1, 0)  # ES has lower loss (GA - ES < 0), or same (== 0)
             )
             
             fig = visualize_loss_difference_heatmap(
@@ -1012,7 +1012,7 @@ def create_heatmaps(
                 plt.close(fig)
                 heatmap_files.append(es_file)
         
-        # Create differential heatmap (ES - GA) for each checkpoint
+        # Create differential heatmap (GA - ES) for each checkpoint
         for i, checkpoint_name in enumerate(all_checkpoints):
             if (i < len(all_ga_losses) and i < len(all_es_losses) and 
                 len(all_ga_losses[i]) > 0 and len(all_es_losses[i]) > 0):
@@ -1029,8 +1029,8 @@ def create_heatmaps(
                 es_losses_aligned = es_losses[:min_len]
                 ga_budget_aligned = ga_budget[:min_len]
                 es_budget_aligned = es_budget[:min_len]
-                # Calculate difference (ES - GA)
-                loss_diff = es_losses_aligned - ga_losses_aligned
+                # Calculate difference (GA - ES) to match binary convention
+                loss_diff = ga_losses_aligned - es_losses_aligned
                 # Use the average budget trajectory
                 avg_budget = (ga_budget_aligned + es_budget_aligned) / 2
 
