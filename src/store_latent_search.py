@@ -1916,8 +1916,10 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     except Exception as _ylim_e:
         print(f"[loss] Y-axis scaling fallback due to error: {_ylim_e}")
     
-    # Add legend
-    ax.legend(loc="upper right", frameon=True, fontsize=10)
+    # Legend toggle for loss plot (disabled by default)
+    show_legend = False
+    if show_legend:
+        ax.legend(loc="upper right", frameon=True, fontsize=10)
     
     # Optionally add accuracy metrics as notes (disabled by default)
     show_accuracy_notes = False
@@ -2320,23 +2322,20 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
         except Exception as e:
             print(f"[loss] Failed to check ES accuracy = 1: {e}")
     
-    # Draw dashed vertical lines where accuracy = 1
-    # Color scheme: Orange (#FBB998) for GA, Purple (#DB74DB) for ES (matching the plot colors)
-    if ga_accuracy_one_budget is not None:
-        # Orange dashed line for GA (using GA color to match the plot)
-        ax.axvline(x=ga_accuracy_one_budget, color='#FBB998', linestyle='--', linewidth=2, alpha=0.8, 
-                   label=f'GA accuracy = 1 (budget {ga_accuracy_one_budget})')
-        print(f"[loss] Added GA accuracy = 1 line at budget {ga_accuracy_one_budget}")
-    
-    if es_accuracy_one_budget is not None:
-        # Purple dashed line for ES (using ES color to match the plot)
-        ax.axvline(x=es_accuracy_one_budget, color='#DB74DB', linestyle='--', linewidth=2, alpha=0.8, 
-                   label=f'ES accuracy = 1 (budget {es_accuracy_one_budget})')
-        print(f"[loss] Added ES accuracy = 1 line at budget {es_accuracy_one_budget}")
-    
-    # Update legend to include the new lines
-    if ga_accuracy_one_budget is not None or es_accuracy_one_budget is not None:
-        ax.legend(loc="upper right", frameon=True, fontsize=10)
+    # Optionally draw vertical lines where accuracy = 1 (disabled by default)
+    show_accuracy_markers = False
+    if show_accuracy_markers:
+        # Color scheme: Orange (#FBB998) for GA, Purple (#DB74DB) for ES (matching the plot colors)
+        if ga_accuracy_one_budget is not None:
+            ax.axvline(x=ga_accuracy_one_budget, color='#FBB998', linestyle='--', linewidth=2, alpha=0.8, 
+                       label=f'GA accuracy = 1 (budget {ga_accuracy_one_budget})')
+            print(f"[loss] Added GA accuracy = 1 line at budget {ga_accuracy_one_budget}")
+        if es_accuracy_one_budget is not None:
+            ax.axvline(x=es_accuracy_one_budget, color='#DB74DB', linestyle='--', linewidth=2, alpha=0.8, 
+                       label=f'ES accuracy = 1 (budget {es_accuracy_one_budget})')
+            print(f"[loss] Added ES accuracy = 1 line at budget {es_accuracy_one_budget}")
+        if (ga_accuracy_one_budget is not None or es_accuracy_one_budget is not None) and show_legend:
+            ax.legend(loc="upper right", frameon=True, fontsize=10)
     
     # Summary of accuracy = 1 detection
     print(f"[loss] Summary of accuracy = 1 detection:")
