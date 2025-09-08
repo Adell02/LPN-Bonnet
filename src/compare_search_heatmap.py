@@ -266,42 +266,71 @@ def run_evaluation_with_budget(
                 data = np.load(latents_file)
                 print(f"Loaded trajectory data with keys: {list(data.keys())}")
                 
-                # Extract intermediate losses (same logic as store_latent_search.py)
+                # Extract intermediate losses (mirror store_latent_search.py behavior at the referenced commit)
                 if method == "gradient_ascent":
-                    # For GA, look for losses_per_sample or trajectory_losses
+                    # Preference order (GA): losses_per_sample -> trajectory_losses/scores -> log_probs fallback
+                    ga_losses = None
                     if "ga_losses_per_sample" in data:
                         losses_per_sample = np.array(data["ga_losses_per_sample"])
                         print(f"Found ga_losses_per_sample with shape: {losses_per_sample.shape}")
                         if losses_per_sample.ndim >= 2:
-                            # Take mean across samples to get trajectory values
-                            trajectory_losses = np.mean(losses_per_sample, axis=0)
-                            metrics["losses"] = trajectory_losses
-                            print(f"Extracted GA trajectory losses: {trajectory_losses.shape}")
-                    elif "ga_trajectory_losses" in data:
-                        metrics["losses"] = np.array(data["ga_trajectory_losses"])
-                        print(f"Extracted GA trajectory losses: {metrics['losses'].shape}")
-                    elif "ga_log_probs" in data:
-                        # Convert log_probs to losses
+                            ga_losses = np.mean(losses_per_sample, axis=0)
+                            print(f"GA trajectory losses (from per-sample mean): {ga_losses.shape}")
+                    if ga_losses is None and "ga_trajectory_losses" in data:
+                        ga_losses = np.array(data["ga_trajectory_losses"]).reshape(-1)
+                        print(f"GA trajectory losses (direct): {ga_losses.shape}")
+                    if ga_losses is None and "ga_trajectory_scores" in data:
+                        # If scores were saved instead, convert to losses consistently
+                        ga_losses = -np.array(data["ga_trajectory_scores"]).reshape(-1)
+                        print(f"GA trajectory scores -> losses: {ga_losses.shape}")
+                    if ga_losses is None and "ga_log_probs" in data:
+                        # Fallback: average log_probs over non-step dims and negate
                         log_probs = np.array(data["ga_log_probs"])
                         print(f"Found ga_log_probs with shape: {log_probs.shape}")
                         if log_probs.ndim == 4:  # (B, C, T, S)
-                            simple_scores = log_probs.mean(axis=(0, 1))
-                            metrics["losses"] = -simple_scores
-                            print(f"Extracted GA losses from log_probs: {metrics['losses'].shape}")
+                            ga_losses = -log_probs.mean(axis=(0, 1))
+                        elif log_probs.ndim >= 3:
+                            # Average over all but last dim
+                            ga_losses = -log_probs.mean(axis=tuple(range(log_probs.ndim - 1)))
+                        if ga_losses is not None:
+                            ga_losses = np.asarray(ga_losses).reshape(-1)
+                            print(f"GA losses (from log_probs): {ga_losses.shape}")
+
+                    # Align GA losses length to match latent trajectory if needed (drop the extra final value)
+                    if ga_losses is not None:
+                        steps_from_latents = None
+                        for latent_key in ("ga_trajectory_latents", "ga_latents"):
+                            if latent_key in data:
+                                lat_arr = np.array(data[latent_key])
+                                steps_from_latents = lat_arr.shape[-2] if lat_arr.ndim >= 2 else lat_arr.shape[0]
+                                print(f"GA latent steps detected from {latent_key}: {steps_from_latents}")
+                                break
+                        if steps_from_latents is not None:
+                            if ga_losses.shape[0] == steps_from_latents + 1:
+                                print("GA has an extra final loss; trimming to match latent steps")
+                                ga_losses = ga_losses[:steps_from_latents]
+                            elif ga_losses.shape[0] != steps_from_latents:
+                                min_len = min(ga_losses.shape[0], steps_from_latents)
+                                print(f"GA length mismatch: losses={ga_losses.shape[0]} latents={steps_from_latents}; trimming to {min_len}")
+                                ga_losses = ga_losses[:min_len]
+                        metrics["losses"] = ga_losses
                     else:
                         print("No GA trajectory data found in expected keys")
                 
                 elif method == "evolutionary_search":
-                    # For ES, look for generation_losses or best_losses_per_generation
+                    # Preference order (ES): generation_losses -> best_losses_per_generation -> all_losses
+                    es_losses = None
                     if "es_generation_losses" in data:
-                        metrics["losses"] = np.array(data["es_generation_losses"]).reshape(-1)
-                        print(f"Extracted ES generation losses: {metrics['losses'].shape}")
-                    elif "es_best_losses_per_generation" in data:
-                        metrics["losses"] = np.array(data["es_best_losses_per_generation"]).reshape(-1)
-                        print(f"Extracted ES best losses per generation: {metrics['losses'].shape}")
-                    elif "es_all_losses" in data:
-                        metrics["losses"] = np.array(data["es_all_losses"]).reshape(-1)
-                        print(f"Extracted ES all losses: {metrics['losses'].shape}")
+                        es_losses = np.array(data["es_generation_losses"]).reshape(-1)
+                        print(f"ES generation losses: {es_losses.shape}")
+                    if es_losses is None and "es_best_losses_per_generation" in data:
+                        es_losses = np.array(data["es_best_losses_per_generation"]).reshape(-1)
+                        print(f"ES best losses per generation: {es_losses.shape}")
+                    if es_losses is None and "es_all_losses" in data:
+                        es_losses = np.array(data["es_all_losses"]).reshape(-1)
+                        print(f"ES all losses (fallback): {es_losses.shape}")
+                    if es_losses is not None:
+                        metrics["losses"] = es_losses
                     else:
                         print("No ES trajectory data found in expected keys")
                 
