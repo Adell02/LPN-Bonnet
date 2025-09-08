@@ -1919,28 +1919,24 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
     # Add legend
     ax.legend(loc="upper right", frameon=True, fontsize=10)
     
-    # Add accuracy metrics as notes
-    if ga_npz_path and os.path.exists(ga_npz_path):
+    # Optionally add accuracy metrics as notes (disabled by default)
+    show_accuracy_notes = False
+    if show_accuracy_notes and ga_npz_path and os.path.exists(ga_npz_path):
         try:
             with np.load(ga_npz_path, allow_pickle=True) as f:
                 ga_accuracies = {}
-                # Try different possible accuracy key names
                 for key in ['ga_overall_accuracy', 'overall_accuracy', 'ga_accuracy', 'accuracy']:
                     if key in f:
                         ga_accuracies['overall'] = safe_array_to_scalar(np.array(f[key]))
                         break
-                
                 for key in ['ga_top_1_shape_accuracy', 'top_1_shape_accuracy', 'ga_shape_accuracy', 'correct_shapes', 'shape_accuracy']:
                     if key in f:
                         ga_accuracies['shape'] = safe_array_to_scalar(np.array(f[key]))
                         break
-                
                 for key in ['ga_top_1_accuracy', 'top_1_accuracy', 'ga_grid_accuracy', 'pixel_correctness', 'grid_accuracy']:
                     if key in f:
                         ga_accuracies['grid'] = safe_array_to_scalar(np.array(f[key]))
                         break
-
-                # Fallback: compute from per-sample arrays if scalars weren't found
                 if ('overall' not in ga_accuracies or 'shape' not in ga_accuracies or 'grid' not in ga_accuracies):
                     overall = ga_accuracies.get('overall', None)
                     shape = ga_accuracies.get('shape', None)
@@ -1960,15 +1956,12 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                                 grid = float(np.mean(arr))
                     except Exception as _ga_fallback_e:
                         print(f"[loss] GA fallback accuracies failed: {_ga_fallback_e}")
-
                     if overall is not None:
                         ga_accuracies['overall'] = overall
                     if shape is not None:
                         ga_accuracies['shape'] = shape
                     if grid is not None:
                         ga_accuracies['grid'] = grid
-                
-                # Add GA accuracy note
                 if ga_accuracies:
                     ga_note = "GA Final: "
                     if 'overall' in ga_accuracies:
@@ -1977,8 +1970,6 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
                         ga_note += f"Shape={ga_accuracies['shape']:.3f} "
                     if 'grid' in ga_accuracies:
                         ga_note += f"Pixel={ga_accuracies['grid']:.3f}"
-                    
-                    # Position note in upper left
                     ax.text(0.02, 0.98, ga_note, transform=ax.transAxes, 
                            fontsize=9, verticalalignment='top',
                            bbox=dict(boxstyle="round,pad=0.3", facecolor='#FBB998', alpha=0.8, color='white'))
@@ -1986,7 +1977,7 @@ def plot_loss_curves(ga: Trace, es: Trace, out_dir: str, original_dim: int = 2,
         except Exception as e:
             print(f"[loss] Failed to extract GA accuracy metrics: {e}")
     
-    if es_npz_path and os.path.exists(es_npz_path):
+    if show_accuracy_notes and es_npz_path and os.path.exists(es_npz_path):
         try:
             with np.load(es_npz_path, allow_pickle=True) as f:
                 es_accuracies = {}
